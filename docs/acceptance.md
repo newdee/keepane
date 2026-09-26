@@ -2666,3 +2666,8 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 21 | 损坏的持久化状态 | 乱码与半截的会话文件：list-saved 跳过、好的照常恢复；事件日志里夹着半行 JSON 与 NUL：list-events/list-tasks 正常；历史目录 chmod 000：server 照跑；在坏日志上重启：正常；server 日志 panic 0。Linux e2e 40/40；Windows 全量通过 | 干净（2/3） |
 | 22 | 测试对 macOS CI 的适用性（读测试） | macOS 的 bash 是 3.2（无 PS0），按第 9 轮写进 README 的行为，失败不会被标出；但 bash 消息测试断言 `#N failed`，在 macOS CI 上必然失败 | **有问题**：测试按本机 bash 版本（`BASH_VERSINFO` ≥ 4.4）期望 failed 或 done；其余依赖（seq、od、dd、stty、kill -0、uname -n、带空格的数据目录）逐一核对，macOS 都有/都能处理 |
 | 23 | 真机 CI（三系统） | 04079ea 推上去：macOS 首次真跑全绿（lib、e2e 含 zsh 测试）、Windows 绿；Ubuntu 的历史测试失败："no history file"。本地用空 HOME 复现 3/3：每 pane 历史的目录只在"有共享历史可复制"时才顺带建出来，新机器（还没有 ~/.bash_history）上 bash 的 `history -a` 写不进不存在的目录（PSReadLine 自己建目录，所以 Windows 从没暴露）。第 11 轮的环境矩阵漏了"空 HOME" | **有问题**（真 bug）：目录总是先建；空 HOME 下 3/3 通过、全量通过（zsh 测试除外：本机解包的 zsh 靠真 HOME 的 .zshenv 找 fpath，是测试环境所限，macOS CI 上的真 zsh 已通过）；普通环境 20/20；Windows 全量通过 |
+| 24 | 真机平台（CI） | 57f85de：Windows、Ubuntu、macOS 三个 job 的 fmt、clippy、全量测试都通过 | 干净（1/3） |
+| 25 | 可复现性 | 同一提交在 CI 上重跑（attempt 2）三系统再全绿；本地 Linux lib 193、e2e 30/30；Windows 2/2（217/10/84） | 干净（2/3） |
+| 26 | 静态一致性（发布产物与文档） | 照 release.yml 的打包步骤逐字在本地跑：`keepane-v0.16.0-linux-x86_64.tar.gz`（+ .sha256），内含同名目录与 keepane、两份 README、配置样例、LICENSE，与 README 的下载名和 `install` 路径一致，解出的程序报 `keepane 0.16.0`；中英 README 15 个要点逐一对照都有；Linux 全量 193/85，Windows 全量通过 | 干净（3/3） |
+
+遗留：macOS 只在 CI 上跑过测试，没有人手在 Mac 上用过（交互客户端、剪贴板、通知）；本机没有装 zsh（sudo 要密码），zsh 测试用解包的 zsh 加临时 `~/.zshenv` 跑，真 zsh 由 macOS CI 覆盖；bash 4.4 以下（macOS 自带）只在文档里说明，没有实测；`keepane startup` 在 Linux/macOS 上还没有（systemd user unit / launchd agent）。
