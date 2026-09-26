@@ -7,9 +7,9 @@ const ZH = {
   "hero.title": "<span class=\"nw\">pane 一直在跑，</span><span class=\"nw\">还能互相传消息。</span>",
   "hero.lede":
     "keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息。常用的 tmux 按键、命令和配置文件可以继续使用，h j k l 也在；PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
-  "hero.download": "下载 Windows 版",
+  "hero.download": "下载",
   "hero.source": "看源码",
-  "hero.meta": "MIT 许可 · Windows 10 1809 及以上 · 一个 3 MB 的 exe · 原名 wmux",
+  "hero.meta": "MIT 许可 · Windows、Linux、macOS · 单个可执行文件 · 原名 wmux",
   "hero.caption": "一段完整录制：分屏、一次输入到所有 pane、移动、全屏、弹出 pane 菜单、切窗口、脱离，再接回来。",
   "stat.exe": "个文件就够",
   "stat.deps": "依赖 Cygwin / WSL",
@@ -21,7 +21,7 @@ const ZH = {
     "<kbd>C-b %</kbd> 左右分，<kbd>C-b \"</kbd> 上下分。用 vim 键位或方向键移动，而且可以连着按：移动和调大小在半秒内不用再按前缀。",
   "c1.p1":
     "每个 pane 都是一个 ConPTY，所以 PSReadLine 的组合键、中文输入法和全屏程序，表现和不用 keepane 时一样。",
-  "c1.p2": "鼠标可以用：点一下切换 pane，拖边框调大小，拖选文字直接复制到 Windows 剪贴板。",
+  "c1.p2": "鼠标可以用：点一下切换 pane，拖边框调大小，拖选文字直接复制到系统剪贴板。",
   "cw.title": "在手机上看 pane、往 pane 里输入",
   "cw.sub":
     "跑长编译之前先开 <code>keepane web</code>，然后人就可以走开。它会打出一个二维码，手机连同一个 Wi-Fi 扫一下，浏览器里就列出所有 pane，点进去能看屏幕、能输入。手机上什么都不用装。",
@@ -115,11 +115,13 @@ const ZH = {
     "<code>keepane update</code> 安装新版本，<code>keepane restart-server</code> 把正在运行的 session 连同历史和目录一起迁过去，已经接入的终端会自动重新连接。",
 
   "c5.title": "安装",
-  "c5.msi": "安装包",
+  "c5.unix": "Linux 和 macOS",
+  "c5.unix.sub": "每个系统一个 .tar.gz（Linux 版静态编译；Mac 分 Apple 芯片和 Intel），解压后把 keepane 放进 PATH。",
+  "c5.msi": "Windows 安装包",
   "c5.msi.sub": "下载 .msi 双击，装到 Program Files，自动进系统 PATH，卸载在“应用和功能”里。",
   "c5.scoop": "Scoop",
   "c5.scoop.sub": "仓库里的清单直接装 zip，以后跟着新版本更新。",
-  "c5.zip": "免安装",
+  "c5.zip": "Windows 免安装",
   "c5.zip.sub": ".zip 里就是同一个 exe，解压到哪都能跑。",
   "c5.cargo": "从源码装",
   "c5.get": "去下载",

@@ -84,6 +84,10 @@ pub struct Options {
     /// `window-size`): "latest" (the one used last), "smallest", "largest"
     /// or "manual" (only `resize-window` changes it).
     pub window_size: String,
+    /// `TERM` in every pane on Linux and macOS (tmux `default-terminal`):
+    /// what the programs there are told they draw on, not what the server
+    /// happened to be started from. ConPTY sets up its own on Windows.
+    pub default_terminal: String,
     /// Show when each command ran, and how it went, at the right end of
     /// its line (tmux has no such thing): needs a shell that reports its
     /// commands, which keepane's PowerShell hook does.
@@ -211,6 +215,7 @@ pub const SHOWABLE: &[&str] = &[
     "restore-on-start",
     "sessions-dir",
     "window-size",
+    "default-terminal",
     "pane-timestamps",
     "log-history",
     "log-history-days",
@@ -234,7 +239,7 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             prefix: Key::ctrl('b'),
-            default_shell: crate::platform::shell::DEFAULT_SHELL.into(),
+            default_shell: crate::platform::shell::default_shell(),
             default_command: Vec::new(),
             mouse: true,
             history_limit: 5000,
@@ -280,6 +285,7 @@ impl Default for Options {
             restore_on_start: false,
             sessions_dir: String::new(),
             window_size: "latest".into(),
+            default_terminal: "xterm-256color".into(),
             pane_timestamps: false,
             log_history: true,
             log_history_days: 30,
@@ -389,6 +395,7 @@ pub const KNOWN: &[&str] = &[
     "base-index",
     "default-command",
     "default-shell",
+    "default-terminal",
     "display-panes-active-colour",
     "display-panes-colour",
     "display-time",
@@ -452,7 +459,6 @@ pub const ACCEPTED: &[&str] = &[
     "allow-rename",
     "automatic-rename",
     "bell-action",
-    "default-terminal",
     "escape-time",
     "focus-events",
     "history-file",
@@ -685,6 +691,13 @@ impl Options {
             "event-log" => self.event_log = parse_bool(value)?,
             "event-log-days" => self.event_log_days = ranged(name, value, 1, 3650, "days")?,
             "event-log-max" => self.event_log_max = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024)?,
+            "default-terminal" => {
+                let v = value.trim();
+                if v.is_empty() || v.contains(char::is_whitespace) {
+                    return Err(format!("bad default-terminal '{value}' (a terminal name, such as xterm-256color)"));
+                }
+                self.default_terminal = v.to_string();
+            }
             "window-size" => {
                 self.window_size = match value.trim() {
                     v @ ("latest" | "smallest" | "largest" | "manual") => v.to_string(),
@@ -701,7 +714,6 @@ impl Options {
             }
             // Accepted for .tmux.conf compatibility; no effect on Windows.
             "escape-time"
-            | "default-terminal"
             | "terminal-overrides"
             | "focus-events"
             | "set-clipboard"
@@ -777,6 +789,7 @@ impl Options {
                 }
             }
             "window-size" => self.window_size.clone(),
+            "default-terminal" => self.default_terminal.clone(),
             "pane-timestamps" => onoff(self.pane_timestamps),
             "log-history" => onoff(self.log_history),
             "keep-zoom" => onoff(self.keep_zoom),
@@ -861,7 +874,7 @@ pub fn resolve_shell(opts: &Options) -> Vec<String> {
 }
 
 // The shell and its hook are the platform's.
-pub use crate::platform::shell::{POWERSHELL_PROMPT_HOOK, which, with_shell_integration};
+pub use crate::platform::shell::{PROMPT_HOOK, which, with_shell_integration};
 
 #[cfg(test)]
 mod tests {
@@ -1067,6 +1080,20 @@ mod tests {
             assert_eq!(o.get("window-status-separator").as_deref(), Some(sep));
         }
         assert_eq!(o.set("s-j", "right").map(|_| o.status_justify.clone()).unwrap(), "right", "abbreviates");
+    }
+
+    #[test]
+    fn default_terminal_is_a_name() {
+        let mut o = Options::default();
+        assert_eq!(o.get("default-terminal").as_deref(), Some("xterm-256color"));
+        o.set("default-terminal", "screen-256color").unwrap();
+        assert_eq!(o.default_terminal, "screen-256color");
+        for bad in ["", "  ", "xterm 256"] {
+            assert!(o.set("default-terminal", bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(o.default_terminal, "screen-256color", "a refused value changes nothing");
+        assert!(SHOWABLE.contains(&"default-terminal") && KNOWN.contains(&"default-terminal"));
+        assert!(!ACCEPTED.contains(&"default-terminal"), "it has an effect now");
     }
 
     #[test]

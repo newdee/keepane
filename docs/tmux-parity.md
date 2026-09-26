@@ -232,7 +232,8 @@ printed, which `keepane web` watches), and for pane messages `pane_name` `pane_a
 `#{m:pattern,text}` (`m/i:` ignores case).
 Not there: `#{e|…}` arithmetic, `#{l:…}` literals, `#{a:…}`, `#{C:…}`
 search, loops (`#{S:…}` `#{W:…}` `#{P:…}`), and the mouse variables.
-Accepted and ignored: `bell-action`, `escape-time`, `default-terminal`,
+`default-terminal` sets `TERM` in panes on Linux and macOS (ConPTY's own on Windows).
+Accepted and ignored: `bell-action`, `escape-time`,
 `terminal-overrides`, `focus-events`, `set-clipboard`, `renumber-windows`,
 `allow-rename`, `automatic-rename`, `window-status-current-style`,
 `mode-keys`, `aggressive-resize`, `set-titles`, `set-titles-string`,

@@ -2479,6 +2479,11 @@ impl Server {
             ("KEEPANE_PANE".into(), pane_id.to_string()),
             ("PATH".into(), path_with_self()),
         ];
+        // What the pane's programs draw on is keepane, not the terminal the
+        // server was started from (tmux does the same).
+        if crate::platform::shell::SETS_TERM {
+            env.push(("TERM".into(), self.opts.default_terminal.clone()));
+        }
         // `set-environment` entries last, so they can override even PATH.
         env.extend(self.env.iter().cloned());
         env
@@ -2552,8 +2557,8 @@ impl Server {
         let id = self.alloc_id();
         let argv = if argv.is_empty() { resolve_shell(&self.opts) } else { argv.to_vec() };
         let mut env = self.pane_env(id);
-        // Only an interactive PowerShell, the one that gets keepane's hook,
-        // has a history file of its own.
+        // Only an interactive shell that gets keepane's hook (PowerShell,
+        // bash, zsh) has a history file of its own.
         let hooked = crate::config::with_shell_integration(&argv) != argv;
         let name = match hist {
             _ if !hooked => None,
@@ -3161,6 +3166,7 @@ impl Server {
                     if window { self.session(sid).unwrap().windows[widx].layout.panes() } else { vec![pid] };
                 let (history, tx) = (self.opts.history_limit, self.pane_tx.clone());
                 let mut done = 0;
+                let mut unfinished = Vec::new();
                 for id in ids {
                     // The same environment a new pane gets: KEEPANE, KEEPANE_PANE
                     // and PATH, not just the set-environment entries.
@@ -3177,9 +3183,16 @@ impl Server {
                     }
                     let cmd = if argv.is_empty() { None } else { Some(argv.as_slice()) };
                     match p.respawn(cmd, history, &env, tx.clone()) {
-                        Ok(()) => done += 1,
+                        Ok(m) => {
+                            done += 1;
+                            unfinished.extend(m);
+                        }
                         Err(e) => return Outcome::Error(format!("respawn: {e:#}")),
                     }
+                }
+                // What the old programs were working on went with them.
+                for m in unfinished {
+                    self.observe.ended(m.id, actor::End::Abandoned, None, None);
                 }
                 if done == 0 {
                     return Outcome::Error("pane is still running (use -k)".into());
@@ -5124,7 +5137,7 @@ impl Server {
                     Some(d) => expand_home(&d),
                     None => return Outcome::Error("set-cwd: no directory given and the client has none".into()),
                 };
-                let dir = pane::windows_path_from_announced(&dir).unwrap_or(dir);
+                let dir = pane::path_from_announced(&dir).unwrap_or(dir);
                 // A relative directory is relative to where the client runs, not the server.
                 let dir = match (std::path::Path::new(&dir).is_relative(), &client_cwd) {
                     (true, Some(base)) => std::path::Path::new(base).join(&dir).to_string_lossy().into_owned(),
@@ -5285,7 +5298,7 @@ impl Server {
     /// there are sessions. `#(command)` pieces are not run for it.
     fn config_condition(&self, cond: &str) -> bool {
         let ctx = crate::format::Context {
-            host: std::env::var("COMPUTERNAME").unwrap_or_default(),
+            host: crate::sysinfo::hostname(),
             socket: self.socket.clone(),
             ..Default::default()
         };
@@ -5338,7 +5351,7 @@ impl Server {
         // The machine's readings come from a once-a-second cache.
         let sys = crate::sysinfo::system();
         let mut ctx = crate::format::Context {
-            host: std::env::var("COMPUTERNAME").unwrap_or_default(),
+            host: crate::sysinfo::hostname(),
             socket: self.socket.clone(),
             cpu_percentage: sys.cpu_percentage,
             ram_percentage: sys.ram_percentage,
@@ -5348,8 +5361,7 @@ impl Server {
             uptime: sys.uptime,
             ..Default::default()
         };
-        let now = chrono::Local::now().timestamp();
-        let unix = |i: Instant| now - i.elapsed().as_secs() as i64;
+        let unix = unix_seconds;
         let Some(sess) = self.session(sid) else { return ctx };
         ctx.session = sess.name.clone();
         ctx.session_id = sess.id;
@@ -5528,10 +5540,15 @@ impl Server {
                         }
                         return;
                     }
-                    let bytes = input::encode_key_record(&rec);
                     match self.clients.get_mut(&cid).and_then(|c| c.popup.as_mut()).filter(|p| !p.finished) {
-                        Some(p) => p.pane.write_input(&bytes),
-                        None => self.write_active(sid, &bytes, typing(&rec)),
+                        Some(p) => {
+                            let bytes = p.pane.key_bytes(&rec);
+                            p.pane.write_input(&bytes)
+                        }
+                        None => {
+                            let bytes = self.active_key_bytes(sid, &rec);
+                            self.write_active(sid, &bytes, typing(&rec))
+                        }
                     }
                     return;
                 }
@@ -5625,7 +5642,8 @@ impl Server {
             c.view_pinned = false;
             c.view_follow = true;
         }
-        self.write_active(sid, &input::encode_key_record(&rec), typing(&rec));
+        let bytes = self.active_key_bytes(sid, &rec);
+        self.write_active(sid, &bytes, typing(&rec));
     }
 
     /// A key while a popup is open: it goes to the popup's program, or closes
@@ -5640,7 +5658,8 @@ impl Server {
             }
             return;
         }
-        p.pane.write_input(&input::encode_key_record(rec));
+        let bytes = p.pane.key_bytes(rec);
+        p.pane.write_input(&bytes);
     }
 
     /// Keep a popup centred and sized as it was asked for. Called before
@@ -5667,6 +5686,14 @@ impl Server {
     /// `synchronize-panes` is on. `typing` is whether it counts as someone
     /// typing (a key pressed, not a key let go or a modifier on its own),
     /// which makes the pane busy for its messages.
+    /// A typed key as the session's active pane is to get it.
+    fn active_key_bytes(&self, sid: SessionId, rec: &KeyRecord) -> Vec<u8> {
+        match self.session(sid).and_then(|s| s.window()).and_then(|w| w.active_pane()) {
+            Some(p) => p.key_bytes(rec),
+            None => crate::platform::keys::to_pane(rec, false),
+        }
+    }
+
     fn write_active(&mut self, sid: SessionId, bytes: &[u8], typing: bool) {
         let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) else { return };
         let write = |p: &mut Pane| if typing { p.type_input(bytes) } else { p.write_input(bytes) };
@@ -7143,7 +7170,7 @@ impl Server {
                 screen: p.screen(),
                 active: *id == active,
                 copy: copy_views.get(id).copied(),
-                border_text: border_top.and_then(|top| border_texts.remove(id).map(|segs| (segs, top))),
+                border_text: border_texts.remove(id).zip(border_top),
             });
         }
         // A client the size of the session draws straight into its grid. A
@@ -7446,6 +7473,17 @@ fn logical_lines(text: &str, eval: &dyn Fn(&str) -> bool) -> (Vec<(usize, String
     (out, frames.first().map(|f| f.opened_at))
 }
 
+/// `i` as Unix seconds, counted from one wall-clock reading the process
+/// takes once: the same instant always gives the same second, so a
+/// difference of two (how long a dead pane ran) does not change from one
+/// asking to the next as each is rounded at another moment.
+fn unix_seconds(i: Instant) -> i64 {
+    static ANCHOR: std::sync::OnceLock<(Instant, f64)> = std::sync::OnceLock::new();
+    let (at, secs) = *ANCHOR.get_or_init(|| (Instant::now(), chrono::Utc::now().timestamp_millis() as f64 / 1000.0));
+    let since = if i >= at { (i - at).as_secs_f64() } else { -(at - i).as_secs_f64() };
+    (secs + since).floor() as i64
+}
+
 /// Expand a leading `~` or `~/` to the user's home directory.
 fn expand_home(path: &str) -> String {
     if (path == "~" || path.starts_with("~/") || path.starts_with("~\\"))
@@ -7489,9 +7527,13 @@ fn path_with_self() -> String {
     let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
         return path;
     };
-    let dir_s = dir.to_string_lossy().into_owned();
     let already = std::env::split_paths(&path).any(|p| p == dir);
-    if already { path } else { format!("{dir_s};{path}") }
+    if already {
+        return path;
+    }
+    // The platform's separator (`;` on Windows, `:` elsewhere).
+    let parts = std::iter::once(dir).chain(std::env::split_paths(&path));
+    std::env::join_paths(parts).map(|p| p.to_string_lossy().into_owned()).unwrap_or(path)
 }
 
 /// Longest a status-line `#(command)` may run before it is killed.
@@ -8335,11 +8377,15 @@ mod tests {
 
     #[test]
     fn run_shell_reports_exit_code_and_utf8() {
-        let (out, code) = run_shell_blocking("Write-Output 中文-ok; exit 3", &[], None);
+        let (ok, echo) = if cfg!(windows) {
+            ("Write-Output 中文-ok; exit 3", "Write-Output $env:KEEPANE_TEST_VAR")
+        } else {
+            ("printf '中文-ok\n'; exit 3", "echo $KEEPANE_TEST_VAR")
+        };
+        let (out, code) = run_shell_blocking(ok, &[], None);
         assert_eq!(code, 3);
         assert!(out.contains("中文-ok"), "{out:?}");
-        let (out, code) =
-            run_shell_blocking("Write-Output $env:KEEPANE_TEST_VAR", &[("KEEPANE_TEST_VAR".into(), "v1".into())], None);
+        let (out, code) = run_shell_blocking(echo, &[("KEEPANE_TEST_VAR".into(), "v1".into())], None);
         assert_eq!(code, 0);
         assert_eq!(out.trim(), "v1");
     }
@@ -8348,13 +8394,33 @@ mod tests {
     fn run_shell_timeout_kills_the_tree() {
         let start = Instant::now();
         let (out, code) = run_shell_blocking(
-            "Write-Output first-line; ping -n 30 127.0.0.1 > $null; Write-Output never-reached",
+            if cfg!(windows) {
+                "Write-Output first-line; ping -n 30 127.0.0.1 > $null; Write-Output never-reached"
+            } else {
+                "echo first-line; sleep 30; echo never-reached"
+            },
             &[],
             Some(Duration::from_secs(2)),
         );
         assert_eq!(code, 124, "{out:?}");
         assert!(out.contains("first-line") && !out.contains("never-reached"), "{out:?}");
         assert!(start.elapsed() < Duration::from_secs(10), "took {:?}", start.elapsed());
+    }
+
+    /// An instant is the same second whenever it is asked about: a dead
+    /// pane's running time does not flicker between two values.
+    #[test]
+    fn an_instant_is_always_the_same_unix_second() {
+        let born = Instant::now() - Duration::from_millis(400);
+        let died = born + Duration::from_millis(700);
+        let first = (unix_seconds(born), unix_seconds(died));
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(37));
+            assert_eq!((unix_seconds(born), unix_seconds(died)), first);
+        }
+        let now = chrono::Utc::now().timestamp();
+        assert!((unix_seconds(Instant::now()) - now).abs() <= 1, "wall time");
+        assert!(unix_seconds(born - Duration::from_secs(90)) <= now - 90, "before the anchor too");
     }
 
     #[test]

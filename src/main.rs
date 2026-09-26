@@ -32,13 +32,13 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
   jobs [-t session] [-F format]   (every pane: running or exited, up for how long, idle since when)
   choose-jobs   (prefix B: the same board as a picker; Enter goes there, x kills, r restarts)
   record [-t target] [out.cast]   (write the pane's output as asciinema v2; no path stops)
-  notify [-T title] message   (a desktop notification; `set -g notify on` for alerts, with a Go-to-pane button)
+  notify [-T title] message   (a desktop notification; `set -g notify on` for alerts; on Windows with a Go-to-pane button)
   focus-pane %N   (every attached client switches to that pane and comes to the front)
-Resume after a reboot (sessions autosave to %LOCALAPPDATA%\\keepane\\sessions):
+Resume after a reboot (sessions autosave to the data directory's sessions folder):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
-  startup on|off|status   (start the server at logon and restore every saved session; no admin needed)
-  windows-terminal install|remove|status   (a keepane profile in the Windows Terminal dropdown)
+  startup on|off|status   (Windows: start the server at logon and restore every saved session)
+  windows-terminal install|remove|status   (Windows: a keepane profile in the Windows Terminal dropdown)
 Upgrading:  version (this keepane and the server's)   update [--check]   restart-server (sessions move to this version)
   migrate   (from wmux, keepane's old name: sessions, saved data, logon start, Windows Terminal profile)
 On a phone:  web [--port N] [--bind IP] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
@@ -57,7 +57,7 @@ Keys not arriving?  show-keys   (prints each key as the console hands it over an
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
-Config: %USERPROFILE%\\.keepane.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name);
+Config: ~/.keepane.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name);
   with none, ~/.tmux.conf is read and whatever keepane cannot use is skipped.
 Any unambiguous prefix of a command name works: `keepane att`, `keepane lsp`, `keepane splitw -h`.
 Option names too (`set sync`, `set mon-act on`); an on/off option with no value flips it.
@@ -143,11 +143,12 @@ fn main() {
         std::process::exit(code);
     }
     // `keepane __shell-hook`: the prompt hook keepane gives an interactive
-    // PowerShell, for a shell started with a script of its own (which gets
-    // none): `Invoke-Expression (keepane __shell-hook)` in that script. The
-    // picture scripts in tools/ use it.
+    // shell (PowerShell on Windows, bash elsewhere), for a shell started
+    // with a script of its own (which gets none): `Invoke-Expression
+    // (keepane __shell-hook)` or `eval "$(keepane __shell-hook)"` in that
+    // script. The picture scripts in tools/ use it.
     if args.first().map(String::as_str) == Some("__shell-hook") {
-        println!("{}", keepane::config::POWERSHELL_PROMPT_HOOK);
+        println!("{}", keepane::config::PROMPT_HOOK);
         return;
     }
     // A notification's "Go to pane" button opens a keepane:// URL, which the

@@ -2634,3 +2634,34 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 8 | 同一套测试 | 304 = 303 + 新单测，205/10/84 | 干净（1/3） |
 | 9 | 环境无关 | 清掉 `KEEPANE`/`KEEPANE_PANE` 全量再跑：205/10/84 | 干净（2/3） |
 | 10 | 实操 | 别的 server 的 pane：`new` 客户端拒、`new -d` 可、改模式不受限；同 server 的 pane：`new` 由 server 拒；不存在的 pane 按 pane 外处理（设计如此，HEAD 同） | 干净（3/3） |
+
+## 65. Linux 与 macOS
+
+`src/platform/unix/`（Linux 与 macOS 共用，只在进程目录、系统信息、进程列表处按 `target_os` 分）：Unix socket（`<runtime>/keepane-<uid>/`，0700，属主检查）、termios 原始模式与 SIGWINCH、VT 输入解析成与 Windows 相同的按键/鼠标记录（`src/vtinput.rs`）、pane 进程树按会话挂断（SIGHUP，半秒后 SIGKILL）、server 自成会话（SSH 挂断到不了）、SIGTERM/SIGHUP 时先存档再退出、bash（`--rcfile`）与 zsh（`ZDOTDIR`）的提示符钩子（先读用户自己的 rc）、每 pane 历史（HISTFILE）、剪贴板（pbcopy/wl-copy/xclip/xsel）、通知（notify-send/osascript）、macOS 的 sysctl/mach/proc_pidinfo。与平台无关、按 shell 走的：提示符标记带 `;sh` 的 shell 用 POSIX 写法投递消息（信封作为 `:` 的参数，多行用 `eval`），见 `server::actor::Syntax`。ConPTY 自己有屏幕、Unix pty 没有：恢复的 pane 在 Unix 上把存档文字直接写进 keepane 的屏幕模型（`console::PTY_HAS_SCREEN`）。e2e 测试平台中立化（Unix 上 pane 是 `/bin/sh`，提示符同为 `keepane>`；Windows 专属的 8 个用 `cfg(windows)`，bash 另有消息与目录测试，zsh 测试在有 zsh 时跑）。CI 加 ubuntu-latest、macos-latest；release 加 linux-x86_64（musl 静态）、macos-aarch64、macos-x86_64 三个 tar.gz。版本 0.16.0。
+
+实现途中发现并修掉的（验收轮之前）：bash 的 PS1 里 ST 的反斜杠被提示符解码吃掉（改用 BEL）；OSC 7 在 Unix 上被丢弃（`windows_path_from_announced` 只收 Windows 路径，改为按平台的 `path_from_announced`，Unix 只收本机存在的绝对目录）；resume 的回放助手在 Unix 上无法与 shell 共用同一个 pty 会话；`git_branch` 把相对路径从进程 cwd 往上找；zsh 默认 SAVEHIST=0 导致每 pane 历史不落盘。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性（通读 src 改动） | clippy linux/mac-x86/mac-arm 0/0/0；`__shell-hook` 的注释只提 PowerShell | **有问题**，注释改为两种 shell |
+| 2 | 机制通路（变异 9 个） | posix_quote、`;sh` 标记（两处）、PTY_HAS_SCREEN、直写回放、OSC 7 收录、zsh SAVEHIST、git 相对路径、e2e 引号：9/9 被抓；全量 Linux 187/84，但 e2e 有一次 `vim_keys` 失败：按键与 list-panes 走不同连接，断言没等 | **有问题**，同类 7 处改为等待（`wait_list`/`wait_buffer`） |
+| 3 | 可复现性（Linux e2e 连跑） | 5 次里 1 次失败；再连跑 40 次找出 3 类：回显竞争（sh 由 tty 回显，提前敲入的一行跟在新提示符后面）、弹窗等到的 `pip>` 其实是命令行里的字、屏幕上 `keepane>` 计数在分屏前已够 | **有问题**，三处修测试；之后 40/40 |
+| 4 | 可复现性（Windows） | fmt 0、clippy 0；全量 3 次：212/10/84 ×3；Linux 40/40（同代码） | 干净（1/3） |
+| 5 | 边界与退化输入 | 超长 `-L`：报错但写着 "open pipe"（Windows 用语、不说路径）；无 SHELL → sh；10×3 终端 attach/detach 正常；空消息被拒、只有空行/中间空行的消息正常；相对的 OSC 7 被忽略；server 日志 panic 0 | **有问题**，改为 "connect to the server at <地址>" |
+| 6 | 不变量（入口审计） | 投递语法只在 mail.rs 一处取 `p.syntax`；目录上报两处入口都走 `path_from_announced`；回放只经 `spawn_gen`。Linux 11/11、三目标 clippy 0；Windows e2e 2/2 失败于 `list-events -S`：事件日志与 pane 输出日志共用一个写线程，繁忙时（本进程 80 多个 server 同时起、各自先剪一遍历史目录）事件落盘晚于 `flush` 的 2 秒上限，查询读到的文件缺行而不自知；加负载复现 3/8 | **有问题**（旧设计缺陷）：事件日志单独一个写线程（`append_event`/`prune_events`/`flush_events`）；加单测（历史写线程被卡 3 秒，事件仍 <2 秒落盘）；同负载复现 0/8；变异（事件改回历史通道）被抓 |
+| 7 | 代码正确性（错误路径、资源、并发） | 无 tty 的 attach、找不到 session、server 不在：提示清楚；Tree 的延时 SIGKILL 线程与信号管道不泄漏。Windows 全量 3/3（与 Linux 并发）；Linux 连跑中偶发 3 类失败：find-text 只等了第三个 pane、历史测试 C-c 后立即打字被 bash 吃掉开头、jobs 里已退出 pane 的 UP 在 0s/1s 间跳 | **有问题**：前两处修测试；第三处是产品 bug——`pane_start_time`/`pane_dead_time` 每次询问时各自按当时的秒取整，差值会跳。改为进程内一个固定锚点（`unix_seconds`），同一时刻永远是同一秒；加单测 |
+| 8 | 可复现性 | Linux e2e 50+60 次 0 失败；lib 190；Windows 全量 3/3（214/10/84） | 干净（1/3） |
+| 9 | 静态一致性（文档对代码） | bash 的命令开始标记靠 PS0，要 4.4 以上，macOS 自带 3.2 没有（没有命令时间、消息成败不标）——README 未说；`keepane --help` 说 notify 有"跳到 pane"按钮（只有 Windows 有） | **有问题**，中英 README 与帮助补上 |
+| 10 | 机制通路（本批新改） | 变异：`hostname` 返回空、事件改回历史通道、`unix_seconds` 内部改回按次取整：3/3 被抓；但格式上下文改回局部闭包（不经 `unix_seconds`）**没被抓**——只有 e2e 偶尔碰到 | **有问题**（测试缺口）：jobs 测试加一个活半秒的 pane，1.5 秒里问 30 次开始/结束之差必须不变；同一变异 5/5 被抓 |
+| 11 | 环境无关 | A：SHELL=zsh、LANG=C、TERM=dumb、无 XDG_RUNTIME_DIR → bash 与 zsh 消息测试都失败，逐个变量排查是 TERM=dumb：pane 继承了 server 自己的 TERM（tmux 从不这样）；B：socket 目录带空格、SHELL=/bin/sh → 通过 | **有问题**：`default-terminal` 由"接受并忽略"改为真选项（默认 xterm-256color），Linux/macOS 上写进每个 pane 的 TERM（Windows 由 ConPTY 管，不变）；配置单测 + e2e；新测试自己也犯了"提示符出来前就敲"的错，修后 20/20 |
+| 12 | 机制通路 + 全量 | 变异：去掉 pane 的 TERM、选项不存值：2/2 被抓；Linux 三种环境（A/B/普通）全绿，普通环境 e2e 25/25（85 个）；三目标 clippy 0；Windows 全量 3/3（215/10/84） | 干净（1/3） |
+| 13 | 静态一致性（平台接口对设计文档） | 两边公开接口逐项对照：名字一致（PowerShell 钩子以 `pub use` 同名导出；Windows 多出的 shutdown 窗口只在 cfg(windows) 用）；但 platform.md 的接缝表缺两项：pane 的 TERM（`SETS_TERM`）、主机名（`hostname`）。另查不变量：运行程序的 8 个入口（pane、分屏、新窗口、respawn、resume、弹窗、hook/run-shell、if-shell、pipe-pane、#()）都经 `pane_env` | **有问题**（文档缺项），补上 |
+| 14 | 边界（新选项） | 配置文件设 screen-256color 且 server 自己 TERM=dumb → pane 得 screen-256color；`set-environment TERM` 盖过它；空值与带空格的值被拒；300 字符照存；缩写 `default-t` 可用。Linux 全量 + e2e 31/31；Windows 2/2 | 干净（1/3） |
+| 15 | 可复现性（逐字节） | musl release 两次构建 sha256 相同（a57bdd01…）；`__shell-hook` 两次相同；两个 server 写出的 5 个启动文件逐字节相同；Linux lib 191、e2e 30/30；Windows 2/2 | 干净（2/3） |
+| 16 | 退化输入（终端输入解析） | 新增确定性模糊测试（20 万字节、任意切块）：不 panic、不囤积。但读代码发现：括号粘贴要等到结束标记才放行，而客户端 30ms 无输入就把囤着的字节当按键冲出去——SSH 上分几次到达的大段粘贴会被拆坏（开头的 ESC[200~ 变成 Esc 键加字面的 `[200~`） | **有问题**（真 bug）：粘贴改为"模式"，文字到了就放行，只留可能是结束标记开头的字节和没收全的 UTF-8；粘贴中不计超时。真客户端实测：中间停 200ms 的粘贴完整到达；3 个变异 3/3 被抓 |
+| 17 | 大输入端到端 + 全量 | 真客户端粘贴 100,030 字节（含中文、emoji、制表符，4KB 一块、块间停 50ms）进 `cat > 文件`：收到 100,030 字节、逐字节相同、3.06 秒。Windows 2/2（216/10/84），三目标 clippy 0；Linux e2e 30 次里历史测试失败 1 次（之后单跑 80 次、全量 55 次、双路并发 90 次都没再现，现场没抓到）。追查中读代码发现：`respawn-pane` 换进一个全新的 Pane，名字、工作模式、收件箱都丢了，排队的消息无声消失（0.15 起的旧 bug） | **有问题**：respawn 带上 actor（`Actor::restarted`：名字/模式/收件箱留下，重新等新程序的提示符或 ready，手上那条以"放弃"记入事件日志）；单测 + e2e；3 个变异——其中"重启后仍算空闲"一开始没被抓（测试先走过 next_delivery），补测试后 3/3 被抓 |
+| 18 | 全量 + 可复现性 | Linux lib 193、e2e 45/45（抓现场的循环，无失败）；三目标 clippy 0；Windows 3/3（217/10/84） | 干净（1/3） |
+| 19 | 静态一致性（respawn 新行为与设计文档） | mailbox.md 没写 respawn 的规则；另有 6 处只按 PowerShell 写（shell 包装、多行改写、agent-commands 默认值、默认模式、钩子标记、"shell 模式目前只支持 PowerShell"） | **有问题**，补写 respawn 规则，6 处补上 bash/zsh |
+| 20 | 不变量（重启入口） | 三个入口（respawn-pane、respawn-window、choose-jobs 的 r）都经 `Cmd::RespawnPane` 同一处；respawn-window 实测：`left:normal:1 right:shell:0`（名字、模式、收件箱都在）；Linux lib 193、e2e 40/40；Windows 2/2 | 干净（1/3） |
+| 21 | 损坏的持久化状态 | 乱码与半截的会话文件：list-saved 跳过、好的照常恢复；事件日志里夹着半行 JSON 与 NUL：list-events/list-tasks 正常；历史目录 chmod 000：server 照跑；在坏日志上重启：正常；server 日志 panic 0。Linux e2e 40/40；Windows 全量通过 | 干净（2/3） |
+| 22 | 测试对 macOS CI 的适用性（读测试） | macOS 的 bash 是 3.2（无 PS0），按第 9 轮写进 README 的行为，失败不会被标出；但 bash 消息测试断言 `#N failed`，在 macOS CI 上必然失败 | **有问题**：测试按本机 bash 版本（`BASH_VERSINFO` ≥ 4.4）期望 failed 或 done；其余依赖（seq、od、dd、stty、kill -0、uname -n、带空格的数据目录）逐一核对，macOS 都有/都能处理 |

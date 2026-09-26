@@ -18,7 +18,10 @@ pub mod resurrect;
 pub mod server;
 pub mod setup;
 pub mod sysinfo;
+pub mod vtinput;
 pub mod web;
 
 // Where these lived before the platform split, so their paths stay.
-pub use platform::{clipboard, console, notify, proccwd, shutdown, startup, update, winsec, wt};
+#[cfg(windows)]
+pub use platform::winsec;
+pub use platform::{clipboard, console, notify, proccwd, shutdown, startup, update, wt};

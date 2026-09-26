@@ -544,7 +544,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
         (true, "/api/info") => Response::json(format!(
             "{{\"readOnly\":{},\"host\":{},\"version\":{}}}",
             state.read_only,
-            json_str(&std::env::var("COMPUTERNAME").unwrap_or_default()),
+            json_str(&crate::sysinfo::hostname()),
             json_str(env!("CARGO_PKG_VERSION"))
         )),
         (true, "/api/panes") => {

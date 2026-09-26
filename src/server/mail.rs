@@ -289,7 +289,8 @@ impl Server {
             return;
         }
         let Some(m) = p.actor.next_delivery() else { return };
-        p.deliver(&m.wrapped());
+        let text = m.wrapped(p.syntax);
+        p.deliver(&text);
         self.observe.delivered(m.id);
     }
 
@@ -840,7 +841,7 @@ impl Server {
             let keep = |l: &str| about.as_ref().is_none_or(|a| l.contains(a.as_str())) && recent_enough(l);
             return Outcome::Text(self.observe.recent(n, keep).join("\n"));
         }
-        crate::histlog::flush(Duration::from_secs(2));
+        crate::histlog::flush_events(Duration::from_secs(2));
         let days = since.map_or(0, |s| s / 86_400 + 1);
         let dir = self.events_dir();
         let mut out = Vec::new();
@@ -947,7 +948,7 @@ impl Server {
         self.wake_waits();
         if self.opts.event_log && self.events_pruned.is_none_or(|t| t.elapsed() >= Duration::from_secs(86_400)) {
             self.events_pruned = Some(now);
-            crate::histlog::prune_flat(self.events_dir(), self.opts.event_log_days);
+            crate::histlog::prune_events(self.events_dir(), self.opts.event_log_days);
         }
     }
 

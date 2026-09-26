@@ -29,8 +29,8 @@ config file keep working.
 - tmux's `C-b` prefix, splits, copy mode, command line, `.tmux.conf`,
   format strings, hooks and plugins are there.
 
-Windows is supported today (ConPTY), with PowerShell, WSL and cmd in the
-panes. Linux and macOS versions are planned.
+It runs on Windows (ConPTY), with PowerShell, WSL and cmd in the panes, and
+on Linux and macOS, with bash and zsh.
 
 ## Send work between panes
 
@@ -76,10 +76,12 @@ Messages use one single-line envelope, with their source and route:
 {"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
 ```
 
-Delivered to a shell, the envelope is a PowerShell comment before the
-command (such as `<# … #> cargo test`) and stays in the history. Several
-lines are joined into one command that runs them together, with one
-result. Delivered to an agent, it is the envelope, the text and the end
+Delivered to a shell, the envelope goes before the command in a form that
+runs nothing and stays in the history: a comment in PowerShell
+(`<# … #> cargo test`), the argument of `:` in bash and zsh
+(`: '…'; cargo test`). Several lines are joined into one command that runs
+them together, with one result (in bash and zsh, the last line's).
+Delivered to an agent, it is the envelope, the text and the end
 line `{"keepane":1,"end":12}`. `task` ties together the order, the work and
 the replies; `hop` counts how many times a message was passed on, and past
 `message-hop-limit` (8 by default) it is refused, so agents cannot answer
@@ -112,6 +114,33 @@ names and work modes are saved with the session. The design in detail:
 [docs/design/mailbox.md](docs/design/mailbox.md).
 
 ## Install
+
+keepane keeps its files (logs, the event log, saved sessions, pane history)
+in its data directory: `%LOCALAPPDATA%\keepane` on Windows,
+`~/.local/share/keepane` on Linux, `~/Library/Application Support/keepane`
+on macOS. The paths below are written the Windows way.
+
+### Linux and macOS
+
+From the [releases page](https://github.com/newdee/keepane/releases):
+`keepane-v<version>-linux-x86_64.tar.gz` (a static build that runs on any
+x86_64 Linux), `keepane-v<version>-macos-aarch64.tar.gz` (Apple silicon) or
+`keepane-v<version>-macos-x86_64.tar.gz` (Intel). Unpack it and put
+`keepane` on your `PATH`:
+
+```bash
+tar xzf keepane-v<version>-linux-x86_64.tar.gz
+install keepane-v<version>-linux-x86_64/keepane ~/.local/bin/
+```
+
+Or build it (below). The server listens on a socket in
+`$XDG_RUNTIME_DIR/keepane-<uid>/` (else `/tmp/keepane-<uid>/`), a directory
+only you can open. `keepane startup`, `keepane update` and the Windows
+Terminal profile are Windows matters: on Linux and macOS, start the server
+from your login files if you want it at logon, and update from the
+releases page (`keepane update` says so).
+
+### Windows
 
 keepane needs Windows 10 1809 or newer (for ConPTY). From the
 [releases page](https://github.com/newdee/keepane/releases):
@@ -154,15 +183,17 @@ merged into winget-pkgs, and until then
 `winget install --manifest packaging/winget/manifests/n/newdee/keepane/<version>`
 from a clone does the same. See `packaging/README.md`.
 
+### From source
+
 Building from source needs Rust 1.88 or newer:
 
-```powershell
+```bash
 cargo install --git https://github.com/newdee/keepane --locked   # latest master
 cargo install --path .                                         # a local clone
 ```
 
-To build the MSI, the script downloads WiX for the occasion if it is not
-installed:
+To build the Windows MSI, the script downloads WiX for the occasion if it
+is not installed:
 
 ```powershell
 cargo build --release
@@ -181,15 +212,18 @@ pwsh -File installer/build-msi.ps1        # target\keepane-<version>-windows-x86
        alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
 </p>
 
-keepane passes keys on in Windows' own win32-input-mode, so PSReadLine
-chords, `Ctrl+Space`, `Shift+Enter`, arrows with modifiers, IME input, and
-vim and htop under WSL all work. It runs in Windows Terminal, the classic
-console, VS Code's terminal and other Windows console hosts.
+On Windows keepane passes keys on in Windows' own win32-input-mode, so
+PSReadLine chords, `Ctrl+Space`, `Shift+Enter`, arrows with modifiers, IME
+input, and vim and htop under WSL all work. It runs in Windows Terminal,
+the classic console, VS Code's terminal and other Windows console hosts. On
+Linux and macOS it reads what the terminal sends (xterm keys with their
+modifiers, bracketed paste, SGR mouse) and passes it on as a terminal
+would, so it runs in any xterm-compatible terminal and over SSH.
 
-```powershell
+```bash
 keepane                      # new session, attached
 keepane new -s work          # named session
-keepane new -d -s bg wsl.exe # detached session running WSL
+keepane new -d -s bg htop    # detached session running htop
 keepane ls                   # list sessions
 keepane attach -t work       # re-attach (works from a different terminal window)
 keepane send-keys -t work "git status" Enter
@@ -280,7 +314,12 @@ clipboard into the pane, as the terminal itself would.
        alt="Command times at the end of each command's line, one failing; the history picker listing pane positions and days; a day opened in the pager; a pane closed by mistake coming back with C-b u">
 </p>
 
-A PowerShell pane reports each command it runs through its prompt hook.
+A PowerShell, bash or zsh pane reports each command it runs through the
+prompt hook keepane starts it with (after your own `~/.bashrc` or
+`.zshrc`, whose prompt it leaves as it is). bash needs 4.4 or newer for
+this: macOS's own `/bin/bash` (3.2) does not say when a command starts,
+so its panes get no times, and a message run there is not marked as failed
+or not.
 `C-b C-t` (or `set -g pane-timestamps on`) shows, at the right end of the
 line the command was typed on, when it started, how long it took and
 whether it failed:
@@ -296,12 +335,14 @@ include it. A line without room for it goes without. `keepane list-marks`
 prints the same for a script. On the phone, the ⏱ button shows the times
 in a column to the left.
 
-A PowerShell started with a script of its own (`-File`, `-Command`) is left
-as it is, hook and all; that script can install the hook itself with
-`Invoke-Expression (keepane __shell-hook | Out-String)`.
+A shell started with a script or command of its own (`pwsh -File`,
+`bash -c`) is left as it is, hook and all; that script can install the hook
+itself: `Invoke-Expression (keepane __shell-hook | Out-String)` in
+PowerShell, `eval "$(keepane __shell-hook)"` in bash.
 
 Other shells report their commands with the sequences Windows Terminal and
-VS Code read too (OSC 133). For bash under WSL:
+VS Code read too (OSC 133). For bash under WSL, or over SSH on another
+machine:
 
 ```bash
 PS0='\e]133;C\e\\'
@@ -354,18 +395,19 @@ command in the pane's last known directory. What the programs themselves
 were doing does not come back; no multiplexer can do that. Saving happens
 by itself: the tree whenever it changes, the pane text every 30 seconds,
 and everything once more when Windows shuts down, restarts or you log
-off (the server holds the shutdown up for the moment that takes). `set -g
+off (the server holds the shutdown up for the moment that takes), or when
+the server is sent SIGTERM or SIGHUP on Linux and macOS. `set -g
 restore-on-start on` makes a fresh server restore everything by itself;
 `set -g autosave off` turns saving off; `sessions-dir` moves the files.
 
-Each PowerShell pane keeps its own command history (what Up brings back),
-in a file under the sessions directory, so a resumed pane has what it ran
-and not what every other pane ran. A new pane starts with a copy of the
-history of the pane it came from (the one split, or the one in use for a
-new window), else of PowerShell's own history file. Files no pane or saved
+Each PowerShell, bash or zsh pane keeps its own command history (what Up
+brings back), in a file under the sessions directory, so a resumed pane has
+what it ran and not what every other pane ran. A new pane starts with a
+copy of the history of the pane it came from (the one split, or the one in
+use for a new window), else of the shell's own history file. Files no pane or saved
 session refers to go after `log-history-days`.
 
-To have all of that happen by itself when you log on:
+To have all of that happen by itself when you log on to Windows:
 
 ```powershell
 keepane startup on          # start the server at logon and restore every saved session
@@ -384,7 +426,7 @@ already running, which keeps your sessions and is still the old program.
 ```powershell
 keepane version          # this keepane, and the server's version when it differs
 keepane update --check   # is there a newer release?
-keepane update           # install it the way this one was installed (MSI or scoop)
+keepane update           # Windows: install it the way this one was installed (MSI or scoop)
 keepane restart-server   # move every running session to a server of this version
 ```
 
@@ -447,10 +489,11 @@ stay. Every tab opened from it joins the same session, as `tmux new -A -s
 main` would.
 
 A pane's directory follows its shell's `cd`, with nothing to set up:
-PowerShell (pwsh or Windows PowerShell) is started with a prompt hook that
-reports the directory after every prompt (an invisible OSC 9;9; your own
-prompt, oh-my-posh and the like included, is left as it is), and for
-`cmd.exe` and other programs keepane reads the process's own directory. A
+PowerShell (pwsh or Windows PowerShell), bash and zsh are started with a
+prompt hook that reports the directory after every prompt (an invisible
+OSC 9;9 or OSC 7; your own prompt, oh-my-posh and the like included, is
+left as it is), and for `cmd.exe`, `sh` and other programs keepane reads
+the process's own directory. A
 shell that announces its directory itself (OSC 9;9, quoted or not, or OSC 7
 from bash/zsh under WSL) is believed first, and `keepane set-cwd` (no argument:
 the directory you run it from) sets it by hand:
@@ -496,9 +539,10 @@ The 20 tools:
 | `list_tasks`, `show_task`, `query_events` | chains of messages, and the event log |
 
 A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`
-or `gemini`, in `shell` mode when it runs `pwsh` or `powershell`, and in
-`normal` mode otherwise, unless a mode is given. What an agent may start is
-limited to `agent-commands` (`pwsh powershell claude codex`), and how many
+or `gemini`, in `shell` mode when it runs `pwsh`, `powershell`, `bash` or
+`zsh`, and in `normal` mode otherwise, unless a mode is given. What an
+agent may start is limited to `agent-commands` (`pwsh powershell claude
+codex` on Windows, `bash zsh sh claude codex` elsewhere), and how many
 panes it and the panes it made may make to `agent-pane-limit` (8). Claude
 Code asks you before each MCP call you have not allowed.
 
@@ -547,8 +591,9 @@ once whether keepane may use the network; allow it for private networks.
 
 ## Configuration
 
-`%USERPROFILE%\.keepane.conf` (or `%USERPROFILE%\.config\keepane\keepane.conf`, or
-the file named by `KEEPANE_CONFIG`) holds one command per line, tmux syntax.
+`~/.keepane.conf` (or `~/.config/keepane/keepane.conf`, or the file named
+by `KEEPANE_CONFIG`; `~` is `%USERPROFILE%` on Windows) holds one command
+per line, tmux syntax.
 With no keepane config at all, an existing `~/.tmux.conf` (or
 `~/.config/tmux/tmux.conf`) is read instead: what keepane understands is
 applied (`%if` blocks are evaluated, and `bind -T copy-mode-vi v send -X
@@ -560,7 +605,7 @@ are taken and do nothing: keepane's mouse handling is fixed.
 
 ```tmux
 set -g prefix C-a
-set -g default-shell wsl          # pwsh (default), powershell, wsl, cmd, or a path
+set -g default-shell wsl          # Windows: pwsh (default), powershell, wsl, cmd, or a path; elsewhere $SHELL (default) or a path
 # set -g default-command "wsl.exe -d Ubuntu"
 set -g mouse on
 set -g history-limit 10000
@@ -608,8 +653,10 @@ Option names take an unambiguous abbreviation, the way command names do:
 (`set mon` lists the three `monitor-*` ones).
 
 Options unknown to keepane but common in `.tmux.conf` (`escape-time`,
-`default-terminal`, ...) are accepted and ignored, so an existing tmux config
-can be reused as a starting point.
+`focus-events`, ...) are accepted and ignored, so an existing tmux config
+can be reused as a starting point. `default-terminal` (`xterm-256color`
+unless set) is the `TERM` panes get on Linux and macOS; on Windows ConPTY
+sets up the terminal and the option does nothing.
 
 ### Themes
 
@@ -793,14 +840,18 @@ index) rather than a window target, next to `-L` `-R` `-U` `-D`.
 
 `keepane` is a client. The first invocation starts a detached server process
 (`keepane __server`) that owns every session; clients talk to it over a per-user
-named pipe (`\\.\pipe\keepane-<user>-<socket>`, choose the socket with `-L`).
-Each pane is a ConPTY with a `vt100` terminal model on the server side; the
+named pipe on Windows (`\\.\pipe\keepane-<user>-<socket>`) and a Unix socket
+elsewhere (`keepane-<uid>/<socket>`, see Install); choose the socket with `-L`.
+Each pane is a pseudo terminal (a ConPTY on Windows) with a `vt100` terminal
+model on the server side; the
 server composites the visible panes, borders and status line into a frame and
 sends only the cells that changed to the attached client, which writes them to
 the console with VT sequences. The server exits when its last session ends.
-It leaves the job it was started in when that job allows it: OpenSSH runs
-each session in a kill-on-close job, so a server started over SSH would
-otherwise end with the connection.
+On Windows it leaves the job it was started in when that job allows it:
+OpenSSH runs each session in a kill-on-close job, so a server started over
+SSH would otherwise end with the connection. On Linux and macOS it runs in a
+session of its own, which a terminal's or an SSH connection's hang-up does
+not reach.
 
 Environment inside panes: `KEEPANE` (socket name) and `KEEPANE_PANE` (pane id). A
 `keepane` command run inside a pane talks to the server that owns it, the way
@@ -818,10 +869,11 @@ some remote tools) send `Ctrl+B` as the character 0x02 with no Ctrl flag;
 keepane reads control characters the way tmux does, so that is still `C-b`.
 
 The pipe carries a DACL that admits only the creating user (and SYSTEM), the
-Windows equivalent of tmux's mode-0700 socket directory. Every pane runs in a
-kill-on-close job object, so `kill-pane`, `kill-session` and a server exit
-take the whole process tree down (the equivalent of tmux hanging up the
-process group), and a slow client console never makes the server buffer
+Windows equivalent of tmux's mode-0700 socket directory (which is what the
+Unix socket gets). Every pane runs in a kill-on-close job object on Windows,
+and is hung up with its whole session elsewhere, so `kill-pane`,
+`kill-session` and a server exit take the whole process tree down, and a
+slow client console never makes the server buffer
 frames without bound: it drops to a full redraw instead.
 
 `vendor/vt100` is vt100 0.16.2 with a one-function fix for a panic when a
@@ -830,20 +882,24 @@ The server also logs and survives any panic in a command (`server.log`).
 
 ## Development
 
-```powershell
-cargo test              # unit + pipe-level e2e + real-console tests (spawns cmd.exe panes)
+```bash
+cargo test              # unit + end-to-end tests (spawns cmd.exe panes on Windows, sh elsewhere)
 cargo clippy --all-targets
 ```
 
-The `tests/console.rs` suite runs the real `keepane.exe` inside a ConPTY, so the
-console code path (raw input mode, alternate screen, detach cleanup) is
-covered without a human at the keyboard.
+CI runs both on Windows, Linux and macOS. The platform's own code lives in
+`src/platform/windows` and `src/platform/unix`, each with the same modules
+(see `docs/design/platform.md`). On Windows the `tests/console.rs` suite
+runs the real `keepane.exe` inside a ConPTY, so the console code path (raw
+input mode, alternate screen, detach cleanup) is covered without a human at
+the keyboard.
 
 ## Not (yet) implemented
 
-keepane runs only on Windows so far. The panes, the messages and the event
-log do not depend on the platform; a Linux or macOS port still needs the
-terminal, the inter-process pipe and the shell hook.
+On Linux and macOS, `keepane startup` (the server at logon), `keepane
+update` (it says where the new version is) and desktop notifications with
+a "Go to pane" button are not there yet, and tab completion is for
+PowerShell only.
 
 Compared with tmux, these differ for now:
 
@@ -858,10 +914,10 @@ Compared with tmux, these differ for now:
 - In `display-popup`, the prefix key still belongs to keepane; pressing it
   twice sends it to the program in the box.
 
-Pane messages: `shell` work mode needs keepane's PowerShell prompt hook, so
-cmd and WSL shells do not take messages on their own yet (they can
-`read-message`); a pane started before keepane 0.15 has the older hook and
-must be restarted for it. The dashboard is not on the phone page yet.
+Pane messages: `shell` work mode needs keepane's prompt hook (PowerShell,
+bash, zsh), so cmd, sh, fish and the shells under WSL do not take messages
+on their own yet (they can `read-message`); a pane started before keepane
+0.15 has the older hook and must be restarted for it. The dashboard is not on the phone page yet.
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.
 

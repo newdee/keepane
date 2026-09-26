@@ -40,8 +40,9 @@ pub struct Callbacks {
     /// What the shell said about its prompts and commands, in order.
     pub marks: Vec<MarkEvent>,
     /// keepane's own prompt hook said the shell is at its prompt (`OSC
-    /// 7777;keepane-prompt`): the one signal a `shell` pane trusts.
-    pub prompted: bool,
+    /// 7777;keepane-prompt`): the one signal a `shell` pane trusts. With the
+    /// language that shell takes commands in.
+    pub prompted: Option<super::actor::Syntax>,
 }
 
 /// A shell's word about its prompt and its commands: FTCS (OSC 133, and
@@ -130,10 +131,9 @@ fn local_ms(ms: &[u8]) -> Option<chrono::DateTime<chrono::Local>> {
     chrono::Local.timestamp_millis_opt(ms).single()
 }
 
-/// Turn a shell-announced directory into a Windows path usable as a process
-/// working directory: `file:///C:/x`, `file://host/C:/x`, `C:\x`, `/mnt/c/x`
-/// (WSL) all become `C:\x`; other Linux paths are not usable and yield None.
-pub fn windows_path_from_announced(raw: &str) -> Option<String> {
+/// Turn a shell-announced directory (OSC 7 `file://host/path`, OSC 9;9
+/// `path`) into a path usable as a process working directory here, or None.
+pub fn path_from_announced(raw: &str) -> Option<String> {
     // Windows Terminal's own PowerShell snippet quotes the path
     // (`ESC]9;9;"C:\x"ESC\`); the quotes are not part of it.
     let mut s = raw.trim().trim_matches('"').trim().to_string();
@@ -142,6 +142,20 @@ pub fn windows_path_from_announced(raw: &str) -> Option<String> {
         let path = &rest[rest.find('/')?..];
         s = percent_decode(path);
     }
+    native_path(s)
+}
+
+/// An absolute path that is a directory on this machine (a shell on another
+/// one, over SSH, announces its own).
+#[cfg(unix)]
+fn native_path(s: String) -> Option<String> {
+    (s.starts_with('/') && std::path::Path::new(&s).is_dir()).then_some(s)
+}
+
+/// `file:///C:/x`, `file://host/C:/x`, `C:\x`, `/mnt/c/x` (WSL) all become
+/// `C:\x`; other Linux paths are not usable and yield None.
+#[cfg(windows)]
+fn native_path(mut s: String) -> Option<String> {
     // /C:/x  or  /c/x (some shells) -> C:/x
     if s.len() >= 3 && s.as_bytes()[0] == b'/' && s.as_bytes()[2] == b':' {
         s = s[1..].to_string();
@@ -238,10 +252,15 @@ impl vt100::Callbacks for Callbacks {
             }
             // OSC 7777 ; keepane-cmd ; start ; end ; ok   (the PowerShell hook,
             // times in Unix milliseconds)
-            // OSC 7777 ; keepane-prompt   (the PowerShell hook, every prompt;
-            // a remote shell's OSC 133 is not keepane's word)
+            // OSC 7777 ; keepane-prompt [; sh]   (keepane's hook, every prompt:
+            // PowerShell's, or bash's and zsh's; a remote shell's OSC 133 is
+            // not keepane's word)
             [b"7777", b"keepane-prompt"] if shell => {
-                self.prompted = true;
+                self.prompted = Some(super::actor::Syntax::PowerShell);
+                None
+            }
+            [b"7777", b"keepane-prompt", b"sh"] if shell => {
+                self.prompted = Some(super::actor::Syntax::Posix);
                 None
             }
             [b"7777", b"keepane-cmd", start, end, ok] if shell => {
@@ -269,7 +288,7 @@ impl vt100::Callbacks for Callbacks {
             _ => None,
         };
         if let Some(raw) = raw
-            && let Some(p) = windows_path_from_announced(&String::from_utf8_lossy(raw))
+            && let Some(p) = path_from_announced(&String::from_utf8_lossy(raw))
         {
             self.cwd = Some(p);
         }
@@ -366,6 +385,9 @@ pub struct Pane {
     /// keepane's prompt came through since the server last looked; the
     /// server takes it and tells the actor.
     pub prompted: bool,
+    /// The language of the shell whose prompt came last: a shell message
+    /// is typed in it.
+    pub syntax: super::actor::Syntax,
     /// Where the message delivered last was typed, and the first line after
     /// it as typed (both `scrolled_total() + row`): what the shell printed
     /// from there to its next prompt is the command's output.
@@ -581,10 +603,17 @@ impl Pane {
         // event): waiting here would block the server, and with it the
         // answers ConPTY expects to its own queries while a process starts.
         //
+        // A pty with no screen of its own (Unix) leaves keepane's screen model
+        // the only one: the saved output goes straight into it instead.
+        //
         // What runs is the command plus keepane's shell integration (a prompt
         // hook that reports the directory); what is remembered and shown
         // is the command as given.
-        let (run, pending) = match replay.filter(|t| !t.is_empty()).map(|t| replay_argv(id, &t)) {
+        let (replay, direct) = match replay.filter(|t| !t.is_empty()) {
+            Some(t) if !crate::platform::console::PTY_HAS_SCREEN => (None, Some(t)),
+            r => (r, None),
+        };
+        let (run, pending) = match replay.map(|t| replay_argv(id, &t)) {
             Some(Ok((helper, path))) => {
                 (helper, Some(PendingStart { argv: argv.to_vec(), dir: dir.clone(), env: env.to_vec(), path }))
             }
@@ -601,7 +630,7 @@ impl Pane {
         let slave = pending.is_some().then_some(pair.slave);
         let writer = pair.master.take_writer().context("pty writer")?;
 
-        Ok(Pane {
+        let mut pane = Pane {
             slave,
             pending,
             tx,
@@ -643,10 +672,17 @@ impl Pane {
             died_at: None,
             actor: Default::default(),
             prompted: false,
+            syntax: Default::default(),
             delivered_line: None,
             settle: false,
             shell_history: None,
-        })
+        };
+        // Before anything the program prints: the server reads that only
+        // after this returns.
+        if let Some(text) = direct {
+            pane.process_output(text.as_bytes());
+        }
+        Ok(pane)
     }
 
     /// Whether the process that just ran was the printer of a resumed pane's
@@ -807,15 +843,17 @@ impl Pane {
     }
 
     /// Start the pane's command again in place, keeping the pane id, its
-    /// position in the layout and its size (tmux `respawn-pane`). The old
-    /// process and its children are killed first.
+    /// position in the layout and its size (tmux `respawn-pane`), and its
+    /// name, work mode and inbox. The old process and its children are
+    /// killed first. Returns the message the old program was working on,
+    /// which ends with it.
     pub fn respawn(
         &mut self,
         argv: Option<&[String]>,
         history: usize,
         env: &[(String, String)],
         tx: Sender<PaneEvent>,
-    ) -> Result<()> {
+    ) -> Result<Option<super::actor::Message>> {
         let argv = argv.map(|a| a.to_vec()).unwrap_or_else(|| self.argv.clone());
         if argv.is_empty() {
             anyhow::bail!("pane has no command to respawn");
@@ -834,11 +872,13 @@ impl Pane {
         )?;
         // Putting the new pane in place drops the old one, whose Drop closes
         // the job object and takes the old process tree with it.
-        let old = std::mem::replace(self, fresh);
-        // The same shell history file: it is the same pane.
+        let mut old = std::mem::replace(self, fresh);
+        // The same shell history file, name, mode and inbox: it is the same pane.
         self.shell_history = old.shell_history.clone();
+        self.actor = std::mem::take(&mut old.actor);
+        let unfinished = self.actor.restarted();
         drop(old);
-        Ok(())
+        Ok(unfinished)
     }
 
     /// Feed process output into the terminal model; answer any queries.
@@ -861,7 +901,10 @@ impl Pane {
             self.bell = true;
         }
         let marks = std::mem::take(&mut cb.marks);
-        self.prompted |= std::mem::take(&mut cb.prompted);
+        if let Some(syntax) = cb.prompted.take() {
+            self.prompted = true;
+            self.syntax = syntax;
+        }
         if !cb.responses.is_empty() {
             let resp = std::mem::take(&mut cb.responses);
             let _ = self.writer.write_all(&resp);
@@ -1206,6 +1249,12 @@ impl Pane {
         bytes.push(b'\r');
         self.write_input(&bytes);
     }
+    /// The bytes a typed key is to this pane's program (the platform's
+    /// encoding; VT sequences follow the program's cursor-key mode).
+    pub fn key_bytes(&self, rec: &crate::ipc::KeyRecord) -> Vec<u8> {
+        crate::platform::keys::to_pane(rec, self.parser.screen().application_cursor())
+    }
+
     pub fn write_input(&mut self, bytes: &[u8]) {
         if self.exit_code.is_some() {
             return;
@@ -1394,6 +1443,24 @@ impl Drop for Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shell whose prompt is `>`: cmd, or sh.
+    fn prompt_shell() -> Vec<String> {
+        if cfg!(windows) {
+            vec!["cmd.exe".into(), "/q".into(), "/k".into(), "prompt $g".into()]
+        } else {
+            vec!["/bin/sh".into(), "-c".into(), "PS1='> ' exec /bin/sh -i".into()]
+        }
+    }
+
+    /// A program that exits at once.
+    fn exits_at_once() -> Vec<String> {
+        if cfg!(windows) {
+            vec!["cmd.exe".into(), "/c".into(), "exit".into()]
+        } else {
+            vec!["/bin/sh".into(), "-c".into(), "exit".into()]
+        }
+    }
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
 
@@ -1425,6 +1492,7 @@ mod tests {
     /// server's screen model gives while it keeps running, and what this
     /// test gives by hand. (Waiting for the printer on the server thread
     /// deadlocked exactly there.)
+    #[cfg(windows)]
     #[test]
     fn a_first_process_can_exit_and_a_second_can_follow() {
         use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -1482,6 +1550,7 @@ mod tests {
 
     /// What ConPTY passes through of what a process prints: the marker a
     /// resumed pane's printer ends with must come out the other side.
+    #[cfg(windows)]
     #[test]
     fn conpty_passes_the_replay_marker_through() {
         use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -1529,6 +1598,22 @@ mod tests {
             out.windows(REPLAY_MARKER.len()).any(|w| w == REPLAY_MARKER.as_bytes()),
             "marker through ConPTY: {text:?}"
         );
+    }
+
+    /// Where the pty keeps no screen, a resumed pane's saved output is on
+    /// keepane's screen before the program starts, and the program starts
+    /// at once (no printer in between).
+    #[cfg(unix)]
+    #[test]
+    fn saved_output_goes_straight_onto_the_screen() {
+        let (tx, _rx) = channel();
+        let argv = prompt_shell();
+        let replay = Some("saved-one\r\nsaved-two\r\n".to_string());
+        let p = Pane::spawn_replaying(14, &argv, None, 30, 6, 10, &[], tx, replay).unwrap();
+        assert!(!p.is_pending());
+        let text = p.screen().contents();
+        assert!(text.starts_with("saved-one\nsaved-two"), "{text:?}");
+        assert_eq!(p.screen().cursor_position(), (2, 0));
     }
 
     /// The screen model keeps what a resize pushes off the screen: shrunk,
@@ -1579,19 +1664,37 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn announced_paths_may_be_quoted() {
         // Windows Terminal's PowerShell snippet: ESC]9;9;"C:\Users\me"ESC\
-        assert_eq!(windows_path_from_announced("\"C:\\Users\\me\"").as_deref(), Some("C:\\Users\\me"));
-        assert_eq!(windows_path_from_announced(" \"D:/x\" ").as_deref(), Some("D:\\x"));
-        assert_eq!(windows_path_from_announced("C:\\x").as_deref(), Some("C:\\x"));
-        assert_eq!(windows_path_from_announced("\"\""), None);
+        assert_eq!(path_from_announced("\"C:\\Users\\me\"").as_deref(), Some("C:\\Users\\me"));
+        assert_eq!(path_from_announced(" \"D:/x\" ").as_deref(), Some("D:\\x"));
+        assert_eq!(path_from_announced("C:\\x").as_deref(), Some("C:\\x"));
+        assert_eq!(path_from_announced("\"\""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn announced_directories_are_taken_when_they_are_here() {
+        let tmp = std::env::temp_dir().join(format!("keepane-announced {}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let t = tmp.to_string_lossy().into_owned();
+        let url = format!("file://some-host{}", t.replace(' ', "%20"));
+        assert_eq!(path_from_announced(&url).as_deref(), Some(t.as_str()));
+        assert_eq!(path_from_announced(&format!("\"{t}\"")).as_deref(), Some(t.as_str()));
+        // Not a directory here (a remote shell's), not absolute, not a path.
+        assert_eq!(path_from_announced("file://far/definitely/not/here/xyz"), None);
+        assert_eq!(path_from_announced("C:\\src"), None);
+        assert_eq!(path_from_announced(""), None);
+        assert_eq!(path_from_announced("file://"), None);
+        let _ = std::fs::remove_dir(&tmp);
     }
 
     #[test]
     fn cmd_echo_roundtrip() {
         let (tx, rx) = channel();
-        let argv = vec!["cmd.exe".to_string(), "/q".into(), "/k".into(), "prompt $g".into()];
+        let argv = prompt_shell();
         let mut p = Pane::spawn(1, &argv, None, 80, 24, 100, &[], tx).unwrap();
         assert!(pump(&mut p, &rx, |p| p.screen().contents().contains('>'), Duration::from_secs(10)), "no prompt");
         p.write_input(b"echo hello-keepane\r");
@@ -1608,16 +1711,23 @@ mod tests {
     #[test]
     fn resize_reaches_child() {
         let (tx, rx) = channel();
-        let argv = vec!["cmd.exe".to_string(), "/q".into(), "/k".into(), "prompt $g".into()];
+        let argv = prompt_shell();
         let mut p = Pane::spawn(2, &argv, None, 80, 24, 100, &[], tx).unwrap();
         assert!(pump(&mut p, &rx, |p| p.screen().contents().contains('>'), Duration::from_secs(10)));
         p.resize(100, 30);
         assert_eq!(p.screen().size(), (30, 100));
-        p.write_input(b"mode con\r");
+        // The size the program sees: `mode con` prints it, and `stty size`.
+        p.write_input(if cfg!(windows) { b"mode con\r".as_slice() } else { b"stty size\r".as_slice() });
         // `mode con` output is localized; check the numbers at line ends.
         let has = |p: &Pane, n: &str| p.screen().contents().lines().any(|l| l.trim_end().ends_with(n));
         assert!(
-            pump(&mut p, &rx, |p| has(p, "100") && has(p, "30"), Duration::from_secs(10)),
+            // `mode con`: rows and columns on lines of their own; `stty size`: "30 100".
+            pump(
+                &mut p,
+                &rx,
+                |p| if cfg!(windows) { has(p, "100") && has(p, "30") } else { has(p, "30 100") },
+                Duration::from_secs(10)
+            ),
             "{:?}",
             p.screen().contents()
         );
@@ -1629,12 +1739,14 @@ mod tests {
     fn kill_takes_grandchildren_down() {
         let (tx, rx) = channel();
         // The shell starts ping (a grandchild of keepane) and waits for it.
-        let argv = vec!["cmd.exe".to_string(), "/q".into(), "/k".into(), "prompt $g".into()];
+        let argv = prompt_shell();
         let mut p = Pane::spawn(9, &argv, None, 80, 24, 100, &[], tx).unwrap();
         assert!(pump(&mut p, &rx, |p| p.screen().contents().contains('>'), Duration::from_secs(10)));
         let marker = std::env::temp_dir().join(format!("keepane-job-marker-{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
-        p.write_input(format!("ping -n 4 127.0.0.1 > nul & echo done > \"{}\"\r", marker.display()).as_bytes());
+        // A grandchild that writes the marker three seconds from now.
+        let wait = if cfg!(windows) { "ping -n 4 127.0.0.1 > nul & echo done >" } else { "sleep 3; echo done >" };
+        p.write_input(format!("{wait} \"{}\"\r", marker.display()).as_bytes());
         std::thread::sleep(Duration::from_millis(500));
         p.kill();
         assert!(pump(&mut p, &rx, |p| p.exit_code.is_some(), Duration::from_secs(10)), "shell did not die");
@@ -1659,7 +1771,7 @@ mod tests {
         assert!(!row.contains('中'), "{row:?}");
         // The same through a Pane resize (what a split does).
         let (tx, _rx) = channel();
-        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
+        let argv = exits_at_once();
         let mut pane = Pane::spawn(11, &argv, None, 100, 5, 10, &[], tx).unwrap();
         pane.parser.process(line.as_bytes());
         pane.resize(50, 5);
@@ -1671,7 +1783,7 @@ mod tests {
     /// never read, so only what the test writes reaches the screen.
     fn quiet_pane(cols: u16, rows: u16, history: usize) -> Pane {
         let (tx, _rx) = channel();
-        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
+        let argv = exits_at_once();
         Pane::spawn(12, &argv, None, cols, rows, history, &[], tx).unwrap()
     }
 
@@ -1825,9 +1937,10 @@ mod tests {
         assert_eq!(p.take_log(true), "8\n9\n");
     }
 
+    #[cfg(windows)]
     #[test]
     fn announced_directories_become_windows_paths() {
-        let w = windows_path_from_announced;
+        let w = path_from_announced;
         assert_eq!(w("file:///C:/Users/x").as_deref(), Some("C:\\Users\\x"));
         assert_eq!(w("file://BOX/C:/Users/x%20y").as_deref(), Some("C:\\Users\\x y"));
         assert_eq!(w("C:\\src").as_deref(), Some("C:\\src"));
@@ -1842,10 +1955,11 @@ mod tests {
         assert_eq!(w("file://"), None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn osc_cwd_updates_the_pane() {
         let (tx, _rx) = channel();
-        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
+        let argv = exits_at_once();
         let mut p = Pane::spawn(12, &argv, Some("C:\\"), 20, 5, 10, &[], tx).unwrap();
         assert_eq!(p.cwd.as_deref(), Some("C:\\"));
         p.process_output(b"\x1b]9;9;C:\\Users\x07");
@@ -1857,10 +1971,44 @@ mod tests {
         assert_eq!(p.cwd.as_deref(), Some("C:\\Windows"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn osc_cwd_updates_the_pane() {
+        let (tx, _rx) = channel();
+        let argv = exits_at_once();
+        let mut p = Pane::spawn(12, &argv, Some("/"), 20, 5, 10, &[], tx).unwrap();
+        assert_eq!(p.cwd.as_deref(), Some("/"));
+        p.process_output(b"\x1b]7;file://HOST/usr\x1b\\");
+        assert_eq!(p.cwd.as_deref(), Some("/usr"));
+        p.process_output(b"\x1b]9;9;/tmp\x07");
+        assert_eq!(p.cwd.as_deref(), Some("/tmp"));
+        // Not a directory here: keep the last one.
+        p.process_output(b"\x1b]7;file://far/definitely/not/here/xyz\x07");
+        assert_eq!(p.cwd.as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn the_prompt_marker_says_which_syntax_the_shell_takes() {
+        use super::super::actor::Syntax;
+        let (tx, _rx) = channel();
+        let argv = exits_at_once();
+        let mut p = Pane::spawn(13, &argv, None, 20, 5, 10, &[], tx).unwrap();
+        assert_eq!(p.syntax, Syntax::PowerShell);
+        p.process_output(b"$ \x1b]7777;keepane-prompt;sh\x07");
+        assert!(std::mem::take(&mut p.prompted));
+        assert_eq!(p.syntax, Syntax::Posix);
+        p.process_output(b"PS> \x1b]7777;keepane-prompt\x1b\\");
+        assert!(std::mem::take(&mut p.prompted));
+        assert_eq!(p.syntax, Syntax::PowerShell, "the shell at the prompt now");
+        // Something else after the word is not keepane's marker.
+        p.process_output(b"\x1b]7777;keepane-prompt;fish\x07");
+        assert!(!p.prompted);
+    }
+
     #[test]
     fn dsr_is_answered() {
         let (tx, _rx) = channel();
-        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
+        let argv = exits_at_once();
         let mut p = Pane::spawn(3, &argv, None, 20, 5, 10, &[], tx).unwrap();
         p.parser.process(b"abc\x1b[6n");
         assert_eq!(p.parser.callbacks().responses, b"\x1b[1;4R");
@@ -1878,7 +2026,7 @@ mod tests {
     #[test]
     fn a_repeated_program_title_does_not_undo_a_title_given_by_hand() {
         let (tx, _rx) = channel();
-        let argv = vec!["cmd.exe".to_string(), "/q".into(), "/k".into()];
+        let argv = prompt_shell();
         let mut p = Pane::spawn(13, &argv, None, 20, 5, 10, &[], tx).unwrap();
         p.process_output(b"\x1b]0;program title\x07");
         assert_eq!(p.title, "program title");
@@ -1892,7 +2040,7 @@ mod tests {
     #[test]
     fn scrollback_lines() {
         let (tx, _rx) = channel();
-        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into()];
+        let argv = exits_at_once();
         let mut p = Pane::spawn(4, &argv, None, 10, 3, 100, &[], tx).unwrap();
         for i in 0..10 {
             p.parser.process(format!("line{i}\r\n").as_bytes());

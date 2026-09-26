@@ -28,6 +28,11 @@ const KEY_EVENT: u16 = 0x0001;
 const MOUSE_EVENT: u16 = 0x0002;
 const WINDOW_BUFFER_SIZE_EVENT: u16 = 0x0004;
 
+/// A pane's pseudo console (ConPTY) keeps a screen of its own and repaints
+/// from it: text a pane is to show must be printed into that screen, by a
+/// process in the console (`keepane __replay`).
+pub const PTY_HAS_SCREEN: bool = true;
+
 /// Write `text` to this process's console screen (`CONOUT$`), VT sequences
 /// interpreted, whatever the standard handles are: a process started into
 /// a ConPTY gets no usable stdout, only the console itself. For the helper

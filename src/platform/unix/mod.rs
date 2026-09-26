@@ -1,4 +1,5 @@
-//! Windows: ConPTY panes, named pipes, the console API, job objects.
+//! Linux and macOS: pty panes (portable-pty), a Unix socket, termios, process
+//! groups. What differs between the two is marked with `target_os` inside.
 
 pub mod clipboard;
 pub mod console;
@@ -13,5 +14,4 @@ pub mod shutdown;
 pub mod startup;
 pub mod sysinfo;
 pub mod update;
-pub mod winsec;
 pub mod wt;

@@ -115,11 +115,11 @@ $1:@3.%7  work:2.1  builder  ai
 | 收件模式 | 打入窗格的内容 |
 |---|---|
 | `ai` | 信封行 + 正文 + 结尾行 `{"keepane":1,"end":12}`，一次括号粘贴后回车 |
-| `shell` | `<# 信封 #> 命令`（PowerShell 行内注释）；多行命令改写为一行 `. ([scriptblock]::Create(('行1', '行2') -join "`n"))` 作为一条命令执行，块内有错时整条记为失败（见第 12 节第 10 条） |
+| `shell` | PowerShell：`<# 信封 #> 命令`（行内注释）；bash、zsh：`: '信封'; 命令`（`:` 的参数，什么也不执行），多行用 `eval "$(printf '%s\n' '行1' '行2')"` 在 shell 本身里执行，成败取最后一行；PowerShell 的多行命令改写为一行 `. ([scriptblock]::Create(('行1', '行2') -join "`n"))` 作为一条命令执行，块内有错时整条记为失败（见第 12 节第 10 条） |
 | `normal` | 不打入；`read-message` 输出信封行 + 正文 |
 
 - 结尾行防伪：正文里伪造的信封行只会出现在真消息首尾之间；agent 需要确认时用 MCP `current_message` 查服务端记录。
-- shell 包装让来源留在屏幕、PowerShell 历史和 keepane 历史日志三处。
+- shell 包装让来源留在屏幕、shell 自己的历史和 keepane 历史日志三处。
 - 投递进 ai 窗格的信封不附"如何回信"说明：只在 MCP 工具说明 / agent 配置里写一次。
 
 ## 6. 跳数、限额与配置项
@@ -135,7 +135,7 @@ $1:@3.%7  work:2.1  builder  ai
 | `message-max-size` | 64 KB | 1 KB–1 MB |
 | `message-wait-max` | 600 秒 | 1–86400（超时由每秒一次的定时检查判定，实际多等不到 1 秒） |
 | `agent-pane-limit` | 8 | 0–256（0 = 禁止 agent 创建窗格） |
-| `agent-commands` | `pwsh powershell claude codex` | 程序名列表 |
+| `agent-commands` | Windows `pwsh powershell claude codex`，其他系统 `bash zsh sh claude codex` | 程序名列表 |
 | `event-log` | on | on / off |
 | `event-log-days` | 30 | 1–3650 |
 | `event-log-max` | 20 MB/天 | 1 MB–1 GB |
@@ -190,10 +190,10 @@ keepane 的这些规则防的是失误，不是恶意：同一 Windows 用户的
 | 销毁 | `kill_pane`（即 `kill-pane`，可 `undo-kill`） |
 
 - 创建工具可带 `message`：创建时即放入新窗格收件箱，就绪后投递，没有"发早了"的时序问题。
-- 默认模式：启动 agent 程序（`claude`、`codex`、`gemini`）为 `ai`，启动 `pwsh`/`powershell` 为 `shell`，其他为 `normal`；可用 `mode` 参数覆盖。
+- 默认模式：启动 agent 程序（`claude`、`codex`、`gemini`）为 `ai`，启动 `pwsh`/`powershell`/`bash`/`zsh` 为 `shell`，其他为 `normal`；可用 `mode` 参数覆盖。
 - Claude Code 接入：SessionStart 与 Stop 两处 hook 调 `keepane pane-ready -q`，并注册 MCP。实测：Windows 上 Claude Code 用 PowerShell 执行 hook，`"C:/x/keepane.exe" pane-ready -q`（带引号的路径加参数）是语法错误，所以写入的命令不带引号。`keepane setup claude` 打印这些配置；`--install` 才写入 `~/.claude/settings.json`，写前备份。
 
-PowerShell 钩子：在现有提示符钩子末尾加 `OSC 7777;keepane-prompt`，每次显示提示符都发（不依赖是否有新历史）。
+PowerShell 钩子：在现有提示符钩子末尾加 `OSC 7777;keepane-prompt`，每次显示提示符都发（不依赖是否有新历史）。bash 与 zsh 的钩子发 `OSC 7777;keepane-prompt;sh`（`;sh` 说明按 POSIX 写法投递），放在 PS1 末尾（bash 用 BEL 结尾：提示符解码会吃掉 ST 里的反斜杠）。
 
 ## 10. 观测平台
 
@@ -290,11 +290,12 @@ $1:@3.%4 tester (ai, busy) · 2 queued · working on #12
 
 - 名字、工作模式随会话存档保存；`resume` 后恢复（名字已被占用则不恢复，并提示）。创建者关系不保存：恢复后窗格编号重新分配，恢复出的 agent 也是新进程，原来的创建关系已无意义。
 - 收件箱里的消息不保存：时机已过、收件进程已换、来源编号失效。重启时被丢弃的消息记 `dropped` 事件，恢复时提示"丢弃了 N 条未投递消息，详见事件日志"。
+- `respawn-pane` 是同一个窗格换了程序：名字、工作模式、收件箱、状态都留下（2026-09-27 起；之前整个换掉，排队的消息无声消失）。新程序报出自己的提示符（或 `pane-ready`）之前不算空闲；旧程序手上那条以放弃（`abandoned`）记入事件日志。
 
 ## 12. 已知限制
 
 1. 卡在忙（第 4 节），需人手 `pane-ready -t` 解开。
-2. shell 模式目前只支持 PowerShell；cmd、WSL bash 没有 keepane 钩子，永远不空闲。
+2. shell 模式要 keepane 的提示符钩子：PowerShell、bash、zsh（Linux/macOS 上由 keepane 启动时装上）；cmd、sh、fish 和 WSL 里的 shell 没有，永远不空闲。按窗格当时的 shell 选写法（提示符标记带 `;sh` 的用 POSIX 写法，见 platform.md），与操作系统无关。
 3. 旧钩子的窗格要重开才能用 shell 模式。
 4. 多行消息：ai 窗格靠括号粘贴（Claude Code 2.1.282 实测有效）；shell 窗格见第 10 条。
 5. 跳数拦不住 agent 空闲后凭记忆重新发起的循环，靠收件箱上限兜底。
@@ -302,12 +303,12 @@ $1:@3.%4 tester (ai, busy) · 2 queued · working on #12
 7. 没有采用"备用屏幕中不投递"之类的规则，Claude Code 是否切备用屏幕未测。
 8. 权限规则防失误不防恶意（第 8 节）。
 9. shell 模式执行的命令（带信封注释）会进入 PSReadLine 的持久历史（`ConsoleHost_history.txt`），之后按上箭头或输入预测时会看到它们。要只留在当前会话历史里，需要在钩子里设置 `AddToHistoryHandler`，而这可能覆盖用户自己的 handler，暂不做。
-10. 多行命令在 shell 模式下改写为一行执行（`. ([scriptblock]::Create(...))`）：PSReadLine 不启用括号粘贴，而 ConPTY 会丢掉 Shift+Enter 的 Shift（实测 `vk=13 state=0`），逐行打入会让每行单独执行。
+10. 多行命令在 shell 模式下改写为一行执行（PowerShell 用 `. ([scriptblock]::Create(...))`，bash/zsh 用 `eval`）：PSReadLine 不启用括号粘贴，而 ConPTY 会丢掉 Shift+Enter 的 Shift（实测 `vk=13 state=0`），逐行打入会让每行单独执行。
 11. 人自己手敲的命令运行期间提前打字：下一个提示符会判为空闲，若恰有消息排队，会接在这些字后面执行。要避免只能把"两次提示符之间有过按键"都判为忙，而人每次回车都是按键，窗格就再也不会空闲，所以不做。
 
 ## 13. 可移植性
 
-keepane 目前是 Windows 版，以后可能做 Linux / mac。本设计的新模块（actor、信封、观测存储、MCP、dashboard）不调用任何平台 API。与 shell 相关的只有两处，按 shell 类型选择实现：提示符钩子（目前只有 PowerShell）与 shell 模式的信封包装（`<# … #>` 是 PowerShell 语法）；以后 bash / zsh 各加一份。
+（写作时 keepane 只有 Windows 版；现已支持 Linux 和 macOS，平台与 shell 的划分见 [platform.md](platform.md)。）keepane 目前是 Windows 版，以后可能做 Linux / mac。本设计的新模块（actor、信封、观测存储、MCP、dashboard）不调用任何平台 API。与 shell 相关的只有两处，按 shell 类型选择实现：提示符钩子（目前只有 PowerShell）与 shell 模式的信封包装（`<# … #>` 是 PowerShell 语法）；以后 bash / zsh 各加一份。
 
 目录结构（已定）：本功能验收后，单独做一次纯重构提交，把 Windows 专用代码移到 `src/platform/windows/`，对外只暴露窄接口（pty、IPC 传输、按键编码、剪贴板、通知、开机启动、进程目录、系统信息），加一个测试扫描 `platform/` 之外不得出现 Windows API；重构前后测试结果必须一致。真正开始做 Linux / mac 时，再按同一划分拆成 `keepane-core` 与各平台 crate。
 

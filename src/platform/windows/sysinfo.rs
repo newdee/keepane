@@ -138,6 +138,11 @@ fn long_path(p: &str) -> String {
     String::from_utf16_lossy(&buf[..n])
 }
 
+/// This machine's name (`#H`).
+pub fn hostname() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
 /// `dir` with the home directory as `~`, the way prompts write it. Either
 /// side may be written with 8.3 short names; both are compared long.
 pub fn short_path(dir: &str) -> String {

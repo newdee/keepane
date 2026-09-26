@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   test:
-    name: fmt, clippy, test (windows)
-    runs-on: windows-latest
+    name: fmt, clippy, test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -23,8 +27,8 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: test
-        # The suite spawns cmd.exe/pwsh panes through ConPTY and runs the real
-        # client inside a pseudo console; keep autosave out of the runner profile.
+        # The suite spawns shell panes (cmd.exe/pwsh through ConPTY on Windows,
+        # sh/bash through a pty elsewhere); keep autosave out of the runner profile.
         env:
-          KEEPANE_SESSIONS_DIR: ${{ runner.temp }}\keepane-sessions
+          KEEPANE_SESSIONS_DIR: ${{ runner.temp }}/keepane-sessions
         run: cargo test --all-targets

@@ -12,6 +12,124 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
 
+/// A shell with the prompt `keepane>` and nothing else of the user's (on
+/// Unix the prompt comes from `PS1`, which `Harness::start` sets).
+#[cfg(windows)]
+const PROMPT_SHELL: &str = "cmd.exe /q /k prompt keepane$g";
+#[cfg(unix)]
+const PROMPT_SHELL: &str = "/bin/sh";
+/// The name a window running `PROMPT_SHELL` gets.
+#[cfg(windows)]
+const SH: &str = "cmd";
+#[cfg(unix)]
+const SH: &str = "sh";
+
+/// A shell like `PROMPT_SHELL` with the prompt `<p>>`.
+#[cfg(windows)]
+fn shell(p: &str) -> Vec<String> {
+    ["cmd.exe", "/q", "/k", &format!("prompt {p}$g")].map(String::from).to_vec()
+}
+#[cfg(unix)]
+fn shell(p: &str) -> Vec<String> {
+    ["/bin/sh", "-c", &format!("PS1='{p}>' exec /bin/sh")].map(String::from).to_vec()
+}
+
+/// `shell(p)` as one command line, for `display-popup -E`.
+#[cfg(windows)]
+fn shell_line(p: &str) -> String {
+    format!("cmd.exe /q /k \"prompt {p}$g\"")
+}
+#[cfg(unix)]
+fn shell_line(p: &str) -> String {
+    // `'p''ip>'` is `pip>` to sh, and the typed line never shows `pip>`
+    // itself, so seeing it means the popup's shell is up.
+    let (first, rest) = p.split_at(1);
+    format!("/bin/sh -c \"PS1='{first}''{rest}>' exec /bin/sh\"")
+}
+
+/// A program that exits at once with `code`.
+#[cfg(windows)]
+fn exits(code: u32) -> Vec<String> {
+    ["cmd.exe", "/c", "exit", &code.to_string()].map(String::from).to_vec()
+}
+#[cfg(unix)]
+fn exits(code: u32) -> Vec<String> {
+    ["/bin/sh", "-c", &format!("exit {code}")].map(String::from).to_vec()
+}
+
+/// A program that exits with `code` after about `ms` milliseconds.
+#[cfg(windows)]
+fn exits_after(code: u32, ms: u32) -> Vec<String> {
+    ["powershell.exe", "-NoProfile", "-Command", &format!("Start-Sleep -Milliseconds {ms}; exit {code}")]
+        .map(String::from)
+        .to_vec()
+}
+#[cfg(unix)]
+fn exits_after(code: u32, ms: u32) -> Vec<String> {
+    ["/bin/sh", "-c", &format!("sleep {}; exit {code}", f64::from(ms) / 1000.0)].map(String::from).to_vec()
+}
+
+/// A program that prints `text` and exits.
+#[cfg(windows)]
+fn says(text: &str) -> String {
+    format!("cmd.exe /c echo {text}")
+}
+#[cfg(unix)]
+fn says(text: &str) -> String {
+    format!("/bin/sh -c 'echo {text}'")
+}
+
+/// A command line for `run-shell` and `#()` that prints `text` (`text` may
+/// hold the shell's own variables).
+#[cfg(windows)]
+fn prints(text: &str) -> String {
+    format!("pwsh -NoProfile -Command Write-Output {text}")
+}
+#[cfg(unix)]
+fn prints(text: &str) -> String {
+    format!("echo {text}")
+}
+
+/// A command line that prints `<word>1` to `<word><n>`, a line each.
+#[cfg(windows)]
+fn count_to(n: u32, word: &str) -> String {
+    format!("for /l %i in (1,1,{n}) do @echo {word}%i")
+}
+#[cfg(unix)]
+fn count_to(n: u32, word: &str) -> String {
+    format!("for i in $(seq 1 {n}); do echo {word}$i; done")
+}
+
+/// A command line that does nothing and shows `text`.
+fn remark(text: &str) -> String {
+    if cfg!(windows) { format!("rem {text}") } else { format!(": {text}") }
+}
+
+/// A command line that makes the prompt `<word>>` with `<word>` in red.
+#[cfg(windows)]
+fn red_prompt(word: &str) -> String {
+    format!("prompt $e[31m{word}$e[0m$g")
+}
+#[cfg(unix)]
+fn red_prompt(word: &str) -> String {
+    format!("PS1=\"$(printf '\\033[31m{word}\\033[0m>')\"")
+}
+
+/// The environment variable `name` as `PROMPT_SHELL` expands it.
+#[cfg(windows)]
+fn var(name: &str) -> String {
+    format!("%{name}%")
+}
+#[cfg(unix)]
+fn var(name: &str) -> String {
+    format!("${name}")
+}
+
+/// `pre` followed by `tail`, as a command's argv.
+fn args<'a>(pre: &[&'a str], tail: &'a [String]) -> Vec<&'a str> {
+    pre.iter().copied().chain(tail.iter().map(String::as_str)).collect()
+}
+
 struct Harness {
     socket: String,
     _server: tokio::task::JoinHandle<()>,
@@ -41,6 +159,12 @@ impl Harness {
         // The replay helper is keepane.exe; this test binary is not it.
         unsafe { std::env::set_var("KEEPANE_EXE", env!("CARGO_BIN_EXE_keepane")) };
         keep_history_out();
+        // `PROMPT_SHELL`'s prompt, and none of the user's start-up file.
+        #[cfg(unix)]
+        unsafe {
+            std::env::set_var("PS1", "keepane>");
+            std::env::remove_var("ENV");
+        }
         let socket = format!("test-{name}-{}", std::process::id());
         let s = socket.clone();
         // An empty config, not the machine's `~/.keepane.conf`: a theme there
@@ -64,8 +188,8 @@ impl Harness {
         // Autosave must never touch the real sessions directory from a test.
         let dir = std::env::temp_dir().join(format!("keepane-test-sessions-{}-{name}", std::process::id()));
         let h = Harness { socket, _server: server, sessions_dir: dir.clone() };
-        // Make every implicitly spawned pane a predictable cmd.exe prompt.
-        let (code, _, err) = h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt keepane$g"]).await;
+        // Make every implicitly spawned pane a predictable `keepane>` prompt.
+        let (code, _, err) = h.cli(&["set", "-g", "default-command", PROMPT_SHELL]).await;
         assert_eq!(code, 0, "{err}");
         let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
         assert_eq!(code, 0, "{err}");
@@ -98,6 +222,33 @@ impl Harness {
             }
             assert!(Instant::now() < deadline, "timeout waiting for {what} in {target}; pane:\n{out}");
             tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Poll `show-buffer` until the newest buffer satisfies `pred` (keys
+    /// that copy and the query travel different connections).
+    async fn wait_buffer(&self, what: &str, pred: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (_, out, _) = self.cli(&["show-buffer"]).await;
+            if pred(&out) {
+                return out;
+            }
+            assert!(Instant::now() < deadline, "timeout waiting for {what}; buffer: {out:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Poll `list-panes -t target` until its text satisfies `pred`.
+    async fn wait_list(&self, target: &str, what: &str, pred: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (_, out, _) = self.cli(&["list-panes", "-t", target]).await;
+            if pred(&out) {
+                return out;
+            }
+            assert!(Instant::now() < deadline, "timeout waiting for {what} in {target}:\n{out}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -278,7 +429,7 @@ async fn cli_lifecycle() {
     assert_eq!(code, 1);
     assert_eq!(err, "no sessions");
 
-    let (code, _, err) = h.cli(&["new", "-d", "-s", "main", "cmd.exe", "/q", "/k", "prompt $g"]).await;
+    let (code, _, err) = h.cli(&args(&["new", "-d", "-s", "main"], &shell(""))).await;
     assert_eq!(code, 0, "{err}");
     let (code, out, _) = h.cli(&["ls"]).await;
     assert_eq!(code, 0);
@@ -308,7 +459,7 @@ async fn cli_lifecycle() {
     let (code, _, _) = h.cli(&["kill-session", "-t", "会话"]).await;
     assert_eq!(code, 0);
 
-    let (code, _, err) = h.cli(&["new-window", "-t", "main", "-n", "second", "cmd.exe", "/c", "exit"]).await;
+    let (code, _, err) = h.cli(&args(&["new-window", "-t", "main", "-n", "second"], &exits(0))).await;
     assert_eq!(code, 0, "{err}");
     let (code, _, _) = h.cli(&["rename-session", "-t", "main", "renamed"]).await;
     assert_eq!(code, 0);
@@ -329,13 +480,13 @@ async fn cli_lifecycle() {
 async fn attach_type_split_detach() {
     let h = Harness::start("attach").await;
     let mut c = h.connect().await;
-    let session = c.attach(&["new", "-s", "w", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    let session = c.attach(&["new", "-s", "w"]).await;
     assert_eq!(session, "w");
 
     // Status line at the bottom names the session and window.
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let status = c.row(ROWS - 1);
-    assert!(status.starts_with("[w] 0:cmd*"), "status: {status:?}");
+    assert!(status.starts_with(&format!("[w] 0:{SH}*")), "status: {status:?}");
 
     // Typing reaches the shell via win32-input-mode.
     c.type_str("echo hello-from-keepane").await;
@@ -350,17 +501,19 @@ async fn attach_type_split_detach() {
 
     // New window: status shows two windows, second is current.
     c.prefix('c').await;
-    c.wait_for("second window", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    c.wait_for("second window", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("1:{SH}*")))
+        .await;
     // Back to window 0 (which is still split).
     c.prefix('p').await;
-    c.wait_for("window 0 current", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*")).await;
+    c.wait_for("window 0 current", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("0:{SH}*")))
+        .await;
     c.wait_for("split border again", |s| s.cell(0, COLS / 2).is_some_and(|c| c.contents() == "│")).await;
 
     // Zoom hides the border.
     c.prefix('z').await;
     c.wait_for("zoomed", |s| {
         !s.cell(0, COLS / 2).is_some_and(|c| c.contents() == "│")
-            && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*Z")
+            && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("0:{SH}*Z"))
     })
     .await;
     c.prefix('z').await;
@@ -377,8 +530,9 @@ async fn attach_type_split_detach() {
     c.prefix(':').await;
     c.type_str("split-window -v -d -b").await;
     c.enter().await;
-    c.wait_for("three panes", |s| s.contents().matches("keepane>").count() >= 3).await;
-    let (_, out, _) = h.cli(&["list-panes", "-t", "w"]).await;
+    // (Counting prompts on the screen would not do: the left pane already
+    // shows two.)
+    let out = h.wait_list("w", "three panes", |out| out.lines().count() == 3).await;
     // The new pane is index 0 (before) and the previously active pane stays active.
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 3, "{out}");
@@ -387,11 +541,13 @@ async fn attach_type_split_detach() {
     // Prefix , opens a rename prompt pre-filled with the window name; the
     // template is "rename-window -- %%" so `--` must end flag parsing.
     c.prefix(',').await;
-    c.wait_for("rename prompt", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with("(rename-window) cmd"))
-        .await;
-    c.key(0x08, '\x08', 0).await; // backspace over "cmd"
-    c.key(0x08, '\x08', 0).await;
-    c.key(0x08, '\x08', 0).await;
+    c.wait_for("rename prompt", |s| {
+        s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with(&format!("(rename-window) {SH}"))
+    })
+    .await;
+    for _ in SH.chars() {
+        c.key(0x08, '\x08', 0).await; // backspace over the name
+    }
     c.type_str("via-comma").await;
     c.enter().await;
     c.wait_for("renamed via ,", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:via-comma*")).await;
@@ -400,9 +556,14 @@ async fn attach_type_split_detach() {
     // Each message starts with the file's path and long lines are clipped at
     // the window width, so the path must be short on every machine: relative
     // to the package root, which is this process's (and the server's) cwd.
-    let bad = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("bad-{}.conf", std::process::id()));
+    // (A target directory elsewhere, CARGO_TARGET_DIR, puts it in the
+    // package root instead.)
+    let name = format!("bad-{}.conf", std::process::id());
+    let tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bad = if tmp.starts_with(root) { tmp.join(&name) } else { root.join(&name) };
     std::fs::write(&bad, "set -g mouse maybe\nfrobnicate\n").unwrap();
-    let rel = bad.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let rel = bad.strip_prefix(root).unwrap();
     c.prefix(':').await;
     c.type_str(&format!("source-file {}", rel.display())).await;
     c.enter().await;
@@ -485,7 +646,7 @@ async fn attach_type_split_detach() {
 async fn pane_exit_closes_window_and_session() {
     let h = Harness::start("exit").await;
     let mut c = h.connect().await;
-    c.attach(&["new", "-s", "x", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    c.attach(&["new", "-s", "x"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('"').await;
     c.wait_for("horizontal border", |s| {
@@ -510,7 +671,7 @@ async fn pane_exit_closes_window_and_session() {
 async fn mouse_selects_pane_and_copy_mode_scrolls() {
     let h = Harness::start("mouse").await;
     let mut c = h.connect().await;
-    let (_, mouse) = c.attach_full(&["new", "-s", "m", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    let (_, mouse) = c.attach_full(&["new", "-s", "m"]).await;
     assert!(mouse, "mouse is on by default");
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // Toggling the option reaches the attached client's console.
@@ -526,7 +687,7 @@ async fn mouse_selects_pane_and_copy_mode_scrolls() {
     // Click in the left pane, then type: text must land on the left.
     c.send(ClientMsg::Mouse(MouseRecord { x: 2, y: 2, buttons: 1, ctrl: 0, flags: 0 })).await;
     c.send(ClientMsg::Mouse(MouseRecord { x: 2, y: 2, buttons: 0, ctrl: 0, flags: 0 })).await;
-    c.type_str("rem left-side-marker").await;
+    c.type_str(&remark("left-side-marker")).await;
     c.wait_for("typed on the left", |s| s.rows(0, COLS / 2).any(|r| r.contains("left-side-marker"))).await;
     assert!(
         !c.text().contains("marker")
@@ -535,7 +696,7 @@ async fn mouse_selects_pane_and_copy_mode_scrolls() {
 
     // Fill scrollback, then wheel up: the [n/m] indicator of copy mode shows.
     c.enter().await;
-    c.type_str("for /l %i in (1,1,60) do @echo line%i").await;
+    c.type_str(&count_to(60, "line")).await;
     c.enter().await;
     c.wait_for("output", |s| s.contents().contains("line60")).await;
     c.send(ClientMsg::Mouse(MouseRecord { x: 2, y: 2, buttons: (120u32) << 16, ctrl: 0, flags: 4 })).await;
@@ -550,12 +711,12 @@ async fn mouse_selects_pane_and_copy_mode_scrolls() {
 async fn resize_and_two_clients() {
     let h = Harness::start("resize").await;
     let mut a = h.connect().await;
-    a.attach(&["new", "-s", "r", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    a.attach(&["new", "-s", "r"]).await;
     a.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // Shrink the client: the status line moves up.
     a.send(ClientMsg::Resize { cols: 60, rows: 12 }).await;
     a.screen = vt100::Parser::new(12, 60, 0);
-    a.wait_for("status at row 11", |s| s.rows(0, 60).nth(11).unwrap().starts_with("[r] 0:cmd*")).await;
+    a.wait_for("status at row 11", |s| s.rows(0, 60).nth(11).unwrap().starts_with(&format!("[r] 0:{SH}*"))).await;
     let (_, out, _) = h.cli(&["ls"]).await;
     assert!(out.contains("[60x12]"), "{out}");
 
@@ -579,11 +740,15 @@ async fn plugins_hooks_status_formats_and_run_shell() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("demo.keepane"),
-        "set -g status-right \"#[fg=red]#(pwsh -NoProfile -Command Write-Output plugged)#[default] %H\"\n\
-         set -g status-interval 1\n\
-         bind P run-shell \"pwsh -NoProfile -Command Write-Output hello-from-plugin\"\n\
-         set-hook -g after-new-window \"rename-window hooked\"\n\
-         set -g @demo-option yes\n",
+        format!(
+            "set -g status-right \"#[fg=red]#({})#[default] %H\"\n\
+             set -g status-interval 1\n\
+             bind P run-shell \"{}\"\n\
+             set-hook -g after-new-window \"rename-window hooked\"\n\
+             set -g @demo-option yes\n",
+            prints("plugged"),
+            prints("hello-from-plugin")
+        ),
     )
     .unwrap();
     // Declared the tmux way, from a config file.
@@ -623,14 +788,15 @@ async fn plugins_hooks_status_formats_and_run_shell() {
 
     // run-shell from the CLI: output comes back when the command finishes; a
     // non-zero exit is an error.
-    let (code, out, _) = h.cli(&["run-shell", "pwsh -NoProfile -Command Write-Output from-cli"]).await;
+    let (code, out, _) = h.cli(&["run-shell", &prints("from-cli")]).await;
     assert_eq!(code, 0);
     assert_eq!(out.trim(), "from-cli");
-    let (code, _, err) = h.cli(&["run-shell", "pwsh -NoProfile -Command exit 3"]).await;
+    let exit3 = if cfg!(windows) { "pwsh -NoProfile -Command exit 3" } else { "exit 3" };
+    let (code, _, err) = h.cli(&["run-shell", exit3]).await;
     assert_eq!(code, 1);
     assert!(err.contains("exited with 3"), "{err}");
     // KEEPANE is set for the child, so plugin scripts can call back.
-    let (_, out, _) = h.cli(&["run-shell", "pwsh -NoProfile -Command Write-Output $env:KEEPANE"]).await;
+    let (_, out, _) = h.cli(&["run-shell", &prints(if cfg!(windows) { "$env:KEEPANE" } else { "$KEEPANE" })]).await;
     assert_eq!(out.trim(), h.socket);
 
     // Attached: the #(command) piece shows up on the status line (styled),
@@ -668,11 +834,11 @@ async fn save_and_resume_sessions() {
     let (code, _, err) = h.cli(&["new", "-d", "-s", "keeper"]).await;
     assert_eq!(code, 0, "{err}");
     // Build a session: two windows, the first split in three, second window renamed.
-    let (code, _, err) = h.cli(&["new", "-d", "-s", "work", "-n", "edit", "cmd.exe", "/q", "/k", "prompt A$g"]).await;
+    let (code, _, err) = h.cli(&args(&["new", "-d", "-s", "work", "-n", "edit"], &shell("A"))).await;
     assert_eq!(code, 0, "{err}");
-    h.cli(&["split-window", "-h", "-t", "work:0", "cmd.exe", "/q", "/k", "prompt B$g"]).await;
-    h.cli(&["split-window", "-v", "-t", "work:0", "cmd.exe", "/q", "/k", "prompt C$g"]).await;
-    h.cli(&["new-window", "-t", "work", "-n", "logs", "cmd.exe", "/q", "/k", "prompt D$g"]).await;
+    h.cli(&args(&["split-window", "-h", "-t", "work:0"], &shell("B"))).await;
+    h.cli(&args(&["split-window", "-v", "-t", "work:0"], &shell("C"))).await;
+    h.cli(&args(&["new-window", "-t", "work", "-n", "logs"], &shell("D"))).await;
     h.cli(&["select-window", "-t", "work:0"]).await;
     // Autosave happens on the tick; the explicit command is immediate.
     let (code, out, err) = h.cli(&["save-session", "-t", "work"]).await;
@@ -754,11 +920,16 @@ async fn save_and_resume_sessions() {
 
     // set-cwd records the directory a pane will be resumed in: explicit, or
     // the calling client's own (the harness sends temp_dir as its cwd).
-    let (code, _, err) = h.cli(&["set-cwd", "-t", "work:0.1", "C:\\Windows"]).await;
+    let (real, gone, announced) = if cfg!(windows) {
+        ("C:\\Windows", "C:\\definitely\\not\\here", "C:\\Users")
+    } else {
+        ("/usr", "/definitely/not/here", "/var")
+    };
+    let (code, _, err) = h.cli(&["set-cwd", "-t", "work:0.1", real]).await;
     assert_eq!(code, 0, "{err}");
     let (code, _, _) = h.cli(&["set-cwd", "-t", "work:0.2"]).await;
     assert_eq!(code, 0);
-    let (code, _, err) = h.cli(&["set-cwd", "-t", "work:0.0", "C:\\definitely\\not\\here"]).await;
+    let (code, _, err) = h.cli(&["set-cwd", "-t", "work:0.0", gone]).await;
     assert_eq!(code, 1);
     assert!(err.contains("not a directory"), "{err}");
     // Relative directories resolve against the client's cwd (temp_dir here).
@@ -771,22 +942,20 @@ async fn save_and_resume_sessions() {
     assert!(out.lines().next().is_some_and(|l| l.contains(&rel)), "{out}");
     let _ = std::fs::remove_dir_all(&sub);
     let (_, out, _) = h.cli(&["list-panes", "-t", "work:0"]).await;
-    let tmp = std::env::temp_dir().to_string_lossy().trim_end_matches('\\').to_string();
-    assert!(out.contains("[C:\\Windows]") && out.contains(&format!("[{tmp}")), "{out}");
-    // The shell itself can announce its directory (OSC 9;9), as a prompt
-    // function would; it travels through ConPTY like a title change does.
-    h.cli(&[
-        "send-keys",
-        "-t",
-        "work:0.0",
-        "pwsh -NoProfile -Command \"Write-Host ([char]27+']9;9;C:\\Users'+[char]7)\"",
-        "Enter",
-    ])
-    .await;
+    let tmp = std::env::temp_dir().to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+    assert!(out.contains(&format!("[{real}]")) && out.contains(&format!("[{tmp}")), "{out}");
+    // The shell itself can announce its directory (OSC 9;9, OSC 7), as a
+    // prompt function would; it travels through the pty like a title does.
+    let announce = if cfg!(windows) {
+        "pwsh -NoProfile -Command \"Write-Host ([char]27+']9;9;C:\\Users'+[char]7)\"".to_string()
+    } else {
+        format!("printf '\\033]7;file://here{announced}\\007'")
+    };
+    h.cli(&["send-keys", "-t", "work:0.0", &announce, "Enter"]).await;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let (_, out, _) = h.cli(&["list-panes", "-t", "work:0"]).await;
-        if out.lines().next().is_some_and(|l| l.contains("[C:\\Users]")) {
+        if out.lines().next().is_some_and(|l| l.contains(&format!("[{announced}]"))) {
             break;
         }
         assert!(Instant::now() < deadline, "OSC cwd not picked up: {out}");
@@ -797,7 +966,7 @@ async fn save_and_resume_sessions() {
     loop {
         let f = keepane::resurrect::SavedFile::load(&keepane::resurrect::find(&dir, "work").unwrap()).unwrap();
         let cwds: Vec<Option<String>> = f.session.windows[0].layout.panes().iter().map(|p| p.cwd.clone()).collect();
-        if cwds[0].as_deref() == Some("C:\\Users") && cwds[1].as_deref() == Some("C:\\Windows") {
+        if cwds[0].as_deref() == Some(announced) && cwds[1].as_deref() == Some(real) {
             break;
         }
         assert!(Instant::now() < deadline, "saved cwds: {cwds:?}");
@@ -828,27 +997,25 @@ async fn vim_keys_and_synchronize_panes() {
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('%').await; // left | right, right active
     c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
-    // prefix h -> left pane active, prefix l -> right again.
+    // prefix h -> left pane active, prefix l -> right again. (The keys and
+    // list-panes come over different connections: wait for the change.)
     c.prefix('h').await;
-    let (_, out, _) = h.cli(&["list-panes", "-t", "v"]).await;
-    assert!(out.lines().next().unwrap().contains("(active)"), "{out}");
+    h.wait_list("v", "left active", |out| out.lines().next().is_some_and(|l| l.contains("(active)"))).await;
     c.prefix('l').await;
-    let (_, out, _) = h.cli(&["list-panes", "-t", "v"]).await;
-    assert!(out.lines().nth(1).unwrap().contains("(active)"), "{out}");
+    h.wait_list("v", "right active", |out| out.lines().nth(1).is_some_and(|l| l.contains("(active)"))).await;
     // prefix H shrinks the right pane's left edge... i.e. resizes; widths change.
     c.prefix('H').await;
-    let (_, out, _) = h.cli(&["list-panes", "-t", "v"]).await;
     // 80 columns: 35 + border + 44.
-    assert!(out.contains("[44x") && out.contains("[35x"), "{out}");
+    h.wait_list("v", "resized", |out| out.contains("[44x") && out.contains("[35x")).await;
     // prefix Tab is last-window now that l is taken.
     c.prefix('c').await;
-    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("1:{SH}*"))).await;
     c.prefix('\t').await;
-    c.wait_for("back to 0", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*")).await;
+    c.wait_for("back to 0", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("0:{SH}*"))).await;
 
     // synchronize-panes: typing lands in both panes; the S flag shows.
     c.prefix('S').await;
-    c.wait_for("S flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*S")).await;
+    c.wait_for("S flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("0:{SH}*S"))).await;
     c.type_str("echo both-panes").await;
     c.enter().await;
     c.wait_for("echoed twice", |s| s.contents().matches("both-panes").count() >= 4).await;
@@ -860,7 +1027,8 @@ async fn vim_keys_and_synchronize_panes() {
     c.wait_for("send-keys to both", |s| s.contents().matches("via-send").count() >= 4).await;
     let (code, _, _) = h.cli(&["set", "-w", "synchronize-panes", "off"]).await;
     assert_eq!(code, 0);
-    c.wait_for("S flag gone", |s| !s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*S")).await;
+    c.wait_for("S flag gone", |s| !s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("0:{SH}*S")))
+        .await;
     h.cli(&["kill-server"]).await;
 }
 
@@ -871,7 +1039,7 @@ async fn choose_tree_picker() {
     c.attach(&["new", "-s", "a"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('c').await;
-    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("1:{SH}*"))).await;
     let (code, _, err) = h.cli(&["new", "-d", "-s", "b"]).await;
     assert_eq!(code, 0, "{err}");
     // The shell in the detached session must be up before its keystrokes matter.
@@ -882,17 +1050,19 @@ async fn choose_tree_picker() {
     // The pane title arrives over OSC, so wait for the fully drawn tree.
     c.wait_for("picker", |s| {
         let t = s.contents();
-        // The title is the shell's own path, with "Administrator: " (localized)
-        // in front of it when the test runs elevated.
-        t.contains("[3/5] j/k move") && t.contains("(1)   - 0: cmd- (1 panes) \"") && t.contains("cmd.exe\"")
+        // The title is cmd's own path, with "Administrator: " (localized)
+        // in front of it when the test runs elevated; sh sets none.
+        t.contains("[3/5] j/k move")
+            && t.contains(&format!("(1)   - 0: {SH}- (1 panes) \""))
+            && (cfg!(unix) || t.contains("cmd.exe\""))
     })
     .await;
     let text = c.text();
     assert!(text.contains("(0) - a: 2 windows (attached)"), "{text}");
-    assert!(text.contains("(2)   - 1: cmd* (1 panes)"), "{text}");
+    assert!(text.contains(&format!("(2)   - 1: {SH}* (1 panes)")), "{text}");
     assert!(text.contains("(3) - b: 1 windows"), "{text}");
     // Every session's current window carries the *, as in tmux.
-    assert!(text.contains("(4)   - 0: cmd* (1 panes)"), "{text}");
+    assert!(text.contains(&format!("(4)   - 0: {SH}* (1 panes)")), "{text}");
     // vim motions: k up, g top, G bottom, j clamps at the end, digits jump.
     c.type_str("k").await;
     c.wait_for("k", |s| s.contents().contains("[2/5]")).await;
@@ -909,7 +1079,7 @@ async fn choose_tree_picker() {
     c.enter().await;
     c.wait_for("window 0", |s| {
         let t = s.contents();
-        !t.contains("j/k move") && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*")
+        !t.contains("j/k move") && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("0:{SH}*"))
     })
     .await;
 
@@ -918,10 +1088,13 @@ async fn choose_tree_picker() {
     c.wait_for("sessions", |s| s.contents().contains("[1/2] j/k move")).await;
     let text = c.text();
     assert!(text.contains("(0) + a: 2 windows (attached)") && text.contains("(1) + b: 1 windows"), "{text}");
-    assert!(!text.contains("0: cmd"), "collapsed: {text}");
+    assert!(!text.contains(&format!("0: {SH}")), "collapsed: {text}");
     c.type_str("j").await;
     c.enter().await;
-    c.wait_for("switched to b", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with("[b] 0:cmd*")).await;
+    c.wait_for("switched to b", |s| {
+        s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with(&format!("[b] 0:{SH}*"))
+    })
+    .await;
 
     // The picker is a mode, not a keyboard trap: the prefix still works, so
     // `prefix ?` (list-keys) overlays it and the next key dismisses the
@@ -946,7 +1119,10 @@ async fn choose_tree_picker() {
     // on the same item (b:0 is now 5 of 6).
     let (code, _, err) = h.cli(&["new-window", "-d", "-t", "b"]).await;
     assert_eq!(code, 0, "{err}");
-    c.wait_for("live", |s| s.contents().contains("[5/6] j/k move") && s.contents().contains("(5)   - 1: cmd")).await;
+    c.wait_for("live", |s| {
+        s.contents().contains("[5/6] j/k move") && s.contents().contains(&format!("(5)   - 1: {SH}"))
+    })
+    .await;
     c.key(0x1B, '\x1b', 0).await;
     c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
     // Nothing the picker consumed reached the shell: one untouched prompt.
@@ -974,7 +1150,7 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
     c.prefix('w').await;
     c.wait_for("picker", |s| s.contents().contains("[2/31] j/k move")).await;
     assert!(c.row(0).starts_with("(0) - many: 30 windows (attached)"), "{:?}", c.row(0));
-    assert!(c.row(1).starts_with("(1)   - 1: cmd*"), "base-index 1: {:?}", c.row(1));
+    assert!(c.row(1).starts_with(&format!("(1)   - 1: {SH}*")), "base-index 1: {:?}", c.row(1));
     // Nothing scrolled yet; the last body row is item 22.
     assert!(c.row(22).starts_with("      - 22:"), "{:?}", c.row(22));
     // G: the last item is visible on the last body row, the list scrolled.
@@ -999,7 +1175,7 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
     c.enter().await;
     c.wait_for("selected", |s| !s.contents().contains("j/k move")).await;
     let (_, out, _) = h.cli(&["list-windows", "-t", "many"]).await;
-    assert!(out.lines().nth(22).unwrap().starts_with("23: cmd*"), "{out}");
+    assert!(out.lines().nth(22).unwrap().starts_with(&format!("23: {SH}*")), "{out}");
     h.cli(&["kill-server"]).await;
 }
 
@@ -1095,23 +1271,21 @@ async fn copy_mode_vi_motions_and_modes() {
     c.type_str("v").await;
     c.type_str("e").await;
     c.enter().await;
-    let (_, out, _) = h.cli(&["show-buffer"]).await;
-    assert_eq!(out.trim_end(), "beta", "b goes back a word: {out:?}");
+    h.wait_buffer("b goes back a word", |out| out.trim_end() == "beta").await;
 
     // A count repeats a motion: 3j moves three lines.
     c.prefix('[').await;
     c.type_str("gv").await; // top of the scrollback, start selecting
     c.type_str("3j").await;
     c.enter().await;
-    let (_, out, _) = h.cli(&["show-buffer"]).await;
-    assert!(out.lines().count() >= 3, "3j selected three lines: {out:?}");
+    let three = h.wait_buffer("3j selected three lines", |out| out.lines().count() >= 3).await;
 
     // C-v makes the selection a rectangle: same columns on every line.
     c.prefix('[').await;
     c.key(b'V' as u16, '\x16', LEFT_CTRL_PRESSED).await; // C-v
     c.type_str("jjll").await;
     c.enter().await;
-    let (_, out, _) = h.cli(&["show-buffer"]).await;
+    let out = h.wait_buffer("the rectangle copied", |out| out != three).await;
     assert!(out.lines().all(|l| l.chars().count() <= 3), "a rectangle is narrow: {out:?}");
     h.cli(&["kill-server"]).await;
 }
@@ -1137,10 +1311,11 @@ async fn clock_conditionals_and_client_commands() {
     let (_, out, _) = h.cli(&["show-options", "-gv", "@cond"]).await;
     assert_eq!(out.trim(), "else");
     // Without -F the shell's exit status decides.
-    h.cli(&["if-shell", "cmd /c exit 0", "set -g @sh ok", "set -g @sh bad"]).await;
+    let exit = |code: u32| if cfg!(windows) { format!("cmd /c exit {code}") } else { format!("exit {code}") };
+    h.cli(&["if-shell", &exit(0), "set -g @sh ok", "set -g @sh bad"]).await;
     let (_, out, _) = h.cli(&["show-options", "-gv", "@sh"]).await;
     assert_eq!(out.trim(), "ok");
-    h.cli(&["if-shell", "cmd /c exit 1", "set -g @sh ok", "set -g @sh bad"]).await;
+    h.cli(&["if-shell", &exit(1), "set -g @sh ok", "set -g @sh bad"]).await;
     let (_, out, _) = h.cli(&["show-options", "-gv", "@sh"]).await;
     assert_eq!(out.trim(), "bad");
 
@@ -1173,7 +1348,7 @@ async fn clock_conditionals_and_client_commands() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_small_tmux_commands() {
     let h = Harness::start("small").await;
-    let (code, _, err) = h.cli(&["new", "-d", "-s", "a", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "a"]).await;
     assert_eq!(code, 0, "{err}");
     h.cli(&["split-window", "-h", "-t", "a"]).await;
     h.cli(&["split-window", "-v", "-t", "a"]).await;
@@ -1216,9 +1391,9 @@ async fn the_small_tmux_commands() {
     h.cli(&["set-environment", "KEEPANE_TEST_VAR", "hello"]).await;
     let (_, out, _) = h.cli(&["show-environment"]).await;
     assert!(out.contains("KEEPANE_TEST_VAR=hello"), "{out}");
-    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "a", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "a"]).await;
     assert_eq!(code, 0, "{err}");
-    h.cli(&["send-keys", "-t", "a:1", "echo %KEEPANE_TEST_VAR%", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "a:1", &format!("echo {}", var("KEEPANE_TEST_VAR")), "Enter"]).await;
     let pane = h.wait_capture("a:1", "the variable", |t| t.contains("hello")).await;
     assert!(pane.contains("hello"), "{pane}");
     h.cli(&["set-environment", "-r", "KEEPANE_TEST_VAR"]).await;
@@ -1231,8 +1406,14 @@ async fn the_small_tmux_commands() {
     assert!(err.contains("still running"), "{err}");
     h.cli(&["send-keys", "-t", "a:1", "echo before-respawn", "Enter"]).await;
     h.wait_capture("a:1", "the marker", |t| t.contains("before-respawn")).await;
+    // It is the same pane afterwards: its name and what waits in its inbox stay.
+    h.cli(&["rename-pane", "-t", "a:1", "stays"]).await;
+    let (code, _, err) = h.cli(&["send-message", "-t", "%stays", "for later"]).await;
+    assert_eq!(code, 0, "{err}");
     let (code, _, err) = h.cli(&["respawn-pane", "-k", "-t", "a:1"]).await;
     assert_eq!(code, 0, "{err}");
+    let (_, name, _) = h.cli(&["display-message", "-p", "-t", "a:1", "#{pane_name} #{pane_inbox}"]).await;
+    assert_eq!(name.trim(), "stays 1", "name and inbox kept");
     let pane =
         h.wait_capture("a:1", "a fresh shell", |t| !t.contains("before-respawn") && t.contains("keepane>")).await;
     assert!(!pane.contains("before-respawn"), "the pane started over: {pane}");
@@ -1242,7 +1423,7 @@ async fn the_small_tmux_commands() {
 #[tokio::test(flavor = "multi_thread")]
 async fn paste_buffers() {
     let h = Harness::start("buffers").await;
-    let (code, _, err) = h.cli(&["new", "-d", "-s", "b", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "b"]).await;
     assert_eq!(code, 0, "{err}");
 
     let (_, out, _) = h.cli(&["list-buffers"]).await;
@@ -1295,9 +1476,9 @@ async fn paste_buffers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn join_pane_marks_and_exact_sizes() {
     let h = Harness::start("join").await;
-    let (code, _, err) = h.cli(&["new", "-d", "-s", "j", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "j"]).await;
     assert_eq!(code, 0, "{err}");
-    h.cli(&["new-window", "-d", "-t", "j", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    h.cli(&["new-window", "-d", "-t", "j"]).await;
     async fn panes(h: &Harness, w: &str) -> usize {
         let (_, out, _) = h.cli(&["list-panes", "-t", w]).await;
         out.lines().count()
@@ -1313,7 +1494,7 @@ async fn join_pane_marks_and_exact_sizes() {
     assert_eq!(out.lines().count(), 1, "the empty window went away: {out}");
 
     // A marked pane is what join-pane takes when there is no -s.
-    h.cli(&["new-window", "-d", "-t", "j", "cmd.exe", "/q", "/k", "prompt keepane$g"]).await;
+    h.cli(&["new-window", "-d", "-t", "j"]).await;
     let (code, _, err) = h.cli(&["select-pane", "-m", "-t", "j:1"]).await;
     assert_eq!(code, 0, "{err}");
     let (code, _, err) = h.cli(&["join-pane", "-v", "-t", "j:0"]).await;
@@ -1337,9 +1518,9 @@ async fn join_pane_marks_and_exact_sizes() {
     // A pane can be given a title, which the format strings pick up. The
     // program's own title comes first: one that arrives after -T replaces
     // it, as in tmux (on a slow CI runner cmd's startup title came late and
-    // did exactly that, so wait for it).
+    // did exactly that, so wait for it; sh sets none).
     let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    while cfg!(windows) {
         let (_, out, _) = h.cli(&["list-panes", "-t", "j:0"]).await;
         if out.lines().next().is_some_and(|l| l.to_lowercase().contains("cmd.exe")) {
             break;
@@ -1435,8 +1616,7 @@ async fn layouts_and_pane_numbers() {
     c.prefix('q').await;
     c.wait_for("numbers", |s| s.contents().contains("███")).await;
     c.key(b'2' as u16, '2', 0).await;
-    let (_, out, _) = h.cli(&["list-panes", "-t", "g"]).await;
-    assert!(out.lines().nth(2).unwrap().contains("(active)"), "pane 2 is active now: {out}");
+    h.wait_list("g", "pane 2 active", |out| out.lines().nth(2).is_some_and(|l| l.contains("(active)"))).await;
     h.cli(&["kill-server"]).await;
 }
 
@@ -1447,7 +1627,7 @@ async fn copy_mode_search_finds_scrolled_off_lines() {
     c.attach(&["new", "-s", "f"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     // More output than fits, so the early lines are only in the scrollback.
-    c.type_str("for /l %i in (1,1,60) do @echo marker-%i").await;
+    c.type_str(&count_to(60, "marker-")).await;
     c.enter().await;
     c.wait_for("output", |s| s.contents().contains("marker-60")).await;
     assert!(!c.text().contains("marker-3 "), "line 3 has scrolled away: {}", c.text());
@@ -1520,8 +1700,7 @@ async fn repeatable_keys_chain_without_the_prefix() {
     // prefix h, then a bare h: two panes left in one go.
     c.prefix('h').await;
     c.type_str("h").await;
-    let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
-    assert_eq!(active(&out), 0, "bare h repeated the binding: {out}");
+    h.wait_list("r", "bare h repeated the binding", |out| active(out) == 0).await;
 
     // The window closes: after repeat-time a bare h is just text again.
     let (code, _, err) = h.cli(&["set", "-g", "repeat-time", "150"]).await;
@@ -1530,17 +1709,17 @@ async fn repeatable_keys_chain_without_the_prefix() {
     tokio::time::sleep(Duration::from_millis(400)).await;
     c.type_str("hhh").await;
     c.enter().await;
-    let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
-    assert_eq!(active(&out), 1, "the late h's must not move the pane: {out}");
+    // Typed text in the pane: the keys were all handled by then.
     let pane = h.wait_capture("r:0.1", "the typed text", |t| t.contains("hhh")).await;
     assert!(pane.contains("hhh"), "{pane}");
+    let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
+    assert_eq!(active(&out), 1, "the late h's must not move the pane: {out}");
 
     // repeat-time 0 turns it off entirely.
     h.cli(&["set", "-g", "repeat-time", "0"]).await;
     c.prefix('h').await;
     c.type_str("h").await;
-    let (_, out, _) = h.cli(&["list-panes", "-t", "r"]).await;
-    assert_eq!(active(&out), 0, "the prefixed h still moves: {out}");
+    h.wait_list("r", "the prefixed h still moves", |out| active(out) == 0).await;
     let pane = h.wait_capture("r:0.0", "the second h as text", |t| t.contains("h")).await;
     assert!(pane.contains("h"), "{pane}");
     h.cli(&["kill-server"]).await;
@@ -1667,7 +1846,7 @@ async fn zoomed_pane_still_navigates_by_direction() {
     c.prefix('%').await; // left | right, the right one active
     c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
     c.prefix('z').await; // zoom the right pane
-    c.wait_for("Z flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd*Z")).await;
+    c.wait_for("Z flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("0:{SH}*Z"))).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
     assert!(out.lines().nth(1).unwrap().contains("[80x23]"), "zoomed pane fills the window: {out}");
     // The hidden pane keeps running at its own size; it is not 0x0.
@@ -1681,8 +1860,10 @@ async fn zoomed_pane_still_navigates_by_direction() {
     // now fills the window.
     let status = |s: &vt100::Screen| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap();
     c.prefix('h').await;
-    c.wait_for("the left pane, zoomed", |s| status(s).contains("0:cmd*Z") && s.contents().contains("hidden-alive"))
-        .await;
+    c.wait_for("the left pane, zoomed", |s| {
+        status(s).contains(&format!("0:{SH}*Z")) && s.contents().contains("hidden-alive")
+    })
+    .await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
     let first = out.lines().next().unwrap();
     assert!(first.contains("(active)") && first.contains("[80x23]"), "left pane active, filling the window: {out}");
@@ -1699,8 +1880,10 @@ async fn zoomed_pane_still_navigates_by_direction() {
     };
     c.wait_for("both numbers", |s| blocks(s, 0, 40) > 0 && blocks(s, 41, 80) > 0).await;
     c.key(b'1' as u16, '1', 0).await;
-    c.wait_for("the right pane, zoomed", |s| status(s).contains("0:cmd*Z") && !s.contents().contains("hidden-alive"))
-        .await;
+    c.wait_for("the right pane, zoomed", |s| {
+        status(s).contains(&format!("0:{SH}*Z")) && !s.contents().contains("hidden-alive")
+    })
+    .await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
     assert!(out.lines().nth(1).unwrap().contains("(active)"), "right pane is active: {out}");
     // Going to a pane from outside (a notification's button, the task
@@ -1710,23 +1893,24 @@ async fn zoomed_pane_still_navigates_by_direction() {
     let left = ids.lines().next().unwrap().trim_start_matches('%').to_string();
     assert_eq!(h.cli(&["focus-pane", &format!("%{left}")]).await.0, 0);
     c.wait_for("the left pane, zoomed, on screen", |s| {
-        status(s).contains("0:cmd*Z") && s.contents().contains("hidden-alive")
+        status(s).contains(&format!("0:{SH}*Z")) && s.contents().contains("hidden-alive")
     })
     .await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
     assert!(out.lines().next().unwrap().contains("[80x23]"), "{out}");
     c.prefix('l').await;
-    c.wait_for("back right", |s| status(s).contains("0:cmd*Z") && !s.contents().contains("hidden-alive")).await;
+    c.wait_for("back right", |s| status(s).contains(&format!("0:{SH}*Z")) && !s.contents().contains("hidden-alive"))
+        .await;
     // Only z itself undoes the zoom.
     c.prefix('z').await;
-    c.wait_for("unzoomed", |s| status(s).contains("0:cmd*") && !status(s).contains("*Z")).await;
+    c.wait_for("unzoomed", |s| status(s).contains(&format!("0:{SH}*")) && !status(s).contains("*Z")).await;
 
     // keep-zoom off: selecting unzooms, as tmux does.
     h.cli(&["set", "-g", "keep-zoom", "off"]).await;
     c.prefix('z').await;
-    c.wait_for("Z flag again", |s| status(s).contains("0:cmd*Z")).await;
+    c.wait_for("Z flag again", |s| status(s).contains(&format!("0:{SH}*Z"))).await;
     c.prefix('h').await;
-    c.wait_for("unzoomed by moving", |s| status(s).contains("0:cmd*") && !status(s).contains("*Z")).await;
+    c.wait_for("unzoomed by moving", |s| status(s).contains(&format!("0:{SH}*")) && !status(s).contains("*Z")).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "z"]).await;
     assert!(out.lines().next().unwrap().contains("(active)"), "left pane is active: {out}");
     h.cli(&["kill-server"]).await;
@@ -1856,8 +2040,9 @@ async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     .await;
     // ...with the pane environment a new pane gets, so `keepane` inside it
     // still talks to this server (respawn used to pass set-environment only).
-    h.cli(&["send-keys", "-t", "r:0", "echo KEEPANE=%KEEPANE% PANE=%KEEPANE_PANE%", "Enter"]).await;
-    // The typed line still says %KEEPANE%; the output line has the real values.
+    let line = format!("echo KEEPANE={} PANE={}", var("KEEPANE"), var("KEEPANE_PANE"));
+    h.cli(&["send-keys", "-t", "r:0", &line, "Enter"]).await;
+    // The typed line still names the variables; the output line has the real values.
     let want = format!("KEEPANE={} PANE=", h.socket);
     h.wait_capture("r:0", "the socket name and pane id from inside", |t| {
         t.lines().any(|l| l.strip_prefix(&want).is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())))
@@ -1935,7 +2120,11 @@ async fn pipe_pane_copies_pane_output_into_a_command() {
     h.wait_capture("p:0", "shell prompt", |t| t.contains("keepane>")).await;
     let out_file = std::env::temp_dir().join(format!("keepane-pipe-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&out_file);
-    let cmd = format!("$input | Set-Content -Path '{}'", out_file.display());
+    let cmd = if cfg!(windows) {
+        format!("$input | Set-Content -Path '{}'", out_file.display())
+    } else {
+        format!("cat > '{}'", out_file.display())
+    };
     let (code, _, err) = h.cli(&["pipe-pane", "-t", "p:0", &cmd]).await;
     assert_eq!(code, 0, "{err}");
 
@@ -2048,7 +2237,7 @@ async fn display_popup_takes_the_keys_and_closes_with_its_command() {
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
 
     c.prefix(':').await;
-    c.type_str("display-popup -E cmd.exe /q /k \"prompt pip$g\"").await;
+    c.type_str(&format!("display-popup -E {}", shell_line("pip"))).await;
     c.enter().await;
     c.wait_for("popup", |s| s.contents().contains("pip>")).await;
     assert!(c.text().contains('┌'), "the popup has a border: {}", c.text());
@@ -2080,23 +2269,24 @@ async fn alerts_flag_background_windows() {
     c.attach(&["new", "-s", "al"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix('c').await;
-    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    c.wait_for("window 1", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("1:{SH}*"))).await;
     h.wait_capture("al:1", "second shell", |t| t.contains("keepane>")).await;
 
     // Output in the window nobody is looking at raises the activity flag.
     h.cli(&["send-keys", "-t", "al:0", "echo background-noise", "Enter"]).await;
     // The flag shows up in the status line and in list-windows, after the
     // "last window" mark, as tmux orders them.
-    c.wait_for("activity flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:cmd-#")).await;
+    c.wait_for("activity flag", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("0:{SH}-#")))
+        .await;
     let (_, out, _) = h.cli(&["list-windows", "-t", "al"]).await;
-    assert!(out.lines().next().is_some_and(|l| l.contains("cmd-#")), "{out}");
+    assert!(out.lines().next().is_some_and(|l| l.contains(&format!("{SH}-#"))), "{out}");
 
     // prefix M-n goes to the window with the alert; looking at it clears it.
     c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
     c.key(b'N' as u16, 'n', LEFT_ALT_PRESSED).await;
     c.wait_for("switched and cleared", |s| {
         let status = s.rows(0, COLS).nth(ROWS as usize - 1).unwrap();
-        status.contains("0:cmd*") && !status.contains("0:cmd#")
+        status.contains(&format!("0:{SH}*")) && !status.contains(&format!("0:{SH}#"))
     })
     .await;
     // With no alert left, the key says so instead of moving.
@@ -2125,7 +2315,7 @@ async fn alerts_flag_background_windows() {
     loop {
         let (_, out, _) = h.cli(&["list-windows", "-t", "far"]).await;
         if out.lines().next().is_some_and(|l| !l.contains('#')) {
-            assert!(out.lines().next().unwrap().contains("cmd*"), "{out}");
+            assert!(out.lines().next().unwrap().contains(&format!("{SH}*")), "{out}");
             break;
         }
         assert!(Instant::now() < deadline, "the current window kept a stale flag: {out}");
@@ -2159,7 +2349,7 @@ async fn spread_layout_and_capture_with_colours() {
     assert!(after[0].abs_diff(after[1]) <= 1, "-E evened them out: {out} (was {before:?})");
 
     // capture-pane -e keeps the colours; without it the text is plain.
-    h.cli(&["send-keys", "-t", "sp:0.0", "prompt $e[31mRED$e[0m$g", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "sp:0.0", &red_prompt("RED"), "Enter"]).await;
     h.wait_capture("sp:0.0", "the coloured prompt", |t| t.contains("RED>")).await;
     let (_, plain, _) = h.cli(&["capture-pane", "-p", "-t", "sp:0.0"]).await;
     assert!(!plain.contains('\u{1b}'), "plain capture has no escapes: {plain:?}");
@@ -2190,7 +2380,7 @@ async fn menus_and_popups_survive_degenerate_sizes() {
     // broken box.
     c.send(ClientMsg::Resize { cols: 8, rows: 3 }).await;
     c.prefix(':').await;
-    c.type_str("display-popup -E cmd.exe").await;
+    c.type_str(&format!("display-popup -E {PROMPT_SHELL}")).await;
     c.enter().await;
     // Eight columns cannot show the message, so read it out of the log.
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -2214,7 +2404,7 @@ async fn menus_and_popups_survive_degenerate_sizes() {
     // nothing, and closing one that is not there is not an error.
     c.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
     c.prefix(':').await;
-    c.type_str("display-popup -E cmd.exe /q /k \"prompt tiny$g\"").await;
+    c.type_str(&format!("display-popup -E {}", shell_line("tiny"))).await;
     c.enter().await;
     c.wait_for("popup", |s| s.contents().contains("tiny>")).await;
     c.send(ClientMsg::Resize { cols: 6, rows: 4 }).await;
@@ -2222,8 +2412,9 @@ async fn menus_and_popups_survive_degenerate_sizes() {
     c.type_str("echo still-alive").await;
     c.enter().await;
     // Either the popup survived the squeeze (and took the keys) or it was
-    // dropped (and the pane took them); both are fine, a panic is not.
-    h.wait_capture("d:0", "the session still works", |t| t.contains("keepane>")).await;
+    // dropped (and the pane took them); both are fine, a panic is not. (A
+    // prompt cut by the squeeze stays cut where the pty does not reflow.)
+    h.wait_capture("d:0", "the session still works", |t| t.lines().any(|l| l.starts_with("keepan"))).await;
 
     // -C from a script closes the popup the user is looking at, and doing it
     // again with none open is not an error.
@@ -2249,7 +2440,9 @@ async fn degenerate_targets_for_the_new_commands() {
     assert!(err.contains("no panes beside it"), "{err}");
 
     // Commands that need a client say so instead of doing half the work.
-    for argv in [vec!["display-menu", "x", "k", "kill-pane"], vec!["choose-client"], vec!["display-popup", "cmd.exe"]] {
+    for argv in
+        [vec!["display-menu", "x", "k", "kill-pane"], vec!["choose-client"], vec!["display-popup", PROMPT_SHELL]]
+    {
         let (code, _, err) = h.cli(&argv).await;
         assert_eq!(code, 1, "{argv:?}");
         assert!(err.contains("not attached"), "{argv:?}: {err}");
@@ -2264,12 +2457,15 @@ async fn degenerate_targets_for_the_new_commands() {
     let (code, _, err) = h.cli(&["pipe-pane", "-t", "one:0"]).await;
     assert_eq!(code, 0, "{err}");
     // -o with nothing running starts one; -o again stops it.
-    h.cli(&["pipe-pane", "-o", "-t", "one:0", "$input | Out-Null"]).await;
-    let (code, _, err) = h.cli(&["pipe-pane", "-o", "-t", "one:0", "$input | Out-Null"]).await;
+    let drain = if cfg!(windows) { "$input | Out-Null" } else { "cat > /dev/null" };
+    h.cli(&["pipe-pane", "-o", "-t", "one:0", drain]).await;
+    let (code, _, err) = h.cli(&["pipe-pane", "-o", "-t", "one:0", drain]).await;
     assert_eq!(code, 0, "{err}");
 
     // capture-pane -e on a pane that has printed nothing is empty, not junk.
-    h.cli(&["new-window", "-d", "-t", "one", "cmd.exe", "/q", "/k", "prompt $h$h$h"]).await;
+    let blank: &[&str] =
+        if cfg!(windows) { &["cmd.exe", "/q", "/k", "prompt $h$h$h"] } else { &["/bin/sh", "-c", "PS1= exec /bin/sh"] };
+    h.cli(&[&["new-window", "-d", "-t", "one"], blank].concat()).await;
     let (code, out, _) = h.cli(&["capture-pane", "-p", "-e", "-t", "one:1"]).await;
     assert_eq!(code, 0);
     assert!(out.trim().is_empty() || !out.contains("\u{1b}[0m\u{1b}[0m"), "{out:?}");
@@ -2362,6 +2558,9 @@ async fn find_text_looks_through_every_pane() {
     h.cli(&["send-keys", "-t", "ft:0.0", "echo REDIS-TIMEOUT-here", "Enter"]).await;
     h.cli(&["send-keys", "-t", "ft:0.1", "echo nothing-to-see", "Enter"]).await;
     h.cli(&["send-keys", "-t", "ft:1", "echo compile-failed-badly", "Enter"]).await;
+    // Each pane on its own: one being done says nothing of the others.
+    h.wait_capture("ft:0.0", "the first pane's output", |t| t.matches("REDIS-TIMEOUT-here").count() >= 2).await;
+    h.wait_capture("ft:0.1", "the second pane's output", |t| t.matches("nothing-to-see").count() >= 2).await;
     h.wait_capture("ft:1", "the third pane's output", |t| t.matches("compile-failed-badly").count() >= 2).await;
 
     // A pattern is looked for in what every pane printed, and the hit says
@@ -2461,7 +2660,7 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let h = Harness { socket, _server: server, sessions_dir: dir.clone() };
-    h.cli(&["set", "-g", "default-command", "cmd.exe /q /k prompt keepane$g"]).await;
+    h.cli(&["set", "-g", "default-command", PROMPT_SHELL]).await;
     // Autosave must never touch the real sessions directory from a test.
     h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
     h.cli(&["new", "-d", "-s", "t"]).await;
@@ -2683,8 +2882,11 @@ async fn save_history_all_keeps_the_whole_scrollback_with_colours() {
     h.cli(&["new", "-d", "-s", "h"]).await;
     h.wait_capture("h:0", "shell prompt", |t| t.contains("keepane>")).await;
     // A coloured prompt, then more lines than the screen holds.
-    h.cli(&["send-keys", "-t", "h:0", "prompt $e[31mred$e[0m$g", "Enter"]).await;
-    h.cli(&["send-keys", "-t", "h:0", "for /l %i in (1,1,60) do @echo scroll-line-%i", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "h:0", &red_prompt("red"), "Enter"]).await;
+    // The new prompt first: typed ahead, the loop's first line would follow
+    // it on its row where the terminal echoes typing (a pty), not the shell.
+    h.wait_capture("h:0", "the red prompt", |t| t.lines().any(|l| l.trim_end() == "red>")).await;
+    h.cli(&["send-keys", "-t", "h:0", &count_to(60, "scroll-line-"), "Enter"]).await;
     h.wait_capture("h:0", "the last line", |t| t.contains("scroll-line-60")).await;
     let saved = |h: &Harness| {
         std::fs::read_dir(&h.sessions_dir)
@@ -2753,7 +2955,7 @@ async fn jobs_lists_every_pane_with_its_state() {
     h.cli(&["new", "-d", "-s", "build"]).await;
     h.cli(&["new", "-d", "-s", "web"]).await;
     h.cli(&["split-window", "-d", "-t", "web:0"]).await;
-    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "build", "-n", "dies", "cmd.exe", "/c", "exit", "4"]).await;
+    let (code, _, err) = h.cli(&args(&["new-window", "-d", "-t", "build", "-n", "dies"], &exits(4))).await;
     assert_eq!(code, 0, "{err}");
     // The board notices the exit (remain-on-exit keeps the pane to show it).
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -2788,6 +2990,28 @@ async fn jobs_lists_every_pane_with_its_state() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let (_, later, _) = h.cli(&["jobs"]).await;
     assert_eq!(up(&later), first, "the clock of an exited pane does not run on: {later}");
+    // Not even by rounding: its start and its end are seconds that stay
+    // what they are, however often and whenever they are asked for (the
+    // pane below lives half a second, so they fall mid-second).
+    let (code, _, err) = h.cli(&args(&["new-window", "-d", "-t", "build", "-n", "brief"], &exits_after(3, 500))).await;
+    assert_eq!(code, 0, "{err}");
+    let ran = async || {
+        let (_, t, _) = h.cli(&["jobs", "-t", "build:2.0", "-F", "#{pane_dead_time} #{pane_start_time}"]).await;
+        let v: Vec<i64> = t.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        (v.len() == 2 && v[0] > 0).then(|| v[0] - v[1])
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let once = loop {
+        if let Some(d) = ran().await {
+            break d;
+        }
+        assert!(Instant::now() < deadline, "the brief pane never ended");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(ran().await, Some(once), "the same two seconds every time");
+    }
     let (_, dead, _) = h.cli(&["jobs", "-t", "build:1.0", "-F", "#{pane_dead_time}"]).await;
     assert!(dead.trim().parse::<i64>().is_ok_and(|t| t > 1_600_000_000), "{dead:?}");
     let (_, live, _) = h.cli(&["jobs", "-t", "build:0.0", "-F", "[#{pane_dead_time}]"]).await;
@@ -2873,7 +3097,8 @@ async fn one_shot_formats_run_their_shell_pieces() {
     // ...with a leash: a command that hangs is given up on, and the
     // server answers anyway.
     let started = Instant::now();
-    let (code, out, _) = h.cli(&["display-message", "-p", "[#(Start-Sleep 20; echo late)]"]).await;
+    let hang = if cfg!(windows) { "[#(Start-Sleep 20; echo late)]" } else { "[#(sleep 20; echo late)]" };
+    let (code, out, _) = h.cli(&["display-message", "-p", hang]).await;
     assert_eq!(code, 0);
     assert_eq!(out.trim(), "[]");
     assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
@@ -2954,13 +3179,24 @@ async fn a_killed_pane_or_window_comes_back_with_undo_kill() {
     let ids =
         async || -> Vec<String> { panes().await.lines().map(|l| l.split(' ').next().unwrap().to_string()).collect() };
     let old = ids().await;
-    let (code, _, err) = h.cli(&["split-window", "-d", "-t", "u:0", "cmd.exe", "/c", "ping -n 2 127.0.0.1 >nul"]).await;
+    let brief: &[&str] =
+        if cfg!(windows) { &["cmd.exe", "/c", "ping -n 2 127.0.0.1 >nul"] } else { &["/bin/sh", "-c", "sleep 1"] };
+    let (code, _, err) = h.cli(&[&["split-window", "-d", "-t", "u:0"], brief].concat()).await;
     assert_eq!(code, 0, "{err}");
     let short = ids().await.into_iter().find(|i| !old.contains(i)).unwrap();
     let running = |pid: &str| {
-        let out =
-            std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).contains(&format!(" {pid} "))
+        if cfg!(windows) {
+            let out =
+                std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(&format!(" {pid} "))
+        } else {
+            std::process::Command::new("kill")
+                .args(["-0", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        }
     };
     // Waited for rather than slept on: a loaded machine is slow to start
     // and to end processes.
@@ -3170,10 +3406,11 @@ async fn the_phone_page_lists_shows_types_and_splits() {
 
     // The + menu; the new pane starts in the directory of the pane it came
     // from, not where the web client runs.
-    h.cli(&["send-keys", "-t", "w:0", "cd /d C:\\Windows", "Enter"]).await;
+    let (cd, there) = if cfg!(windows) { ("cd /d C:\\Windows", "[c:\\windows]") } else { ("cd /usr", "[/usr]") };
+    h.cli(&["send-keys", "-t", "w:0", cd, "Enter"]).await;
     h.wait_capture("w:0", "the cd", |t| t.contains("C:\\Windows>") || t.lines().any(|l| l.trim() == "keepane>")).await;
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !h.cli(&["list-panes", "-t", "w"]).await.1.to_ascii_lowercase().contains("[c:\\windows]") {
+    while !h.cli(&["list-panes", "-t", "w"]).await.1.to_ascii_lowercase().contains(there) {
         assert!(Instant::now() < deadline, "the pane never reported its new directory");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -3181,7 +3418,7 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     assert_eq!(code, 200, "{err}");
     let list = h.cli(&["list-panes", "-t", "w"]).await.1;
     assert_eq!(list.lines().count(), 2, "{list}");
-    assert!(list.lines().nth(1).unwrap().to_ascii_lowercase().contains("[c:\\windows]"), "{list}");
+    assert!(list.lines().nth(1).unwrap().to_ascii_lowercase().contains(there), "{list}");
     assert_eq!(http(addr, "POST", &format!("/api/action?pane={pane}&do=kill-server"), key, "").await.0, 400);
     assert_eq!(h.cli(&["ls"]).await.0, 0, "the server is still there");
     h.cli(&["kill-server"]).await;
@@ -3283,7 +3520,8 @@ async fn the_prefix_as_a_bare_byte_still_works() {
     c.send(ClientMsg::Key(KeyRecord { down: false, ..bare(0x02) })).await;
     c.send(ClientMsg::Key(bare(b'c' as u16))).await;
     c.send(ClientMsg::Key(KeyRecord { down: false, ..bare(b'c' as u16) })).await;
-    c.wait_for("a second window", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("1:cmd*")).await;
+    c.wait_for("a second window", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains(&format!("1:{SH}*")))
+        .await;
     h.cli(&["kill-server"]).await;
 }
 
@@ -3316,8 +3554,16 @@ async fn the_copy_mode_vi_table_binds_keys_in_copy_mode() {
     // Outside copy mode, i is just typed.
     c.type_str("i").await;
     c.wait_for("i typed into the shell", |s| s.contents().contains("keepane>i")).await;
-    c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its line
+    if cfg!(windows) {
+        c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its line
+    } else {
+        c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await; // the terminal's line kill
+    }
     c.wait_for("the line cleared", |s| !s.contents().contains("keepane>i")).await;
+    // A second prompt line, so the copy-mode cursor has a row above it
+    // whatever row the shell's first prompt was on.
+    c.enter().await;
+    c.wait_for("a second prompt", |s| s.contents().matches("keepane>").count() >= 2).await;
     // In copy mode, i is bound: it leaves copy mode.
     c.prefix('[').await;
     c.wait_for("copy mode", in_copy).await;
@@ -3377,22 +3623,25 @@ async fn the_machine_variables_answer_without_a_command() {
     let git = ask("#{git_branch}").await;
     assert!(!git.is_empty(), "a branch or a commit: {git:?}");
     let short = ask("#{pane_current_path_short}").await;
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
-    if repo.to_lowercase().starts_with(&home.to_lowercase()) {
-        assert!(short.starts_with("~\\"), "{short}");
+    let home = std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_default();
+    if !home.is_empty() && repo.to_lowercase().starts_with(&home.to_lowercase()) {
+        assert!(short.starts_with(&format!("~{}", std::path::MAIN_SEPARATOR)), "{short}");
     } else {
         assert_eq!(short, repo);
     }
-    // Idle, the pane runs its shell; while ping runs, that is the program.
-    assert_eq!(ask("#{pane_pid_command}").await, "cmd");
-    h.cli(&["send-keys", "-t", "sv:0", "ping -n 4 127.0.0.1", "Enter"]).await;
+    // Idle, the pane runs its shell; while a program runs, that is the program.
+    // (macOS's /bin/sh starts bash in its place: the process is bash.)
+    let idle = ask("#{pane_pid_command}").await;
+    assert!(idle == SH || (cfg!(target_os = "macos") && idle == "bash"), "{idle}");
+    let (busy, name) = if cfg!(windows) { ("ping -n 4 127.0.0.1", "ping") } else { ("sleep 3", "sleep") };
+    h.cli(&["send-keys", "-t", "sv:0", busy, "Enter"]).await;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let p = ask("#{pane_pid_command}").await;
-        if p.eq_ignore_ascii_case("ping") {
+        if p.eq_ignore_ascii_case(name) {
             break;
         }
-        assert!(Instant::now() < deadline, "ping never showed as the program: {p:?}");
+        assert!(Instant::now() < deadline, "{name} never showed as the program: {p:?}");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     // Battery: a figure with a percent sign, or nothing on a desktop; the
@@ -3430,7 +3679,7 @@ async fn the_wheel_selects_the_pane_it_scrolls_and_the_prefix_twice_pages_up() {
     // A second pane on the right, which becomes active; fill the LEFT one.
     h.cli(&["split-window", "-h", "-t", "ws:0"]).await;
     h.wait_capture("ws:0.1", "right prompt", |t| t.contains("keepane>")).await;
-    h.cli(&["send-keys", "-t", "ws:0.0", "for /l %i in (1,1,60) do @echo left-%i", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "ws:0.0", &count_to(60, "left-"), "Enter"]).await;
     h.wait_capture("ws:0.0", "left filled", |t| t.contains("left-60")).await;
     assert_eq!(h.cli(&["display-message", "-p", "-t", "ws:0", "#{pane_index}"]).await.1.trim(), "1", "right is active");
     // Wheel up over the left pane (x=2): it scrolls back and is the active
@@ -3515,7 +3764,7 @@ async fn a_right_click_pastes_the_clipboard() {
     c.enter().await;
     c.wait_for("and it ran", |s| s.contents().matches("pasted-by-right-click").count() >= 2).await;
     // From copy mode (the wheel scrolled back): copy mode ends, the paste lands.
-    h.cli(&["send-keys", "-t", "rc:0", "for /l %i in (1,1,40) do @echo fill-%i", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "rc:0", &count_to(40, "fill-"), "Enter"]).await;
     c.wait_for("filled", |s| s.contents().contains("fill-40")).await;
     c.send(ClientMsg::Mouse(MouseRecord { x: 2, y: 2, buttons: (120u32) << 16, ctrl: 0, flags: 4 })).await;
     c.wait_for("copy mode", |s| s.rows(0, COLS).next().unwrap().contains("[3/")).await;
@@ -3729,7 +3978,7 @@ async fn the_last_small_tmux_gaps_are_closed() {
     assert_eq!(h.cli(&["list-panes", "-a"]).await.1.lines().count(), 4);
     // pipe-pane -I: what the command prints is typed into the pane.
     h.wait_capture("a:0", "prompt", |t| t.contains("keepane>")).await;
-    let (code, _, err) = h.cli(&["pipe-pane", "-I", "-t", "a:0", "cmd.exe /c echo echo typed-by-the-pipe"]).await;
+    let (code, _, err) = h.cli(&["pipe-pane", "-I", "-t", "a:0", &says("echo typed-by-the-pipe")]).await;
     assert_eq!(code, 0, "{err}");
     h.wait_capture("a:0", "the piped input ran", |t| t.matches("typed-by-the-pipe").count() >= 2).await;
     // ...and, its output over, the input-only pipe is gone: a plain
@@ -3737,7 +3986,7 @@ async fn the_last_small_tmux_gaps_are_closed() {
     // the old one (which `-o` would toggle off).
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let (code, _, _) = h.cli(&["pipe-pane", "-o", "-I", "-t", "a:0", "cmd.exe /c echo echo second-pipe"]).await;
+        let (code, _, _) = h.cli(&["pipe-pane", "-o", "-I", "-t", "a:0", &says("echo second-pipe")]).await;
         assert_eq!(code, 0);
         let (_, out, _) = h.cli(&["capture-pane", "-p", "-t", "a:0"]).await;
         if out.matches("second-pipe").count() >= 2 {
@@ -3753,14 +4002,19 @@ async fn the_last_small_tmux_gaps_are_closed() {
     c.attach(&["attach", "-t", "b"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix(':').await;
-    c.type_str("display-popup -E cmd.exe /q /k \"prompt pip$g\"").await;
+    c.type_str(&format!("display-popup -E {}", shell_line("pip"))).await;
     c.enter().await;
     c.wait_for("popup", |s| s.contents().contains("pip>")).await;
     // cmd prints ^B for a C-b typed at its prompt only on some builds, so
-    // ask PowerShell inside the popup to read one key and say its code.
-    c.type_str("powershell -NoProfile -Command \"$k=[Console]::ReadKey($true); 'code=' + [int]$k.KeyChar\"").await;
+    // ask a program inside the popup to read one key and say its code.
+    c.type_str(if cfg!(windows) {
+        "powershell -NoProfile -Command \"$k=[Console]::ReadKey($true); 'code=' + [int]$k.KeyChar\""
+    } else {
+        "stty raw -echo; k=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' '); stty sane; echo code=$k"
+    })
+    .await;
     c.enter().await;
-    tokio::time::sleep(Duration::from_millis(1500)).await; // powershell start-up
+    tokio::time::sleep(Duration::from_millis(1500)).await; // the reader's start-up
     c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await; // the prefix...
     c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await; // ...and the prefix again
     c.wait_for("the popup saw C-b", |s| s.contents().contains("code=2")).await;
@@ -3848,7 +4102,7 @@ async fn the_smaller_tmux_gaps_are_closed() {
     c.attach(&["attach", "-t", "other"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     c.prefix(':').await;
-    c.type_str("display-popup -x 0 -y 0 -w 20 -h 5 -E cmd.exe /q /k \"prompt pip$g\"").await;
+    c.type_str(&format!("display-popup -x 0 -y 0 -w 20 -h 5 -E {}", shell_line("pip"))).await;
     c.enter().await;
     c.wait_for("popup", |s| s.contents().contains("pip>")).await;
     assert!(c.row(0).starts_with('┌'), "top-left corner at 0,0: {:?}", c.row(0));
@@ -3857,7 +4111,7 @@ async fn the_smaller_tmux_gaps_are_closed() {
     c.enter().await;
     c.wait_for("popup closed", |s| !s.contents().contains("pip>")).await;
     c.prefix(':').await;
-    c.type_str("display-popup -x R -y B -w 20 -h 5 -E cmd.exe /q /k \"prompt pip$g\"").await;
+    c.type_str(&format!("display-popup -x R -y B -w 20 -h 5 -E {}", shell_line("pip"))).await;
     c.enter().await;
     c.wait_for("popup", |s| s.contents().contains("pip>")).await;
     // Bottom-right of the window area: the row above the status line ends
@@ -3872,6 +4126,7 @@ async fn the_smaller_tmux_gaps_are_closed() {
 /// or logoff; the server keeps a hidden one for that and saves everything
 /// when asked. The server runs in this process, so the test can ask the
 /// same way Windows would.
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shutdown_saves_every_session_first() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_QUERYENDSESSION};
@@ -4043,7 +4298,7 @@ async fn choose_tree_filters_and_tags() {
     c.enter().await;
     c.wait_for("filter kept", |s| {
         let t = s.contents();
-        !t.contains("(filter)") && t.contains("[filter: GAMMA]") && t.contains("(1)   - 0: cmd*")
+        !t.contains("(filter)") && t.contains("[filter: GAMMA]") && t.contains(&format!("(1)   - 0: {SH}*"))
     })
     .await;
     c.type_str("f").await;
@@ -4063,8 +4318,10 @@ async fn choose_tree_filters_and_tags() {
     c.type_str("t").await; // gamma's window (the last line: the cursor stays)
     c.wait_for("three", |s| s.contents().contains("[3 tagged]")).await;
     c.type_str("t").await; // ...and untag it again
-    c.wait_for("back to two", |s| s.contents().contains("[2 tagged]") && s.contents().contains("(4)   - 0: cmd*"))
-        .await;
+    c.wait_for("back to two", |s| {
+        s.contents().contains("[2 tagged]") && s.contents().contains(&format!("(4)   - 0: {SH}*"))
+    })
+    .await;
     c.key(b'X' as u16, 'x', 0).await;
     c.wait_for("killed", |s| {
         let t = s.contents();
@@ -4090,7 +4347,7 @@ async fn choose_jobs_is_the_board_you_can_act_on() {
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "j"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
-    h.cli(&["new-window", "-d", "-t", "j", "-n", "dies", "cmd.exe", "/c", "exit", "4"]).await;
+    h.cli(&args(&["new-window", "-d", "-t", "j", "-n", "dies"], &exits(4))).await;
     h.cli(&["new", "-d", "-s", "other"]).await;
     let deadline = Instant::now() + Duration::from_secs(10);
     while !h.cli(&["jobs"]).await.1.contains("exit 4") {
@@ -4227,6 +4484,42 @@ async fn focus_pane_brings_every_attached_client_to_that_pane() {
     h.cli(&["kill-server"]).await;
 }
 
+/// bash with keepane's hook reports every cd (OSC 7); sh says nothing, and
+/// its process's own directory is read instead. Both land in the saved file.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_knows_where_its_shell_went() {
+    let h = Harness::start("cwd").await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "cw", "-c", "/", "bash"]).await;
+    assert_eq!(code, 0, "{err}");
+    let follows = async |target: &str, cd: &str, want: &str| {
+        h.cli(&["send-keys", "-t", target, cd, "Enter"]).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (_, out, _) = h.cli(&["display-message", "-p", "-t", target, "#{pane_current_path}"]).await;
+            if out.trim() == want {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{target}: {cd} was not followed: {out:?}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    follows("cw:0", "cd /usr", "/usr").await;
+    h.cli(&["new-window", "-d", "-t", "cw", "-n", "s"]).await;
+    h.wait_capture("cw:1", "sh prompt", |t| t.contains("keepane>")).await;
+    follows("cw:1", "cd /usr/bin", "/usr/bin").await;
+    h.cli(&["save-session", "-t", "cw"]).await;
+    let file = std::fs::read_dir(&h.sessions_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .find(|t| t.contains("\"name\": \"cw\""))
+        .expect("a saved file for cw");
+    assert!(file.contains("\"cwd\": \"/usr\"") && file.contains("\"cwd\": \"/usr/bin\""), "{file}");
+    h.cli(&["kill-server"]).await;
+}
+
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pane_knows_where_its_shell_went() {
     let h = Harness::start("cwd").await;
@@ -4283,7 +4576,7 @@ async fn a_resumed_pane_keeps_its_history_through_a_resize() {
     h.cli(&["new", "-d", "-s", "keeper"]).await;
     h.cli(&["new", "-d", "-s", "r"]).await;
     h.wait_capture("r:0", "prompt", |t| t.contains("keepane>")).await;
-    h.cli(&["send-keys", "-t", "r:0", "for /l %i in (1,1,40) do @echo keep-%i", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "r:0", &count_to(40, "keep-"), "Enter"]).await;
     h.wait_capture("r:0", "the last line", |t| t.contains("keep-40")).await;
     h.cli(&["save-session", "-t", "r"]).await;
     h.cli(&["kill-session", "-t", "r"]).await;
@@ -4387,7 +4680,7 @@ async fn the_newer_variables_come_from_the_live_tree() {
     // The cursor sits after the prompt; the scrollback grows with output.
     h.wait_capture("v:1", "prompt", |t| t.contains("keepane>")).await;
     assert_eq!(ask("v:1", "#{cursor_x},#{history_size},#{history_limit}").await, "8,0,5000");
-    h.cli(&["send-keys", "-t", "v:1", "for /l %i in (1,1,40) do @echo hs-%i", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "v:1", &count_to(40, "hs-"), "Enter"]).await;
     h.wait_capture("v:1", "the loop", |t| t.contains("hs-40")).await;
     let n: usize = ask("v:1", "#{history_size}").await.parse().unwrap();
     assert!(n >= 18, "40 lines in a 22-row pane leave some in the scrollback: {n}");
@@ -4530,6 +4823,153 @@ async fn a_message_finds_its_pane_by_name_or_address_and_waits_to_be_read() {
     h.cli(&["kill-server"]).await;
 }
 
+/// A pane's TERM is `default-terminal`, whatever the server's own was (a
+/// server started from a dumb terminal must not hand that on).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_are_told_the_terminal_they_draw_on() {
+    let h = Harness::start("term").await;
+    h.cli(&["new", "-d", "-s", "t"]).await;
+    // At the prompt first: typed ahead, the output would share its line.
+    h.wait_capture("t:0", "a prompt", |t| t.contains("keepane>")).await;
+    h.cli(&["send-keys", "-t", "t:0", "echo \"term=$TERM\"", "Enter"]).await;
+    h.wait_capture("t:0", "the default", |t| t.lines().any(|l| l.trim() == "term=xterm-256color")).await;
+    h.cli(&["set", "-g", "default-terminal", "screen-256color"]).await;
+    h.cli(&["new-window", "-d", "-t", "t"]).await;
+    h.wait_capture("t:1", "a prompt", |t| t.contains("keepane>")).await;
+    h.cli(&["send-keys", "-t", "t:1", "echo \"term=$TERM\"", "Enter"]).await;
+    h.wait_capture("t:1", "the option", |t| t.lines().any(|l| l.trim() == "term=screen-256color")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// Whether this machine's bash says when a command starts (`PS0`, bash 4.4
+/// and newer), which is what tells keepane a command failed.
+#[cfg(unix)]
+fn bash_reports_commands() -> bool {
+    std::process::Command::new("bash")
+        .args(["-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+        .is_some_and(|v| v >= 404)
+}
+
+/// The same in bash: POSIX syntax for the envelope and for several lines.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
+    let h = Harness::start("mail-shell").await;
+    h.cli(&["new", "-d", "-s", "sh", "bash"]).await;
+    let p = pane_id(&h, "sh:0.0").await;
+    let t = format!("%{p}");
+    let (code, _, err) = h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
+    assert_eq!(code, 0, "{err}");
+    // bash before 4.4 (macOS's own) does not say when a command starts, so
+    // a failure is not known there: such a message is just done (README).
+    let failed = if bash_reports_commands() { "failed" } else { "done" };
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (code, out, err) = h.cli(&["send-message", "-t", &t, "-w", "30", "printf '%s%s\\n' ab cd"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("delivered"), "{out}");
+    let id = msg_id(&out);
+    let (code, trace, err) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
+    assert!(trace.contains("output:\nabcd"), "{trace}");
+    // The envelope goes in front as an argument of `:`, which runs nothing.
+    let screen = h.wait_capture("sh:0.0", "the envelope", |t| t.contains(": '{\"keepane\":1")).await;
+    assert!(screen.contains("abcd"), "{screen}");
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "ls /keepane-not-here-xyz"]).await;
+    let id = msg_id(&out);
+    let (_, trace, _) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{id} {failed}")), "{trace}");
+    // Several lines run as one script in the shell; its status is the last line's.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let multi = "kp_a=20\nkp_b=\"2'2\"\necho $((kp_a + ${kp_b%\\'*}${kp_b#*\\'}))\nls /keepane-not-here-xyz";
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "--", multi]).await;
+    let id = msg_id(&out);
+    let (_, trace, _) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{id} {failed}")), "{trace}");
+    assert!(trace.contains("output:\n42\n"), "{trace}");
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "echo \"$kp_b\""]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+    assert!(trace.contains("output:\n2'2"), "its variables stay in the shell: {trace}");
+    // A marker ahead of the text before it: done a moment after, with it.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let early = "printf '\\033]7777;keepane-prompt;sh\\007'; sleep 0.01; echo late-output";
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "--", early]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+    assert!(trace.contains("output:\nlate-output"), "{trace}");
+    // Typed while its command runs: the pane is not free afterwards.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "sleep 0.8"]).await;
+    let slow = msg_id(&out);
+    h.cli(&["send-keys", "-t", &t, "-l", "ech"]).await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "echo next"]).await;
+    let next = msg_id(&out);
+    h.cli(&["trace-message", &slow, "-w", "30"]).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_idle}").await, "0");
+    let (_, trace, _) = h.cli(&["trace-message", &next]).await;
+    assert!(trace.starts_with(&format!("#{next} queued")), "{trace}");
+    // The person clears the line and presses Enter: a clean prompt, free.
+    h.cli(&["send-keys", "-t", &t, "C-u", "Enter"]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &next, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{next} done")) && trace.contains("output:\nnext"), "{trace}");
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    h.cli(&["send-keys", "-t", &t, "-l", "ech"]).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_idle}").await, "0");
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "echo later"]).await;
+    assert!(out.contains("busy"), "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
+/// zsh (macOS's own shell) gets the hook through its own start files: it
+/// takes messages, several lines with quotes included, reports its
+/// directory, and keeps a history file of its own. Skipped without zsh.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zsh_pane_takes_messages_and_reports_its_directory() {
+    if keepane::config::which("zsh").is_none() {
+        eprintln!("no zsh here: skipped");
+        return;
+    }
+    let h = Harness::start("mail-zsh").await;
+    h.cli(&["new", "-d", "-s", "z", "-c", "/", "zsh"]).await;
+    let p = pane_id(&h, "z:0.0").await;
+    let t = format!("%{p}");
+    h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let multi = "cd /usr\nkp=\"it's\"\necho \"$kp $PWD\"";
+    let (code, out, err) = h.cli(&["send-message", "-t", &t, "-w", "30", "--", multi]).await;
+    assert_eq!(code, 0, "{err}");
+    let id = msg_id(&out);
+    let (_, trace, _) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
+    assert!(trace.contains("output:\nit's /usr"), "{trace}");
+    wait_format(&h, p, "#{pane_current_path}", "/usr").await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "ls /keepane-not-here-xyz"]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+    assert!(trace.contains("failed"), "{trace}");
+    // Its own history file, under the sessions directory.
+    let dir = h.sessions_dir.join("psreadline");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains("keepane-not-here-xyz")))
+    {
+        assert!(Instant::now() < deadline, "no history file in {} has the command", dir.display());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    h.cli(&["kill-server"]).await;
+}
+
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     let h = Harness::start("mail-shell").await;
@@ -4789,15 +5229,16 @@ async fn an_agent_makes_panes_within_its_limits_and_owns_them() {
     // Both are agents' panes: what they make is theirs, within limits.
     h.cli(&["set-work-mode", "-t", &format!("%{a}"), "ai"]).await;
     h.cli(&["set-work-mode", "-t", &format!("%{o}"), "ai"]).await;
+    // A plain program not in the default agent-commands, and a shell
+    // keepane hands commands to.
+    let plain = if cfg!(windows) { "cmd.exe" } else { "cat" };
+    let shell: &[&str] = if cfg!(windows) { &["pwsh", "-NoLogo", "-NoProfile"] } else { &["bash"] };
     // Only agent-commands programs, from inside a pane.
-    let (code, _, err) = h.cli_in(Some(a), &["create-pane", "-k", "window", "--", "cmd.exe", "/q"]).await;
+    let (code, _, err) = h.cli_in(Some(a), &["create-pane", "-k", "window", "--", plain]).await;
     assert!(code != 0 && err.contains("agent-commands"), "{err}");
-    h.cli(&["set", "-g", "agent-commands", "cmd pwsh"]).await;
+    h.cli(&["set", "-g", "agent-commands", if cfg!(windows) { "cmd pwsh" } else { "cat bash" }]).await;
     let (code, out, err) = h
-        .cli_in(
-            Some(a),
-            &["create-pane", "-k", "window", "-n", "child", "-m", "ai", "-M", "first task", "--", "cmd.exe", "/q"],
-        )
+        .cli_in(Some(a), &["create-pane", "-k", "window", "-n", "child", "-m", "ai", "-M", "first task", "--", plain])
         .await;
     assert_eq!(code, 0, "{err}");
     let mut lines = out.lines();
@@ -4809,19 +5250,19 @@ async fn an_agent_makes_panes_within_its_limits_and_owns_them() {
     let (code, _, err) = h.cli_in(Some(a), &["set-work-mode", "-t", "%child", "shell"]).await;
     assert!(code != 0 && err.contains("changes only the pane it runs in"), "{err}");
     // A shell made for an agent takes commands unless told otherwise.
-    let (_, out, err) = h.cli_in(Some(a), &["create-pane", "-n", "sh1", "--", "pwsh", "-NoLogo", "-NoProfile"]).await;
+    let (_, out, err) = h.cli_in(Some(a), &[&["create-pane", "-n", "sh1", "--"], shell].concat()).await;
     assert!(out.contains(" sh1  shell"), "{out} {err}");
     // The line of creators has one budget.
     h.cli(&["set", "-g", "agent-pane-limit", "3"]).await;
     let c = pane_id(&h, "%child").await;
-    assert_eq!(h.cli_in(Some(c), &["create-pane", "-k", "window", "--", "cmd.exe"]).await.0, 0, "grandchild");
-    let (code, _, err) = h.cli_in(Some(a), &["create-pane", "-k", "window", "--", "cmd.exe"]).await;
+    assert_eq!(h.cli_in(Some(c), &["create-pane", "-k", "window", "--", plain]).await.0, 0, "grandchild");
+    let (code, _, err) = h.cli_in(Some(a), &["create-pane", "-k", "window", "--", plain]).await;
     assert!(code != 0 && err.contains("agent-pane-limit 3"), "{err}");
     // A person is not an agent: no list, no budget, no owner.
-    assert_eq!(h.cli(&["create-pane", "-k", "window", "-t", "other", "--", "wsl.exe", "--help"]).await.0, 0);
+    assert_eq!(h.cli(&["create-pane", "-k", "window", "-t", "other", "--", plain]).await.0, 0);
     // Closing what it made frees the budget.
     assert_eq!(h.cli_in(Some(a), &["kill-pane", "-t", "%sh1"]).await.0, 0);
-    assert_eq!(h.cli_in(Some(a), &["create-pane", "-k", "window", "--", "cmd.exe"]).await.0, 0);
+    assert_eq!(h.cli_in(Some(a), &["create-pane", "-k", "window", "--", plain]).await.0, 0);
     h.cli(&["kill-server"]).await;
 }
 
@@ -4905,7 +5346,7 @@ async fn a_pane_made_for_an_agent_is_the_one_it_asked_for_whatever_hooks_do() {
     // A hook that makes one more pane in every new window.
     h.cli(&["set-hook", "-g", "after-new-window", "split-window -d"]).await;
     let (code, out, err) =
-        h.cli(&["create-pane", "-k", "window", "-t", "hk", "-n", "mine", "-m", "ai", "--", "cmd.exe", "/q"]).await;
+        h.cli(&["create-pane", "-k", "window", "-t", "hk", "-n", "mine", "-m", "ai", "--", SH]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("hk:1.0  mine  ai"), "the window's own pane, not the hook's: {out}");
     // (The hook split the window in view, hk:0.)
@@ -4918,21 +5359,47 @@ fn last_line(screen: &str) -> String {
     screen.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().trim_end().to_string()
 }
 
-/// Every PowerShell pane keeps its own command history, in a file under the
+/// A shell keepane gives its hook to (PowerShell; bash).
+#[cfg(windows)]
+const HOOKED_SHELL: &[&str] = &["pwsh", "-NoLogo", "-NoProfile"];
+#[cfg(unix)]
+const HOOKED_SHELL: &[&str] = &["bash"];
+
+/// The history file `HOOKED_SHELL` shares between its sessions.
+fn shared_history_file() -> Option<std::path::PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("APPDATA")
+            .map(|a| std::path::Path::new(&a).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"))
+    } else {
+        std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".bash_history"))
+    }
+}
+
+/// Wait until `HOOKED_SHELL` in `target` is at its prompt: PowerShell's
+/// reads `PS `; bash's is the user's own, so keepane's prompt marker says.
+async fn at_hooked_prompt(h: &Harness, target: &str) {
+    if cfg!(windows) {
+        h.wait_capture(target, "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    } else {
+        h.cli(&["set-work-mode", "-t", target, "shell"]).await;
+        wait_format(h, pane_id(h, target).await, "#{pane_idle}", "1").await;
+    }
+}
+
+/// Every hooked shell pane keeps its own command history, in a file under the
 /// sessions directory: a pane split off starts from the one it came from,
-/// the two go their own ways, a resumed pane has what it had, and
-/// PowerShell's shared file is not written.
+/// the two go their own ways, a resumed pane has what it had, and the
+/// shell's shared file is not written.
 #[tokio::test(flavor = "multi_thread")]
-async fn each_powershell_pane_keeps_its_own_command_history() {
+async fn each_shell_pane_keeps_its_own_command_history() {
     let h = Harness::start("shell-history").await;
     // Marks of this run's own: a run that failed half way leaves its marks
     // behind, and those must not fail the next one.
     let (one, two) = (format!("kp-hist-one-{}", std::process::id()), format!("kp-hist-two-{}", std::process::id()));
     h.cli(&["new", "-d", "-s", "keeper"]).await;
-    let (code, _, err) =
-        h.cli(&["new", "-d", "-s", "hist", "-x", "100", "-y", "30", "pwsh", "-NoLogo", "-NoProfile"]).await;
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "hist", "-x", "100", "-y", "30"], HOOKED_SHELL].concat()).await;
     assert_eq!(code, 0, "{err}");
-    h.wait_capture("hist:0.0", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    at_hooked_prompt(&h, "hist:0.0").await;
     h.cli(&["send-keys", "-t", "hist:0.0", &format!("echo {one}"), "Enter"]).await;
     h.wait_capture("hist:0.0", "the command", |t| t.matches(one.as_str()).count() >= 2).await;
     // Its file, under the sessions directory.
@@ -4951,13 +5418,16 @@ async fn each_powershell_pane_keeps_its_own_command_history() {
     }
 
     // A pane split off has it too.
-    let (code, _, err) = h.cli(&["split-window", "-t", "hist:0.0", "pwsh", "-NoLogo", "-NoProfile"]).await;
+    let (code, _, err) = h.cli(&[&["split-window", "-t", "hist:0.0"], HOOKED_SHELL].concat()).await;
     assert_eq!(code, 0, "{err}");
-    h.wait_capture("hist:0.1", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    at_hooked_prompt(&h, "hist:0.1").await;
     h.cli(&["send-keys", "-t", "hist:0.1", "Up"]).await;
     h.wait_capture("hist:0.1", "the first pane's command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
     // From here on, each its own.
     h.cli(&["send-keys", "-t", "hist:0.1", "C-c"]).await;
+    // The shell takes C-c in its own time: what is typed before its new
+    // prompt can be cut into.
+    at_hooked_prompt(&h, "hist:0.1").await;
     h.cli(&["send-keys", "-t", "hist:0.1", &format!("echo {two}"), "Enter"]).await;
     h.wait_capture("hist:0.1", "the command", |t| t.matches(two.as_str()).count() >= 2).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -4971,7 +5441,7 @@ async fn each_powershell_pane_keeps_its_own_command_history() {
     let (code, _, err) = h.cli(&["respawn-pane", "-k", "-t", "hist:0.0"]).await;
     assert_eq!(code, 0, "{err}");
     tokio::time::sleep(Duration::from_millis(500)).await;
-    h.wait_capture("hist:0.0", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    at_hooked_prompt(&h, "hist:0.0").await;
     h.cli(&["send-keys", "-t", "hist:0.0", "Up"]).await;
     h.wait_capture("hist:0.0", "its command after respawn", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
     h.cli(&["send-keys", "-t", "hist:0.0", "C-c"]).await;
@@ -4982,10 +5452,10 @@ async fn each_powershell_pane_keeps_its_own_command_history() {
     h.cli(&["kill-session", "-t", "hist"]).await;
     let mut c = h.connect().await;
     assert_eq!(c.attach(&["resume", "hist"]).await, "hist");
-    h.wait_capture("hist:0.1", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    at_hooked_prompt(&h, "hist:0.1").await;
     h.cli(&["send-keys", "-t", "hist:0.1", "Up"]).await;
     h.wait_capture("hist:0.1", "its own last command", |t| last_line(t).ends_with(&format!("echo {two}"))).await;
-    h.wait_capture("hist:0.0", "a prompt", |t| last_line(t).starts_with("PS ")).await;
+    at_hooked_prompt(&h, "hist:0.0").await;
     h.cli(&["send-keys", "-t", "hist:0.0", "Up"]).await;
     h.wait_capture("hist:0.0", "its own last command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
 
@@ -5001,17 +5471,13 @@ async fn each_powershell_pane_keeps_its_own_command_history() {
     }
     let mut c = h.connect().await;
     assert_eq!(c.attach(&["resume", "hist"]).await, "hist");
-    h.wait_capture("hist:0.1", "a prompt", |t| last_line(t).starts_with("PS ")).await;
-    let shared_exists = std::env::var_os("APPDATA").is_some_and(|a| {
-        std::path::Path::new(&a).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt").is_file()
-    });
-    if shared_exists {
+    at_hooked_prompt(&h, "hist:0.1").await;
+    let shared = shared_history_file();
+    if shared.as_ref().is_some_and(|f| f.is_file()) {
         assert!(names.iter().all(|p| p.is_file()), "both files are back: {names:?}");
     }
-    // PowerShell's shared history has none of it.
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        let shared =
-            std::path::Path::new(&appdata).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt");
+    // The shell's shared history has none of it.
+    if let Some(shared) = shared {
         let text = std::fs::read_to_string(shared).unwrap_or_default();
         assert!(!text.contains(one.as_str()) && !text.contains(two.as_str()), "the shared history file was written");
     }

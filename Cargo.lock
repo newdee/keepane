@@ -247,12 +247,13 @@ dependencies = [
 
 [[package]]
 name = "keepane"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "bincode",
  "chrono",
  "dirs",
+ "libc",
  "log",
  "portable-pty",
  "qrcode",

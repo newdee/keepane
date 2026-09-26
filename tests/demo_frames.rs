@@ -430,7 +430,7 @@ impl Demo {
                  {}\n\
                  Clear-Host\n",
                 drive.0,
-                keepane::config::POWERSHELL_PROMPT_HOOK
+                keepane::config::PROMPT_HOOK
             ),
         )
         .expect("prompt script");

@@ -48,10 +48,10 @@
           run inside panes with every keystroke intact.
         </p>
         <div class="cta">
-          <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download for Windows</a>
+          <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download</a>
           <a class="btn ghost" href="https://github.com/newdee/keepane" data-i18n="hero.source">View source</a>
         </div>
-        <p class="meta" data-i18n="hero.meta">MIT · Windows 10 1809 or newer · one 3 MB exe · formerly wmux</p>
+        <p class="meta" data-i18n="hero.meta">MIT · Windows, Linux, macOS · one small binary · formerly wmux</p>
 
         <figure class="stage">
           <img src="img/keepane-demo.gif" width="880" alt="A keepane session: splitting panes, typing into all of them with set sync, zooming, the pane menu, the window picker, detaching and attaching again" />
@@ -183,7 +183,7 @@
         </div>
         <ul class="points">
           <li data-i18n="c1.p1">Every pane is a ConPTY, so PSReadLine chords, IME input and full-screen programs behave as they do outside keepane.</li>
-          <li data-i18n="c1.p2">The mouse works: click a pane to focus it, drag a border to resize it, drag across text to copy it to the Windows clipboard.</li>
+          <li data-i18n="c1.p2">The mouse works: click a pane to focus it, drag a border to resize it, drag across text to copy it to the system clipboard.</li>
           <li data-i18n="c1.p3"><kbd>C-b S</kbd> or <code>:set sync</code> (Tab completes the name) sends every key to every pane in the window. <code>split-window -N 3</code> adds three panes at once and tiles them.</li>
         </ul>
       </section>
@@ -291,12 +291,17 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
         </header>
         <div class="cards">
           <div class="card">
-            <h3 data-i18n="c5.msi">Installer</h3>
+            <h3 data-i18n="c5.unix">Linux and macOS</h3>
+            <p data-i18n="c5.unix.sub">A .tar.gz for each (static on Linux; Apple silicon and Intel). Unpack it and put keepane on your PATH.</p>
+            <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get it</a>
+          </div>
+          <div class="card">
+            <h3 data-i18n="c5.msi">Windows installer</h3>
             <p data-i18n="c5.msi.sub">The .msi puts keepane in Program Files, on the system PATH, and in "Apps &amp; features".</p>
             <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get it</a>
           </div>
           <div class="card">
-            <h3 data-i18n="c5.zip">Portable</h3>
+            <h3 data-i18n="c5.zip">Windows portable</h3>
             <p data-i18n="c5.zip.sub">The .zip is the same single exe. Unzip it anywhere and run it.</p>
             <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get it</a>
           </div>
@@ -316,7 +321,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
       <section class="closing">
         <h2 data-i18n="close.title">Try it on your next long build.</h2>
         <div class="cta">
-          <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download for Windows</a>
+          <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download</a>
           <a class="btn ghost" href="https://github.com/newdee/keepane#readme" data-i18n="close.docs">Read the docs</a>
         </div>
       </section>

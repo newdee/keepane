@@ -29,9 +29,17 @@ pub fn var(name: &str) -> Option<String> {
     var_os(name).and_then(|v| v.into_string().ok())
 }
 
-/// The pipe an old wmux server of `socket` listens on.
+/// The pipe an old wmux server of `socket` listens on. wmux ran on Windows
+/// only: elsewhere there is none (an address nothing answers on), never
+/// keepane's own.
+#[cfg(windows)]
 pub fn pipe_name(socket: &str) -> String {
     crate::ipc::pipe_name(socket).replacen(r"\\.\pipe\keepane-", r"\\.\pipe\wmux-", 1)
+}
+
+#[cfg(not(windows))]
+pub fn pipe_name(_socket: &str) -> String {
+    String::new()
 }
 
 /// The old data directory beside the new one.
@@ -125,7 +133,11 @@ mod tests {
         assert_eq!(var("KEEPANE_LEGACY_PROBE"), None);
         assert_eq!(var("NOT_PREFIXED_AT_ALL_PROBE"), None);
         let p = pipe_name("work");
-        assert!(p.starts_with(r"\\.\pipe\wmux-") && p.ends_with("-work"), "{p}");
+        if cfg!(windows) {
+            assert!(p.starts_with(r"\\.\pipe\wmux-") && p.ends_with("-work"), "{p}");
+        } else {
+            assert!(p.is_empty() && !crate::client::server_running(&p), "no wmux here: {p}");
+        }
         assert!(is_our_old_command(
             r#"conhost.exe --headless "C:\Program Files\wmux\wmux.exe" -L default __server --restore"#
         ));

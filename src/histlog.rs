@@ -12,8 +12,8 @@
 //! when the pane goes is written then. A command the shell reported gets a
 //! line of its times before it (`── 14:03:22 · 3.2s · ✓ ──`).
 //!
-//! Writing is done by one thread, so a slow disk never holds up the
-//! server. A file stops growing at `DAY_CAP` bytes (with a note saying
+//! Writing is done by a thread of its own (another one writes the event
+//! log), so a slow disk never holds up the server. A file stops growing at `DAY_CAP` bytes (with a note saying
 //! so); files older than `log-history-days` are removed.
 
 use std::collections::HashMap;
@@ -84,61 +84,103 @@ enum Msg {
     /// A writer dying of a bug, for the test of its replacement.
     #[cfg(test)]
     Crash,
+    /// A writer held up (a slow disk, a big prune), for the test of the
+    /// lanes.
+    #[cfg(test)]
+    Stall(Duration),
 }
 
-fn start() -> Sender<Msg> {
+/// The two writers, each a thread of its own: what panes print, and the
+/// event log. Apart, so that reading the event log back (`list-events`,
+/// `show-task`) never waits behind a flood of pane output or a pruning of
+/// the history directory, which can take seconds on a busy machine.
+#[derive(Clone, Copy, Debug)]
+enum Lane {
+    History,
+    Events,
+}
+
+fn start(lane: Lane) -> Sender<Msg> {
     let (tx, rx) = channel();
-    std::thread::Builder::new().name("history-log".into()).spawn(move || run(rx)).expect("history-log thread");
+    let name = match lane {
+        Lane::History => "history-log",
+        Lane::Events => "event-log",
+    };
+    std::thread::Builder::new().name(name.into()).spawn(move || run(rx)).expect("log writer thread");
     tx
 }
 
-fn writer() -> &'static Mutex<Sender<Msg>> {
-    static TX: OnceLock<Mutex<Sender<Msg>>> = OnceLock::new();
-    TX.get_or_init(|| Mutex::new(start()))
+fn writer(lane: Lane) -> &'static Mutex<Sender<Msg>> {
+    static HISTORY: OnceLock<Mutex<Sender<Msg>>> = OnceLock::new();
+    static EVENTS: OnceLock<Mutex<Sender<Msg>>> = OnceLock::new();
+    let cell = match lane {
+        Lane::History => &HISTORY,
+        Lane::Events => &EVENTS,
+    };
+    cell.get_or_init(|| Mutex::new(start(lane)))
 }
 
-fn send(m: Msg) {
-    let Ok(mut tx) = writer().lock() else { return };
+fn send(lane: Lane, m: Msg) {
+    let Ok(mut tx) = writer(lane).lock() else { return };
     // A writer that died of a bug must not take the log with it for the
     // rest of the server's life: another one takes over.
     if let Err(back) = tx.send(m) {
-        log::error!("history log writer stopped; starting another");
-        *tx = start();
+        log::error!("{lane:?} log writer stopped; starting another");
+        *tx = start(lane);
         let _ = tx.send(back.0);
     }
 }
 
-/// Add `text` to the end of `path`, from the writer thread.
+/// Add `text` to the end of the history file `path`, from its writer.
 pub fn append(path: PathBuf, text: String) {
-    append_capped(path, text, DAY_CAP);
-}
-
-/// `append`, with the most bytes the file may hold.
-pub fn append_capped(path: PathBuf, text: String, cap: u64) {
     if !text.is_empty() {
-        send(Msg::Append(path, text, cap));
+        send(Lane::History, Msg::Append(path, text, DAY_CAP));
     }
 }
 
-/// Remove the files under `dir` older than `days` days (0 keeps them all),
-/// and the directories that leaves empty.
+/// Add an event log line to `path`, a file that may hold at most `cap` bytes.
+pub fn append_event(path: PathBuf, text: String, cap: u64) {
+    if !text.is_empty() {
+        send(Lane::Events, Msg::Append(path, text, cap));
+    }
+}
+
+/// Remove the history files under `dir` older than `days` days (0 keeps
+/// them all), and the directories that leaves empty.
 pub fn prune(dir: PathBuf, days: u32) {
     if days > 0 {
-        send(Msg::Prune(dir, days, false));
+        send(Lane::History, Msg::Prune(dir, days, false));
     }
 }
 
-/// `prune` for a directory whose day files are right in it.
-pub fn prune_flat(dir: PathBuf, days: u32) {
+/// `prune` for an event log directory, whose day files are right in it.
+pub fn prune_events(dir: PathBuf, days: u32) {
     if days > 0 {
-        send(Msg::Prune(dir, days, true));
+        send(Lane::Events, Msg::Prune(dir, days, true));
     }
 }
 
-/// Wait (at most `wait`) until everything asked for so far is on disk.
+/// Wait (at most `wait` in all) until everything asked for so far, of
+/// both logs, is on disk.
 pub fn flush(wait: Duration) {
+    let deadline = std::time::Instant::now() + wait;
+    let asked: Vec<Receiver<()>> = [Lane::History, Lane::Events]
+        .into_iter()
+        .map(|lane| {
+            let (tx, rx) = channel();
+            send(lane, Msg::Flush(tx));
+            rx
+        })
+        .collect();
+    for rx in asked {
+        let _ = rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
+    }
+}
+
+/// `flush` for the event log alone: what reading it back waits for.
+pub fn flush_events(wait: Duration) {
     let (tx, rx) = channel();
-    send(Msg::Flush(tx));
+    send(Lane::Events, Msg::Flush(tx));
     let _ = rx.recv_timeout(wait);
 }
 
@@ -249,6 +291,8 @@ fn run(rx: Receiver<Msg>) {
             }
             #[cfg(test)]
             Msg::Crash => panic!("history-log test: told to crash"),
+            #[cfg(test)]
+            Msg::Stall(d) => std::thread::sleep(d),
         }
     }
 }
@@ -362,12 +406,34 @@ mod tests {
         let _turn = turn();
         let dir = std::env::temp_dir().join(format!("keepane-histlog-crash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        send(Msg::Crash);
+        send(Lane::History, Msg::Crash);
         std::thread::sleep(Duration::from_millis(300));
         let f = file_for(&dir, "s", 0, 0, chrono::Local::now().date_naive());
         append(f.clone(), "after the crash\n".into());
         flush(Duration::from_secs(5));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "after the crash\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The event log does not wait behind the history log: with the history
+    /// writer held up, an event line is still on disk at once.
+    #[test]
+    fn the_event_log_is_not_held_up_by_the_history_log() {
+        let _turn = turn();
+        let dir = std::env::temp_dir().join(format!("keepane-histlog-lanes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        send(Lane::History, Msg::Stall(Duration::from_secs(3)));
+        let history = file_for(&dir, "s", 0, 0, chrono::Local::now().date_naive());
+        append(history.clone(), "behind the stall\n".into());
+        let events = dir.join("events").join("2026-09-27.jsonl");
+        let started = std::time::Instant::now();
+        append_event(events.clone(), "{\"ev\":\"x\"}\n".into(), DAY_CAP);
+        flush_events(Duration::from_secs(2));
+        assert_eq!(std::fs::read_to_string(&events).unwrap_or_default(), "{\"ev\":\"x\"}\n");
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(!history.exists(), "the history writer is still held up");
+        flush(Duration::from_secs(10));
+        assert_eq!(std::fs::read_to_string(&history).unwrap(), "behind the stall\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -378,7 +444,7 @@ mod tests {
         assert_eq!(safe_name(""), "_");
         let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 25).unwrap();
         let p = file_for(Path::new("C:\\h"), "work", 1, 0, day);
-        assert_eq!(p, Path::new("C:\\h\\work\\1.0\\2026-09-25.log"));
+        assert_eq!(p, Path::new("C:\\h").join("work").join("1.0").join("2026-09-25.log"));
         assert_eq!(day_of(&p), Some(day));
         assert_eq!(day_of(Path::new("notes.txt")), None);
         assert_eq!(day_of(Path::new("2026-13-01.log")), None);

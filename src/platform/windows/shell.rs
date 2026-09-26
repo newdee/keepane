@@ -6,6 +6,16 @@ use std::path::PathBuf;
 
 /// `default-shell`'s default.
 pub const DEFAULT_SHELL: &str = "pwsh";
+
+/// `default-shell`'s default, as the platforms give it.
+pub fn default_shell() -> String {
+    DEFAULT_SHELL.into()
+}
+
+/// The hook, for `keepane __shell-hook`.
+pub use self::POWERSHELL_PROMPT_HOOK as PROMPT_HOOK;
+/// ConPTY sets up the terminal its programs see: `TERM` is left as it is.
+pub const SETS_TERM: bool = false;
 /// `agent-commands`'s default: what an agent may start in a pane it makes.
 pub const DEFAULT_AGENT_COMMANDS: &str = "pwsh powershell claude codex";
 /// The variable that tells a pane's shell its own history file (read by the hook).

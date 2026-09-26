@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::platform::sysinfo::{System, program_of, short_path, system};
+pub use crate::platform::sysinfo::{System, hostname, program_of, short_path, system};
 
 /// Bytes as people write them: "812M", "6.2G".
 pub fn human_bytes(b: u64) -> String {
@@ -20,8 +20,12 @@ pub fn human_bytes(b: u64) -> String {
 /// The branch of the git repository `dir` is in ("main"), a short commit
 /// when the head is detached ("a1b2c3d"), or empty outside a repository.
 /// Reads `.git/HEAD` (following a `.git` file's `gitdir:`, as worktrees
-/// have); never runs git.
+/// have); never runs git. A relative `dir` is no pane's directory (it would
+/// be looked up from wherever this process runs): empty.
 pub fn git_branch(dir: &str) -> String {
+    if !Path::new(dir).is_absolute() {
+        return String::new();
+    }
     let mut at = Some(Path::new(dir));
     while let Some(d) = at {
         let dot = d.join(".git");
@@ -73,7 +77,10 @@ mod tests {
         std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
         assert_eq!(git_branch(&wt.to_string_lossy()), "wt-branch");
         assert_eq!(git_branch(&dir.to_string_lossy()), "", "no repository above");
-        assert_eq!(git_branch(r"Z:\no\such\place"), "");
+        let nowhere = if cfg!(windows) { r"Z:\no\such\place" } else { "/no/such/place" };
+        assert_eq!(git_branch(nowhere), "");
+        assert_eq!(git_branch("src"), "", "relative: not looked up from this process's directory");
+        assert_eq!(git_branch(""), "");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

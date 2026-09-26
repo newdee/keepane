@@ -32,7 +32,7 @@ async fn connect(pipe: &str, autostart: bool, socket: &str) -> Result<Stream> {
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            Err(e) => return Err(e).context("open pipe"),
+            Err(e) => return Err(e).with_context(|| format!("connect to the server at {pipe}")),
         }
     }
 }
@@ -340,6 +340,9 @@ pub async fn migrate(socket: &str) -> Result<i32> {
             });
         }
     }
+    // The logon start, the Windows Terminal profile and the notification
+    // link: Windows's (wmux never ran anywhere else).
+    #[cfg(windows)]
     if real {
         if crate::startup::legacy_status(socket)?.is_some() {
             crate::startup::install(socket)?;

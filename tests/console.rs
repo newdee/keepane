@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! Runs the real `keepane.exe` client inside a ConPTY, so the console code path
 //! (raw mode, ReadConsoleInputW, WriteConsoleW, alternate screen) is exercised
 //! exactly as under Windows Terminal.

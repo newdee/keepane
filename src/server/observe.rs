@@ -129,7 +129,7 @@ impl Store {
         let Some(dir) = &self.dir else { return };
         let line = format!("{{\"at\":{},\"ev\":\"{ev}\"{fields}}}", stamp(at));
         let path = dir.join(format!("{}.jsonl", at.format("%Y-%m-%d")));
-        crate::histlog::append_capped(path, format!("{line}\n"), self.cap);
+        crate::histlog::append_event(path, format!("{line}\n"), self.cap);
         self.recent.push_back(line);
         while self.recent.len() > RECENT {
             self.recent.pop_front();

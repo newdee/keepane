@@ -112,13 +112,16 @@ impl Message {
     }
 
     /// What is typed into the pane to deliver it (Enter follows). A shell
-    /// gets the envelope as a PowerShell inline comment before the
-    /// command, so it runs nothing and stays in the history; an agent gets
-    /// the envelope, the text, and the end line.
-    pub fn wrapped(&self) -> String {
-        match self.via {
-            WorkMode::Shell => format!("<# {} #> {}", self.envelope(), one_command(&self.text)),
-            WorkMode::Ai | WorkMode::Normal => format!("{}\n{}\n{}", self.envelope(), self.text, self.end_line()),
+    /// gets the envelope in front of the command in a form that runs
+    /// nothing and stays in the history (`syntax`: the language of the shell
+    /// at the prompt); an agent gets the envelope, the text, and the end line.
+    pub fn wrapped(&self, syntax: Syntax) -> String {
+        match (self.via, syntax) {
+            (WorkMode::Shell, Syntax::PowerShell) => format!("<# {} #> {}", self.envelope(), one_command(&self.text)),
+            (WorkMode::Shell, Syntax::Posix) => {
+                format!(": {}; {}", posix_quote(&self.envelope()), posix_one_command(&self.text))
+            }
+            (WorkMode::Ai | WorkMode::Normal, _) => format!("{}\n{}\n{}", self.envelope(), self.text, self.end_line()),
         }
     }
 
@@ -166,6 +169,33 @@ pub fn one_command(text: &str) -> String {
          if (-not [object]::ReferenceEquals($Error[0], $__keepane_e)) {{ Write-Error \"a line above failed\" -ErrorAction SilentlyContinue }}",
         quoted.join(", ")
     )
+}
+
+/// The command language of the shell at a pane's prompt, as its keepane
+/// hook said (`OSC 7777;keepane-prompt`, and `;sh` from the bash and zsh
+/// hooks): what a shell message is typed in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Syntax {
+    #[default]
+    PowerShell,
+    Posix,
+}
+
+/// `s` in POSIX single quotes (a `'` inside becomes `'\''`).
+fn posix_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// A bash or zsh command of several lines as one line: the lines, quoted,
+/// given to `eval` as one script, in the shell's own scope. Its status is the
+/// script's, the last command's. One line is left as it is.
+pub fn posix_one_command(text: &str) -> String {
+    let text = text.trim_end_matches(['\r', '\n']);
+    if !text.contains('\n') {
+        return text.to_string();
+    }
+    let quoted: Vec<String> = text.split('\n').map(|l| posix_quote(l.trim_end_matches('\r'))).collect();
+    format!("eval \"$(printf '%s\\n' {})\"", quoted.join(" "))
 }
 
 /// How the message a pane was working on came to an end.
@@ -267,6 +297,17 @@ impl Actor {
         if self.current.is_some() {
             self.typed_while_working = true;
         }
+    }
+
+    /// The pane's program was started again in place (`respawn-pane`): its
+    /// name, mode and inbox stay, it is not at a prompt (or ready) until the
+    /// new program says so, and the message the old one was working on is
+    /// over, unfinished; it comes back to be recorded.
+    pub fn restarted(&mut self) -> Option<Message> {
+        self.at_prompt = false;
+        self.ready = false;
+        self.typed_while_working = false;
+        self.current.take()
     }
 
     /// A person unsticks a pane that stays busy (text typed and deleted
@@ -421,9 +462,24 @@ mod tests {
     #[test]
     fn each_mode_wraps_the_same_envelope_its_own_way() {
         let m = msg(5, WorkMode::Shell);
-        assert_eq!(m.wrapped(), format!("<# {} #> text 5", m.envelope()));
+        assert_eq!(m.wrapped(Syntax::PowerShell), format!("<# {} #> text 5", m.envelope()));
+        assert_eq!(m.wrapped(Syntax::Posix), format!(": '{}'; text 5", m.envelope()));
         let m = msg(5, WorkMode::Ai);
-        assert_eq!(m.wrapped(), format!("{}\ntext 5\n{{\"keepane\":1,\"end\":5}}", m.envelope()));
+        let agent = format!("{}\ntext 5\n{{\"keepane\":1,\"end\":5}}", m.envelope());
+        assert_eq!(m.wrapped(Syntax::PowerShell), agent);
+        assert_eq!(m.wrapped(Syntax::Posix), agent, "an agent's text is not the shell's");
+    }
+
+    #[test]
+    fn a_posix_command_of_several_lines_goes_in_as_one() {
+        assert_eq!(posix_one_command("ls -l\n"), "ls -l");
+        assert_eq!(posix_one_command("a='x'\r\necho \"$a\""), r#"eval "$(printf '%s\n' 'a='\''x'\''' 'echo "$a"')""#);
+        let mut m = msg(3, WorkMode::Shell);
+        m.text = "a\nb".into();
+        let w = m.wrapped(Syntax::Posix);
+        assert!(w.ends_with(r#"; eval "$(printf '%s\n' 'a' 'b')""#), "{w}");
+        assert!(!w.contains('\n'), "one line");
+        assert_eq!(posix_quote("it's"), r"'it'\''s'");
     }
 
     #[test]
@@ -439,11 +495,39 @@ mod tests {
         let mut m = msg(3, WorkMode::Shell);
         m.text = "a\nb".into();
         assert!(
-            m.wrapped().contains("#> $__keepane_e = $Error[0]; . ([scriptblock]::Create(('a', 'b')"),
+            m.wrapped(Syntax::PowerShell).contains("#> $__keepane_e = $Error[0]; . ([scriptblock]::Create(('a', 'b')"),
             "{}",
-            m.wrapped()
+            m.wrapped(Syntax::PowerShell)
         );
-        assert!(!m.wrapped().contains('\n'), "one line");
+        assert!(!m.wrapped(Syntax::PowerShell).contains('\n'), "one line");
+    }
+
+    #[test]
+    fn a_restarted_program_keeps_the_inbox_and_ends_the_work() {
+        let mut a = actor(WorkMode::Shell);
+        a.name = Some("builder".into());
+        a.enqueue(msg(1, WorkMode::Shell), 10).unwrap();
+        a.enqueue(msg(2, WorkMode::Shell), 10).unwrap();
+        a.prompt();
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(1));
+        // The program is started again while working on #1.
+        assert_eq!(a.restarted().map(|m| m.id), Some(1), "the work in hand ends with it");
+        assert!(!a.idle(), "not at a prompt until the new program shows one");
+        assert_eq!((a.name.as_deref(), a.mode, a.inbox.len()), (Some("builder"), WorkMode::Shell, 1));
+        assert_eq!(a.prompt(), None, "nothing was in hand any more");
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(2), "the queue goes on");
+        assert_eq!(a.restarted().map(|m| m.id), Some(2));
+        assert_eq!(a.restarted(), None);
+        // Free at its prompt, then started again: busy until the new one's.
+        a.prompt();
+        assert!(a.idle());
+        a.restarted();
+        assert!(!a.idle(), "the old program's prompt is not the new one's");
+        let mut b = actor(WorkMode::Ai);
+        b.ready();
+        assert!(b.idle());
+        b.restarted();
+        assert!(!b.idle(), "nor its word that it was ready");
     }
 
     #[test]
