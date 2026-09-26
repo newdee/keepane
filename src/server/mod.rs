@@ -2609,6 +2609,15 @@ impl Server {
         if path.is_file() {
             return;
         }
+        // The directory in any case: the shell writes the file itself, and
+        // bash and zsh (unlike PSReadLine) make no directory for it. With
+        // nothing to start from (no shared history yet) it is all there is.
+        if let Some(dir) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            log::warn!("shell history {}: {e}", dir.display());
+            return;
+        }
         let source = from
             .and_then(|p| self.pane_ref(p))
             .and_then(|p| p.shell_history.as_deref())
@@ -2616,12 +2625,9 @@ impl Server {
             .filter(|p| p.is_file())
             .or_else(crate::platform::shell::shared_history);
         if let Some(src) = source
-            && let Some(dir) = path.parent()
+            && let Err(e) = std::fs::copy(&src, &path)
         {
-            let _ = std::fs::create_dir_all(dir);
-            if let Err(e) = std::fs::copy(&src, &path) {
-                log::warn!("shell history {}: {e}", path.display());
-            }
+            log::warn!("shell history {}: {e}", path.display());
         }
     }
 
