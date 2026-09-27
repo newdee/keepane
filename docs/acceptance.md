@@ -2749,4 +2749,4 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 轮 | 视角 | 数据 | 结论 |
 |---|---|---|---|
 | 1 | 全量 + 审查 | Windows 231/10/85，Linux 208/86；降级只动 `ESC[…m`，鼠标、备用屏、标题等原样；只改 `status-style` 时默认色块保留（与 tmux 主题一致） | 干净（1/3） |
-| 2 | 机制通路（真实伪终端） | `script` 给真实客户端分配 pty，抓它写给终端的字节：未声明 11 个 `;2` / 0 个 `;5`；Apple_Terminal 0 / 11；Apple_Terminal+COLORTERM=truecolor 13 / 0；iTerm 11 / 0；pane 里程序输出的红色在 Apple_Terminal 下也换成 256 色 | 干净（2/3） |
+| 2 | 机制通路（真实伪终端） | `script` 给真实客户端分配 pty，抓它写给终端的字节：未声明 11 个 `;2` / 0 个 `;5`；Apple_Terminal 0 / 11；Apple_Terminal+COLORTERM=truecolor 13 / 0；iTerm 11 / 0；pane 里程序输出的红色在 Apple_Terminal 下也换成 256 色 | 干净（2/3） || 3 | 真机三平台（CI run 36293922236，提交 d907ed7） | windows、ubuntu、macos 的 fmt、clippy、全量测试都通过（含第 68 条的导入功能与改过的 bash 测试） | 干净（3/3），验收通过；第 68 条第 10 轮那次丢行仍未复现，诊断已就位 |
