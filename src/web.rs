@@ -12,9 +12,9 @@
 //! random bits, made anew each start (or kept, with `--keep-key`), handed to
 //! the phone in the address a QR code in the terminal carries, after the `#`
 //! so that it is never part of a request line. The phone can only look,
-//! type into a pane, and run the few fixed actions of the page's + menu
-//! (new window, split, close a pane): no command of its own reaches the
-//! server. Plain HTTP, so for a network you trust; over anything else, a
+//! type into a pane, and run the few fixed actions of the page (new
+//! window, split, close a pane; rename a session, window or pane): no
+//! command of its own reaches the server. Plain HTTP, so for a network you trust; over anything else, a
 //! private network such as Tailscale in between.
 
 use anyhow::{Context, Result, bail};
@@ -44,8 +44,9 @@ const KEYS: &[&str] = &[
     "NPage", "DC",
 ];
 
-/// What the page's + menu can do, and nothing else.
-const ACTIONS: &[&str] = &["new-window", "split-h", "split-v", "kill-pane"];
+/// What the page's + menu and its names can do, and nothing else.
+const ACTIONS: &[&str] =
+    &["new-window", "split-h", "split-v", "kill-pane", "rename-session", "rename-window", "rename-pane"];
 
 /// How `web-start` serves: its flags (`keepane web` passes its own on).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -441,7 +442,7 @@ async fn connection(mut stream: TcpStream, peer: IpAddr, state: &State) -> Resul
         }
         state.tell(Seen::Watching { peer, pane: pane.to_string(), open: true });
         let _watching = Watching(state, peer, pane.to_string());
-        return watch(&mut stream, state, pane, history).await;
+        return watch(&mut stream, state, pane, history, req.param("join") == Some("1")).await;
     }
     let resp = handle(&req, peer, state).await;
     write_response(&mut stream, &resp).await
@@ -460,7 +461,7 @@ const WATCH_LONGEST: Duration = Duration::from_secs(30 * 60);
 /// Stream a pane's screen as server-sent events: `data: {"text":...}`
 /// whenever it may have changed (its output count or size moved), a
 /// comment to keep the line alive, and `event: gone` when the pane is.
-async fn watch(stream: &mut TcpStream, state: &State, pane: &str, history: u32) -> Result<()> {
+async fn watch(stream: &mut TcpStream, state: &State, pane: &str, history: u32, join: bool) -> Result<()> {
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n\
                 X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n";
     stream.write_all(head.as_bytes()).await?;
@@ -489,7 +490,7 @@ async fn watch(stream: &mut TcpStream, state: &State, pane: &str, history: u32) 
             }
         };
         if stamp != last_stamp {
-            if let Ok(json) = screen_json(&state.socket, pane, history).await {
+            if let Ok(json) = screen_json(&state.socket, pane, history, join).await {
                 let event = format!("data: {json}\n\n");
                 if stream.write_all(event.as_bytes()).await.is_err() {
                     return Ok(()); // the phone went away
@@ -524,35 +525,91 @@ async fn watch(stream: &mut TcpStream, state: &State, pane: &str, history: u32) 
 /// the text `capture-pane -e` gives (the last `history` lines of the
 /// scrollback first) and, for each command the pane's shell ran on one of
 /// those lines, `[line, start, end, exit]` (`list-marks`, its times in Unix
-/// milliseconds, null where unknown).
-async fn screen_json(socket: &str, pane: &str, history: u32) -> Result<String, (u16, String)> {
+/// milliseconds, null where unknown). `join`: lines the pane wrapped come
+/// as one (`capture-pane -J`), for a phone that wraps them at its own
+/// width; each mark then goes on the joined line its row is part of.
+async fn screen_json(socket: &str, pane: &str, history: u32, join: bool) -> Result<String, (u16, String)> {
     let q = |argv: Vec<String>| async move {
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
         crate::client::query(socket, &argv).await
     };
-    let mut argv = vec!["capture-pane".into(), "-p".into(), "-e".into(), "-t".into(), pane.to_string()];
-    if history > 0 {
-        argv.extend(["-S".into(), format!("-{history}")]);
-    }
-    let text = match q(argv).await {
-        Ok((0, out, _)) => out,
-        Ok((_, _, err)) => return Err((404, err.trim().to_string())),
-        Err(e) => return Err((500, format!("{e:#}"))),
+    let capture = |join: bool| {
+        let mut argv = vec!["capture-pane".into(), "-p".into(), "-e".into(), "-t".into(), pane.to_string()];
+        if history > 0 {
+            argv.extend(["-S".into(), format!("-{history}")]);
+        }
+        if join {
+            argv.push("-J".into());
+        }
+        async move {
+            match q(argv).await {
+                Ok((0, out, _)) => Ok(out),
+                Ok((_, _, err)) => Err((404, err.trim().to_string())),
+                Err(e) => Err((500, format!("{e:#}"))),
+            }
+        }
     };
+    // The rows as the pane has them: the marks are placed on those.
+    let rows = capture(false).await?;
+    let text = if join { capture(true).await? } else { rows.clone() };
     let marks = q(vec!["list-marks".into(), "-t".into(), pane.into()]).await;
-    let size = q(vec!["display-message".into(), "-p".into(), "-t".into(), pane.into(), "#{history_size}".into()]).await;
+    let size = q(vec![
+        "display-message".into(),
+        "-p".into(),
+        "-t".into(),
+        pane.into(),
+        "#{history_size} #{pane_width}".into(),
+    ])
+    .await;
     let marks = match (marks, size) {
-        (Ok((0, marks, _)), Ok((0, size, _))) => marks_json(&text, &marks, history, size.trim().parse().unwrap_or(0)),
+        (Ok((0, marks, _)), Ok((0, size, _))) => {
+            let mut size = size.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(0));
+            let (scrollback, cols) = (size.next().unwrap_or(0), size.next().unwrap_or(0));
+            let placed = marks_placed(&rows, &marks, history, scrollback);
+            if join {
+                // Row to joined line; a count that does not add up (output
+                // arrived between the captures) places none.
+                match joined_rows(&text, rows.split('\n').count(), cols) {
+                    Some(line_of) => {
+                        let mut seen = std::collections::HashSet::new();
+                        let placed = placed
+                            .into_iter()
+                            .filter_map(|(i, rest)| line_of.get(i).filter(|j| seen.insert(**j)).map(|j| (*j, rest)));
+                        marks_list(placed)
+                    }
+                    None => "[]".into(),
+                }
+            } else {
+                marks_list(placed)
+            }
+        }
         _ => "[]".into(),
     };
     Ok(format!("{{\"text\":{},\"marks\":{marks}}}", json_str(&text)))
 }
 
+/// For each row of a capture, the line of the joined capture (`-J`) it is
+/// part of: a joined line of width W took ⌈W / cols⌉ rows (one at least).
+/// None when the rows do not add up to `rows`.
+fn joined_rows(joined: &str, rows: usize, cols: usize) -> Option<Vec<usize>> {
+    use unicode_width::UnicodeWidthStr;
+    if cols == 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(rows);
+    for (j, line) in joined.split('\n').enumerate() {
+        let width = without_escapes(line).trim_end().width();
+        out.extend(std::iter::repeat_n(j, width.div_ceil(cols).max(1)));
+    }
+    (out.len() == rows).then_some(out)
+}
+
 /// `list-marks` lines placed on the lines of `text`, a capture holding the
-/// last `history` of `scrollback` lines above the screen. A mark whose line
-/// does not read as it did (output arrived between the two questions) is
-/// left out rather than put against the wrong line.
-fn marks_json(text: &str, marks: &str, history: u32, scrollback: usize) -> String {
+/// last `history` of `scrollback` lines above the screen: the line, and
+/// `start,end,exit`. A mark whose line does not read as it did (output
+/// arrived between the two questions) is left out rather than put against
+/// the wrong line.
+fn marks_placed(text: &str, marks: &str, history: u32, scrollback: usize) -> Vec<(usize, String)> {
     let lines: Vec<&str> = text.split('\n').collect();
     let above = i64::from(history).min(scrollback as i64);
     let num = |s: &str| if s.parse::<i64>().is_ok() { s.to_string() } else { "null".to_string() };
@@ -565,10 +622,16 @@ fn marks_json(text: &str, marks: &str, history: u32, scrollback: usize) -> Strin
         let said = f.next().unwrap_or("");
         let Some(i) = row.parse::<i64>().ok().map(|r| r + above).filter(|i| *i >= 0) else { continue };
         if lines.get(i as usize).is_some_and(|l| without_escapes(l).trim_end() == said) {
-            out.push(format!("[{i},{},{},{}]", num(start), num(end), num(exit)));
+            out.push((i as usize, format!("{},{},{}", num(start), num(end), num(exit))));
         }
     }
-    format!("[{}]", out.join(","))
+    out
+}
+
+/// `[[line, start, end, exit], ...]`.
+fn marks_list(placed: impl IntoIterator<Item = (usize, String)>) -> String {
+    let items: Vec<String> = placed.into_iter().map(|(i, rest)| format!("[{i},{rest}]")).collect();
+    format!("[{}]", items.join(","))
 }
 
 /// A captured line without its colour sequences (`ESC [ ... m`).
@@ -674,7 +737,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 return Response::text(400, "pane: %N");
             };
             let history: u32 = req.param("history").and_then(|h| h.parse().ok()).unwrap_or(0).min(MAX_HISTORY);
-            match screen_json(&state.socket, pane, history).await {
+            match screen_json(&state.socket, pane, history, req.param("join") == Some("1")).await {
                 Ok(json) => Response::json(json),
                 Err((status, msg)) => Response::text(status, &msg),
             }
@@ -710,16 +773,28 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
                 return Response::text(400, "pane: %N");
             };
-            let mut argv: Vec<String> = match req.param("do") {
-                Some("new-window") => vec!["new-window".into(), "-t".into(), pane.into()],
-                Some("split-h") => vec!["split-window".into(), "-h".into(), "-t".into(), pane.into()],
-                Some("split-v") => vec!["split-window".into(), "-v".into(), "-t".into(), pane.into()],
-                Some("kill-pane") => vec!["kill-pane".into(), "-t".into(), pane.into()],
+            let what = req.param("do").unwrap_or("");
+            let mut argv: Vec<String> = match what {
+                "new-window" => vec!["new-window".into(), "-t".into(), pane.into()],
+                "split-h" => vec!["split-window".into(), "-h".into(), "-t".into(), pane.into()],
+                "split-v" => vec!["split-window".into(), "-v".into(), "-t".into(), pane.into()],
+                "kill-pane" => vec!["kill-pane".into(), "-t".into(), pane.into()],
+                // The pane's session, its window or itself, by the pane: the
+                // new name is the body, after `--` so that one starting with
+                // `-` is a name. keepane says what a name may be.
+                "rename-session" | "rename-window" | "rename-pane" => {
+                    let name = match rename_body(&req.body) {
+                        Ok(n) => n,
+                        Err(e) => return Response::text(400, e),
+                    };
+                    vec![what.into(), "-t".into(), pane.into(), "--".into(), name]
+                }
                 _ => return Response::text(400, &format!("do: one of {}", ACTIONS.join(", "))),
             };
+            let renaming = what.starts_with("rename-");
             // A new pane starts where the pane it came from is, not where
             // `keepane web` was started (the directory this client would give).
-            if argv[0] != "kill-pane"
+            if matches!(what, "new-window" | "split-h" | "split-v")
                 && let Ok((0, dir, _)) = q(vec![
                     "display-message".into(),
                     "-p".into(),
@@ -734,12 +809,27 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             }
             match q(argv).await {
                 Ok((0, _, _)) => Response::text(200, "done"),
-                Ok((_, _, err)) => Response::text(404, err.trim()),
+                // A name keepane does not take is the phone's to change.
+                Ok((_, _, err)) => Response::text(if renaming { 400 } else { 404 }, err.trim()),
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
         }
         _ => Response::text(404, "not found"),
     }
+}
+
+/// The name a rename's body carries: text on one line, not too long. What
+/// else a name may be is keepane's to say (a pane's: letters, digits, `-`
+/// and `_`; empty takes it away).
+fn rename_body(body: &[u8]) -> Result<String, &'static str> {
+    let name = std::str::from_utf8(body).map_err(|_| "the name is not text")?.trim();
+    if name.chars().count() > 64 {
+        return Err("the name is too long (64 at most)");
+    }
+    if name.chars().any(char::is_control) {
+        return Err("the name is one line of text");
+    }
+    Ok(name.to_string())
 }
 
 fn is_pane_id(p: &str) -> bool {
@@ -840,6 +930,20 @@ mod tests {
         assert!(same_key("abc", "abc") && !same_key("abc", "abd") && !same_key("abc", "ab"));
     }
 
+    /// The rows a joined line took, by its width: a mark on any of them goes
+    /// on that line; colours take no room, wide characters two columns; a
+    /// count that does not add up places nothing.
+    #[test]
+    fn rows_find_their_joined_line() {
+        let long = "x".repeat(25);
+        assert_eq!(joined_rows(&format!("abc\n{long}\n"), 5, 10), Some(vec![0, 1, 1, 1, 2]));
+        assert_eq!(joined_rows(&format!("\x1b[31m{}\x1b[0m\nb", "y".repeat(10)), 2, 10), Some(vec![0, 1]));
+        assert_eq!(joined_rows(&"中".repeat(6), 2, 10), Some(vec![0, 0]));
+        assert_eq!(joined_rows("trailing spaces    \nb", 2, 16), Some(vec![0, 1]));
+        assert_eq!(joined_rows(&long, 2, 10), None, "25 columns are 3 rows, not 2");
+        assert_eq!(joined_rows("a", 1, 0), None);
+    }
+
     /// `keepane web`'s flags, long or short, reach `web-start` as they were
     /// given; the address comes back out of what it says.
     #[test]
@@ -932,11 +1036,11 @@ mod tests {
         // Two lines of scrollback above a three-line screen, all captured.
         let text = "PS> ls\nfile\n\x1b[32mPS> \x1b[0mbad\x1b[0m\nerr\nPS>";
         let marks = "-2 1000 1500 0 PS> ls\n0 2000 2100 1 PS> bad\n1 3000 3100 0 PS> gone";
-        assert_eq!(marks_json(text, marks, 300, 2), "[[0,1000,1500,0],[2,2000,2100,1]]");
+        assert_eq!(marks_list(marks_placed(text, marks, 300, 2)), "[[0,1000,1500,0],[2,2000,2100,1]]");
         // With less history asked for than there is, lines shift with it.
-        assert_eq!(marks_json("PS> \x1b[1mbad\nerr\nPS>", marks, 0, 2), "[[0,2000,2100,1]]");
+        assert_eq!(marks_list(marks_placed("PS> \x1b[1mbad\nerr\nPS>", marks, 0, 2)), "[[0,2000,2100,1]]");
         // Unknown times and codes are null; a torn line is skipped.
-        assert_eq!(marks_json("PS> x", "0 - 5 - PS> x\nnonsense", 0, 0), "[[0,null,5,null]]");
+        assert_eq!(marks_list(marks_placed("PS> x", "0 - 5 - PS> x\nnonsense", 0, 0)), "[[0,null,5,null]]");
         assert_eq!(without_escapes("\x1b[38;2;1;2;3ma\x1b[0mb"), "ab");
     }
 

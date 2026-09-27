@@ -10,7 +10,7 @@
 //! locked or the tab is in the background. So a phone is connected while it
 //! streams, or asked within `CONNECTED_FOR`.
 
-use super::{Event, Outcome, Server};
+use super::{ClientId, Event, Outcome, Server};
 use crate::web::{Options, Seen};
 use chrono::{DateTime, Local};
 use std::net::IpAddr;
@@ -30,7 +30,8 @@ pub(super) struct WebHost {
     options: Options,
     url: String,
     since: DateTime<Local>,
-    task: tokio::task::JoinHandle<()>,
+    /// Taken by `web-stop`, which waits for it to end.
+    task: Option<tokio::task::JoinHandle<()>>,
     peers: Vec<Peer>,
     refused: Vec<IpAddr>,
     /// The count the status line was last drawn with.
@@ -40,7 +41,9 @@ pub(super) struct WebHost {
 impl Drop for WebHost {
     fn drop(&mut self) {
         // The listener and every connection go with the task.
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 
@@ -148,7 +151,7 @@ impl Server {
             options: o,
             url,
             since: Local::now(),
-            task,
+            task: Some(task),
             peers: Vec::new(),
             refused: Vec::new(),
             drawn: 0,
@@ -157,14 +160,25 @@ impl Server {
         Outcome::Text(self.web.as_ref().map(WebHost::status).unwrap_or_default())
     }
 
-    pub(super) fn web_stop(&mut self) -> Outcome {
-        if self.web.take().is_none() {
+    /// Stop serving. A client that asked is answered once the task has
+    /// ended, the port closed with it: `keepane web stop` followed at once by
+    /// `keepane web` on the same port finds it free.
+    pub(super) fn web_stop(&mut self, cid: Option<ClientId>) -> Outcome {
+        let Some(mut host) = self.web.take() else {
             return Outcome::Error("web: not running".into());
-        }
+        };
         log::info!("web: stopped");
         self.note_message("web: stopped");
         self.web_redraw();
-        Outcome::Ok
+        let (Some(task), Some(cid)) = (host.task.take(), cid) else { return Outcome::Ok };
+        task.abort();
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            // Cancelled: the future, the listener in it, is dropped by now.
+            let _ = task.await;
+            let _ = events.send(Event::WebStopped(cid));
+        });
+        Outcome::Pending
     }
 
     pub(super) fn web_status(&self) -> String {
@@ -294,10 +308,39 @@ mod tests {
         let again = text(s.web_start(Options { read_only: true, ..here() }));
         assert!(again.starts_with("error: web: already serving"), "{again}");
         assert_eq!(s.web.as_ref().map(|w| w.url().to_string()), Some(url));
-        assert_eq!(text(s.web_stop()), "ok");
+        assert_eq!(text(s.web_stop(None)), "ok");
         assert!(s.web.is_none());
-        assert_eq!(text(s.web_stop()), "error: web: not running");
+        assert_eq!(text(s.web_stop(None)), "error: web: not running");
         assert!(text(s.web_start(Options { read_only: true, ..here() })).contains(" · read-only · "));
+    }
+
+    /// Asked by a client, `web-stop` answers only once the task has ended:
+    /// by then the port is free for the next `keepane web`.
+    #[tokio::test]
+    async fn stopping_answers_once_the_port_is_free() {
+        let (pane_tx, _p) = std::sync::mpsc::channel::<super::super::PaneEvent>();
+        let (events, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        let mut s = Server::new(pane_tx, "t".into(), events);
+        let url = crate::web::status_url(&text(s.web_start(here()))).unwrap().to_string();
+        let port: u16 = url.split(':').nth(2).unwrap().split('/').next().unwrap().parse().unwrap();
+        assert!(matches!(s.web_stop(Some(7)), Outcome::Pending), "answered before the task ended");
+        let stopped = loop {
+            match rx.recv().await {
+                Some(Event::WebStopped(cid)) => break cid,
+                Some(_) => continue,
+                None => panic!("no answer"),
+            }
+        };
+        assert_eq!(stopped, 7);
+        // Nothing listens there any more. Checked a while rather than once:
+        // a pane forked by another test at that moment holds a copy of every
+        // open socket until it execs, ours included, so the kernel may keep
+        // the port a moment after this process let go of it.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            assert!(Instant::now() < deadline, "still listening once stopped");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// A phone counts while it asks (within `CONNECTED_FOR`) or watches; one

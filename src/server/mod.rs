@@ -96,6 +96,8 @@ enum Event {
     PublicIp(Option<String>),
     /// A request to the phones' page told who asked (`web_host`).
     Web(u64, crate::web::Seen),
+    /// `web-stop`'s task has ended: answer the client that asked.
+    WebStopped(ClientId),
 }
 
 /// How long after keepane's prompt marker a pane's command is taken as
@@ -1928,6 +1930,7 @@ impl Server {
             Event::NewerChecked(latest) => self.newer_checked(latest),
             Event::PublicIp(ip) => self.public_ip_answered(ip),
             Event::Web(generation, seen) => self.web_seen(generation, seen),
+            Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -5097,7 +5100,7 @@ impl Server {
             }
             Cmd::WebStart(o) => self.web_start(o),
             Cmd::WebStatus => Outcome::Text(self.web_status()),
-            Cmd::WebStop => self.web_stop(),
+            Cmd::WebStop => self.web_stop(cid),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };
                 let mut wake: Vec<ClientId> = Vec::new();

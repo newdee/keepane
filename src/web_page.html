@@ -38,12 +38,18 @@
   main { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; }
   .hidden { display: none !important; }
 
-  /* The list */
-  .session { margin: 12px 12px 4px; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+  /* The list: each session, its windows, their panes */
+  .group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .group .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session { margin: 14px 12px 2px; color: var(--accent); font-size: 14px; font-weight: 600; }
+  .window { margin: 6px 12px 0 22px; color: var(--muted); font-size: 13px; }
+  .window.current { color: var(--fg); }
+  .rename { min-height: 28px; width: 32px; padding: 0; font-size: 14px; color: var(--muted); background: transparent; border-color: transparent; flex: none; }
   .pane {
-    display: flex; align-items: center; gap: 10px; margin: 6px 12px; padding: 12px;
-    background: var(--card); border: 1px solid var(--line); border-radius: 10px; width: calc(100% - 24px); text-align: left;
+    display: flex; align-items: center; gap: 10px; margin: 6px 12px 6px 22px; padding: 10px 12px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px; width: calc(100% - 34px); text-align: left;
   }
+  .pane .cmd, .pane .where { overflow-wrap: anywhere; }
   .pane .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
   .pane.current .dot { background: var(--green); }
   .pane.dead .dot { background: var(--red); }
@@ -65,6 +71,9 @@
     margin: 0; padding: 8px; white-space: pre; font-family: "Maple Mono NF CN", "Maple Mono", ui-monospace, Menlo, Consolas, monospace;
     line-height: 1.2; min-height: 100%;
   }
+  /* A pane wider than the phone: its lines wrap at the phone's edge. */
+  #screen.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #wrap.on { background: var(--accent); color: var(--bar); border-color: var(--accent); }
   /* Detailed mode: when each command ran, in a column left of its line. */
   #detail.on { background: var(--accent); color: var(--bar); border-color: var(--accent); }
   .stamp { color: var(--muted); cursor: pointer; }
@@ -88,6 +97,20 @@
   }
   #menu .sheet button { display: block; width: 100%; margin: 6px 0; padding: 12px; text-align: left; }
   #menu .sheet .danger { color: var(--red); }
+  /* Asking for a name */
+  #ask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; }
+  #ask .sheet {
+    width: 100%; background: var(--bar); border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+    padding: 12px 12px calc(env(safe-area-inset-bottom) + 12px);
+  }
+  #ask .title { margin: 4px 2px 10px; color: var(--muted); font-size: 14px; }
+  #ask input {
+    width: 100%; font: 16px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+  }
+  #ask .row { display: flex; gap: 8px; margin-top: 10px; }
+  #ask .row button { flex: 1; padding: 10px; }
+  #ask .row .ok { background: var(--accent); color: var(--bar); border-color: var(--accent); font-weight: 600; }
   #toast {
     position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); background: var(--card);
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; font-size: 14px;
@@ -98,6 +121,7 @@
 <header>
   <button id="back" class="icon hidden" aria-label="Back">&#8249;</button>
   <h1 id="title">keepane</h1>
+  <button id="wrap" class="icon hidden" aria-label="Wrap">&#8617;</button>
   <button id="detail" class="icon hidden" aria-label="Times">&#9201;</button>
   <button id="plus" class="icon hidden" aria-label="More">+</button>
 </header>
@@ -117,8 +141,18 @@
     <button data-do="split-h">Split left | right</button>
     <button data-do="split-v">Split top / bottom</button>
     <button data-do="new-window">New window</button>
+    <button data-do="rename-pane">Rename this pane</button>
+    <button data-do="rename-window">Rename this window</button>
+    <button data-do="rename-session">Rename this session</button>
     <button data-do="kill-pane" class="danger">Close this pane</button>
     <button data-do="">Cancel</button>
+  </div>
+</div>
+<div id="ask" class="hidden">
+  <div class="sheet">
+    <div class="title" id="askTitle"></div>
+    <input id="askName" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
+    <div class="row"><button id="askCancel">Cancel</button><button id="askOk" class="ok">OK</button></div>
   </div>
 </div>
 <div id="toast" class="hidden"></div>
@@ -172,11 +206,24 @@ async function loadList() {
   }
 }
 
+// Grouped as keepane holds them: each session, its windows, their panes
+// (list-panes -a gives them in that order). A session or window is renamed
+// by way of one of its panes.
 function renderList() {
   if (!panes.length) { $("list").innerHTML = `<p class="empty">${t("No panes.", "没有 pane。")}</p>`; return; }
-  let html = "", last = null;
+  const pen = (kind, p, name) => readOnly ? "" :
+    `<button class="rename" data-kind="${kind}" data-id="${esc(p.id)}" data-name="${esc(name)}" aria-label="${t("Rename", "重命名")}">&#9998;</button>`;
+  let html = "", lastSession = null, lastWindow = null;
   for (const p of panes) {
-    if (p.session !== last) { html += `<div class="session">${esc(p.session)}</div>`; last = p.session; }
+    if (p.session !== lastSession) {
+      html += `<div class="group session"><span class="name">${esc(p.session)}</span>${pen("session", p, p.session)}</div>`;
+      lastSession = p.session; lastWindow = null;
+    }
+    if (p.window !== lastWindow) {
+      html += `<div class="group window${p.windowActive ? " current" : ""}"><span class="name">${p.window}: ${esc(p.windowName)}</span>` +
+        `${pen("window", p, p.windowName)}</div>`;
+      lastWindow = p.window;
+    }
     const marks = (p.activity ? `<span class="mark activity" title="${t("printed", "有输出")}">#</span>` : "") +
       (p.bell ? `<span class="mark bell" title="${t("bell", "响铃")}">!</span>` : "") +
       (p.silence ? `<span class="mark silence" title="${t("silent", "没动静")}">~</span>` : "");
@@ -184,27 +231,59 @@ function renderList() {
     html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot"></span><span class="what">` +
       `<div class="cmd">${esc(p.command || "?")}</div>` +
       `<div class="where">${p.name ? `<b>%${esc(p.name)}</b> · ` : ""}${p.mode && p.mode !== "normal" ? `${esc(p.mode)} · ` : ""}` +
-      `${esc(p.windowName)} · ${p.window}.${p.pane} · ${p.cols}×${p.rows}</div></span>` +
+      `${t("pane", "pane")} ${p.pane} · ${p.cols}×${p.rows}</div></span>` +
       (marks ? `<span class="marks">${marks}</span>` : "") + `</button>`;
   }
   $("list").innerHTML = html;
 }
 
 $("list").addEventListener("click", (e) => {
+  const r = e.target.closest("button.rename");
+  if (r) { rename(r.dataset.kind, r.dataset.id, r.dataset.name); return; }
   const b = e.target.closest("button.pane");
   if (b) open(b.dataset.id, true);
 });
 
+// ---- Names ----
+// A sheet with the name to change; resolves to the new one, or null.
+function askName(title, value) {
+  return new Promise((resolve) => {
+    $("askTitle").textContent = title; $("askName").value = value || "";
+    $("ask").classList.remove("hidden"); $("askName").focus(); $("askName").select();
+    const done = (v) => { $("ask").classList.add("hidden"); $("askOk").onclick = $("askCancel").onclick = $("askName").onkeydown = $("ask").onclick = null; resolve(v); };
+    $("askOk").onclick = () => done($("askName").value.trim());
+    $("askCancel").onclick = () => done(null);
+    $("ask").onclick = (e) => { if (e.target === $("ask")) done(null); };
+    $("askName").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); done($("askName").value.trim()); } if (e.key === "Escape") done(null); };
+  });
+}
+async function rename(kind, id, now) {
+  const title = { session: t("Rename the session", "重命名 session"), window: t("Rename the window", "重命名窗口"),
+    pane: t("Name the pane (letters, digits, - and _; empty: none)", "给 pane 命名（字母、数字、- 和 _；留空即去掉名字）") }[kind];
+  const name = await askName(title, now);
+  if (name === null || name === now) return;
+  try {
+    await api(`/api/action?pane=${encodeURIComponent(id)}&do=rename-${kind}`, { method: "POST", body: name });
+    panes = await (await api("/api/panes")).json();
+    if (current) setTitle(); else renderList();
+    toast(t("Renamed", "已重命名"));
+  } catch (e) { toast(e.message); }
+}
+
 // ---- One pane ----
 function paneInfo(id) { return panes.find((p) => p.id === id); }
+
+function setTitle() {
+  const p = paneInfo(current);
+  $("title").innerHTML = p ? `${esc(p.name ? "%" + p.name : p.command || "?")} <span class="sub">${esc(p.session)}:${p.window}.${p.pane}</span>` : esc(current || "");
+}
 
 function open(id, push) {
   current = id;
   if (push) history.pushState({ pane: id }, "");
-  const p = paneInfo(id);
-  $("title").innerHTML = p ? `${esc(p.command || "?")} <span class="sub">${esc(p.session)}:${p.window}.${p.pane}</span>` : esc(id);
+  setTitle();
   $("list").classList.add("hidden"); $("screen").classList.remove("hidden");
-  $("back").classList.remove("hidden"); $("detail").classList.remove("hidden");
+  $("back").classList.remove("hidden"); $("detail").classList.remove("hidden"); $("wrap").classList.remove("hidden");
   $("plus").classList.toggle("hidden", readOnly); $("footer").classList.toggle("hidden", readOnly);
   lastText = ""; shown = { text: "", marks: [] }; $("screen").innerHTML = ""; stick = true;
   stopWatch(); fitFont(); tick();
@@ -216,7 +295,7 @@ function showList(push) {
   if (push) history.pushState({}, "");
   $("title").textContent = "keepane";
   $("screen").classList.add("hidden"); $("list").classList.remove("hidden");
-  $("back").classList.add("hidden"); $("detail").classList.add("hidden"); $("plus").classList.add("hidden"); $("footer").classList.add("hidden");
+  $("back").classList.add("hidden"); $("detail").classList.add("hidden"); $("wrap").classList.add("hidden"); $("plus").classList.add("hidden"); $("footer").classList.add("hidden");
   tick();
 }
 
@@ -232,12 +311,36 @@ let charRatio = 0.6;
   probe.textContent = "M".repeat(20); document.body.appendChild(probe);
   charRatio = probe.getBoundingClientRect().width / 2000 || 0.6; probe.remove();
 })();
+// A pane too wide to read at the phone's width: its lines wrap at a size
+// that reads (the default), or keep their width and scroll sideways (the
+// ↩ button, for a full-screen program whose boxes wrapping would break).
+const READABLE = 9, WRAPPED = 12;
+let wrap = (() => { try { return localStorage.getItem("keepane-wrap") !== "0"; } catch (e) { return true; } })();
 function fitFont() {
   const p = paneInfo(current); const cols = (p ? p.cols : 80) + (detail ? GUTTER : 0);
   const width = $("main").clientWidth - 16;
-  $("screen").style.fontSize = Math.max(8, Math.min(15, width / (cols * charRatio))).toFixed(2) + "px";
+  const fit = width / (cols * charRatio);
+  const wrapping = wrap && fit < READABLE;
+  const was = joined();
+  $("screen").classList.toggle("wrap", wrapping);
+  $("screen").style.fontSize = (wrapping ? WRAPPED : Math.max(8, Math.min(15, fit))).toFixed(2) + "px";
+  // Asked for as the pane has them, or joined: a change asks again.
+  if (current && joined() !== was) { lastText = null; stopWatch(); tick(); }
 }
+// Wrapping here, the lines the pane itself wrapped come joined, so that a
+// line breaks once, at the phone's edge (the command times are placed on
+// the joined lines by keepane).
+function joined() { return $("screen").classList.contains("wrap"); }
+const screenQuery = (id) => `pane=${encodeURIComponent(id)}&history=300${joined() ? "&join=1" : ""}`;
 window.addEventListener("resize", fitFont);
+$("wrap").classList.toggle("on", wrap);
+$("wrap").addEventListener("click", () => {
+  wrap = !wrap;
+  try { localStorage.setItem("keepane-wrap", wrap ? "1" : "0"); } catch (e) {}
+  $("wrap").classList.toggle("on", wrap);
+  fitFont();
+  toast(wrap ? t("Long lines wrap", "长行自动换行") : t("Long lines scroll sideways", "长行左右滑动"));
+});
 
 // Follow the bottom unless the reader has scrolled up.
 let stick = true;
@@ -315,7 +418,7 @@ const showError = (msg) => ($("screen").innerHTML = `<span style="color:var(--re
 // Polling, for a browser that cannot read a response as it arrives.
 async function loadScreen() {
   try {
-    const s = await (await api(`/api/screen?pane=${encodeURIComponent(current)}&history=300`)).json();
+    const s = await (await api(`/api/screen?${screenQuery(current)}`)).json();
     showScreen(s.text, s.marks);
   } catch (e) { showError(e.message); }
 }
@@ -331,7 +434,7 @@ async function watchScreen() {
   const id = current;
   while (!ctl.signal.aborted && current === id) {
     try {
-      const r = await fetch(`/api/watch?pane=${encodeURIComponent(id)}&history=300`,
+      const r = await fetch(`/api/watch?${screenQuery(id)}`,
         { headers: { "X-Keepane-Key": key }, cache: "no-store", signal: ctl.signal });
       if (r.status === 401) { showError(t("This page needs the code again: run `keepane web` and scan it.", "需要重新扫码：在电脑上运行 `keepane web` 再扫一次。")); return; }
       if (!r.ok) { showError((await r.text()) || r.statusText); throw new Error("retry"); }
@@ -392,6 +495,12 @@ $("menu").addEventListener("click", async (e) => {
   $("menu").classList.add("hidden");
   const what = b ? b.dataset.do : "";
   if (!what || !current) return;
+  if (what.startsWith("rename-")) {
+    const p = paneInfo(current) || {};
+    const kind = what.slice("rename-".length);
+    rename(kind, current, kind === "session" ? p.session : kind === "window" ? p.windowName : p.name || "");
+    return;
+  }
   if (what === "kill-pane" && !confirm(t("Close this pane? What runs in it stops.", "关闭这个 pane？里面运行的程序会被结束。"))) return;
   try {
     const before = new Set(panes.map((p) => p.id));
@@ -479,7 +588,11 @@ if (window.visualViewport) {
   $("send").textContent = t("Send", "发送");
   $("detail").title = t("When each command ran", "每条命令的时间");
   const labels = { "split-h": t("Split left | right", "左右分屏"), "split-v": t("Split top / bottom", "上下分屏"),
-    "new-window": t("New window", "新窗口"), "kill-pane": t("Close this pane", "关闭这个 pane"), "": t("Cancel", "取消") };
+    "new-window": t("New window", "新窗口"), "kill-pane": t("Close this pane", "关闭这个 pane"), "": t("Cancel", "取消"),
+    "rename-pane": t("Rename this pane", "重命名这个 pane"), "rename-window": t("Rename this window", "重命名这个窗口"),
+    "rename-session": t("Rename this session", "重命名这个 session") };
+  $("askOk").textContent = t("OK", "确定"); $("askCancel").textContent = t("Cancel", "取消");
+  $("wrap").title = t("Wrap long lines", "长行换行");
   for (const b of document.querySelectorAll("#menu button")) b.textContent = labels[b.dataset.do];
   try {
     const info = await (await api("/api/info")).json();

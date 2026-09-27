@@ -3489,6 +3489,21 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     assert_eq!(code, 200);
     assert!(screen.contains("-from-the-phone-7"), "{screen}");
 
+    // A line wider than the pane: as the pane shows it, broken at its edge;
+    // joined (`join=1`, for a phone that wraps at its own width), whole.
+    let long = format!("L{}", "z".repeat(COLS as usize + 20));
+    http(addr, "POST", &format!("/api/send?pane={pane}"), key, &format!("echo {long}")).await;
+    http(addr, "POST", &format!("/api/send?pane={pane}&key=Enter"), key, "").await;
+    h.wait_capture("w:0", "the long line", |t| {
+        t.contains("zzz\n") || t.lines().filter(|l| l.contains("zzz")).count() >= 3
+    })
+    .await;
+    let (_, split) = http(addr, "GET", &format!("/api/screen?pane={pane}&history=20"), key, "").await;
+    assert!(!split.contains(&long), "the pane breaks it: {split}");
+    let (code, joined) = http(addr, "GET", &format!("/api/screen?pane={pane}&history=20&join=1"), key, "").await;
+    assert_eq!(code, 200);
+    assert!(joined.contains(&long), "{joined}");
+
     // The + menu; the new pane starts in the directory of the pane it came
     // from, not where the web client runs.
     let (cd, there) = if cfg!(windows) { ("cd /d C:\\Windows", "[c:\\windows]") } else { ("cd /usr", "[/usr]") };
@@ -3506,6 +3521,89 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     assert!(list.lines().nth(1).unwrap().to_ascii_lowercase().contains(there), "{list}");
     assert_eq!(http(addr, "POST", &format!("/api/action?pane={pane}&do=kill-server"), key, "").await.0, 400);
     assert_eq!(h.cli(&["ls"]).await.0, 0, "the server is still there");
+    h.cli(&["kill-server"]).await;
+}
+
+/// The phone renames the session, window and pane a pane is in: the name is
+/// the body (one starting with `-` included), keepane's rules apply, and a
+/// name it does not take comes back as the phone's mistake (400).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_phone_renames_sessions_windows_and_panes() {
+    let h = Harness::start("webrename").await;
+    h.cli(&["new", "-d", "-s", "r"]).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let key = "rename-key";
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, key, false))));
+    let p = pane_id(&h, "r:0.0").await;
+    let at = |what: &str| format!("/api/action?pane=%25{p}&do=rename-{what}");
+
+    let (code, err) = http(addr, "POST", &at("pane"), key, "from_phone").await;
+    assert_eq!(code, 200, "{err}");
+    let (code, err) = http(addr, "POST", &at("window"), key, "logs on phone").await;
+    assert_eq!(code, 200, "{err}");
+    let (code, err) = http(addr, "POST", &at("session"), key, "-phone").await;
+    assert_eq!(code, 200, "{err}");
+    let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
+    for want in ["\"name\":\"from_phone\"", "\"windowName\":\"logs on phone\"", "\"session\":\"-phone\""] {
+        assert!(list.contains(want), "{want}: {list}");
+    }
+    assert!(h.cli(&["ls"]).await.1.contains("-phone:"));
+
+    // keepane's rules, and the page's: 400 with the reason.
+    let (code, err) = http(addr, "POST", &at("pane"), key, "a b").await;
+    assert_eq!(code, 400);
+    assert!(err.contains("letters, digits"), "{err}");
+    assert_eq!(http(addr, "POST", &at("window"), key, &"x".repeat(65)).await.0, 400);
+    assert_eq!(http(addr, "POST", &at("window"), key, "two\nlines").await.0, 400);
+    // Empty takes a pane's name away.
+    assert_eq!(http(addr, "POST", &at("pane"), key, "").await.0, 200);
+    assert!(http(addr, "GET", "/api/panes", key, "").await.1.contains("\"name\":\"\""));
+    h.cli(&["kill-server"]).await;
+}
+
+/// A phone that wraps lines at its own width asks for them joined; a
+/// command's time then goes on the joined line that holds the whole
+/// command, not on a piece of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_phone_gets_joined_lines_with_their_command_times() {
+    let h = Harness::start("webjoin").await;
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "j", "-x", "30", "-y", "20"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let p = pane_id(&h, "j:0.0").await;
+    let say = if cfg!(windows) { "Write-Output" } else { "echo" };
+    let command = format!("{say} joined-{}-end", "w".repeat(40));
+    h.cli(&["set-work-mode", "-t", &format!("%{p}"), "shell"]).await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    h.cli(&["send-keys", "-t", &format!("%{p}"), &command, "Enter"]).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !h.cli(&["list-marks", "-t", &format!("%{p}")]).await.1.contains("joined-") {
+        assert!(Instant::now() < deadline, "the command was never marked");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, "k", false))));
+    let (code, body) = http(addr, "GET", &format!("/api/screen?pane=%25{p}&history=50&join=1"), "k", "").await;
+    assert_eq!(code, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let lines: Vec<&str> = v["text"].as_str().unwrap().split('\n').collect();
+    let marks = v["marks"].as_array().unwrap();
+    // The line as read: its colours taken out.
+    let plain = |s: &str| {
+        let mut out = String::new();
+        let mut it = s.chars();
+        while let Some(c) = it.next() {
+            if c == '\x1b' {
+                it.by_ref().take_while(|c| !c.is_ascii_alphabetic()).for_each(drop);
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
+    let on = |m: &serde_json::Value| plain(lines.get(m[0].as_u64().unwrap() as usize).copied().unwrap_or(""));
+    assert!(marks.iter().any(|m| on(m).contains(&command)), "no mark on the whole command:\n{lines:#?}\n{marks:?}");
     h.cli(&["kill-server"]).await;
 }
 
@@ -3659,8 +3757,28 @@ async fn the_phone_page_runs_in_the_server_and_says_who_is_on_it() {
     })
     .await;
     assert!(cut.is_ok(), "the stream outlived web-stop");
-    assert!(tokio::net::TcpStream::connect(addr).await.is_err(), "the port is still open");
+    // Closed; a pane another test forks just then may hold the socket a
+    // moment (until it execs), so a while rather than at once.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while tokio::net::TcpStream::connect(addr).await.is_ok() {
+        assert!(Instant::now() < deadline, "the port is still open");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert_eq!(h.cli(&["display", "-p", "[#{web_url}]"]).await.1.trim(), "[]");
+    // Answered once the port is closed: the same port at once is free.
+    let port = addr.port().to_string();
+    for _ in 0..3 {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let (code, _, err) = h.cli(&["web-start", "-p", &port, "-b", "127.0.0.1"]).await;
+            if code == 0 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the port was not free again: {err}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(h.cli(&["web-stop"]).await.0, 0);
+    }
     assert_eq!(h.cli(&["web-stop"]).await.0, 1);
     h.cli(&["kill-server"]).await;
 }

@@ -617,8 +617,8 @@ keepane web
 ```
 
 prints a QR code in the terminal. Scan it with the phone's camera (same
-network) and the browser opens a page that lists every pane with the program
-running in it, and with the window's alert marks from the status line (`#`
+network) and the browser opens a page that lists every pane, under its session
+and window, with the program running in it, and with the window's alert marks from the status line (`#`
 printed, `!` bell, `~` silent, with `monitor-activity` and friends on), so
 you can see which job finished. Tap one to see its screen, colours and all;
 keepane sends it again whenever it changes, so there is no refresh to wait for;
@@ -626,7 +626,10 @@ type into it from the box at the bottom, or with the row of keys the phone
 keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
 + menu splits the pane, opens a window or closes the pane; the ⏱ button adds
 a column with the time each command started (tap one for its date, how long
-it took and its exit code; see "Command times and history"). Everything runs
+it took and its exit code; see "Command times and history"). The ✎ beside a session or
+window, and the + menu, rename a session, window or pane. A pane wider than the
+phone wraps its long lines at the phone's edge (the ↩ button turns that off, for
+a full-screen program). Everything runs
 on the computer; the phone only shows and types. "Add to Home Screen" makes
 it open like an app.
 
