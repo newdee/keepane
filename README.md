@@ -786,13 +786,24 @@ repository), `pane_current_path_short` (`~` for home), `pane_pid_command`
 (the program the pane is running right now, `cargo` during a build) and
 `pane_output_count` (how many times the pane has printed; a script can
 compare two readings to tell whether anything changed, which
-`pane_activity`, in whole seconds, cannot).
+`pane_activity`, in whole seconds, cannot). `keepane_update` is a newer
+keepane's version once the daily check found one.
 
-The default `status-right` uses them:
-`#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU
-#{cpu_percentage} MEM #{ram_percentage}#{?battery_percentage, | BAT
-#{battery_percentage},} | %H:%M`; `set -g status-right ...` replaces it,
-and `set -g status off` hides the line.
+The network: `local_ip` is the address this machine reaches the network
+from (read from the system, nothing sent), and `public_ip` the address the
+internet sees it at. Only a service outside knows the second, so keepane
+asks one (`api.ipify.org`, every ten minutes) only while a format that is
+drawn uses `#{public_ip}`; without it nobody is asked. Neither is in the
+default look; to show them:
+
+```tmux
+set -ag status-right " #{local_ip} #{public_ip}"
+```
+
+The default `status-right` uses the machine's (see
+`themes/tokyo-night.conf`, which is the default look written out, and
+`themes/plain.conf` for tmux's); `set -g status-right ...` replaces it, and
+`set -g status off` hides the line.
 
 Comparisons, as in tmux: `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}`
 `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and `#{m:pattern,text}` (a

@@ -9,6 +9,7 @@ mod mail;
 mod newer;
 pub mod observe;
 pub mod pane;
+mod public_ip;
 pub mod render;
 
 use crate::command::{Cmd, Dir, MenuItem, PaneSel, Target};
@@ -90,6 +91,8 @@ enum Event {
     PromptSettled(PaneId),
     /// The daily look for a newer keepane came back (`newer`).
     NewerChecked(Option<String>),
+    /// The address the internet sees this machine at came back (`public_ip`).
+    PublicIp(Option<String>),
 }
 
 /// How long after keepane's prompt marker a pane's command is taken as
@@ -747,6 +750,8 @@ pub struct Server {
     events_pruned: Option<Instant>,
     /// The daily look for a newer keepane.
     newer: newer::Check,
+    /// `#{public_ip}`, while a format uses it.
+    public_ip: public_ip::PublicIp,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -1093,6 +1098,7 @@ impl Server {
             msg_dropped: Vec::new(),
             events_pruned: None,
             newer: newer::Check::default(),
+            public_ip: public_ip::PublicIp::default(),
         }
     }
 
@@ -1905,6 +1911,7 @@ impl Server {
                 let _ = done.send(());
             }
             Event::NewerChecked(latest) => self.newer_checked(latest),
+            Event::PublicIp(ip) => self.public_ip_answered(ip),
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -1918,6 +1925,7 @@ impl Server {
                 self.history_tick();
                 self.mail_tick();
                 self.newer_tick();
+                self.public_ip_tick();
                 // Kept long enough: gone for good.
                 let keep = Duration::from_secs(self.opts.undo_kill_time);
                 self.killed.retain(|k| k.at().elapsed() < keep);
@@ -5385,6 +5393,8 @@ impl Server {
             battery_charging: sys.battery_charging,
             uptime: sys.uptime,
             keepane_update: self.newer.newer.clone().unwrap_or_default(),
+            local_ip: crate::sysinfo::local_ip(),
+            public_ip: self.public_ip.value.clone(),
             ..Default::default()
         };
         let unix = unix_seconds;

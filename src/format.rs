@@ -124,6 +124,11 @@ pub struct Context {
     /// A newer keepane's version when the daily check found one
     /// (`update-check`), else empty.
     pub keepane_update: String,
+    /// The address this machine reaches the network from, and the one the
+    /// internet sees it at (asked only while a format uses it); empty when
+    /// not known.
+    pub local_ip: String,
+    pub public_ip: String,
     /// The pane's directory with the home directory as `~`.
     pub pane_path_short: String,
     /// The program running in the pane right now (its newest descendant),
@@ -297,6 +302,8 @@ impl Context {
             "uptime" => human_duration(self.uptime),
             "git_branch" => self.git_branch.clone(),
             "keepane_update" => self.keepane_update.clone(),
+            "local_ip" => self.local_ip.clone(),
+            "public_ip" => self.public_ip.clone(),
             "pane_current_path_short" => self.pane_path_short.clone(),
             "pane_pid_command" => self.pane_pid_command.clone(),
             "version" => env!("CARGO_PKG_VERSION").to_string(),

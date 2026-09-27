@@ -1154,6 +1154,28 @@ mod tests {
         assert!(o.set("save-history", "").is_err(), "not an on/off option");
     }
 
+    /// themes/tokyo-night.conf is the built-in look written out: every
+    /// option it sets comes out the same as the default.
+    #[test]
+    fn the_tokyo_night_theme_is_the_default_look() {
+        let theme = include_str!("../themes/tokyo-night.conf");
+        let mut o = Options::default();
+        let mut set = Vec::new();
+        for line in theme.lines() {
+            if let Ok(Some(crate::command::Cmd::SetOption { name, value, append: false, .. })) =
+                crate::command::parse_line(line)
+            {
+                o.set(&name, &value).unwrap_or_else(|e| panic!("{line}: {e}"));
+                set.push(name);
+            }
+        }
+        assert!(set.len() >= 9, "the theme sets the look: {set:?}");
+        let default = Options::default();
+        for name in &set {
+            assert_eq!(o.get(name), default.get(name), "{name} differs from the default");
+        }
+    }
+
     /// keepane's own config first, then one under the old name (wmux, up to
     /// 0.13.1); never tmux's (`import-config` brings that over when asked).
     #[test]

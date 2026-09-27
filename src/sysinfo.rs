@@ -9,6 +9,34 @@ use std::path::{Path, PathBuf};
 
 pub use crate::platform::sysinfo::{System, hostname, program_of, short_path, system};
 
+/// The address this machine reaches the network from (IPv4), empty when it
+/// has none. The system is asked which address a UDP socket "connected" to
+/// a public address would use; connecting a UDP socket sends nothing. Kept
+/// for ten seconds.
+pub fn local_ip() -> String {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, ip)) = cache.as_ref()
+        && at.elapsed() < Duration::from_secs(10)
+    {
+        return ip.clone();
+    }
+    let ip = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| {
+            s.connect("192.0.2.1:9")?;
+            s.local_addr()
+        })
+        .map(|a| a.ip())
+        .ok()
+        .filter(|ip| !ip.is_unspecified())
+        .map(|ip| ip.to_string())
+        .unwrap_or_default();
+    *cache = Some((Instant::now(), ip.clone()));
+    ip
+}
+
 /// Bytes as people write them: "812M", "6.2G".
 pub fn human_bytes(b: u64) -> String {
     const G: f64 = 1024.0 * 1024.0 * 1024.0;
