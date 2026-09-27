@@ -2696,3 +2696,4 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 10 | 机制通路（变异 3 项） | a 窗格死后 `pane_dead_time` 取当前时间：`jobs` 测试抓到；b 视图跟随多退一列：没抓到，该测试本就接受第 8 或第 9 列（cmd 是否已回显 x），差一列落在容忍内，属旧有宽容，记下不改；c 去掉"标记后 60ms 内不送下一条"的保护：84/84 全过，这一保护此前没有任何测试。新加 `sent_as_the_prompt_comes_back`（pwsh、bash 两版）：先发一条跑半秒的消息，轮询到 `#{pane_idle}` 变 1（即标记到达、窗口开始）立刻发第二条，断言两条各以自己的输出完成；再跑变异 c 抓到（第一条被顶替，永远不结束）；正常 5/5 | **有问题**：补测试（不计数） |
 | 11 | 全量（两平台） | fmt/clippy 0；Windows 225/10/84；Linux 201/85 | 干净（1/3） |
 | 12 | 机制通路（Linux） | 第 10 轮的变异 c 只在 Windows 上做过：Linux 上去掉保护，bash 版在 `sent_as_the_prompt_comes_back` 的第一条断言失败；恢复后该测试连跑 5 次 5/5（每次 3.6 秒） | 干净（2/3） |
+| 13 | 真机三平台（CI run 36288253492，提交 68a8bc9） | windows-latest、ubuntu-latest、macos-latest 的 fmt、clippy、全量测试都通过 | 干净（3/3），验收通过 |
