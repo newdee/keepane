@@ -3568,7 +3568,11 @@ async fn the_phone_renames_sessions_windows_and_panes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_phone_gets_joined_lines_with_their_command_times() {
     let h = Harness::start("webjoin").await;
-    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "j", "-x", "30", "-y", "20"], HOOKED_SHELL].concat()).await;
+    // A short prompt (`PS C:\> `), as on any machine: the command, not a
+    // long path, is what wraps.
+    let root = if cfg!(windows) { "C:\\" } else { "/" };
+    let (code, _, err) =
+        h.cli(&[&["new", "-d", "-s", "j", "-x", "30", "-y", "20", "-c", root], HOOKED_SHELL].concat()).await;
     assert_eq!(code, 0, "{err}");
     let p = pane_id(&h, "j:0.0").await;
     let say = if cfg!(windows) { "Write-Output" } else { "echo" };
@@ -3577,7 +3581,15 @@ async fn the_phone_gets_joined_lines_with_their_command_times() {
     wait_format(&h, p, "#{pane_idle}", "1").await;
     h.cli(&["send-keys", "-t", &format!("%{p}"), &command, "Enter"]).await;
     let deadline = Instant::now() + Duration::from_secs(20);
-    while !h.cli(&["list-marks", "-t", &format!("%{p}")]).await.1.contains("joined-") {
+    // Marked as done: a mark with its end time (`row start end exit said`;
+    // `said` is the command's first row, which may hold little of it).
+    let done = |marks: &str| marks.lines().any(|l| l.split(' ').nth(2).is_some_and(|e| e != "-"));
+    let output = format!("joined-{}-end", "w".repeat(40));
+    let printed = async || {
+        let (_, screen, _) = h.cli(&["capture-pane", "-p", "-J", "-t", &format!("%{p}")]).await;
+        screen.lines().any(|l| l.trim_end() == output)
+    };
+    while !(printed().await && done(&h.cli(&["list-marks", "-t", &format!("%{p}")]).await.1)) {
         assert!(Instant::now() < deadline, "the command was never marked");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
