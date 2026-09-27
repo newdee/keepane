@@ -57,16 +57,16 @@ fn exits(code: u32) -> Vec<String> {
     ["/bin/sh", "-c", &format!("exit {code}")].map(String::from).to_vec()
 }
 
-/// A program that exits with `code` after about `ms` milliseconds.
+/// A program that exits with `code` after about a second. On Windows it is
+/// cmd.exe waiting on ping's one-second interval: Windows PowerShell can take
+/// longer than that just to start on a busy runner.
 #[cfg(windows)]
-fn exits_after(code: u32, ms: u32) -> Vec<String> {
-    ["powershell.exe", "-NoProfile", "-Command", &format!("Start-Sleep -Milliseconds {ms}; exit {code}")]
-        .map(String::from)
-        .to_vec()
+fn exits_after_a_second(code: u32) -> Vec<String> {
+    ["cmd.exe", "/c", "ping", "-n", "2", "127.0.0.1", ">nul", "&", "exit", &code.to_string()].map(String::from).to_vec()
 }
 #[cfg(unix)]
-fn exits_after(code: u32, ms: u32) -> Vec<String> {
-    ["/bin/sh", "-c", &format!("sleep {}; exit {code}", f64::from(ms) / 1000.0)].map(String::from).to_vec()
+fn exits_after_a_second(code: u32) -> Vec<String> {
+    ["/bin/sh", "-c", &format!("sleep 1; exit {code}")].map(String::from).to_vec()
 }
 
 /// A program that prints `text` and exits.
@@ -303,8 +303,10 @@ impl Conn {
         .await;
     }
 
+    /// The next message, however long the command it answers may wait
+    /// (`-w 30` is the longest any test asks for).
     async fn next(&mut self) -> ServerMsg {
-        tokio::time::timeout(Duration::from_secs(10), read_frame::<_, ServerMsg>(&mut self.rd))
+        tokio::time::timeout(Duration::from_secs(40), read_frame::<_, ServerMsg>(&mut self.rd))
             .await
             .expect("timeout waiting for server")
             .unwrap()
@@ -952,7 +954,8 @@ async fn save_and_resume_sessions() {
         format!("printf '\\033]7;file://here{announced}\\007'")
     };
     h.cli(&["send-keys", "-t", "work:0.0", &announce, "Enter"]).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // pwsh has to start first, which on a busy runner takes seconds.
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let (_, out, _) = h.cli(&["list-panes", "-t", "work:0"]).await;
         if out.lines().next().is_some_and(|l| l.contains(&format!("[{announced}]"))) {
@@ -2994,8 +2997,9 @@ async fn jobs_lists_every_pane_with_its_state() {
     assert_eq!(up(&later), first, "the clock of an exited pane does not run on: {later}");
     // Not even by rounding: its start and its end are seconds that stay
     // what they are, however often and whenever they are asked for (the
-    // pane below lives half a second, so they fall mid-second).
-    let (code, _, err) = h.cli(&args(&["new-window", "-d", "-t", "build", "-n", "brief"], &exits_after(3, 500))).await;
+    // pane below starts and ends wherever in a second the clock happens to be).
+    let (code, _, err) =
+        h.cli(&args(&["new-window", "-d", "-t", "build", "-n", "brief"], &exits_after_a_second(3))).await;
     assert_eq!(code, 0, "{err}");
     let ran = async || {
         let (_, t, _) = h.cli(&["jobs", "-t", "build:2.0", "-F", "#{pane_dead_time} #{pane_start_time}"]).await;
@@ -3007,7 +3011,10 @@ async fn jobs_lists_every_pane_with_its_state() {
         if let Some(d) = ran().await {
             break d;
         }
-        assert!(Instant::now() < deadline, "the brief pane never ended");
+        if Instant::now() >= deadline {
+            let (_, all, _) = h.cli(&["jobs", "-t", "build"]).await;
+            panic!("the brief pane never ended: {all}");
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     for _ in 0..30 {
@@ -3907,7 +3914,14 @@ async fn a_small_client_has_its_own_view_of_a_big_window() {
     let long = "0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
     big.type_str(&format!("echo {long}")).await;
     big.enter().await;
-    big.wait_for("the long line", |s| s.contents().contains(long)).await;
+    // Twice (the command and its output) and the prompt after them: until
+    // then the cursor is wherever the shell is printing, and following it
+    // below would go there.
+    big.wait_for("the long line", |s| {
+        let t = s.contents();
+        t.matches(long).count() >= 2 && t.lines().any(|l| l.trim_end() == "keepane>")
+    })
+    .await;
     small
         .wait_for("the first 40 columns", |s| {
             let t = s.contents();
@@ -4738,6 +4752,29 @@ async fn wait_format(h: &Harness, pane: u32, format: &str, want: &str) {
     }
 }
 
+/// A message sent the moment shell pane `pane` is back at its prompt (the
+/// marker seen, the screen not read yet) waits until the command before it
+/// has been taken as done: typed in then, it would become the pane's current
+/// message and take that command's end for its own. `first` prints
+/// `first-out` after half a second, `second` prints `second-out`.
+async fn sent_as_the_prompt_comes_back(h: &Harness, pane: u32, first: &str, second: &str) {
+    let t = format!("%{pane}");
+    wait_format(h, pane, "#{pane_idle}", "1").await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, first]).await;
+    let a = msg_id(&out);
+    // Taken at once: busy now. Free again at the marker; send right then.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while ask_pane(h, pane, "#{pane_idle}").await != "1" {
+        assert!(Instant::now() < deadline, "the first command never ended");
+    }
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, second]).await;
+    let b = msg_id(&out);
+    let (_, trace, _) = h.cli(&["trace-message", &a, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{a} done")) && trace.contains("output:\nfirst-out"), "{trace}");
+    let (_, trace, _) = h.cli(&["trace-message", &b, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{b} done")) && trace.contains("output:\nsecond-out"), "{trace}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_finds_its_pane_by_name_or_address_and_waits_to_be_read() {
     let h = Harness::start("mail-basic").await;
@@ -4916,12 +4953,7 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     let (_, out, _) = h.cli(&["send-message", "-t", &t, "echo \"$kp_b\""]).await;
     let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
     assert!(trace.contains("output:\n2'2"), "its variables stay in the shell: {trace}");
-    // A marker ahead of the text before it: done a moment after, with it.
-    wait_format(&h, p, "#{pane_idle}", "1").await;
-    let early = "printf '\\033]7777;keepane-prompt;sh\\007'; sleep 0.01; echo late-output";
-    let (_, out, _) = h.cli(&["send-message", "-t", &t, "--", early]).await;
-    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
-    assert!(trace.contains("output:\nlate-output"), "{trace}");
+    sent_as_the_prompt_comes_back(&h, p, "sleep 0.5; echo first-out", "echo second-out").await;
     // Typed while its command runs: the pane is not free afterwards.
     wait_format(&h, p, "#{pane_idle}", "1").await;
     let (_, out, _) = h.cli(&["send-message", "-t", &t, "sleep 0.8"]).await;
@@ -4943,6 +4975,18 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     assert_eq!(ask_pane(&h, p, "#{pane_idle}").await, "0");
     let (_, out, _) = h.cli(&["send-message", "-t", &t, "echo later"]).await;
     assert!(out.contains("busy"), "{out}");
+
+    // A marker ahead of the text before it: done a moment after, with it.
+    // The command's own marker is followed by its prompt's, a second one,
+    // which on a busy machine would end the next message: its own pane, last.
+    h.cli(&["new-window", "-d", "-t", "sh", "bash"]).await;
+    let q = pane_id(&h, "sh:1.0").await;
+    h.cli(&["set-work-mode", "-t", &format!("%{q}"), "shell"]).await;
+    wait_format(&h, q, "#{pane_idle}", "1").await;
+    let early = "printf '\\033]7777;keepane-prompt;sh\\007'; sleep 0.01; echo late-output";
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{q}"), "--", early]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+    assert!(trace.contains("output:\nlate-output"), "{trace}");
     h.cli(&["kill-server"]).await;
 }
 
@@ -5030,14 +5074,13 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "Write-Output $kp_b"]).await;
     let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
     assert!(trace.contains("output:\n22"), "its variables stay in the shell: {trace}");
-    // ConPTY may pass the prompt marker ahead of the text before it: the
-    // command is taken as done a moment after the marker, with its output.
-    // (Here the command itself sends a marker before its last line.)
-    wait_format(&h, p, "#{pane_idle}", "1").await;
-    let early = "[Console]::Write([char]27 + ']7777;keepane-prompt' + [char]27 + '\\'); Start-Sleep -Milliseconds 10; Write-Output late-output";
-    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "--", early]).await;
-    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
-    assert!(trace.contains("output:\nlate-output"), "{trace}");
+    sent_as_the_prompt_comes_back(
+        &h,
+        p,
+        "Start-Sleep -Milliseconds 500; Write-Output first-out",
+        "Write-Output second-out",
+    )
+    .await;
     // Typed while its command runs: that text is on the next prompt's line,
     // so the pane is not free and the next message does not join it.
     wait_format(&h, p, "#{pane_idle}", "1").await;
@@ -5064,6 +5107,28 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     assert_eq!(ask_pane(&h, p, "#{pane_idle}").await, "0");
     let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "Write-Output later"]).await;
     assert!(out.contains("busy"), "{out}");
+
+    // ConPTY may pass the prompt marker ahead of the text before it: the
+    // command is taken as done a moment after the marker, with its output.
+    // Here the command itself sends a marker before its last line, and its
+    // prompt then sends the real one: a second marker ConPTY never sends. On
+    // a busy machine the two come further apart than the moment, and the
+    // second would end whatever message went in after the first; so this
+    // is in a pane of its own, and last.
+    h.cli(&["new-window", "-d", "-t", "sh", "pwsh", "-NoLogo", "-NoProfile"]).await;
+    let q = pane_id(&h, "sh:1.0").await;
+    h.cli(&["set-work-mode", "-t", &format!("%{q}"), "shell"]).await;
+    wait_format(&h, q, "#{pane_idle}", "1").await;
+    // A shell that has run these commands before, as the one above had: a
+    // fresh PowerShell takes its time over the first of each.
+    let (_, out, _) =
+        h.cli(&["send-message", "-t", &format!("%{q}"), "Start-Sleep -Milliseconds 10; Write-Output warm"]).await;
+    h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+    wait_format(&h, q, "#{pane_idle}", "1").await;
+    let early = "[Console]::Write([char]27 + ']7777;keepane-prompt' + [char]27 + '\\'); Start-Sleep -Milliseconds 10; Write-Output late-output";
+    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{q}"), "--", early]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+    assert!(trace.contains("output:\nlate-output"), "{trace}");
     h.cli(&["kill-server"]).await;
 }
 
@@ -5428,15 +5493,12 @@ fn shared_history_file() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Wait until `HOOKED_SHELL` in `target` is at its prompt: PowerShell's
-/// reads `PS `; bash's is the user's own, so keepane's prompt marker says.
+/// Wait until `HOOKED_SHELL` in `target` is at its prompt, as keepane's
+/// prompt marker says. Not by what the screen shows: a resumed pane shows
+/// the prompt it was saved at before its new shell has even started.
 async fn at_hooked_prompt(h: &Harness, target: &str) {
-    if cfg!(windows) {
-        h.wait_capture(target, "a prompt", |t| last_line(t).starts_with("PS ")).await;
-    } else {
-        h.cli(&["set-work-mode", "-t", target, "shell"]).await;
-        wait_format(h, pane_id(h, target).await, "#{pane_idle}", "1").await;
-    }
+    h.cli(&["set-work-mode", "-t", target, "shell"]).await;
+    wait_format(h, pane_id(h, target).await, "#{pane_idle}", "1").await;
 }
 
 /// Every hooked shell pane keeps its own command history, in a file under the
