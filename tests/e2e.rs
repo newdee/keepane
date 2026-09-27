@@ -5043,16 +5043,14 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     // A marker ahead of the text before it: done a moment after, with it.
     // The command's own marker is followed by its prompt's, a second one,
     // which on a busy machine would end the next message: its own pane, last.
+    // (Only builtins after the marker: a pty keeps order, so the moment is
+    // ConPTY's, and the PowerShell test times it; an external `sleep` here
+    // can take longer than the moment just to start, on a macOS runner.)
     h.cli(&["new-window", "-d", "-t", "sh", "bash"]).await;
     let q = pane_id(&h, "sh:1.0").await;
     h.cli(&["set-work-mode", "-t", &format!("%{q}"), "shell"]).await;
     wait_format(&h, q, "#{pane_idle}", "1").await;
-    // A shell that has run `sleep` before, as the one above had: the first
-    // in a fresh one (macOS) takes longer than the moment.
-    let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{q}"), "sleep 0.01; echo warm"]).await;
-    h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
-    wait_format(&h, q, "#{pane_idle}", "1").await;
-    let early = "printf '\\033]7777;keepane-prompt;sh\\007'; sleep 0.01; echo late-output";
+    let early = "printf '\\033]7777;keepane-prompt;sh\\007'; echo late-output";
     let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{q}"), "--", early]).await;
     let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
     assert!(trace.contains("output:\nlate-output"), "{trace}");
