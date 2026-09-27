@@ -193,6 +193,11 @@ impl Harness {
         assert_eq!(code, 0, "{err}");
         let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
         assert_eq!(code, 0, "{err}");
+        // tmux's plain status line, which these tests read as text: the
+        // default look (Tokyo Night) is tests/console.rs's to check.
+        let plain = concat!(env!("CARGO_MANIFEST_DIR"), "/themes/plain.conf");
+        let (code, _, err) = h.cli(&["source-file", plain]).await;
+        assert_eq!(code, 0, "{err}");
         h
     }
 
@@ -5136,7 +5141,14 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     let id = msg_id(&out);
     let (_, trace, _) = h.cli(&["trace-message", &id, "-w", "30"]).await;
     assert!(trace.starts_with(&format!("#{id} failed")), "{trace}");
-    assert!(trace.contains("output:\n42\n"), "{trace}");
+    if !trace.contains("output:\n42\n") {
+        // Where the command sat on the screen tells which rows were taken
+        // for it (it has once lost the first line of output on CI).
+        let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", &format!("%{p}"), "-S", "-30"]).await;
+        let (_, size, _) =
+            h.cli(&["display-message", "-p", "-t", &format!("%{p}"), "#{pane_width}x#{pane_height}"]).await;
+        panic!("{trace}\npane {}:\n{screen}", size.trim());
+    }
     wait_format(&h, p, "#{pane_idle}", "1").await;
     let (_, out, _) = h.cli(&["send-message", "-t", &format!("%{p}"), "Write-Output $kp_b"]).await;
     let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;

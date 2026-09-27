@@ -249,8 +249,11 @@ impl Default for Options {
             history_limit: 5000,
             status: true,
             status_top: false,
-            status_fg: Color::Idx(0),
-            status_bg: Color::Idx(2),
+            // The look is Tokyo Night (themes/tokyo-night.conf); themes/plain.conf
+            // is tmux's plain one. A bar a shade darker than Tokyo Night's
+            // background (#1a1b26), so it reads as its own strip.
+            status_fg: Color::Rgb(0xa9, 0xb1, 0xd6),
+            status_bg: Color::Rgb(0x16, 0x16, 0x1e),
             remain_on_exit: false,
             save_history: 500,
             monitor_activity: false,
@@ -265,23 +268,27 @@ impl Default for Options {
             pane_base_index: 0,
             display_time_ms: 1500,
             repeat_time_ms: 500,
-            pane_border_active_fg: Color::Idx(2),
+            // Quiet borders, the active pane outlined in blue.
+            pane_border_active_fg: Color::Rgb(0x7a, 0xa2, 0xf7),
             // tmux's defaults.
             display_panes_colour: Color::Idx(4),
             display_panes_active_colour: Color::Idx(1),
-            pane_border_fg: Color::Idx(8),
-            status_left: "[#S] ".into(),
+            pane_border_fg: Color::Rgb(0x3b, 0x42, 0x61),
+            // The session name on a blue block.
+            status_left: "#[fg=#1a1b26,bg=#7aa2f7,bold] #S #[default] ".into(),
             // What is useful at a glance and costs nothing to read: the
             // branch when in a repository, where the pane is, the machine's
-            // load, the battery when there is one, the time.
-            status_right: "#{?git_branch, #{git_branch} |,} #{pane_current_path_short} | CPU #{cpu_percentage} MEM #{ram_percentage}#{?battery_percentage, | BAT #{battery_percentage},} | %H:%M".into(),
+            // load, the battery when there is one, then the time on a blue
+            // block.
+            status_right: "#{?git_branch,#[fg=#bb9af7]#{git_branch} ,}#[fg=#7dcfff]#{pane_current_path_short} #[fg=#9ece6a]CPU #{cpu_percentage} #[fg=#e0af68]MEM #{ram_percentage} #{?battery_percentage,#[fg=#9ece6a]BAT #{battery_percentage} ,}#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M ".into(),
             status_left_length: 40,
             status_right_length: 100, // the default right side is a long one; the window list still wins the room
             status_justify: "left".into(),
-            window_status_separator: " ".into(),
+            // Muted tabs, the current one on a purple block.
+            window_status_separator: "".into(),
             status_interval: 15,
-            window_status_format: "#I:#W#F".into(),
-            window_status_current_format: "#I:#W#F".into(),
+            window_status_format: "#[fg=#565f89] #I:#W#F ".into(),
+            window_status_current_format: "#[fg=#1a1b26,bg=#bb9af7,bold] #I:#W#F #[default]".into(),
             plugin_path: "~/.keepane/plugins".into(),
             pending_plugins: Vec::new(),
             user: Vec::new(),
@@ -901,7 +908,7 @@ mod tests {
         assert_eq!(o.get("status-style").unwrap(), "fg=#a9b1d6,bg=colour234");
         assert_eq!(o.get("status-bg").unwrap(), "colour234");
         assert_eq!(o.get("pane-active-border-style").unwrap(), "fg=brightblue");
-        assert_eq!(o.get("pane-border-style").unwrap(), "fg=brightblack");
+        assert_eq!(o.get("pane-border-style").unwrap(), "fg=#3b4261", "Tokyo Night's by default");
         // tmux separates a style's parts with spaces as well as commas.
         o.set("status-style", "bg=#1e1e2e fg=#cdd6f4").unwrap();
         assert_eq!(o.get("status-style").unwrap(), "fg=#cdd6f4,bg=#1e1e2e");
@@ -1070,7 +1077,7 @@ mod tests {
     fn status_justify_takes_both_spellings_and_the_separator_anything() {
         let mut o = Options::default();
         assert_eq!(o.status_justify, "left");
-        assert_eq!(o.window_status_separator, " ");
+        assert_eq!(o.window_status_separator, "", "the default tabs carry their own padding");
         for (given, stored) in [
             ("centre", "centre"),
             ("center", "centre"),

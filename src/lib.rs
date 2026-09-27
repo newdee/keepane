@@ -18,6 +18,7 @@ pub mod resurrect;
 pub mod server;
 pub mod setup;
 pub mod sysinfo;
+pub mod truecolor;
 pub mod vtinput;
 pub mod web;
 

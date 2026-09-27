@@ -714,14 +714,22 @@ sets up the terminal and the option does nothing.
 
 ### Themes
 
-`themes/` in this repository holds ready-made colour schemes (Tokyo Night,
-which the pictures here wear, Nord, Gruvbox dark, Dracula, Catppuccin
-Mocha). They are ordinary keepane commands, so a theme is just a file to source
-and an easy thing to copy and edit:
+keepane looks like Tokyo Night out of the box: the session on a blue block,
+the current window on a purple one, muted tabs, quiet pane borders with the
+active pane outlined in blue. `themes/` in this repository holds other
+colour schemes (Nord, Gruvbox dark, Dracula, Catppuccin Mocha), Tokyo Night
+itself to edit, and `plain.conf`, tmux's plain green bar. They are ordinary
+keepane commands, so a theme is just a file to source and an easy thing to
+copy and edit:
 
 ```tmux
 source-file ~/.keepane/themes/dracula.conf
+source-file ~/.keepane/themes/plain.conf   # tmux's look instead
 ```
+
+The default look uses 24-bit colours. On a terminal without them (macOS's
+Terminal, unless it says `COLORTERM=truecolor`), keepane shows the nearest
+of the 256 colours instead, for its own look and for programs in panes.
 
 ### Status line
 

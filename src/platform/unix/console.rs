@@ -69,6 +69,8 @@ pub struct Console {
     saved: libc::termios,
     raw: AtomicBool,
     parser: Mutex<Parser>,
+    /// A terminal without 24-bit colour: what is written has them made 256.
+    downgrade: Option<Mutex<crate::truecolor::Downgrade>>,
 }
 
 impl Console {
@@ -85,7 +87,8 @@ impl Console {
             if libc::tcgetattr(0, &mut saved) != 0 {
                 bail!("tcgetattr: {}", std::io::Error::last_os_error());
             }
-            Ok(Console { saved, raw: AtomicBool::new(false), parser: Mutex::new(Parser::new()) })
+            let downgrade = (!crate::truecolor::host_has_truecolor(|k| std::env::var(k).ok())).then(Mutex::default);
+            Ok(Console { saved, raw: AtomicBool::new(false), parser: Mutex::new(Parser::new()), downgrade })
         }
     }
 
@@ -142,6 +145,14 @@ impl Console {
     }
 
     pub fn write_bytes(&self, b: &[u8]) {
+        let filtered;
+        let b = match &self.downgrade {
+            Some(d) => {
+                filtered = d.lock().unwrap_or_else(|e| e.into_inner()).filter(b);
+                &filtered[..]
+            }
+            None => b,
+        };
         let mut off = 0;
         while off < b.len() {
             let n = unsafe { libc::write(1, b[off..].as_ptr() as *const libc::c_void, b.len() - off) };

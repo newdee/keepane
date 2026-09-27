@@ -2734,3 +2734,19 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 6 | 机制通路（变异 4 项） | 不跳过无用选项、又读 tmux.conf、不查已导入、不在临时 server 上检验：4/4 被抓 | 干净（2/3） || 7 | 真机三平台（CI run 36292968265，提交 bce3c53） | Windows、Ubuntu 通过；macOS 上 bash 版假标记测试 took 62ms、输出为空：命令在标记后启动外部 `sleep 0.01`，macOS runner 起进程就超过 60ms 窗口（热身也不够）。与本次改动无关，是第 66 条挪测试时留下的时间假设 | **有问题**：标记后只用内建命令（pty 本就保序，60ms 窗口是 ConPTY 的，由 PowerShell 版用进程内 `Start-Sleep` 计时）（不计数） |
 | 8 | 慢机器（Linux） | 改后该测试 10/10；测试与 4 个空转进程绑在同样 2 个核上 8/8 | 干净（1/3） |
 | 9 | 全量 + 复查改动 | Windows 228/10/85，Linux 205/86；diff 只删外部 `sleep` 与热身、加注释，注释与代码一致 | 干净（2/3） |
+| 10 | 真机三平台（CI run 36293265746，提交 c62237c） | macOS、Ubuntu 通过；Windows 上 PowerShell 版多行命令的输出少了第一行 `42`（从 `Get-Item:` 开始）：像是命令所占行数多算了一行。同一代码上一轮 Windows 通过，本机限 4 核连跑 25 次 25/25 未复现，原因未明 | **有问题，未解决**：该断言失败时改为打印窗格屏幕与尺寸，待下次出现取证（不计数；并入第 69 条继续验收） |
+
+## 69. 默认主题 Tokyo Night；不支持真彩色的终端降到 256 色
+
+用户：Tokyo Night 作为默认主题，不要 tmux 那样光秃秃的，用户喜欢可以自己配置。
+
+一、`Options::default()` 的状态栏、边框、窗口标签、左右两侧改为 Tokyo Night（与 `themes/tokyo-night.conf` 相同，右侧保留电池）。新增 `themes/plain.conf`：tmux 的朴素绿色状态栏（即 0.17 的默认），想要旧样子 source 它。
+
+二、默认外观用 24 位色。先确认了前提：渲染层原样输出 `38;2`，不看终端能力；macOS 旧 Terminal 不支持真彩色，会显示错色。改为客户端一侧（`src/truecolor.rs`，接在 Unix 的 `Console::write_bytes`）：只对确知不支持的终端（`TERM_PROGRAM=Apple_Terminal` 且未声明 `COLORTERM=truecolor|24bit`）把 `38/48;2;r;g;b`（含冒号写法）换成最近的 256 色（6×6×6 立方与灰阶取近），被写入拆开的序列等到完整再换；其余终端不动，免得误判把颜色变暗。不改通信协议；pane 里程序的真彩色也一并降级（tmux 同理）。Windows 控制台自 1703 起支持真彩色，不接。
+
+三、测试：e2e 的 Harness 启动时 source `themes/plain.conf`（这些测试读状态栏文字、检验的是行为）；原先依赖旧默认文字的 9 个 e2e 测试不改一字全部通过，同时证明 `plain.conf` 准确还原旧外观。`tests/console.rs` 不加载主题，检查默认外观（会话名所在格子背景为 `#7aa2f7`）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量 + 审查 | Windows 231/10/85，Linux 208/86；降级只动 `ESC[…m`，鼠标、备用屏、标题等原样；只改 `status-style` 时默认色块保留（与 tmux 主题一致） | 干净（1/3） |
+| 2 | 机制通路（真实伪终端） | `script` 给真实客户端分配 pty，抓它写给终端的字节：未声明 11 个 `;2` / 0 个 `;5`；Apple_Terminal 0 / 11；Apple_Terminal+COLORTERM=truecolor 13 / 0；iTerm 11 / 0；pane 里程序输出的红色在 Apple_Terminal 下也换成 256 色 | 干净（2/3） |

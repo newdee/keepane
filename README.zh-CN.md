@@ -421,7 +421,14 @@ set -ag status-right " | keepane"    # -a 是往原值后面追加，不是覆�
 source-file ~/.keepane/themes/nord.conf
 ```
 
-仓库里的 `themes/` 放了几套现成配色（Tokyo Night，也就是这里截图用的那套，还有 Nord、Gruvbox dark、Dracula、Catppuccin Mocha）。它们就是普通的 keepane 命令文件，`source-file` 一下就行，想改直接改。
+keepane 默认就是 Tokyo Night 的样子：会话名在蓝色色块上，当前窗口在紫色色块上，其他窗口标签是暗色，pane 边框很淡，当前 pane 用蓝色描边。仓库里的 `themes/` 还放了几套现成配色（Nord、Gruvbox dark、Dracula、Catppuccin Mocha），Tokyo Night 本身也有一份方便改，另外 `plain.conf` 是 tmux 那种朴素的绿色状态栏。它们就是普通的 keepane 命令文件，`source-file` 一下就行，想改直接改：
+
+```tmux
+source-file ~/.keepane/themes/dracula.conf
+source-file ~/.keepane/themes/plain.conf   # 换回 tmux 的样子
+```
+
+默认外观用的是 24 位真彩色。在不支持真彩色的终端上（macOS 自带的 Terminal，除非它声明了 `COLORTERM=truecolor`），keepane 会自动换成 256 色里最接近的颜色，keepane 自己的界面和 pane 里程序的输出都一样。
 
 `.tmux.conf` 里常见但 keepane 用不上的选项（`escape-time`、`focus-events` 这些）如果还是被设置了（比如用 `source-file` 读了一份 tmux 配置），会被接受然后忽略；`import-config` 不会导入它们。`default-terminal`（不设就是 `xterm-256color`）是 Linux 和 macOS 上 pane 拿到的 `TERM`；Windows 上终端由 ConPTY 安排，这个选项不起作用。
 

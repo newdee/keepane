@@ -159,12 +159,19 @@ fn real_client_in_conpty() {
 
     // Attached: shell prompt in the pane, status line at the bottom.
     t.wait_for("prompt", |s| s.contents().contains("keepane>"));
-    t.wait_for("status", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[t] 0:cmd*"));
+    // The default look: the session on a block, then the window tabs.
+    t.wait_for("status", |s| {
+        let row = s.rows(0, 80).nth(23).unwrap();
+        row.starts_with(" t ") && row.contains(" 0:cmd* ")
+    });
     assert!(t.parser.screen().alternate_screen(), "client should use the alternate screen");
     // The default right side: the pane's directory and the machine's
     // load, read in-process, and the clock.
     let row = t.row(23);
-    assert!(row.contains("CPU ") && row.contains("MEM ") && row.contains(" | "), "machine on the right: {row:?}");
+    assert!(row.contains("CPU ") && row.contains("MEM "), "machine on the right: {row:?}");
+    // In Tokyo Night's colours: the session on its blue block.
+    let cell = t.parser.screen().cell(23, 1).unwrap();
+    assert_eq!(cell.bgcolor(), vt100::Color::Rgb(0x7a, 0xa2, 0xf7), "{row:?}");
 
     // Keystrokes travel: pty -> conhost -> ReadConsoleInputW -> server -> pane.
     t.send("echo typed-in-conpty\r");
@@ -447,7 +454,7 @@ fn restart_server_moves_the_sessions_and_the_attached_client_follows() {
     let pid_before = run(&["display-message", "-p", "-t", "keep", "#{pid}"]).1.trim().to_string();
 
     let mut t = Term::spawn_env(&["-L", &socket, "attach", "-t", "keep"], 80, 24, &[("KEEPANE_SESSIONS_DIR", &dir)]);
-    t.wait_for("attached", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[keep]"));
+    t.wait_for("attached", |s| s.rows(0, 80).nth(23).unwrap().starts_with(" keep "));
 
     let (code, out, err) = run(&["restart-server"]);
     assert_eq!(code, 0, "{out}{err}");
@@ -468,7 +475,7 @@ fn restart_server_moves_the_sessions_and_the_attached_client_follows() {
         t.pump(Duration::from_millis(100));
     }
     t.wait_for("attached again", |s| {
-        s.rows(0, 80).nth(23).unwrap().starts_with("[keep]") && s.contents().contains("before-restart")
+        s.rows(0, 80).nth(23).unwrap().starts_with(" keep ") && s.contents().contains("before-restart")
     });
     // The pane's text was drawn again after the notice cleared the screen.
     let at = t.raw.windows(notice.len()).rposition(|w| w == notice).unwrap();
@@ -514,7 +521,7 @@ fn the_title_says_when_the_server_is_another_version() {
         .to_string();
     assert_ne!(v, env!("CARGO_PKG_VERSION"), "KEEPANE_OLD_EXE must be another version");
     let mut t = Term::spawn_env(&["-L", &socket, "attach", "-t", "m"], 80, 24, &[("KEEPANE_SESSIONS_DIR", &dir)]);
-    t.wait_for("attached", |s| s.rows(0, 80).nth(23).unwrap().starts_with("[m]"));
+    t.wait_for("attached", |s| s.rows(0, 80).nth(23).unwrap().starts_with(" m "));
     let want = format!("keepane: m [server {v}: run keepane restart-server]");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !String::from_utf8_lossy(&t.raw).contains(&want) {
