@@ -26,8 +26,9 @@ config file keep working.
   the panes, messages and tasks.
 - People, scripts and AI agents use the same messages; an agent can also
   work through the built-in MCP server.
-- tmux's `C-b` prefix, splits, copy mode, command line, `.tmux.conf`,
-  format strings, hooks and plugins are there.
+- tmux's `C-b` prefix, splits, copy mode, command line, config syntax
+  (`keepane import-config` brings a `.tmux.conf` over), format strings,
+  hooks and plugins are there.
 
 It runs on Windows (ConPTY), with PowerShell, WSL and cmd in the panes, and
 on Linux and macOS, with bash and zsh.
@@ -633,14 +634,27 @@ once whether keepane may use the network; allow it for private networks.
 `~/.keepane.conf` (or `~/.config/keepane/keepane.conf`, or the file named
 by `KEEPANE_CONFIG`; `~` is `%USERPROFILE%` on Windows) holds one command
 per line, tmux syntax.
-With no keepane config at all, an existing `~/.tmux.conf` (or
-`~/.config/tmux/tmux.conf`) is read instead: what keepane understands is
-applied (`%if` blocks are evaluated, and `bind -T copy-mode-vi v send -X
-begin-selection`-style lines bind keys in copy mode), and what it cannot
-use (TPM's `@plugin` lines for plugins it does not have, options tmux has
-and keepane does not) is skipped and listed in `show-messages` rather than
-thrown at you on every attach. Mouse "keys" such as `MouseDragEnd1Pane`
-are taken and do nothing: keepane's mouse handling is fixed.
+
+keepane reads only its own config, never `~/.tmux.conf`. To bring a tmux
+config over, ask for it once:
+
+```bash
+keepane import-config -n     # show what would be written, write nothing
+keepane import-config        # from ~/.tmux.conf (or ~/.config/tmux/tmux.conf)
+keepane import-config some.conf -o ~/.keepane.conf   # any config, anywhere
+```
+
+Each line is tried the way keepane would read it at start. What it takes
+is written as it was (continuation lines and `%if` blocks keep their shape,
+every branch checked); the rest goes in commented out, with why: TPM and
+every `@` plugin setting (tmux's plugins do not run in keepane), options
+tmux has and keepane has no use for (`escape-time`, `mode-keys`, ...),
+bindings of mouse "keys" such as `MouseDragEnd1Pane` (keepane's mouse
+handling is fixed), commands that run programs (`run`, `if-shell`: an
+import runs nothing), and anything keepane rejects. It goes into the config keepane reads (a new
+`~/.keepane.conf` if there is none) and says so; a file imported once is
+refused the second time. A running server read its config when it started:
+`keepane source-file ~/.keepane.conf` applies the import now.
 
 ```tmux
 set -g prefix C-a
@@ -692,8 +706,9 @@ Option names take an unambiguous abbreviation, the way command names do:
 (`set mon` lists the three `monitor-*` ones).
 
 Options unknown to keepane but common in `.tmux.conf` (`escape-time`,
-`focus-events`, ...) are accepted and ignored, so an existing tmux config
-can be reused as a starting point. `default-terminal` (`xterm-256color`
+`focus-events`, ...) are accepted and ignored if they are set anyway (by a
+`source-file` of a tmux config, say); `import-config` leaves them out.
+`default-terminal` (`xterm-256color`
 unless set) is the `TERM` panes get on Linux and macOS; on Windows ConPTY
 sets up the terminal and the option does nothing.
 

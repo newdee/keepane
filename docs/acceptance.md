@@ -2713,3 +2713,22 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 |---|---|---|---|
 | 1 | 全量（两平台） | fmt/clippy 0；Windows 225/10/84；Linux 202/85（多出的 1 个是新单元测试） | 干净（1/3） |
 | 2 | 机制通路 | 照 Homebrew 的布局放一份（`bin/keepane` 链接到 `Cellar/keepane/0.17.0/bin/keepane`）：经链接运行 `keepane update` 给 brew 的提示，放在别处给通用提示；把 Homebrew 判断改成恒假，单元测试在第 42 行变红 | 干净（2/3） || 3 | 真机三平台（CI run 36290957929，提交 44270c8）+ tap 在 main 上手动运行（run 36290958152） | keepane：windows、ubuntu、macos 的 fmt、clippy、全量测试都通过。tap：两平台 test 通过，bump 输出 formula already at 0.17.0，publish 未提交（tap 的 main 仍是合并提交 aaf09f9） | 干净（3/3），验收通过 |
+
+## 68. 不再自动读 tmux.conf；`import-config` 手动导入
+
+用户：装了 tmux 的机器上，keepane 自动读 `~/.tmux.conf`，每次都提示"N lines keepane could not use were skipped"，里面又有 TPM 插件；要求默认不读，改为由用户手动把能用的配置导入 keepane 自己的配置，且能从 tmux 或其他配置导入。
+
+一、`config_paths` 去掉三个 tmux 路径（`.wmux.conf` 仍读）。没有 keepane 配置而本机有 tmux 配置时，server 启动只在 `show-messages` 记一条"is tmux's and is not read: `keepane import-config` …"，不在状态栏弹。显式 `source-file` 一份 tmux 配置仍按原来的宽松方式读。
+
+二、`keepane import-config [-n] [-o file] [file]`（`src/server/import.rs`）：不给文件就找 tmux 的位置；写进 keepane 正在读的配置（用户本机是 `.wmux.conf`：新建 `.keepane.conf` 会把它挡住），没有就新建 `~/.keepane.conf`；每行在一个不连接任何东西的临时 server 上真执行一次，只收设置类命令（选项、按键绑定、hook、环境变量），能用的原样写入（续行、`%if` 结构保留，每个分支都检验），其余注释掉并写明原因：TPM 与所有 `@` 选项、keepane 接受但无用的 tmux 选项、鼠标"键"的绑定、`run`/`if-shell`（导入不执行任何东西）、`source-file`、非设置命令、keepane 拒绝的写法。同一文件第二次导入拒绝；导入自身拒绝；空文件不写。审查确认临时 server 上这几类命令只改内存（无文件、无进程）。
+
+三、顺带：样式按 tmux 规则用逗号或空格分隔（`bg=#1e1e2e fg=#cdd6f4` 原来报 bad colour）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量 + 审查副作用 | Windows 228/10/85，Linux 205/86；审查：选项/绑定/hook/环境变量在临时 server 上只改内存。但鼠标"键"的绑定会被原样导入，而它在 keepane 里什么都不做 | **有问题**：鼠标键绑定改为跳过并注明（不计数） |
+| 2 | 真实输入、默认路径（Linux，独立 HOME） | TPM 很重的 37 行 tmux.conf：导入前 server 前缀仍是 C-b、`show-messages` 只有一条提示；不带参数找到 `~/.tmux.conf`、新建 `~/.keepane.conf`，15 导入 17 跳过，`-n` 预览与写入逐字节相同；导入后 server 选项与绑定生效、无任何报错；再导入拒绝。但 `status-style 'bg=#1e1e2e fg=#cdd6f4'` 报 bad colour：keepane 的样式只按逗号分隔 | **有问题**：分隔符与 tmux 一致（加单元测试），重跑后 16 导入 16 跳过（不计数） |
+| 3 | 静态一致性 | 两份 README 开头功能列表仍写"支持 `.tmux.conf`"，读来像会直接读取；其余说法（`source-file` tmux 配置宽松、接受无用选项）仍成立 | **有问题**：改为"配置写法（`import-config` 导入 `.tmux.conf`）"（不计数） |
+| 4 | 边界与退化输入（15 种） | 无 tmux 配置、文件不存在、未知参数、两个文件、`-o` 缺值：都报错退出 1、不写文件；无结尾换行、CRLF 目标、`~` 路径、两万字符的行、末行 `\`、嵌套 `%if` 未闭合都正确。但空文件仍写入一行只有标记的块（以后还挡住再导入） | **有问题**：空白文件只说"nothing to import"，不写（不计数） |
+| 5 | 可复现性 + 全量 | Windows 228/10/85，Linux 205/86；边界脚本全部重跑；同一 tmux.conf 在两个临时 HOME 各导入一次，去掉含路径的标记行后 sha256 相同 `da391bbf…` | 干净（1/3） |
+| 6 | 机制通路（变异 4 项） | 不跳过无用选项、又读 tmux.conf、不查已导入、不在临时 server 上检验：4/4 被抓 | 干净（2/3） |

@@ -57,8 +57,9 @@ Keys not arriving?  show-keys   (prints each key as the console hands it over an
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
-Config: ~/.keepane.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name);
-  with none, ~/.tmux.conf is read and whatever keepane cannot use is skipped.
+Config: ~/.keepane.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name).
+  import-config [-n] [-o file] [file]   (bring what keepane can use from ~/.tmux.conf or any config into it;
+  the rest goes in commented out, with why; -n shows it and writes nothing; tmux.conf is never read on its own)
 Any unambiguous prefix of a command name works: `keepane att`, `keepane lsp`, `keepane splitw -h`.
 Option names too (`set sync`, `set mon-act on`); an on/off option with no value flips it.
 Default prefix: C-b.  Prefix ? lists key bindings, prefix q shows pane numbers.";
@@ -181,6 +182,8 @@ fn main() {
         "windows-terminal" | "wt" => Some(keepane::wt::run(&socket, &args[1..])),
         "completion" => Some(keepane::completion::run(&args[1..])),
         "setup" => Some(keepane::setup::run(&args[1..])),
+        // A file of ours from a file of someone else's: no server needed.
+        "import-config" => Some(rt.block_on(async { keepane::server::import::run(&args[1..]) })),
         // The hook every Claude Code session runs: outside a pane there is
         // nothing to tell and no server to ask (or to start).
         "pane-ready" if args.iter().any(|a| a == "-q") && std::env::var_os("KEEPANE_PANE").is_none() => Some(Ok(0)),

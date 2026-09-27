@@ -173,13 +173,16 @@ Missing: `copy-pipe` to a command (`copy-pipe-and-cancel` copies as
 
 ## Config file
 
-`~/.keepane.conf` first; with none, `~/.tmux.conf` or
-`~/.config/tmux/tmux.conf` is read as tmux would read it: `\` continues a
-line, `%if` / `%elif` / `%else` / `%endif` pick their branch by the
-condition (a format, true when it expands to something other than nothing
-or `0`; `#{==:#{host},box}` and the other comparisons work), and every line
-keepane cannot use is skipped with a note in
-`show-messages` plus a one-line count on the first attach. `bind -T` takes
+`~/.keepane.conf`, read as tmux reads its own: `\` continues a line,
+`%if` / `%elif` / `%else` / `%endif` pick their branch by the condition (a
+format, true when it expands to something other than nothing or `0`;
+`#{==:#{host},box}` and the other comparisons work). `~/.tmux.conf` is not
+read: `keepane import-config` brings what keepane can use from it (or from
+any config) into keepane's, once, with the rest commented out and why
+(TPM and `@` plugin settings, options keepane has no use for, `run` and
+`if-shell`, anything it rejects). A tmux config read with `source-file`
+still skips what keepane cannot use, with a note in `show-messages` plus a
+one-line count on the first attach. `bind -T` takes
 `root`, `prefix` and `copy-mode-vi` (`copy-mode` is taken as the same
 table, keepane's copy mode being vi-style); any other table is refused rather
 than bound somewhere else. Mouse key names (`MouseDragEnd1Pane`,
@@ -188,7 +191,8 @@ than bound somewhere else. Mouse key names (`MouseDragEnd1Pane`,
 ## Options
 
 `show-options` prints what keepane implements; anything else common in a
-`.tmux.conf` is accepted and ignored so an existing config still loads.
+`.tmux.conf` is accepted and ignored if set anyway, and left out by
+`import-config`.
 The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `mouse`, `history-limit`, `status`, `status-position`, `status-style`,
 `status-left`, `status-right`, `status-left-length`,

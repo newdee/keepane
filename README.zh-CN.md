@@ -16,7 +16,7 @@ keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程�
 - 给 pane 命名后，就能向它发消息。消息先进入收件箱，等 pane 准备好再投递：shell 回到提示符时执行命令，其他程序主动读取。
 - 每条消息都有固定格式的信封，记录发送方、接收方和任务。事件日志保留 30 天；按 `C-b v` 可查看 pane、消息和任务。
 - 人、脚本和 AI agent 使用同一套消息机制；agent 也可通过内置的 MCP 服务端操作。
-- 支持 tmux 风格的 `C-b` 前缀、分屏、copy mode、命令行、`.tmux.conf`、格式串、hook 和插件。
+- 支持 tmux 风格的 `C-b` 前缀、分屏、copy mode、命令行、配置写法（`keepane import-config` 可以导入现成的 `.tmux.conf`）、格式串、hook 和插件。
 
 支持 Windows（ConPTY），pane 里可运行 PowerShell、WSL 和 cmd；也支持 Linux 和 macOS，pane 里可运行 bash 和 zsh。
 
@@ -365,7 +365,15 @@ keepane web --port 8080 --bind 192.168.1.23   # 换端口，或者指定网卡
 
 ## 配置
 
-没有 `.keepane.conf` 的话，keepane 会直接读你现成的 `~/.tmux.conf`（或 `~/.config/tmux/tmux.conf`）：认识的照做（`%if` 块会求值，`bind -T copy-mode-vi v send -X begin-selection` 这类行会在 copy mode 里绑键），不认识的（没装的 TPM `@plugin`、tmux 有而 keepane 没有的选项）跳过并记进 `show-messages`，不会每次 attach 都糊你一脸报错。`MouseDragEnd1Pane` 这类鼠标“键”照收不误、不起作用：keepane 的鼠标行为是固定的。
+keepane 只读自己的配置，不会去读 `~/.tmux.conf`。想沿用 tmux 的配置，就手动导入一次：
+
+```bash
+keepane import-config -n     # 先看看会写进去什么，不改任何文件
+keepane import-config        # 从 ~/.tmux.conf（或 ~/.config/tmux/tmux.conf）导入
+keepane import-config some.conf -o ~/.keepane.conf   # 任何配置文件，写到指定位置
+```
+
+每一行都按 keepane 启动时读配置的方式试一遍。能用的原样写进去（续行和 `%if` 块保持原来的结构，每个分支都检验过）；用不了的以注释形式写进去，并注明原因：TPM 和所有 `@` 开头的插件设置（tmux 的插件在 keepane 里不会运行）、tmux 有而 keepane 用不上的选项（`escape-time`、`mode-keys` 这些）、给 `MouseDragEnd1Pane` 这类鼠标“键”的绑定（keepane 的鼠标行为是固定的）、会执行程序的命令（`run`、`if-shell`：导入时什么都不执行），以及 keepane 不接受的写法。导入写进 keepane 正在读的那个配置文件（一个都没有就新建 `~/.keepane.conf`），并告诉你写到了哪里；同一个文件导入过一次，再导入会被拒绝。已经在运行的 server 只在启动时读配置，用 `keepane source-file ~/.keepane.conf` 可以立刻生效。
 
 配置文件是 `~/.keepane.conf`（也可以放 `~/.config/keepane/keepane.conf`，或者用 `KEEPANE_CONFIG` 环境变量指定；Windows 上 `~` 就是 `%USERPROFILE%`），一行一条命令，就是 tmux 那种写法：
 
@@ -415,7 +423,7 @@ source-file ~/.keepane/themes/nord.conf
 
 仓库里的 `themes/` 放了几套现成配色（Tokyo Night，也就是这里截图用的那套，还有 Nord、Gruvbox dark、Dracula、Catppuccin Mocha）。它们就是普通的 keepane 命令文件，`source-file` 一下就行，想改直接改。
 
-`.tmux.conf` 里常见但 keepane 用不上的选项（`escape-time`、`focus-events` 这些）会被接受然后忽略，所以现成的 tmux 配置可以直接拿来改。`default-terminal`（不设就是 `xterm-256color`）是 Linux 和 macOS 上 pane 拿到的 `TERM`；Windows 上终端由 ConPTY 安排，这个选项不起作用。
+`.tmux.conf` 里常见但 keepane 用不上的选项（`escape-time`、`focus-events` 这些）如果还是被设置了（比如用 `source-file` 读了一份 tmux 配置），会被接受然后忽略；`import-config` 不会导入它们。`default-terminal`（不设就是 `xterm-256color`）是 Linux 和 macOS 上 pane 拿到的 `TERM`；Windows 上终端由 ConPTY 安排，这个选项不起作用。
 
 所有窗口和 pane 命令都支持 tmux 风格的 `-t`：`session`、`session:window`、`:window`、`session:window.pane`，窗口那一段可以是编号、名字、`+`、`-` 或 `!`。`%N` 是按编号指定 pane（`list-panes` 里显示的那个），别的 pane 增减时它指的还是同一个；`list-panes -F` 按格式串逐个 pane 输出。
 

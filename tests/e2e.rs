@@ -2615,6 +2615,70 @@ async fn find_text_looks_through_every_pane() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `import-config` writes what keepane takes from a tmux config into
+/// keepane's own, the rest commented out; once per file; `-n` writes
+/// nothing; and what it wrote loads with no errors at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tmux_conf_is_imported_when_asked() {
+    let dir = std::env::temp_dir().join(format!("keepane-import-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let tmux = dir.join("tmux.conf");
+    let out = dir.join("keepane.conf");
+    let _ = std::fs::remove_file(&out);
+    std::fs::write(
+        &tmux,
+        "set -g prefix C-a\n\
+         set -g base-index 1\n\
+         set -g escape-time 0\n\
+         set -g @plugin 'tmux-plugins/tpm'\n\
+         bind r source-file ~/.tmux.conf\n\
+         run '~/.tmux/plugins/tpm/tpm'\n",
+    )
+    .unwrap();
+    let import = |args: &[&str]| {
+        let o =
+            std::process::Command::new(env!("CARGO_BIN_EXE_keepane")).arg("import-config").args(args).output().unwrap();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let (t, o) = (tmux.to_string_lossy().into_owned(), out.to_string_lossy().into_owned());
+
+    let (code, shown, err) = import(&["-n", "-o", &o, &t]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!out.exists(), "-n writes nothing");
+    assert!(shown.contains("set -g prefix C-a") && shown.contains("# set -g escape-time 0"), "{shown}");
+
+    let (code, said, err) = import(&["-o", &o, &t]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(said.contains("3 imported, 3 skipped"), "{said}");
+    assert!(said.contains("4: set -g @plugin 'tmux-plugins/tpm'  (a tmux plugin (TPM)"), "{said}");
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(written.starts_with(&format!("# keepane import-config: from {t}\nset -g prefix C-a\n")), "{written}");
+    assert!(written.contains("\n# run '~/.tmux/plugins/tpm/tpm'\n"), "{written}");
+    assert_eq!(written, shown, "what -n shows is what is written");
+
+    let (code, _, err) = import(&["-o", &o, &t]);
+    assert_eq!(code, Some(1), "a second import of the same file is refused");
+    assert!(err.contains("was imported into") && err.contains("already"), "{err}");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), written, "and changes nothing");
+    let (code, _, err) = import(&["-o", &o, &o]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("is the config keepane reads already"), "{err}");
+
+    // Read the way a server reads its config: nothing to report.
+    let h = Harness::start("import").await;
+    let (code, _, err) = h.cli(&["source-file", &o]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(h.cli(&["show", "-gv", "prefix"]).await.1.trim(), "C-a");
+    let (_, keys, _) = h.cli(&["list-keys"]).await;
+    assert!(keys.lines().any(|l| l.contains("-T prefix r ") && l.contains("source-file")), "{keys}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     // A config as people actually have them: TPM, copy-mode-vi bindings, a

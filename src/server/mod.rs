@@ -2,6 +2,7 @@
 //! named pipe; renders frames.
 
 pub mod actor;
+pub mod import;
 pub mod input;
 pub mod layout;
 mod mail;
@@ -1460,6 +1461,14 @@ impl Server {
                     self.config_errors = Some(e.lines().map(str::to_string).collect());
                 }
             }
+        } else if let Some(tmux) = import::tmux_config() {
+            // Said where it is looked for, not on every attach.
+            let note = format!(
+                "{} is tmux's and is not read: `keepane import-config` brings over what keepane can use",
+                tmux.display()
+            );
+            log::info!("{note}");
+            self.note_message(&note);
         }
         if (self.opts.restore_on_start || self.force_restore) && self.sessions.is_empty() {
             let (created, problems) = self.restore_all(None);

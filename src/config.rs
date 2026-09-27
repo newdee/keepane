@@ -370,11 +370,12 @@ pub fn parse_color(v: &str) -> Result<Color, String> {
     Err(format!("bad colour '{v}'"))
 }
 
-/// Parse "fg=green,bg=black" style values into (fg, bg).
+/// Parse "fg=green,bg=black" style values into (fg, bg). As in tmux, the
+/// parts are separated by commas or spaces ("bg=#1e1e2e fg=#cdd6f4").
 fn parse_style(v: &str) -> Result<(Option<Color>, Option<Color>), String> {
     let mut fg = None;
     let mut bg = None;
-    for part in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+    for part in v.split([',', ' ', '\t', '\n']).filter(|p| !p.is_empty()) {
         if let Some(c) = part.strip_prefix("fg=") {
             fg = Some(parse_color(c)?);
         } else if let Some(c) = part.strip_prefix("bg=") {
@@ -850,18 +851,11 @@ pub fn config_paths() -> Vec<PathBuf> {
         v.push(cfg.join("keepane").join("keepane.conf"));
     }
     // keepane was wmux up to 0.13.1: a config under the old name still counts.
+    // A tmux config does not: `keepane import-config` brings over what
+    // keepane can use from one, when asked.
     if let Some(home) = dirs::home_dir() {
         v.push(home.join(".wmux.conf"));
         v.push(home.join(".config").join("wmux").join("wmux.conf"));
-    }
-    // With no keepane config of its own, an existing tmux config is read the
-    // way tmux would read it, skipping what keepane has no equivalent for.
-    if let Some(home) = dirs::home_dir() {
-        v.push(home.join(".tmux.conf"));
-        v.push(home.join(".config").join("tmux").join("tmux.conf"));
-    }
-    if let Some(cfg) = dirs::config_dir() {
-        v.push(cfg.join("tmux").join("tmux.conf"));
     }
     v
 }
@@ -908,6 +902,12 @@ mod tests {
         assert_eq!(o.get("status-bg").unwrap(), "colour234");
         assert_eq!(o.get("pane-active-border-style").unwrap(), "fg=brightblue");
         assert_eq!(o.get("pane-border-style").unwrap(), "fg=brightblack");
+        // tmux separates a style's parts with spaces as well as commas.
+        o.set("status-style", "bg=#1e1e2e fg=#cdd6f4").unwrap();
+        assert_eq!(o.get("status-style").unwrap(), "fg=#cdd6f4,bg=#1e1e2e");
+        o.set("status-style", " fg=red ,  bg=blue").unwrap();
+        assert_eq!(o.get("status-style").unwrap(), "fg=red,bg=blue");
+        assert!(o.set("status-style", "fg=red bold").unwrap_err().contains("bad style 'bold'"));
         for c in [Color::Default, Color::Idx(3), Color::Idx(15), Color::Idx(200), Color::Rgb(0, 0x1a, 0xff)] {
             assert_eq!(parse_color(&color_name(c)).unwrap(), c, "{}", color_name(c));
         }
@@ -1139,7 +1139,7 @@ mod tests {
     }
 
     /// keepane's own config first, then one under the old name (wmux, up to
-    /// 0.13.1), then tmux's.
+    /// 0.13.1); never tmux's (`import-config` brings that over when asked).
     #[test]
     fn a_config_under_the_old_name_still_counts() {
         let paths: Vec<String> = config_paths()
@@ -1149,7 +1149,7 @@ mod tests {
             .collect();
         let at = |name: &str| paths.iter().position(|p| p == name).unwrap_or_else(|| panic!("{name} in {paths:?}"));
         assert!(at(".keepane.conf") < at(".wmux.conf"), "{paths:?}");
-        assert!(at(".wmux.conf") < at(".tmux.conf"), "{paths:?}");
         assert!(paths.iter().any(|p| p == "wmux.conf"), "~/.config/wmux/wmux.conf too: {paths:?}");
+        assert!(!paths.iter().any(|p| p.ends_with("tmux.conf")), "tmux's is not read: {paths:?}");
     }
 }

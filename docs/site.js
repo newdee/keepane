@@ -92,9 +92,9 @@ const ZH = {
   "cm.p3":
     "pane 的工作模式只能在那个 pane 里切换，所以任何 pane 里运行的程序都不能把别的 pane 变成收到什么就执行什么的 shell。发生过的一切记在事件日志里，保留 30 天。",
 
-  "c4.title": "你的 .tmux.conf，基本能直接用",
+  "c4.title": "你的 .tmux.conf，导入一次就能用",
   "c4.sub":
-    "命令行、: 命令提示符、配置文件里是同一套命令名。tmux 有而 keepane 没有的选项会被接受然后忽略，所以现成配置可以拿来当起点。",
+    "命令行、: 命令提示符、配置文件里是同一套命令名。keepane import-config 把 tmux 配置里能用的导入 keepane 自己的配置，只导一次，用不了的注释掉并写明原因。",
   "c4.p0":
     "命令名可以只写不会混淆的前缀（<code>keepane att</code>、<code>keepane splitw -h</code>），选项名也一样：<code>set sync</code> 就是 <code>set synchronize-panes</code>，<code>set mon-act on</code> 就是 <code>set monitor-activity on</code>。开关类选项不给值就是切换。",
   "c4.p1":
