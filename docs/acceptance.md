@@ -2712,4 +2712,4 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 轮 | 视角 | 数据 | 结论 |
 |---|---|---|---|
 | 1 | 全量（两平台） | fmt/clippy 0；Windows 225/10/84；Linux 202/85（多出的 1 个是新单元测试） | 干净（1/3） |
-| 2 | 机制通路 | 照 Homebrew 的布局放一份（`bin/keepane` 链接到 `Cellar/keepane/0.17.0/bin/keepane`）：经链接运行 `keepane update` 给 brew 的提示，放在别处给通用提示；把 Homebrew 判断改成恒假，单元测试在第 42 行变红 | 干净（2/3） |
+| 2 | 机制通路 | 照 Homebrew 的布局放一份（`bin/keepane` 链接到 `Cellar/keepane/0.17.0/bin/keepane`）：经链接运行 `keepane update` 给 brew 的提示，放在别处给通用提示；把 Homebrew 判断改成恒假，单元测试在第 42 行变红 | 干净（2/3） || 3 | 真机三平台（CI run 36290957929，提交 44270c8）+ tap 在 main 上手动运行（run 36290958152） | keepane：windows、ubuntu、macos 的 fmt、clippy、全量测试都通过。tap：两平台 test 通过，bump 输出 formula already at 0.17.0，publish 未提交（tap 的 main 仍是合并提交 aaf09f9） | 干净（3/3），验收通过 |
