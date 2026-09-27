@@ -2700,3 +2700,4 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 14 | 真机三平台（CI run 36288382993，提交 3c28d21，只改了本文件） | 发版前的 CI 在 macOS 上挂了：bash 版的假标记检查（第 7 轮挪进新窗口）输出为空，took 65ms。新 bash 里第一次启动外部的 `sleep 0.01` 在 macOS 上超过 60ms 窗口；pwsh 版挪窗时加了热身，bash 版漏了。同样的代码第 13 轮通过，说明一次 CI 不足以证明 | **有问题**：bash 版同样先热身（不计数）；v0.17.0 的发布在等 CI 这一步就停了，没有产出，标签移到修复后的提交 |
 | 15 | 全量（两平台） | fmt/clippy 0；Windows 225/10/84；Linux 201/85；bash 版该测试 Linux 连跑 10 次 10/10 | 干净（1/3） |
 | 16 | 慢机器（Linux） | 测试与 4 个空转进程绑在同样 2 个核上：shell 测试 8/8；e2e 全量两次 85/85（每次 34.7 秒，平时 8.7 秒） | 干净（2/3） |
+| 17 | 真机三平台（CI run 36288770227，提交 c22768a） | windows、ubuntu、macos 的 fmt、clippy、全量测试都通过。（其间 b391684 误带进一个本机工具的 `.codegraph/.gitignore`，c22768a 删掉，并在本地 `.git/info/exclude` 里排除） | 干净（3/3），验收通过 |
