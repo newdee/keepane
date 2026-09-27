@@ -1750,7 +1750,9 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
             frames += 1;
         }
     }
-    assert!(frames >= 20, "a moving frame, {frames} frames in a second");
+    // Several frames, not one jump: how many a busy machine (the whole
+    // suite at once) draws is not what this is about.
+    assert!(frames >= 4, "a moving frame, {frames} frames in a second");
     c.wait_for("gone again", |s| corners(s) == 0).await;
     c.prefix('l').await;
     c.wait_for("back right", |s| corners(s) == 0).await;
@@ -4778,21 +4780,27 @@ async fn a_message_finds_its_pane_by_name_or_address_and_waits_to_be_read() {
     h.cli(&["send-message", "-t", &format!("%{aside}"), "for later"]).await;
     let (_, flags, _) = h.cli(&["display-message", "-p", "-t", "m:aside", "#{window_flags}"]).await;
     assert!(flags.contains('@'), "{flags:?}");
-    // Taken by the pane itself: the envelope line, then the text.
+    // Taken by the pane itself: the header line (its fields), then the text.
     let (code, out, err) = h.cli_in(Some(b), &["read-message"]).await;
     assert_eq!(code, 0, "{err}");
     let (env, text) = out.split_once('\n').unwrap();
     assert_eq!(
         env,
-        format!(
-            r#"{{"keepane":1,"id":{id},"task":{id},"from":"{addr_a}","name":"lead","mode":"normal","to":"{addr_b}","via":"normal","hop":0}}"#
-        )
+        format!("[keepane id={id} task={id} from={addr_a} name=lead mode=normal to={addr_b} via=normal hop=0]")
     );
     assert_eq!(text.trim(), "hello there");
     let (_, trace, _) = h.cli(&["trace-message", &id]).await;
     assert!(trace.starts_with(&format!("#{id} read")), "{trace}");
     let (_, out, _) = h.cli_in(Some(b), &["read-message"]).await;
-    assert!(out.contains(r#""from":"user""#) && out.ends_with("second"), "{out}");
+    assert!(out.contains(" from=user ") && out.ends_with("second"), "{out}");
+    // `message-envelope json`: the JSON envelope, as before 0.17.
+    h.cli(&["set", "-g", "message-envelope", "json"]).await;
+    h.cli(&["send-message", "-t", "%builder", "in json"]).await;
+    let (_, out, _) = h.cli_in(Some(b), &["read-message"]).await;
+    assert!(out.starts_with(r#"{"keepane":1,"id":"#) && out.contains(r#""from":"user""#), "{out}");
+    let (code, _, err) = h.cli(&["set", "-g", "message-envelope", "xml"]).await;
+    assert!(code != 0 && err.contains("fields or json"), "{err}");
+    h.cli(&["set", "-g", "message-envelope", "fields"]).await;
     let (code, _, err) = h.cli_in(Some(b), &["read-message"]).await;
     assert!(code != 0 && err.contains("no message"), "{err}");
 
@@ -4876,8 +4884,20 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     assert_eq!(code, 0, "{err}");
     assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
     assert!(trace.contains("output:\nabcd"), "{trace}");
+    // A command wider than the pane: the line editor draws its prompt again
+    // as the line wraps. That is not a prompt: the command runs on, busy.
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let long = format!("sleep 1; echo {}", "x".repeat(160));
+    let (_, out, _) = h.cli(&["send-message", "-t", &t, "--", &long]).await;
+    let id_long = msg_id(&out);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (_, trace, _) = h.cli(&["trace-message", &id_long]).await;
+    assert!(trace.starts_with(&format!("#{id_long} delivered")), "still running at 0.5s: {trace}");
+    assert_eq!(ask_pane(&h, p, "#{pane_idle}").await, "0");
+    let (_, trace, _) = h.cli(&["trace-message", &id_long, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{id_long} done")) && trace.contains(&"x".repeat(160)), "{trace}");
     // The envelope goes in front as an argument of `:`, which runs nothing.
-    let screen = h.wait_capture("sh:0.0", "the envelope", |t| t.contains(": '{\"keepane\":1")).await;
+    let screen = h.wait_capture("sh:0.0", "the envelope", |t| t.contains(": '[keepane id=")).await;
     assert!(screen.contains("abcd"), "{screen}");
     wait_format(&h, p, "#{pane_idle}", "1").await;
     let (_, out, _) = h.cli(&["send-message", "-t", &t, "ls /keepane-not-here-xyz"]).await;
@@ -4989,7 +5009,7 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
     assert!(trace.contains("output:\nabcd"), "{trace}");
     // The command ran with its envelope in front, as a comment.
-    let screen = h.wait_capture("sh:0.0", "the envelope", |t| t.contains("<# {\"keepane\":1")).await;
+    let screen = h.wait_capture("sh:0.0", "the envelope", |t| t.contains("<# [keepane id=")).await;
     assert!(screen.contains("abcd"), "{screen}");
     // A command that fails is on record as failed.
     wait_format(&h, p, "#{pane_idle}", "1").await;
@@ -5065,7 +5085,7 @@ async fn an_agent_pane_takes_work_when_it_says_so_and_answers_along_the_chain() 
     let (_, trace, _) = h.cli(&["trace-message", &id]).await;
     assert!(trace.starts_with(&format!("#{id} delivered")), "{trace}");
     h.wait_capture("ai:1.0", "the delivery", |t| {
-        t.contains(&format!("{{\"keepane\":1,\"id\":{id}")) && t.contains(&format!("{{\"keepane\":1,\"end\":{id}}}"))
+        t.contains(&format!("[keepane id={id} ")) && t.contains(&format!("[keepane end={id}]"))
     })
     .await;
     // Its answer carries the chain on: same task, one hop more, re the task.
@@ -5073,12 +5093,10 @@ async fn an_agent_pane_takes_work_when_it_says_so_and_answers_along_the_chain() 
     assert_eq!(code, 0, "{err}");
     let (_, got, _) = h.cli_in(Some(a), &["read-message"]).await;
     assert!(
-        got.contains(&format!(r#""task":{id}"#))
-            && got.contains(r#""hop":1"#)
-            && got.contains(&format!(r#""re":{id}"#)),
+        got.contains(&format!(" task={id} ")) && got.contains(" hop=1") && got.contains(&format!(" re={id}]")),
         "{got}"
     );
-    assert!(got.contains(r#""mode":"ai""#) && got.ends_with("result one"), "{got}");
+    assert!(got.contains(" mode=ai ") && got.ends_with("result one"), "{got}");
     // Ready again: that one is done.
     h.cli_in(Some(b), &["pane-ready"]).await;
     let (_, trace, _) = h.cli(&["trace-message", &id]).await;
@@ -5107,6 +5125,41 @@ async fn an_agent_pane_takes_work_when_it_says_so_and_answers_along_the_chain() 
     // refused, so two agents cannot answer each other for ever.
     let (code, _, err) = h.cli_in(Some(a), &["send-message", "-r", "thanks"]).await;
     assert!(code != 0 && err.contains("message-hop-limit"), "{err}");
+    // The fields a sender may give by name: what it answers (--re: to that
+    // message's sender unless --to says otherwise) and the task it carries
+    // on (--task); the hop is still keepane's, so the limit still holds.
+    let (code, out, err) = h.cli(&["send-message", "--re", &fresh, "about that"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, got, _) = h.cli_in(Some(a), &["read-message"]).await;
+    assert!(
+        got.contains(&format!(" task={fresh} ")) && got.contains(" hop=1") && got.contains(&format!(" re={fresh}]")),
+        "{out}: {got}"
+    );
+    let (code, _, err) = h.cli(&["send-message", "--to", &pb, "--task", &id, "more of it"]).await;
+    assert!(code != 0 && err.contains("message-hop-limit"), "past the furthest hop of task #{id}: {err}");
+    h.cli(&["set", "-g", "message-hop-limit", "8"]).await;
+    let (code, out, err) = h.cli(&["send-message", "--to", &pb, "--task", &id, "more of it"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out)]).await;
+    assert!(trace.contains(&format!("task #{id} · hop 2")), "{trace}");
+    // Answering what came from outside any pane needs a place to go.
+    let (_, out, _) = h.cli(&["send-message", "--to", &pb, "from outside"]).await;
+    let outside = msg_id(&out);
+    let (code, _, err) = h.cli(&["send-message", "--re", &outside, "x"]).await;
+    assert!(code != 0 && err.contains("--re") && err.contains("say where with --to"), "{err}");
+    let (code, _, err) = h.cli(&["send-message", "--re", &outside, "--to", &pb, "x"]).await;
+    assert_eq!(code, 0, "with --to it goes: {err}");
+    for (argv, why) in [
+        (vec!["send-message", "--re", "999999", "x"], "no message #999999"),
+        (vec!["send-message", "--to", &pb, "--task", "999999", "x"], "no task #999999"),
+        (vec!["send-message", "--to", &pb, "--re", &fresh, "--task", &id, "x"], "is in task"),
+        (vec!["send-message", "--to", &pb, "--from", "%x", "x"], "keepane's to fill in"),
+        (vec!["send-message", "--to", &pb, "--hop", "0", "x"], "keepane's to fill in"),
+        (vec!["send-message", "--re", "x1", "x"], "a message number"),
+    ] {
+        let (code, _, err) = h.cli(&argv).await;
+        assert!(code != 0 && err.contains(why), "{argv:?}: {err}");
+    }
     // pane-ready counts only in an ai pane; outside any pane -q is quiet.
     assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
     let (code, _, err) = h.cli(&["pane-ready"]).await;

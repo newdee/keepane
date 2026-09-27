@@ -16,12 +16,16 @@
 
 .EXAMPLE
   pwsh -File tools/make-demos.ps1
+.EXAMPLE
+  pwsh -File tools/make-demos.ps1 -Only keepane-messages   # one demo, the others left as they are
 #>
 [CmdletBinding()]
 param(
     # 0 keeps the rendered size.
     [int]$Width = 0,
-    [string]$Work = "target/demos"
+    [string]$Work = "target/demos",
+    # Only these demos (by name, such as keepane-messages); all when empty.
+    [string[]]$Only = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,6 +38,11 @@ $takes = @(
     @{ Env = "KEEPANE_DEMO_OUT3"; Test = "record_history"; Name = "keepane-history" },
     @{ Env = "KEEPANE_DEMO_OUT4"; Test = "record_messages"; Name = "keepane-messages" }
 )
+if ($Only.Count -gt 0) {
+    $unknown = $Only | Where-Object { $_ -notin $takes.Name }
+    if ($unknown) { throw "no demo named $($unknown -join ', ') (there are $($takes.Name -join ', '))" }
+    $takes = $takes | Where-Object { $_.Name -in $Only }
+}
 foreach ($t in $takes) {
     $frames = Join-Path $Work "$($t.Name)-frames"
     $png = Join-Path $Work "$($t.Name)-png"

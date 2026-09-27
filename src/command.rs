@@ -159,12 +159,17 @@ pub enum Cmd {
     ListMarks {
         target: Option<Target>,
     },
-    /// `send-message [-t pane] [-r] [-w seconds] text`: into a pane's inbox
-    /// (docs/design/mailbox.md). `-r` answers the sender of the message the
-    /// calling pane is working on; `-w` waits until it is delivered.
+    /// `send-message [-t|--to pane] [-r | --re id] [--task id] [-w seconds]
+    /// text`: into a pane's inbox (docs/design/mailbox.md). `-r` answers the
+    /// sender of the message the calling pane is working on; `--re` answers
+    /// message `id` (its sender, unless `--to` says otherwise); `--task`
+    /// carries task `id` on. `-w` waits until it is delivered. Who sends it,
+    /// its number and its hop are keepane's to fill in, never the sender's.
     SendMessage {
         target: Option<Target>,
         reply: bool,
+        re: Option<u64>,
+        task: Option<u64>,
         wait: Option<u64>,
         text: String,
     },
@@ -791,11 +796,17 @@ impl fmt::Display for Cmd {
                 f.write_str("list-marks")?;
                 fmt_target(f, target)
             }
-            Cmd::SendMessage { target, reply, wait, text } => {
+            Cmd::SendMessage { target, reply, re, task, wait, text } => {
                 f.write_str("send-message")?;
                 fmt_target(f, target)?;
                 if *reply {
                     f.write_str(" -r")?;
+                }
+                if let Some(r) = re {
+                    write!(f, " --re {r}")?;
+                }
+                if let Some(t) = task {
+                    write!(f, " --task {t}")?;
                 }
                 if let Some(w) = wait {
                     write!(f, " -w {w}")?;
@@ -1918,7 +1929,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-commands", &[]),
     ("list-keys", &[]),
     ("list-marks", &["-t"]),
-    ("send-message", &["-t", "-r", "-w"]),
+    ("send-message", &["-t", "-r", "-w", "--to", "--re", "--task"]),
     ("read-message", &["-t", "-w"]),
     ("list-messages", &["-t", "-a"]),
     ("trace-message", &["-w"]),
@@ -2305,23 +2316,37 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ListMarks { target }
         }
         "send-message" => {
-            let (mut target, mut reply, mut wait) = (None, false, None);
+            let (mut target, mut reply, mut wait, mut re, mut task) = (None, false, None, None, None);
+            let id = |flag: &str, v: &str| -> Result<u64, String> {
+                v.trim_start_matches('#')
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|i| *i > 0)
+                    .ok_or_else(|| format!("{n}: {flag} takes a message number, not '{v}'"))
+            };
             while a.is_flag() {
                 match a.next().unwrap() {
-                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-t" | "--to" => target = Some(Target::parse(a.value("--to")?)),
                     "-r" => reply = true,
+                    "--re" => re = Some(id("--re", a.value("--re")?)?),
+                    "--task" => task = Some(id("--task", a.value("--task")?)?),
                     "-w" => wait = Some(seconds(n, a.value("-w")?)?),
+                    f @ ("--from" | "--name" | "--mode" | "--id" | "--hop" | "--via") => {
+                        return Err(format!(
+                            "{n}: {f} is keepane's to fill in (who sends, its number, its hop and how it goes are never the sender's word)"
+                        ));
+                    }
                     f => return Err(bad_flag(n, f)),
                 }
             }
-            if reply && target.is_some() {
-                return Err(format!("{n}: -r answers the sender; it takes no -t"));
+            if reply && (target.is_some() || re.is_some()) {
+                return Err(format!("{n}: -r answers the message being worked on; it takes no --to or --re"));
             }
             let text = a.rest().join(" ");
             if text.is_empty() {
                 return Err(format!("{n}: text required"));
             }
-            Cmd::SendMessage { target, reply, wait, text }
+            Cmd::SendMessage { target, reply, re, task, wait, text }
         }
         "read-message" => {
             let (mut target, mut wait) = (None, None);
@@ -3856,7 +3881,9 @@ mod tests {
         for (cmd, flags) in FLAGS {
             assert!(COMMANDS.contains(cmd), "{cmd} is in FLAGS but not a command");
             for f in *flags {
-                assert!(f.starts_with('-') && f.len() == 2, "{cmd}: flag {f}");
+                // `-x`, or a word for a field (`--re`).
+                assert!(f.len() == 2 || (f.starts_with("--") && f.len() > 3), "{cmd}: flag {f}");
+                assert!(f.starts_with('-'), "{cmd}: flag {f}");
                 let words: Vec<String> = [cmd, f, "1", "x"].iter().map(|s| s.to_string()).collect();
                 if let Err(e) = parse(&words)
                     && e.contains("unknown flag")

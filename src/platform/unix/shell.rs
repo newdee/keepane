@@ -1,9 +1,11 @@
 //! The shell a pane starts with, and keepane's hook in it: bash and zsh get
 //! a start file of keepane's that first reads the user's own (`~/.bashrc`,
 //! `$ZDOTDIR/.zshrc`), then reports the directory (OSC 7), each command's
-//! start and end with its status (OSC 133), and the prompt itself (`OSC
-//! 7777;keepane-prompt;sh`, at its end, as the PowerShell hook does, `;sh`
-//! saying commands are typed to it in POSIX syntax), and keeps
+//! start and end with its status (OSC 133), and that a prompt is up (`OSC
+//! 7777;keepane-prompt;sh`, `;sh` saying commands are typed to it in POSIX
+//! syntax: once a prompt, from `PROMPT_COMMAND` / `precmd`, never in PS1,
+//! which the line editor draws again as a line wraps or text is typed
+//! ahead), and keeps
 //! the pane's own history file (`KEEPANE_SHELL_HISTORY`), written command by
 //! command.
 
@@ -46,11 +48,13 @@ if [ -n "$KEEPANE_SHELL_HISTORY" ]; then HISTFILE="$KEEPANE_SHELL_HISTORY"; hist
 __keepane_status() { __keepane_ok=$?; }
 __keepane_prompt() {
   history -a
-  printf '\e]133;D;%s\e\\\e]7;file://%s%s\e\\' "$__keepane_ok" "${HOSTNAME:-localhost}" "$PWD"
   case "$PS1" in
-    *keepane-prompt*) ;;
-    *) PS1="\[$(printf '\033]133;A\007')\]$PS1\[$(printf '\033]133;B\007\033]7777;keepane-prompt;sh\007')\]" ;;
+    *']133;B'*) ;;
+    *) PS1="\[$(printf '\033]133;A\007')\]$PS1\[$(printf '\033]133;B\007')\]" ;;
   esac
+  # keepane's word that a prompt is up: once a prompt, from here, not in
+  # PS1, which readline draws again (a wrapped line, text typed ahead).
+  printf '\e]133;D;%s\e\\\e]7;file://%s%s\e\\\e]7777;keepane-prompt;sh\a' "$__keepane_ok" "${HOSTNAME:-localhost}" "$PWD"
 }
 PS0="$(printf '\033]133;C\007')"
 PROMPT_COMMAND="__keepane_status;${PROMPT_COMMAND:+$PROMPT_COMMAND;}__keepane_prompt"
@@ -68,11 +72,12 @@ fi
 setopt INC_APPEND_HISTORY
 __keepane_precmd() {
   local ok=$?
-  printf '\e]133;D;%s\e\\\e]7;file://%s%s\e\\' "$ok" "${HOST:-localhost}" "$PWD"
   case "$PS1" in
-    *keepane-prompt*) ;;
-    *) PS1="%{"$'\e]133;A\a'"%}$PS1%{"$'\e]133;B\a\e]7777;keepane-prompt;sh\a'"%}" ;;
+    *$'\e]133;B'*) ;;
+    *) PS1="%{"$'\e]133;A\a'"%}$PS1%{"$'\e]133;B\a'"%}" ;;
   esac
+  # Once a prompt, not in PS1, which zle draws again.
+  printf '\e]133;D;%s\e\\\e]7;file://%s%s\e\\\e]7777;keepane-prompt;sh\a' "$ok" "${HOST:-localhost}" "$PWD"
 }
 __keepane_preexec() { printf '\e]133;C\e\\'; }
 autoload -Uz add-zsh-hook

@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::actor::{End, Message, MsgId, Sender, WorkMode};
+use super::actor::{End, EnvelopeStyle, Message, MsgId, Sender, WorkMode};
 
 /// Where a message is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -338,11 +338,11 @@ impl Store {
     }
 
     /// The message's life, for `trace-message`.
-    pub fn trace(&self, id: MsgId) -> Option<String> {
+    pub fn trace(&self, id: MsgId, style: EnvelopeStyle) -> Option<String> {
         let r = self.records.get(&id)?;
         let m = &r.msg;
         let t = |x: Time| x.format("%H:%M:%S").to_string();
-        let mut out = vec![format!("#{id} {} · task #{} · hop {}", r.stage.as_str(), m.task, m.hop), m.envelope()];
+        let mut out = vec![format!("#{id} {} · task #{} · hop {}", r.stage.as_str(), m.task, m.hop), m.header(style)];
         out.push(format!("  sent       {}", t(m.at)));
         if let Some(d) = r.delivered {
             let how = if r.stage == Stage::Read { "read" } else { "delivered" };
@@ -479,7 +479,7 @@ mod tests {
         s.ended(5, End::Done, Some(false), Some(("error: 1 failed".into(), false)));
         let r = s.get(5).unwrap();
         assert_eq!((r.stage, r.ok, r.output.as_deref()), (Stage::Failed, Some(false), Some("error: 1 failed")));
-        let t = s.trace(5).unwrap();
+        let t = s.trace(5, EnvelopeStyle::Json).unwrap();
         assert!(t.starts_with("#5 failed · task #5 · hop 1"), "{t}");
         assert!(t.contains("error: 1 failed") && t.contains("cargo test"), "{t}");
         assert_eq!(s.last_id(), 5);

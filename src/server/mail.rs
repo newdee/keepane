@@ -25,6 +25,14 @@ enum WaitKind {
     Inbox(PaneId),
 }
 
+/// What a message answers and carries on: `-r` (the message the calling
+/// pane works on), `--re` (message number so-and-so), `--task` (a chain).
+pub(super) struct Answer {
+    pub reply: bool,
+    pub re: Option<MsgId>,
+    pub task: Option<MsgId>,
+}
+
 /// A message deleted lately, for `drop-message -u`: when, its pane, where
 /// it stood in the queue.
 pub(super) struct Dropped {
@@ -135,12 +143,12 @@ impl Server {
     /// Run a pane-message command.
     pub(super) fn exec_mail(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
         let out = match cmd {
-            Cmd::SendMessage { target, reply, wait, text } => {
-                self.send_message(cid, target.as_ref(), reply, wait, text)
+            Cmd::SendMessage { target, reply, re, task, wait, text } => {
+                self.send_message(cid, target.as_ref(), Answer { reply, re, task }, wait, text)
             }
             Cmd::ReadMessage { target, wait } => self.read_message(cid, target.as_ref(), wait),
             Cmd::ListMessages { target, all } => self.list_messages(cid, target.as_ref(), all),
-            Cmd::TraceMessage { id, wait } => match self.observe.trace(id) {
+            Cmd::TraceMessage { id, wait } => match self.observe.trace(id, self.opts.message_envelope) {
                 None => Outcome::Error(format!("no message #{id}")),
                 Some(t) => match (wait, cid) {
                     (Some(secs), Some(cid)) if !self.observe.get(id).is_some_and(|r| r.stage.finished()) => {
@@ -179,29 +187,65 @@ impl Server {
         &mut self,
         cid: Option<ClientId>,
         target: Option<&Target>,
-        reply: bool,
+        answer: Answer,
         wait: Option<u64>,
         text: String,
     ) -> Outcome {
+        let Answer { reply, re, task: into_task } = answer;
         let me = self.caller_pane(cid);
         let actor = me.and_then(|p| self.pane_ref(p)).map(|p| &p.actor);
-        // What it answers (-r), and the chain it carries on.
-        let answering = actor.and_then(|a| a.answering().cloned());
-        let carry = actor.and_then(|a| a.carry(reply));
-        let to = if reply {
-            let Some(me) = me else { return Outcome::Error("send-message -r: not run inside a pane".into()) };
-            let Some(cur) = &answering else {
-                return Outcome::Error(format!("send-message -r: %{me} has no message to answer"));
+        // What it answers (-r: what the pane works on; --re: that message),
+        // and the chain it carries on.
+        let (answering, mut carry) = match re {
+            Some(r) => match self.observe.get(r) {
+                Some(rec) => (Some(rec.msg.clone()), Some((rec.msg.task, rec.msg.hop + 1))),
+                None => return Outcome::Error(format!("send-message --re: no message #{r}")),
+            },
+            None => (actor.and_then(|a| a.answering().cloned()), actor.and_then(|a| a.carry(reply))),
+        };
+        // --task: that chain, one hop past the furthest it has gone, so the
+        // hop limit still stops a loop.
+        if let Some(t) = into_task {
+            // A refused message went nowhere: it is not how far the chain got.
+            let furthest = self.observe.task(t).iter().filter(|r| r.stage != Stage::Rejected).map(|r| r.msg.hop).max();
+            let Some(furthest) = furthest else {
+                return Outcome::Error(format!("send-message --task: no task #{t}"));
             };
+            if let (Some(r), Some(a)) = (re, &answering)
+                && a.task != t
+            {
+                return Outcome::Error(format!("send-message: #{r} is in task #{}, not #{t}", a.task));
+            }
+            carry = Some((t, furthest + 1));
+        }
+        let reply = reply || (re.is_some() && target.is_none());
+        let to = if reply {
+            let Some(cur) = &answering else {
+                return Outcome::Error(match me {
+                    Some(me) => format!("send-message -r: %{me} has no message to answer"),
+                    None => "send-message -r: not run inside a pane".into(),
+                });
+            };
+            // Said the way it was asked: -r, or --re (which can be sent
+            // elsewhere with --to).
+            let (how, instead) = if re.is_some() { ("--re", "; say where with --to") } else { ("-r", "") };
             match cur.sender_pane() {
                 Some(p) if self.place_of(p).is_some() => p,
                 Some(p) => {
-                    return Outcome::Error(format!("send-message -r: #{} came from %{p}, which is gone", cur.id));
+                    return Outcome::Error(format!(
+                        "send-message {how}: #{} came from %{p}, which is gone{instead}",
+                        cur.id
+                    ));
                 }
-                None => return Outcome::Error(format!("send-message -r: #{} came from outside any pane", cur.id)),
+                None => {
+                    return Outcome::Error(format!(
+                        "send-message {how}: #{} came from outside any pane{instead}",
+                        cur.id
+                    ));
+                }
             }
         } else {
-            let Some(t) = target else { return Outcome::Error("send-message: -t pane required".into()) };
+            let Some(t) = target else { return Outcome::Error("send-message: --to pane (or -t) required".into()) };
             match self.resolve(Some(t), cid) {
                 Ok((_, _, p)) => p,
                 Err(e) => return Outcome::Error(e),
@@ -217,7 +261,7 @@ impl Server {
             to: self.address_of(to),
             via: self.pane_ref(to).map_or(WorkMode::Normal, |p| p.actor.mode),
             hop,
-            re: if reply { answering.as_ref().map(|c| c.id) } else { None },
+            re: if reply || re.is_some() { answering.as_ref().map(|c| c.id) } else { None },
             text,
             // The event log keeps milliseconds; so does the message.
             at: chrono::SubsecRound::trunc_subsecs(chrono::Local::now(), 3),
@@ -283,13 +327,14 @@ impl Server {
 
     /// Type the next message into the pane, if it is free for one.
     pub(super) fn deliver(&mut self, pid: PaneId) {
+        let style = self.opts.message_envelope;
         let Some(p) = self.find_pane_mut(pid) else { return };
         // Not while a command's end is settling: its output is taken first.
         if p.exit_code.is_some() || p.is_pending() || p.settle {
             return;
         }
         let Some(m) = p.actor.next_delivery() else { return };
-        let text = m.wrapped(p.syntax);
+        let text = m.wrapped(p.syntax, style);
         p.deliver(&text);
         self.observe.delivered(m.id);
     }
@@ -402,10 +447,11 @@ impl Server {
 
     /// Take the oldest message from a pane's inbox, as `read-message` prints it.
     fn take_message(&mut self, pid: PaneId) -> Option<String> {
+        let style = self.opts.message_envelope;
         let p = self.find_pane_mut(pid)?;
         let m = p.actor.read()?;
         self.observe.read(m.id);
-        Some(format!("{}\n{}", m.envelope(), m.text))
+        Some(format!("{}\n{}", m.header(style), m.text))
     }
 
     fn list_messages(&mut self, cid: Option<ClientId>, target: Option<&Target>, all: bool) -> Outcome {
@@ -721,7 +767,7 @@ impl Server {
         let mut out = vec![self.whoami(new)];
         if let Some(text) = message {
             let t = Target { pane_id: Some(new), ..Default::default() };
-            match self.send_message(cid, Some(&t), false, None, text) {
+            match self.send_message(cid, Some(&t), Answer { reply: false, re: None, task: None }, None, text) {
                 Outcome::Text(s) => out.push(s),
                 Outcome::Error(e) => out.push(e),
                 _ => {}
@@ -898,9 +944,11 @@ impl Server {
                 },
                 WaitKind::Finished(id) => match self.observe.get(id) {
                     Some(r) if !r.stage.finished() => None,
-                    _ => {
-                        Some(self.observe.trace(id).map_or(Outcome::Error(format!("no message #{id}")), Outcome::Text))
-                    }
+                    _ => Some(
+                        self.observe
+                            .trace(id, self.opts.message_envelope)
+                            .map_or(Outcome::Error(format!("no message #{id}")), Outcome::Text),
+                    ),
                 },
                 WaitKind::Inbox(pid) => {
                     if self.pane_ref(pid).is_none() {

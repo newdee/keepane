@@ -1,30 +1,52 @@
-//! `keepane dashboard`: every pane at a glance — its work mode, whether it
-//! is free, its inbox, what it says it is doing — and, below, the chosen
-//! pane's events, messages, the tasks, or its screen live
-//! (docs/design/mailbox.md §10.3). Opened by prefix v in a popup, or run
-//! in any terminal.
+//! `keepane dashboard`: panels in the manner of lazygit
+//! (docs/design/dashboard.md). On the left, [1] every pane (its mode,
+//! whether it is free, its inbox, how long it has been quiet, its
+//! program), [2] the chosen pane's inbox and [3] the tasks; on the right,
+//! [0] the chosen pane: its screen live, its scrollback, its events, or one
+//! message or task in full. Opened by prefix v in a popup, or run in any
+//! terminal.
 //!
-//! It watches and does not act, with one exception kept behind a mode of
-//! its own: in manage mode (E) queued messages can be deleted and moved.
-//! Everything it asks the server is in `QUERIES`; everything it may change
-//! is in `MANAGES`. The board is kept apart from the console, so it can be
-//! tested without one.
+//! It can act as well as watch: send a pane a message, rename it, change
+//! its work mode, mark it ready, go to it, close it, and delete or move
+//! queued messages. What cannot be taken back lightly (deleting a message,
+//! closing a pane, switching a pane to `shell`, where what it gets is run)
+//! waits for a yes. Everything it asks the server is in `QUERIES`, and
+//! everything it may change in `ACTIONS`. The board is kept apart from the
+//! console, so it can be tested without one.
 
+use crate::ipc::MouseRecord;
 use crate::keys::{Key, KeyCode};
-use std::time::{Duration, Instant};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use std::time::Duration;
+use unicode_width::UnicodeWidthChar;
 
 /// The only server commands the dashboard sends to look.
 pub const QUERIES: &[&str] =
-    &["list-panes", "list-events", "list-messages", "list-tasks", "capture-pane", "trace-message"];
-/// The only ones it sends to change anything, and only in manage mode.
-pub const MANAGES: &[&str] = &["drop-message", "move-message"];
+    &["list-panes", "list-events", "list-messages", "list-tasks", "capture-pane", "trace-message", "show-task"];
+/// The only ones it sends to change anything.
+pub const ACTIONS: &[&str] = &[
+    "send-message",
+    "rename-pane",
+    "set-work-mode",
+    "pane-ready",
+    "focus-pane",
+    "kill-pane",
+    "drop-message",
+    "move-message",
+];
 
-/// Manage mode ends by itself after this long without a key.
-const MANAGE_IDLE: Duration = Duration::from_secs(30);
+/// Whether `argv` is a change that waits for a yes: deleting a queued
+/// message, closing a pane, or letting a pane run what it is sent.
+pub fn needs_yes(argv: &[String]) -> bool {
+    match argv.first().map(String::as_str) {
+        Some("kill-pane") => true,
+        Some("drop-message") => argv.get(1).is_some_and(|a| a != "-u"),
+        Some("set-work-mode") => argv.last().is_some_and(|m| m == "shell"),
+        _ => false,
+    }
+}
 
 /// `list-panes -F` for the board: one pane a line, tab-separated.
-pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}";
+pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}";
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct PaneRow {
@@ -40,12 +62,19 @@ pub struct PaneRow {
     pub command: String,
     pub message: String,
     pub dead: bool,
+    pub path: String,
+    pub pid: String,
+    /// Unix seconds: when its program started, and when it last printed.
+    pub started: i64,
+    pub activity: i64,
+    pub size: String,
+    pub exit: String,
 }
 
 impl PaneRow {
     pub fn parse(line: &str) -> Option<PaneRow> {
         let f: Vec<&str> = line.split('\t').collect();
-        if f.len() < 12 {
+        if f.len() < 19 {
             return None;
         }
         Some(PaneRow {
@@ -61,6 +90,12 @@ impl PaneRow {
             command: f[9].into(),
             message: f[10].into(),
             dead: f[11] == "1",
+            path: f[12].into(),
+            pid: f[13].into(),
+            started: f[14].parse().unwrap_or(0),
+            activity: f[15].parse().unwrap_or(0),
+            size: format!("{}x{}", f[16], f[17]),
+            exit: f[18].into(),
         })
     }
 
@@ -74,6 +109,17 @@ impl PaneRow {
         } else {
             "busy"
         }
+    }
+
+    /// The state, coloured: free green, busy yellow, exited red.
+    fn state_styled(&self) -> String {
+        let colour = match self.state() {
+            "idle" => "32",
+            "busy" => "33",
+            "exited" => "31",
+            _ => "2",
+        };
+        format!("\x1b[{colour}m{:<6}\x1b[0m", self.state())
     }
 
     /// What it is doing: what it said, else the message it works on, else
@@ -90,112 +136,335 @@ impl PaneRow {
 
     fn matches(&self, filter: &str) -> bool {
         let f = filter.to_lowercase();
-        [&self.address, &self.session, &self.name, &self.mode, &self.status, &self.command]
+        [&self.address, &self.session, &self.name, &self.mode, &self.status, &self.command, &self.path]
             .iter()
             .any(|x| x.to_lowercase().contains(&f))
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum View {
-    /// The chosen pane's events.
-    Events,
-    /// Its inbox, what it works on, what it sent and got lately.
-    Messages,
-    /// Every task.
-    Tasks,
-    /// Its screen, live.
-    Live,
-    /// Its screen and scrollback.
-    History,
-    /// One message in full: envelope, text, what became of it.
-    Trace,
+/// One queued message, as `list-messages` gives it.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Queued {
+    pub id: String,
+    pub from: String,
+    pub waiting: String,
+    pub text: String,
 }
 
-impl View {
-    fn word(self) -> &'static str {
-        match self {
-            View::Events => "events",
-            View::Messages => "messages",
-            View::Tasks => "tasks",
-            View::Live => "live",
-            View::History => "history",
-            View::Trace => "message",
-        }
+impl Queued {
+    /// `  #5  from user  waiting 1s  the text`.
+    fn parse(line: &str) -> Option<Queued> {
+        let rest = line.strip_prefix("  #")?;
+        let mut parts = rest.split("  ");
+        let id = parts.next()?.trim().to_string();
+        let from = parts.next()?.strip_prefix("from ")?.to_string();
+        let waiting = parts.next()?.strip_prefix("waiting ")?.to_string();
+        let text = parts.collect::<Vec<_>>().join("  ");
+        Some(Queued { id, from, waiting, text })
     }
 }
+
+/// One task, as `list-tasks` gives it.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TaskRow {
+    pub id: String,
+    pub status: String,
+    /// Where its first message went, as the pane's part of the address
+    /// (`%4 (ai)`).
+    pub at: String,
+    pub took: String,
+    pub steps: String,
+    pub title: String,
+}
+
+impl TaskRow {
+    /// `list-tasks` lines: fixed columns, where its heading puts them; a
+    /// line without a heading goes by words (id, status, the rest).
+    fn parse_all(lines: &[String]) -> Vec<TaskRow> {
+        const HEADS: [&str; 6] = ["TASK", "STATUS", "AT", "TOOK", "STEPS", "TITLE"];
+        let cols: Option<Vec<usize>> = lines.iter().find(|l| l.starts_with("TASK")).and_then(|head| {
+            let mut from = 0;
+            HEADS
+                .iter()
+                .map(|w| {
+                    let at = from + head.get(from..)?.find(w)?;
+                    from = at + w.len();
+                    Some(at)
+                })
+                .collect()
+        });
+        lines
+            .iter()
+            .filter(|l| l.starts_with('#'))
+            .map(|l| {
+                let by_cols = cols.as_ref().and_then(|c| {
+                    let cell = |i: usize| -> Option<String> {
+                        let end = c.get(i + 1).copied().unwrap_or(l.len()).min(l.len());
+                        Some(l.get(c[i].min(end)..end)?.trim().to_string())
+                    };
+                    Some(TaskRow {
+                        id: cell(0)?.trim_start_matches('#').to_string(),
+                        status: cell(1)?,
+                        at: cell(2)?.rsplit('.').next().unwrap_or_default().to_string(),
+                        took: cell(3)?,
+                        steps: cell(4)?,
+                        title: cell(5)?,
+                    })
+                });
+                by_cols.unwrap_or_else(|| {
+                    let mut w = l.split_whitespace();
+                    TaskRow {
+                        id: w.next().unwrap_or_default().trim_start_matches('#').to_string(),
+                        status: w.next().unwrap_or_default().to_string(),
+                        title: w.collect::<Vec<_>>().join(" "),
+                        ..Default::default()
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn line(&self) -> String {
+        let colour = match self.status.as_str() {
+            "running" => "33",
+            "failed" => "31",
+            "done" => "32",
+            _ => "2",
+        };
+        // The title before where it went: in a narrow panel the title is
+        // what is read.
+        format!(
+            "#{:<3} \x1b[{colour}m{:<8}\x1b[0m {:>5}  {}  \x1b[2m{}\x1b[0m",
+            self.id, self.status, self.took, self.title, self.at
+        )
+    }
+}
+
+/// The panels, in the order Tab goes through them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Panel {
+    Panes,
+    Inbox,
+    Tasks,
+    Main,
+}
+
+/// What the main panel shows of the chosen pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Screen,
+    Scrollback,
+    Events,
+    Detail,
+}
+
+const TABS: [Tab; 4] = [Tab::Screen, Tab::Scrollback, Tab::Events, Tab::Detail];
+
+impl Tab {
+    fn word(self) -> &'static str {
+        match self {
+            Tab::Screen => "Screen",
+            Tab::Scrollback => "Scrollback",
+            Tab::Events => "Events",
+            Tab::Detail => "Detail",
+        }
+    }
+
+    /// Read from the bottom up (a screen, a log) rather than from the top.
+    fn read_up(self) -> bool {
+        self != Tab::Detail
+    }
+}
+
+/// What Detail shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Detail {
+    Message(String),
+    Task(String),
+}
+
+/// A line being typed at the bottom.
+#[derive(Clone, Debug, PartialEq)]
+enum Input {
+    Filter,
+    Send { to: String },
+    Rename { to: String },
+}
+
+/// What waits for an answer at the bottom.
+#[derive(Clone, Debug, PartialEq)]
+enum Dialog {
+    /// `y` runs it, anything else does not.
+    Confirm { question: String, argv: Vec<String> },
+    /// A work mode for a pane, picked with j/k.
+    Mode { to: String, pick: usize },
+    /// Every key, in the main panel.
+    Help,
+}
+
+const MODES: [&str; 3] = ["normal", "shell", "ai"];
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
     Redraw,
     Quit,
-    /// A server command to run (a query after a key, or a change in manage mode).
+    /// A server command to run (a change; queries come with the refresh).
     Run(Vec<String>),
+    /// Go to a pane: run it, and when in a popup, close the dashboard.
+    Go(Vec<String>),
 }
 
 pub struct Board {
     pub rows: Vec<PaneRow>,
     /// The chosen pane, by id, so it stays chosen when others come and go.
     pub chosen: Option<String>,
-    pub view: View,
-    /// Manage mode and the time of its last key.
-    pub manage: Option<Instant>,
-    /// The lines below the panes, as the last query for the view gave them.
-    pub below: Vec<String>,
-    /// The queued messages of the chosen pane, in order, and the one picked.
-    pub queued: Vec<String>,
-    pub pick: usize,
-    /// Messages of every pane's inbox, not just the chosen one's (`a`).
-    pub all_inboxes: bool,
-    /// The message shown in full (`View::Trace`).
-    pub traced: Option<String>,
-    /// Lines the view below is scrolled up by.
+    pub focus: Panel,
+    /// The left panel focus goes back to from the main one.
+    left: Panel,
+    pub tab: Tab,
+    pub inbox: Vec<Queued>,
+    pub inbox_pick: usize,
+    /// The tasks, and the one picked.
+    pub tasks: Vec<TaskRow>,
+    pub task_pick: usize,
+    /// What the main panel's tab shows, as its query gave it.
+    pub main: Vec<String>,
+    pub detail: Option<Detail>,
+    /// Lines the main panel is scrolled by, away from where it is read from.
     pub scroll: usize,
     pub filter: String,
-    typing: Option<String>,
+    input: Option<(Input, String)>,
+    dialog: Option<Dialog>,
     pub note: Option<String>,
     pub cols: u16,
     pub height: u16,
+    /// Unix seconds, from the refresh (how long ago panes started, went quiet).
+    pub now: i64,
 }
 
-fn clip(s: &str, width: usize) -> String {
-    let mut used = 0;
+/// Visible width of text that may hold SGR sequences.
+fn width_of(s: &str) -> usize {
+    clip(s, usize::MAX).1
+}
+
+/// `s` cut to `width` columns, escape sequences kept (a CSI whole, an OSC
+/// up to its end), other control characters as spaces; with the width it
+/// takes. A cut string ends its styles.
+fn clip(s: &str, width: usize) -> (String, usize) {
     let mut out = String::new();
-    for c in s.chars() {
-        let w = if c.is_control() { 1 } else { c.width().unwrap_or(0) };
+    let mut used = 0;
+    let mut styled = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            let mut seq = String::from(c);
+            match chars.peek() {
+                Some('[') => {
+                    seq.push(chars.next().unwrap());
+                    for d in chars.by_ref() {
+                        seq.push(d);
+                        if ('\x40'..='\x7e').contains(&d) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    // An OSC (a title, a link): not for this board; dropped.
+                    for d in chars.by_ref() {
+                        if d == '\x07' {
+                            break;
+                        }
+                        if d == '\x1b' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some(_) => {
+                    seq.push(chars.next().unwrap());
+                }
+                None => {}
+            }
+            styled = true;
+            out.push_str(&seq);
+            continue;
+        }
+        let (c, w) = if c.is_control() { (' ', 1) } else { (c, c.width().unwrap_or(0)) };
         if used + w > width {
             break;
         }
-        out.push(if c.is_control() { ' ' } else { c });
+        out.push(c);
         used += w;
     }
+    if styled {
+        out.push_str("\x1b[0m");
+    }
+    (out, used)
+}
+
+/// `s` in exactly `width` columns: cut, or filled with spaces.
+fn fit(s: &str, width: usize) -> String {
+    let (mut out, used) = clip(s, width);
+    out.push_str(&" ".repeat(width - used));
     out
 }
 
-fn pad(s: &str, width: usize) -> String {
-    let s = clip(s, width);
-    let n = width.saturating_sub(s.width());
-    format!("{s}{}", " ".repeat(n))
+/// Where each panel is on the screen: its top row, its height (borders
+/// included), and its left column and width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Rect {
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
 }
+
+impl Rect {
+    fn holds(&self, x: usize, y: usize) -> bool {
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+    }
+    /// Rows inside the borders.
+    fn inner_h(&self) -> usize {
+        self.h.saturating_sub(2)
+    }
+    fn inner_w(&self) -> usize {
+        self.w.saturating_sub(2)
+    }
+}
+
+struct Layout {
+    panes: Option<Rect>,
+    inbox: Option<Rect>,
+    tasks: Option<Rect>,
+    main: Option<Rect>,
+}
+
+/// Below this width, only the focused side is shown.
+const NARROW: usize = 70;
 
 impl Board {
     pub fn new(cols: u16, height: u16) -> Board {
         Board {
             rows: Vec::new(),
             chosen: None,
-            view: View::Events,
-            manage: None,
-            below: Vec::new(),
-            queued: Vec::new(),
-            pick: 0,
-            all_inboxes: false,
-            traced: None,
+            focus: Panel::Panes,
+            left: Panel::Panes,
+            tab: Tab::Screen,
+            inbox: Vec::new(),
+            inbox_pick: 0,
+            tasks: Vec::new(),
+            task_pick: 0,
+            main: Vec::new(),
+            detail: None,
             scroll: 0,
             filter: String::new(),
-            typing: None,
+            input: None,
+            dialog: None,
             note: None,
             cols,
             height,
+            now: 0,
         }
     }
 
@@ -214,274 +483,837 @@ impl Board {
         self.chosen.as_ref().and_then(|id| shown.iter().find(|r| &r.id == id).copied()).or(shown.first().copied())
     }
 
+    fn chosen_id(&self) -> Option<String> {
+        self.chosen_row().map(|r| r.id.clone())
+    }
+
     /// New pane rows from the server; the chosen pane stays chosen.
     pub fn set_rows(&mut self, rows: Vec<PaneRow>) {
         self.rows = rows;
-        if self.chosen_row().map(|r| r.id.clone()) != self.chosen {
-            self.chosen = self.chosen_row().map(|r| r.id.clone());
+        self.chosen = self.chosen_id();
+    }
+
+    /// The chosen pane's inbox, as `list-messages -t` gives it.
+    pub fn set_inbox(&mut self, lines: &[String]) {
+        self.inbox = lines.iter().filter_map(|l| Queued::parse(l)).collect();
+        self.inbox_pick = self.inbox_pick.min(self.inbox.len().saturating_sub(1));
+    }
+
+    /// The tasks, as `list-tasks` gives them (its heading left out).
+    pub fn set_tasks(&mut self, lines: &[String]) {
+        self.tasks = TaskRow::parse_all(lines);
+        self.task_pick = self.task_pick.min(self.tasks.len().saturating_sub(1));
+    }
+
+    pub fn set_main(&mut self, lines: Vec<String>) {
+        let mut lines = lines;
+        // A screen's blank rows below its last line say nothing.
+        if matches!(self.tab, Tab::Screen | Tab::Scrollback) {
+            while lines.last().is_some_and(|l| width_of(l) == 0 || clip(l, usize::MAX).0.trim().is_empty()) {
+                lines.pop();
+            }
         }
+        self.main = lines;
     }
 
-    /// What the view below shows, and for messages, which are queued.
-    pub fn set_below(&mut self, lines: Vec<String>) {
-        if self.view == View::Messages {
-            self.queued = lines
-                .iter()
-                .filter_map(|l| l.strip_prefix("  #"))
-                .filter_map(|l| l.split_whitespace().next())
-                .map(String::from)
-                .collect();
-            self.pick = self.pick.min(self.queued.len().saturating_sub(1));
+    /// What to ask for the chosen pane's inbox.
+    pub fn inbox_query(&self) -> Option<Vec<String>> {
+        self.chosen_id().map(|id| owned(&["list-messages", "-t", &id]))
+    }
+
+    pub fn tasks_query(&self) -> Vec<String> {
+        owned(&["list-tasks"])
+    }
+
+    /// What to ask for the main panel's tab.
+    pub fn main_query(&self) -> Option<Vec<String>> {
+        if self.tab == Tab::Detail {
+            return match &self.detail {
+                Some(Detail::Message(m)) => Some(owned(&["trace-message", m])),
+                Some(Detail::Task(t)) => Some(owned(&["show-task", t])),
+                None => None,
+            };
         }
-        self.below = lines;
+        let id = self.chosen_id()?;
+        Some(match self.tab {
+            Tab::Screen => owned(&["capture-pane", "-p", "-e", "-t", &id]),
+            Tab::Scrollback => owned(&["capture-pane", "-p", "-e", "-S", "-2000", "-t", &id]),
+            _ => owned(&["list-events", "-t", &id, "-n", "300"]),
+        })
     }
 
-    /// The query that fills the view below, for the chosen pane.
-    pub fn query(&self) -> Vec<String> {
-        let id = self.chosen_row().map(|r| r.id.clone()).unwrap_or_default();
-        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        match self.view {
-            View::Tasks => v(&["list-tasks"]),
-            View::Messages if self.all_inboxes => v(&["list-messages", "-a"]),
-            View::Trace => match &self.traced {
-                Some(m) => v(&["trace-message", m]),
-                None => Vec::new(),
-            },
-            _ if id.is_empty() => Vec::new(),
-            View::Events => v(&["list-events", "-t", &id, "-n", "200"]),
-            View::Messages => v(&["list-messages", "-t", &id]),
-            View::Live => v(&["capture-pane", "-p", "-t", &id]),
-            View::History => v(&["capture-pane", "-p", "-S", "-2000", "-t", &id]),
-        }
-    }
-
-    pub fn managing(&self) -> bool {
-        self.manage.is_some_and(|t| t.elapsed() < MANAGE_IDLE)
-    }
-
-    /// From the refresh: manage mode left alone ends.
-    pub fn tick(&mut self) {
-        if self.manage.is_some() && !self.managing() {
-            self.manage = None;
-            self.note = Some("manage mode ended (30s without a key)".into());
-        }
-    }
-
-    fn step(&mut self, by: isize) {
+    fn step_pane(&mut self, by: isize) {
         let shown = self.shown();
         if shown.is_empty() {
             return;
         }
         let at = self.chosen_row().and_then(|c| shown.iter().position(|r| r.id == c.id)).unwrap_or(0);
         let to = (at as isize + by).clamp(0, shown.len() as isize - 1) as usize;
-        self.chosen = Some(shown[to].id.clone());
-        self.scroll = 0;
-        self.pick = 0;
+        let id = shown[to].id.clone();
+        if Some(&id) != self.chosen.as_ref() {
+            self.chosen = Some(id);
+            self.scroll = 0;
+            self.inbox_pick = 0;
+            if self.tab == Tab::Detail && matches!(self.detail, Some(Detail::Message(_))) {
+                self.tab = Tab::Screen;
+            }
+        }
     }
 
-    fn show(&mut self, v: View) {
-        self.view = if self.view == v && v != View::Events { View::Events } else { v };
+    fn focus_on(&mut self, p: Panel) {
+        if p != Panel::Main {
+            self.left = p;
+        }
+        self.focus = p;
+    }
+
+    fn cycle(&mut self, back: bool) {
+        const ORDER: [Panel; 4] = [Panel::Panes, Panel::Inbox, Panel::Tasks, Panel::Main];
+        let at = ORDER.iter().position(|p| *p == self.focus).unwrap_or(0);
+        let to = if back { (at + ORDER.len() - 1) % ORDER.len() } else { (at + 1) % ORDER.len() };
+        self.focus_on(ORDER[to]);
+    }
+
+    fn switch_tab(&mut self, by: isize) {
+        let at = TABS.iter().position(|t| *t == self.tab).unwrap_or(0) as isize;
+        self.tab = TABS[(at + by).rem_euclid(TABS.len() as isize) as usize];
         self.scroll = 0;
-        self.pick = 0;
+    }
+
+    fn scroll_by(&mut self, up: isize) {
+        // Up is away from the bottom for what is read from the bottom, and
+        // back towards the top for what is read from the top.
+        let by = if self.tab.read_up() { up } else { -up };
+        self.scroll = (self.scroll as isize + by).clamp(0, self.main.len() as isize) as usize;
+    }
+
+    fn page(&self) -> isize {
+        (usize::from(self.height) / 2).max(1) as isize
+    }
+
+    fn picked_message(&self) -> Option<&Queued> {
+        self.inbox.get(self.inbox_pick)
+    }
+
+    /// Ask before `argv` when it needs a yes; else run it.
+    fn act(&mut self, question: String, argv: Vec<String>) -> Action {
+        if needs_yes(&argv) {
+            self.dialog = Some(Dialog::Confirm { question, argv });
+            Action::Redraw
+        } else {
+            Action::Run(argv)
+        }
     }
 
     pub fn key(&mut self, k: Key) -> Action {
         self.note = None;
-        if let Some(text) = self.typing.as_mut() {
-            match k.code {
-                KeyCode::Escape => {
-                    self.typing = None;
-                    self.filter.clear();
-                }
-                KeyCode::Enter => self.typing = None,
-                KeyCode::BSpace => {
-                    text.pop();
-                    self.filter = text.clone();
-                }
-                KeyCode::Char(c) if !k.ctrl && !k.alt => {
-                    text.push(c);
-                    self.filter = text.clone();
-                }
-                _ => {}
+        if let Some(d) = self.dialog.take() {
+            return self.answer(d, k);
+        }
+        if let Some((what, text)) = self.input.take() {
+            return self.typed(what, text, k);
+        }
+        let plain = !k.ctrl && !k.alt;
+        // Everywhere.
+        match k.code {
+            KeyCode::Char('q') if plain => return Action::Quit,
+            KeyCode::Char('c') if k.ctrl => return Action::Quit,
+            KeyCode::Escape => return Action::Quit,
+            KeyCode::Tab => {
+                self.cycle(k.shift);
+                return Action::Redraw;
             }
+            KeyCode::Char(c @ ('1' | '2' | '3' | '0')) if plain => {
+                self.focus_on(match c {
+                    '1' => Panel::Panes,
+                    '2' => Panel::Inbox,
+                    '3' => Panel::Tasks,
+                    _ => Panel::Main,
+                });
+                return Action::Redraw;
+            }
+            KeyCode::Char('l') | KeyCode::Right if plain => {
+                self.focus_on(Panel::Main);
+                return Action::Redraw;
+            }
+            KeyCode::Char('h') | KeyCode::Left if plain => {
+                self.focus_on(self.left);
+                return Action::Redraw;
+            }
+            KeyCode::Char('[') if plain => {
+                self.switch_tab(-1);
+                return Action::Redraw;
+            }
+            KeyCode::Char(']') if plain => {
+                self.switch_tab(1);
+                return Action::Redraw;
+            }
+            KeyCode::Char('?') if plain => {
+                self.dialog = Some(Dialog::Help);
+                return Action::Redraw;
+            }
+            KeyCode::Char('/') if plain => {
+                self.input = Some((Input::Filter, self.filter.clone()));
+                return Action::Redraw;
+            }
+            KeyCode::PPage => {
+                self.scroll_by(self.page());
+                return Action::Redraw;
+            }
+            KeyCode::NPage => {
+                self.scroll_by(-self.page());
+                return Action::Redraw;
+            }
+            _ => {}
+        }
+        if !plain {
             return Action::Redraw;
         }
-        let managing = self.managing();
-        if managing {
-            self.manage = Some(Instant::now());
+        match self.focus {
+            Panel::Panes => self.pane_key(k.code),
+            Panel::Inbox => self.inbox_key(k.code),
+            Panel::Tasks => self.task_key(k.code),
+            Panel::Main => self.main_key(k.code),
         }
-        let picked = self.queued.get(self.pick).cloned();
-        let manage_key = matches!(k.code, KeyCode::Char('d' | 'K' | 'J' | 'g' | 'u')) && !k.ctrl && !k.alt;
-        if manage_key {
-            if !managing {
-                self.note = Some("press E for manage mode to change queued messages".into());
-                return Action::Redraw;
-            }
-            if self.view != View::Messages {
-                self.note = Some("m shows the messages to manage".into());
-                return Action::Redraw;
-            }
-            let run = |xs: &[&str]| Action::Run(xs.iter().map(|x| x.to_string()).collect());
-            return match (k.code, picked) {
-                (KeyCode::Char('u'), _) => run(&["drop-message", "-u"]),
-                (KeyCode::Char('d'), Some(id)) => run(&["drop-message", &id]),
-                // The pick goes with the message it moves.
-                (KeyCode::Char('K'), Some(id)) => {
-                    self.pick = self.pick.saturating_sub(1);
-                    run(&["move-message", &id, "up"])
-                }
-                (KeyCode::Char('J'), Some(id)) => {
-                    self.pick = (self.pick + 1).min(self.queued.len().saturating_sub(1));
-                    run(&["move-message", &id, "down"])
-                }
-                (KeyCode::Char('g'), Some(id)) => {
-                    self.pick = 0;
-                    run(&["move-message", &id, "top"])
-                }
-                _ => {
-                    self.note = Some("no queued message".into());
-                    Action::Redraw
-                }
-            };
-        }
-        match (k.code, k.ctrl) {
-            (KeyCode::Char('q'), false) | (KeyCode::Char('c'), true) => return Action::Quit,
-            (KeyCode::Escape, _) if managing => self.manage = None,
-            (KeyCode::Escape, _) => return Action::Quit,
-            (KeyCode::Char('E'), false) => {
-                self.manage = if managing { None } else { Some(Instant::now()) };
-            }
-            (KeyCode::Down | KeyCode::Char('j'), false) => self.step(1),
-            (KeyCode::Up | KeyCode::Char('k'), false) => self.step(-1),
-            (KeyCode::Char('n'), false) => self.pick = (self.pick + 1).min(self.queued.len().saturating_sub(1)),
-            (KeyCode::Char('p'), false) => self.pick = self.pick.saturating_sub(1),
-            (KeyCode::PPage, _) => self.scroll += 10,
-            (KeyCode::NPage, _) => self.scroll = self.scroll.saturating_sub(10),
-            // In the messages, Enter opens the one picked; from it, back.
-            (KeyCode::Enter, _) if self.view == View::Messages && picked.is_some() => {
-                self.traced = picked;
-                self.view = View::Trace;
+    }
+
+    fn pane_key(&mut self, code: KeyCode) -> Action {
+        let Some(row) = self.chosen_row().cloned() else { return Action::Redraw };
+        let id = row.id.clone();
+        let who = if row.name.is_empty() { id.clone() } else { format!("{id} ({})", row.name) };
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => self.step_pane(1),
+            KeyCode::Up | KeyCode::Char('k') => self.step_pane(-1),
+            KeyCode::Enter => {
+                self.tab = Tab::Screen;
                 self.scroll = 0;
+                self.focus_on(Panel::Main);
             }
-            (KeyCode::Enter, _) if self.view == View::Trace => self.view = View::Messages,
-            (KeyCode::Enter, _) => self.show(View::Events),
-            (KeyCode::Char('a'), false) if self.view == View::Messages => {
-                self.all_inboxes = !self.all_inboxes;
-                self.pick = 0;
+            KeyCode::Char('s') => self.input = Some((Input::Send { to: id }, String::new())),
+            KeyCode::Char('r') => self.input = Some((Input::Rename { to: id }, row.name.clone())),
+            KeyCode::Char('m') => {
+                let pick = MODES.iter().position(|m| *m == row.mode).unwrap_or(0);
+                self.dialog = Some(Dialog::Mode { to: id, pick });
             }
-            (KeyCode::Char('m'), false) => self.show(View::Messages),
-            (KeyCode::Char('t'), false) => self.show(View::Tasks),
-            (KeyCode::Char('v'), false) => self.show(View::Live),
-            (KeyCode::Char('h'), false) => self.show(View::History),
-            (KeyCode::Char('/'), false) => self.typing = Some(self.filter.clone()),
+            KeyCode::Char('R') => return Action::Run(owned(&["pane-ready", "-t", &id])),
+            KeyCode::Char('o') => return Action::Go(owned(&["focus-pane", &id])),
+            KeyCode::Char('x') => {
+                return self.act(
+                    format!("close {who}? (prefix u within 10s brings it back)"),
+                    owned(&["kill-pane", "-t", &id]),
+                );
+            }
             _ => {}
         }
         Action::Redraw
     }
 
-    /// Everything on screen, as the bytes that draw it.
-    pub fn frame(&self, now: &str) -> String {
-        let (w, h) = (usize::from(self.cols), usize::from(self.height).max(6));
-        let mut lines: Vec<String> = Vec::new();
+    fn inbox_key(&mut self, code: KeyCode) -> Action {
+        let last = self.inbox.len().saturating_sub(1);
+        let picked = self.picked_message().cloned();
+        match (code, picked) {
+            (KeyCode::Down | KeyCode::Char('j'), _) => self.inbox_pick = (self.inbox_pick + 1).min(last),
+            (KeyCode::Up | KeyCode::Char('k'), _) => self.inbox_pick = self.inbox_pick.saturating_sub(1),
+            (KeyCode::Char('u'), _) => return Action::Run(owned(&["drop-message", "-u"])),
+            (KeyCode::Enter, Some(m)) => {
+                self.detail = Some(Detail::Message(m.id));
+                self.tab = Tab::Detail;
+                self.scroll = 0;
+                self.focus_on(Panel::Main);
+            }
+            (KeyCode::Char('d'), Some(m)) => {
+                let question = format!("delete #{} from {} (\"{}\")? (u brings it back)", m.id, m.from, m.text);
+                return self.act(question, owned(&["drop-message", &m.id]));
+            }
+            // The pick goes with the message it moves.
+            (KeyCode::Char('K'), Some(m)) => {
+                self.inbox_pick = self.inbox_pick.saturating_sub(1);
+                return Action::Run(owned(&["move-message", &m.id, "up"]));
+            }
+            (KeyCode::Char('J'), Some(m)) => {
+                self.inbox_pick = (self.inbox_pick + 1).min(last);
+                return Action::Run(owned(&["move-message", &m.id, "down"]));
+            }
+            (KeyCode::Char('t'), Some(m)) => {
+                self.inbox_pick = 0;
+                return Action::Run(owned(&["move-message", &m.id, "top"]));
+            }
+            (KeyCode::Char('d' | 'K' | 'J' | 't') | KeyCode::Enter, None) => {
+                self.note = Some("no queued message".into());
+            }
+            _ => {}
+        }
+        Action::Redraw
+    }
+
+    fn task_key(&mut self, code: KeyCode) -> Action {
+        let last = self.tasks.len().saturating_sub(1);
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => self.task_pick = (self.task_pick + 1).min(last),
+            KeyCode::Up | KeyCode::Char('k') => self.task_pick = self.task_pick.saturating_sub(1),
+            KeyCode::Enter => {
+                let id = self.tasks.get(self.task_pick).map(|t| t.id.clone()).filter(|id| !id.is_empty());
+                match id {
+                    Some(id) => {
+                        self.detail = Some(Detail::Task(id));
+                        self.tab = Tab::Detail;
+                        self.scroll = 0;
+                        self.focus_on(Panel::Main);
+                    }
+                    None => self.note = Some("no task".into()),
+                }
+            }
+            _ => {}
+        }
+        Action::Redraw
+    }
+
+    fn main_key(&mut self, code: KeyCode) -> Action {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_by(1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_by(-1),
+            KeyCode::Char('g') => self.scroll_by(self.main.len() as isize),
+            KeyCode::Char('G') => self.scroll_by(-(self.main.len() as isize)),
+            KeyCode::Enter => self.focus_on(self.left),
+            _ => {}
+        }
+        Action::Redraw
+    }
+
+    fn typed(&mut self, what: Input, mut text: String, k: Key) -> Action {
+        match k.code {
+            KeyCode::Escape => {
+                if what == Input::Filter {
+                    self.filter.clear();
+                }
+                return Action::Redraw;
+            }
+            KeyCode::Enter => {
+                return match what {
+                    Input::Filter => Action::Redraw,
+                    _ if text.trim().is_empty() => Action::Redraw,
+                    Input::Send { to } => Action::Run(owned(&["send-message", "-t", &to, "--", &text])),
+                    Input::Rename { to } => Action::Run(owned(&["rename-pane", "-t", &to, "--", text.trim()])),
+                };
+            }
+            KeyCode::BSpace => {
+                text.pop();
+            }
+            KeyCode::Char(c) if !k.ctrl && !k.alt => text.push(c),
+            _ => {}
+        }
+        if what == Input::Filter {
+            self.filter = text.clone();
+            self.chosen = self.chosen_id();
+        }
+        self.input = Some((what, text));
+        Action::Redraw
+    }
+
+    fn answer(&mut self, d: Dialog, k: Key) -> Action {
+        match d {
+            Dialog::Help => Action::Redraw,
+            Dialog::Confirm { argv, .. } => {
+                if k.code == KeyCode::Char('y') && !k.ctrl && !k.alt {
+                    Action::Run(argv)
+                } else {
+                    self.note = Some("left as it was".into());
+                    Action::Redraw
+                }
+            }
+            Dialog::Mode { to, pick } => match k.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.dialog = Some(Dialog::Mode { to, pick: (pick + 1).min(MODES.len() - 1) });
+                    Action::Redraw
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.dialog = Some(Dialog::Mode { to, pick: pick.saturating_sub(1) });
+                    Action::Redraw
+                }
+                KeyCode::Enter => self.act(
+                    format!("switch {to} to shell? What it is sent will be run as commands."),
+                    owned(&["set-work-mode", "-t", &to, MODES[pick]]),
+                ),
+                _ => Action::Redraw,
+            },
+        }
+    }
+
+    /// A mouse event: a click focuses a panel and picks the row under it,
+    /// the wheel scrolls the panel under the pointer.
+    pub fn mouse(&mut self, m: &MouseRecord) -> Action {
+        const MOVED: u32 = 0x1;
+        const WHEELED: u32 = 0x4;
+        let (x, y) = (m.x.max(0) as usize, m.y.max(0) as usize);
+        let layout = self.layout();
+        let at = [
+            (Panel::Panes, layout.panes),
+            (Panel::Inbox, layout.inbox),
+            (Panel::Tasks, layout.tasks),
+            (Panel::Main, layout.main),
+        ]
+        .into_iter()
+        .find_map(|(p, r)| r.filter(|r| r.holds(x, y)).map(|r| (p, r)));
+        let Some((panel, rect)) = at else { return Action::Redraw };
+        if m.flags & WHEELED != 0 {
+            let up = (m.buttons >> 16) as i16 > 0;
+            match panel {
+                Panel::Main => self.scroll_by(if up { 3 } else { -3 }),
+                Panel::Panes => self.step_pane(if up { -1 } else { 1 }),
+                Panel::Inbox => {
+                    self.inbox_pick = if up {
+                        self.inbox_pick.saturating_sub(1)
+                    } else {
+                        (self.inbox_pick + 1).min(self.inbox.len().saturating_sub(1))
+                    }
+                }
+                Panel::Tasks => {
+                    self.task_pick = if up {
+                        self.task_pick.saturating_sub(1)
+                    } else {
+                        (self.task_pick + 1).min(self.tasks.len().saturating_sub(1))
+                    }
+                }
+            }
+            return Action::Redraw;
+        }
+        if m.flags & MOVED != 0 || m.buttons & 1 == 0 {
+            return Action::Redraw;
+        }
+        self.focus_on(panel);
+        let row = y.checked_sub(rect.y + 1).filter(|r| *r < rect.inner_h());
+        let Some(row) = row else { return Action::Redraw };
+        match panel {
+            Panel::Panes => {
+                let (start, table) = self.pane_table(rect.inner_h());
+                if let Some((Some(id), _)) = table.get(start + row) {
+                    let id = id.clone();
+                    if Some(&id) != self.chosen.as_ref() {
+                        self.chosen = Some(id);
+                        self.scroll = 0;
+                        self.inbox_pick = 0;
+                    }
+                }
+            }
+            Panel::Inbox => {
+                let start = window_start(self.inbox_pick, self.inbox.len(), rect.inner_h());
+                if start + row < self.inbox.len() {
+                    self.inbox_pick = start + row;
+                }
+            }
+            Panel::Tasks => {
+                let start = window_start(self.task_pick, self.tasks.len(), rect.inner_h());
+                if start + row < self.tasks.len() {
+                    self.task_pick = start + row;
+                }
+            }
+            Panel::Main => {}
+        }
+        Action::Redraw
+    }
+
+    fn layout(&self) -> Layout {
+        let (w, h) = (usize::from(self.cols), usize::from(self.height));
+        let body = h.saturating_sub(1);
+        if w < 12 || body < 6 {
+            return Layout { panes: None, inbox: None, tasks: None, main: None };
+        }
+        let narrow = w < NARROW;
+        let (left_w, main) = if narrow {
+            (w, (self.focus == Panel::Main).then_some(Rect { x: 0, y: 0, w, h: body }))
+        } else {
+            let lw = (w * 9 / 20).clamp(30, 64).min(w - 20);
+            (lw, Some(Rect { x: lw, y: 0, w: w - lw, h: body }))
+        };
+        if narrow && self.focus == Panel::Main {
+            return Layout { panes: None, inbox: None, tasks: None, main };
+        }
+        // Inbox and tasks a quarter each (3 rows at least), the panes the rest.
+        let small = (body / 4).max(3);
+        let panes_h = body.saturating_sub(2 * small).max(3);
+        let inbox_h = small.min(body.saturating_sub(panes_h));
+        let tasks_h = body.saturating_sub(panes_h + inbox_h);
+        let rect = |y, h| (h >= 3).then_some(Rect { x: 0, y, w: left_w, h });
+        Layout { panes: rect(0, panes_h), inbox: rect(panes_h, inbox_h), tasks: rect(panes_h + inbox_h, tasks_h), main }
+    }
+
+    /// The pane table (session headings and panes), with each line's pane,
+    /// and the first line shown in `rows` so the chosen pane is in view.
+    fn pane_table(&self, rows: usize) -> (usize, Vec<(Option<String>, String)>) {
+        let chosen = self.chosen_id();
+        let mut table: Vec<(Option<String>, String)> = Vec::new();
+        let mut session = None;
+        for r in self.shown() {
+            if session != Some(&r.session) {
+                session = Some(&r.session);
+                table.push((None, format!("\x1b[1m{}\x1b[0m", r.session)));
+            }
+            let quiet =
+                if r.activity > 0 { crate::format::human_duration(self.now - r.activity) } else { String::new() };
+            let name = if r.name.is_empty() { String::from("·") } else { r.name.clone() };
+            let line = format!(
+                "{}{} {} {:<3} {:>2} {:>4}  {}",
+                fit(&format!("{} {}", r.place, r.id), 9),
+                fit(&format!(" {name}"), 11),
+                fit(if r.mode == "normal" { "-" } else { &r.mode }, 6),
+                r.state_styled(),
+                r.inbox,
+                quiet,
+                r.command
+            );
+            table.push((Some(r.id.clone()), line));
+        }
+        let at = table.iter().position(|(id, _)| id.is_some() && *id == chosen).unwrap_or(0);
+        (window_start(at, table.len(), rows), table)
+    }
+
+    fn panes_box(&self, r: Rect) -> Vec<String> {
         let shown = self.shown();
         let busy = shown.iter().filter(|r| r.mode != "normal" && !r.idle && !r.dead).count();
         let queued: usize = shown.iter().map(|r| r.inbox).sum();
-        let managing = self.managing();
-        let head = format!(
-            " keepane dashboard{}   {} panes · {busy} busy · {queued} queued   {now}",
-            if managing { "   MANAGE" } else { "" },
-            shown.len()
-        );
-        let colour = if managing { "\x1b[1;37;41m" } else { "\x1b[7m" };
-        lines.push(format!("{colour}{}\x1b[0m", pad(&head, w)));
-        lines.push(format!("\x1b[2m{}\x1b[0m", pad("   PANE      NAME          MODE    STATE   INBOX  DOING", w)));
-        // The panes, grouped by session; the chosen one kept in view.
-        let top_rows = ((h - 4) / 2).max(3);
-        let mut table: Vec<(bool, String)> = Vec::new();
-        let chosen = self.chosen_row().map(|r| r.id.clone());
-        let mut session = None;
-        for r in &shown {
-            if session != Some(&r.session) {
-                session = Some(&r.session);
-                table.push((false, format!("\x1b[1m {}\x1b[0m", r.session)));
+        let filtered = if self.filter.is_empty() { String::new() } else { format!(" · /{}", self.filter) };
+        let title = format!("[1] Panes  {} · {busy} busy · {queued} queued{filtered}", shown.len());
+        let (start, table) = self.pane_table(r.inner_h());
+        let chosen = self.chosen_id();
+        let focused = self.focus == Panel::Panes;
+        let lines = table
+            .iter()
+            .skip(start)
+            .take(r.inner_h())
+            .map(|(id, line)| row_line(line, id.is_some() && *id == chosen, focused, r.inner_w()))
+            .collect();
+        boxed(&title, "", lines, r, focused)
+    }
+
+    fn inbox_box(&self, r: Rect) -> Vec<String> {
+        let who = self.chosen_row().map(|p| if p.name.is_empty() { p.id.clone() } else { format!("%{}", p.name) });
+        let title = format!("[2] Inbox {} · {}", who.unwrap_or_default(), self.inbox.len());
+        let focused = self.focus == Panel::Inbox;
+        let start = window_start(self.inbox_pick, self.inbox.len(), r.inner_h());
+        let mut lines: Vec<String> = self
+            .inbox
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(r.inner_h())
+            .map(|(i, m)| {
+                // From a pane: its part of the address (a name is short already).
+                let from = m.from.split(' ').next().unwrap_or_default().rsplit('.').next().unwrap_or_default();
+                let line = format!("#{:<3} {:<7} {:>4}  {}", m.id, clip(from, 7).0, m.waiting, m.text);
+                row_line(&line, i == self.inbox_pick, focused, r.inner_w())
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push("\x1b[2mnothing queued\x1b[0m".into());
+        }
+        boxed(&title, "", lines, r, focused)
+    }
+
+    fn tasks_box(&self, r: Rect) -> Vec<String> {
+        let focused = self.focus == Panel::Tasks;
+        let start = window_start(self.task_pick, self.tasks.len(), r.inner_h());
+        let mut lines: Vec<String> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(r.inner_h())
+            .map(|(i, t)| row_line(&t.line(), i == self.task_pick, focused, r.inner_w()))
+            .collect();
+        if lines.is_empty() {
+            lines.push("\x1b[2mno tasks\x1b[0m".into());
+        }
+        boxed(&format!("[3] Tasks · {}", self.tasks.len()), "", lines, r, focused)
+    }
+
+    fn main_box(&self, r: Rect) -> Vec<String> {
+        let focused = self.focus == Panel::Main;
+        let tabs = TABS
+            .iter()
+            .map(|t| if *t == self.tab { format!("\x1b[1;32m{}\x1b[0m", t.word()) } else { t.word().to_string() })
+            .collect::<Vec<_>>()
+            .join("│");
+        let (title, mut head) = match self.chosen_row() {
+            Some(p) => {
+                let name = if p.name.is_empty() { String::new() } else { format!(" {}", p.name) };
+                let up = if p.started > 0 { crate::format::human_duration(self.now - p.started) } else { "?".into() };
+                let quiet =
+                    if p.activity > 0 { crate::format::human_duration(self.now - p.activity) } else { "?".into() };
+                let exit = if p.dead { format!(" · exited {}", p.exit) } else { String::new() };
+                (
+                    format!("[0] {}{name} · {} · {}", p.id, p.mode, p.state()),
+                    vec![
+                        format!("\x1b[36m{}\x1b[0m  {}  \x1b[2m{}\x1b[0m", p.address, p.command, p.path),
+                        format!("pid {} · up {up} · quiet {quiet} · {}{exit}", p.pid, p.size),
+                        format!("doing: {}", p.doing()),
+                    ],
+                )
             }
-            let me = chosen.as_ref() == Some(&r.id);
-            let cells = format!(
-                "{} {:<9} {:<13} {:<7} {:<7} {:>5}  {}",
-                if me { ">" } else { " " },
-                clip(&format!("{} {}", r.place, r.id), 9),
-                clip(&r.name, 13),
-                clip(&r.mode, 7),
-                r.state(),
-                r.inbox,
-                r.doing()
-            );
-            let line = pad(&format!(" {cells}"), w);
-            table.push((me, if me { format!("\x1b[7m{line}\x1b[0m") } else { line }));
-        }
-        let at = table.iter().position(|(me, _)| *me).unwrap_or(0);
-        let start = at.saturating_sub(top_rows.saturating_sub(1));
-        for i in 0..top_rows {
-            lines.push(table.get(start + i).map(|(_, l)| l.clone()).unwrap_or_default());
-        }
-        // Below: the chosen pane and the view.
-        let about = match self.chosen_row() {
-            Some(r) => format!(
-                "── {} {}{} · {} · {} · {} ",
-                r.id,
-                r.name,
-                if r.name.is_empty() { "" } else { " " },
-                r.mode,
-                r.command,
-                r.address
-            ),
-            None => "── no panes ".into(),
+            None => ("[0] no panes".to_string(), Vec::new()),
         };
-        let about = format!("{about}── {} ", self.view.word());
-        let fill = w.saturating_sub(about.width());
-        lines.push(format!("\x1b[2m{}{}\x1b[0m", clip(&about, w), "─".repeat(fill)));
-        let room = h.saturating_sub(lines.len() + 1);
-        let body: Vec<String> = match self.view {
-            View::Events => self.below.iter().map(|l| event_line(l)).collect(),
-            _ => self.below.clone(),
-        };
-        let end = body.len().saturating_sub(self.scroll);
-        let from = end.saturating_sub(room);
-        let picked = self.queued.get(self.pick);
-        for l in &body[from..end] {
-            let mark = self.view == View::Messages
-                && picked.is_some_and(|id| l.strip_prefix("  #").is_some_and(|x| x.starts_with(&format!("{id} "))));
-            let text = pad(l, w);
-            lines.push(if mark { format!("\x1b[1;33m{text}\x1b[0m") } else { text });
+        if self.tab == Tab::Detail {
+            head = match &self.detail {
+                Some(Detail::Message(m)) => vec![format!("message #{m}")],
+                Some(Detail::Task(t)) => vec![format!("task #{t}")],
+                None => vec!["Enter on a message ([2]) or a task ([3]) shows it here".into()],
+            };
         }
-        while lines.len() < h - 1 {
-            lines.push(String::new());
+        head.push(format!("\x1b[2m{}\x1b[0m", "─".repeat(r.inner_w())));
+        let room = r.inner_h().saturating_sub(head.len());
+        let body: Vec<String> = match (&self.dialog, self.tab) {
+            (Some(Dialog::Help), _) => help_lines(),
+            (_, Tab::Events) => self.main.iter().map(|l| event_line(l)).collect(),
+            // Read in full: the envelope as its fields, long lines wrapped.
+            (_, Tab::Detail) => self
+                .main
+                .iter()
+                .flat_map(|l| envelope_fields(l).unwrap_or_else(|| vec![l.clone()]))
+                .flat_map(|l| if width_of(&l) > r.inner_w() { wrap(&strip(&l), r.inner_w()) } else { vec![l] })
+                .collect(),
+            _ => self.main.clone(),
+        };
+        let shown: Vec<String> = if matches!(self.dialog, Some(Dialog::Help)) || !self.tab.read_up() {
+            let from = if matches!(self.dialog, Some(Dialog::Help)) { 0 } else { self.scroll.min(body.len()) };
+            body.into_iter().skip(from).take(room).collect()
+        } else {
+            let end = body.len().saturating_sub(self.scroll);
+            let from = end.saturating_sub(room);
+            body[from..end].to_vec()
+        };
+        let mut lines = head;
+        lines.extend(shown.into_iter().map(|l| fit(&l, r.inner_w())));
+        let title =
+            if matches!(self.dialog, Some(Dialog::Help)) { "[?] Keys (any key closes)".to_string() } else { title };
+        boxed(&title, &tabs, lines, r, focused)
+    }
+
+    /// The bottom line: what is being typed, the question, a note, or the
+    /// keys of the focused panel.
+    fn foot(&self) -> String {
+        if let Some((what, text)) = &self.input {
+            let label = match what {
+                Input::Filter => "filter panes".to_string(),
+                Input::Send { to } => format!("message to {to}"),
+                Input::Rename { to } => format!("name for {to}"),
+            };
+            return format!("\x1b[1m{label}:\x1b[0m {text}\x1b[7m \x1b[0m   Enter ok · Esc cancel");
         }
-        let foot = match (&self.typing, &self.note) {
-            (Some(t), _) => format!("/{t}"),
-            (None, Some(n)) => format!(" {n}"),
-            (None, None) if managing => {
-                " MANAGE  n/p pick  d delete  K/J move  g to top  u undo delete  E/Esc done".to_string()
+        match &self.dialog {
+            Some(Dialog::Confirm { question, .. }) => {
+                return format!("\x1b[1;37;41m {question} \x1b[0m  y yes · any other key no");
             }
-            (None, None) if self.view == View::Messages => {
-                " j/k pane  n/p pick  Enter open it  a every inbox  E manage  t tasks  v live  q quit".to_string()
+            Some(Dialog::Mode { to, pick }) => {
+                let modes = MODES
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| if i == *pick { format!("\x1b[7m {m} \x1b[0m") } else { format!(" {m} ") })
+                    .collect::<String>();
+                return format!("\x1b[1mwork mode for {to}:\x1b[0m{modes}  j/k · Enter · Esc");
             }
-            (None, None) => {
-                " j/k pane  Enter events  m messages  t tasks  v live  h history  / filter  E manage  q quit"
-                    .to_string()
+            _ => {}
+        }
+        if let Some(n) = &self.note {
+            return format!("\x1b[1m {n}\x1b[0m");
+        }
+        let keys = match self.focus {
+            Panel::Panes => "j/k pane  Enter screen  s send  r rename  m mode  R ready  o go there  x close",
+            Panel::Inbox => "j/k pick  Enter read  d delete  K/J move  t to top  u undo delete",
+            Panel::Tasks => "j/k pick  Enter steps",
+            Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
+        };
+        format!(" {keys}  \x1b[2m│ Tab/1230 panel  / filter  ? keys  q quit\x1b[0m")
+    }
+
+    /// Everything on screen, as the bytes that draw it: every row exactly
+    /// the window's width, each put at its row (never a line feed, which on
+    /// a window shorter than this board thinks would scroll it).
+    pub fn frame(&self) -> String {
+        let (w, h) = (usize::from(self.cols), usize::from(self.height));
+        let layout = self.layout();
+        let body = h.saturating_sub(1);
+        let mut rows: Vec<String> = vec![String::new(); body];
+        let mut place = |r: Option<Rect>, lines: Vec<String>| {
+            if let Some(r) = r {
+                for (i, l) in lines.into_iter().enumerate().take(r.h) {
+                    if let Some(row) = rows.get_mut(r.y + i) {
+                        row.push_str(&l);
+                    }
+                }
             }
         };
-        lines.push(format!("\x1b[7m{}\x1b[0m", pad(&foot, w)));
-        let mut s = String::from("\x1b[?25l\x1b[H");
-        for (i, l) in lines.iter().take(h).enumerate() {
-            s.push_str("\x1b[2K");
-            s.push_str(l);
-            if i + 1 < h {
-                s.push_str("\r\n");
-            }
+        // Left column first, then the main panel to its right.
+        let (p, i, t, m) = (layout.panes, layout.inbox, layout.tasks, layout.main);
+        place(p, p.map(|r| self.panes_box(r)).unwrap_or_default());
+        place(i, i.map(|r| self.inbox_box(r)).unwrap_or_default());
+        place(t, t.map(|r| self.tasks_box(r)).unwrap_or_default());
+        place(m, m.map(|r| self.main_box(r)).unwrap_or_default());
+        let mut s = String::from("\x1b[?25l");
+        for (y, row) in rows.iter().chain(std::iter::once(&self.foot())).enumerate() {
+            s.push_str(&format!("\x1b[{};1H", y + 1));
+            s.push_str(&fit(row, w));
         }
         s
     }
+}
+
+/// A message's header, in either of its forms (`[keepane id=3 from=… …]`,
+/// or the JSON envelope), one field a line: the name, then the value. The
+/// protocol's version (`keepane`) is left out; None for any other line.
+fn envelope_fields(line: &str) -> Option<Vec<String>> {
+    let line = line.trim();
+    let pairs: Vec<(String, String)> =
+        if let Some(inner) = line.strip_prefix("[keepane ").and_then(|l| l.strip_suffix(']')) {
+            inner
+                .split(' ')
+                .map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+                .collect::<Option<_>>()?
+        } else if line.starts_with('{') {
+            let serde_json::Value::Object(map) = serde_json::from_str::<serde_json::Value>(line).ok()? else {
+                return None;
+            };
+            map.into_iter()
+                .filter(|(k, _)| k != "keepane")
+                .map(|(k, v)| {
+                    let value = match v {
+                        serde_json::Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    (k, value)
+                })
+                .collect()
+        } else {
+            return None;
+        };
+    let width = pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    Some(pairs.into_iter().map(|(k, v)| format!("\x1b[36m{k:<width$}\x1b[0m  {v}")).collect())
+}
+
+/// A plain line in rows of at most `width` columns.
+fn wrap(line: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for c in line.chars() {
+        let w = if c.is_control() { 1 } else { c.width().unwrap_or(0) };
+        if used + w > width {
+            rows.push(String::new());
+            used = 0;
+        }
+        rows.last_mut().unwrap().push(c);
+        used += w;
+    }
+    rows
+}
+
+fn owned(xs: &[&str]) -> Vec<String> {
+    xs.iter().map(|x| x.to_string()).collect()
+}
+
+/// The first of `len` lines to show in `rows` so that line `at` is in view.
+fn window_start(at: usize, len: usize, rows: usize) -> usize {
+    if rows == 0 || len <= rows {
+        return 0;
+    }
+    at.saturating_sub(rows - 1).min(len - rows)
+}
+
+/// A list line, marked when it is the one picked: reversed in the focused
+/// panel, bold with a marker otherwise.
+fn row_line(line: &str, picked: bool, focused: bool, width: usize) -> String {
+    let text = format!("{}{line}", if picked && !focused { ">" } else { " " });
+    if picked && focused {
+        // Reverse video through the whole row; a reset inside the line
+        // would end it, so the line's own styles go.
+        let plain = strip(&text);
+        format!("\x1b[7m{}\x1b[0m", fit(&plain, width))
+    } else if picked {
+        format!("\x1b[1m{}\x1b[0m", fit(&text, width))
+    } else {
+        fit(&text, width)
+    }
+}
+
+/// `s` without its escape sequences.
+fn strip(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for d in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&d) {
+                        break;
+                    }
+                }
+            } else {
+                chars.next();
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A panel: a border with its title (and, on the right, `right`), `lines`
+/// inside, all in `r`. The focused panel's border is green.
+fn boxed(title: &str, right: &str, lines: Vec<String>, r: Rect, focused: bool) -> Vec<String> {
+    let (w, inner) = (r.w, r.inner_w());
+    let border = if focused { "\x1b[1;32m" } else { "\x1b[2m" };
+    // The right-hand text (the tabs) only where the title keeps some room.
+    let right_w = width_of(right);
+    let with_right = right_w > 0 && inner >= right_w + 12;
+    let title_room = if with_right { inner - right_w - 2 } else { inner };
+    let (text, text_w) = clip(&format!("─{title} "), title_room);
+    let fill = "─".repeat(title_room - text_w);
+    let top = if with_right {
+        format!("{border}┌{text}{fill}\x1b[0m {right} {border}┐\x1b[0m")
+    } else {
+        format!("{border}┌{text}{fill}┐\x1b[0m")
+    };
+    let mut out = vec![fit(&top, w)];
+    for i in 0..r.inner_h() {
+        let l = lines.get(i).map(String::as_str).unwrap_or("");
+        out.push(format!("{border}│\x1b[0m{}{border}│\x1b[0m", fit(l, inner)));
+    }
+    out.push(format!("{border}└{}┘\x1b[0m", "─".repeat(inner)));
+    out
+}
+
+fn help_lines() -> Vec<String> {
+    [
+        "Everywhere",
+        "  Tab / Shift+Tab, 1 2 3 0, h / l   change panel",
+        "  [ / ]                             change the tab on the right",
+        "  PgUp / PgDn                       page the right panel",
+        "  /                                 filter the panes",
+        "  q, Esc                            quit (Esc first cancels a question)",
+        "  mouse                             click a panel or a row; the wheel scrolls",
+        "",
+        "[1] Panes",
+        "  j / k      pick a pane             Enter   its screen",
+        "  s          send it a message       r       rename it",
+        "  m          its work mode           R       mark it ready (unstick it)",
+        "  o          go there                x       close it (asks; prefix u undoes)",
+        "",
+        "[2] Inbox (the chosen pane's queued messages)",
+        "  j / k      pick one                Enter   read it in full",
+        "  d          delete it (asks)        u       bring the last deleted back",
+        "  K / J      move it up / down       t       put it first",
+        "",
+        "[3] Tasks    j / k pick, Enter shows every step",
+        "",
+        "[0] The chosen pane: Screen, Scrollback, Events, Detail",
+        "  j / k      scroll                  g / G   top / bottom",
+        "",
+        "Asks first: deleting a message, closing a pane, switching a pane to shell.",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// An event log line, short: time, what, the gist.
@@ -530,14 +1362,23 @@ pub fn event_line(json: &str) -> String {
             g
         }
     };
-    format!("{at}  {ev:<9} {gist}")
+    let colour = match ev {
+        "failed" | "rejected" | "dropped" | "abandoned" => "\x1b[31m",
+        "done" => "\x1b[32m",
+        "sent" | "delivered" => "\x1b[36m",
+        _ => "",
+    };
+    let reset = if colour.is_empty() { "" } else { "\x1b[0m" };
+    format!("{at}  {colour}{ev:<9}{reset} {gist}")
 }
 
-/// `keepane dashboard`.
-pub fn run(socket: &str, rt: &tokio::runtime::Runtime) -> anyhow::Result<i32> {
+/// `keepane dashboard [--popup]` (`--popup`: opened by prefix v, so going
+/// to a pane closes it).
+pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool) -> anyhow::Result<i32> {
     use crate::console::{Console, InputEvent};
     let mut console = Console::open()?;
     console.enter_raw()?;
+    console.set_mouse(true);
     let console = std::sync::Arc::new(console);
     let (tx, rx) = std::sync::mpsc::channel::<InputEvent>();
     {
@@ -553,29 +1394,40 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime) -> anyhow::Result<i32> {
         });
     }
     let ask = |argv: &[String]| -> (i32, String, String) {
-        debug_assert!(argv.first().is_some_and(|c| QUERIES.contains(&c.as_str()) || MANAGES.contains(&c.as_str())));
+        debug_assert!(argv.first().is_some_and(|c| QUERIES.contains(&c.as_str()) || ACTIONS.contains(&c.as_str())));
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
         rt.block_on(crate::client::query(socket, &argv)).unwrap_or_else(|e| (1, String::new(), format!("{e:#}")))
+    };
+    let lines = |(_, out, err): (i32, String, String)| -> Vec<String> {
+        (if out.is_empty() { err } else { out }).lines().map(String::from).collect()
     };
     let (cols, rows) = console.size();
     let mut board = Board::new(cols, rows);
     let result = (|| -> anyhow::Result<()> {
         loop {
-            let (code, out, err) = ask(&["list-panes".into(), "-a".into(), "-F".into(), PANE_FORMAT.into()]);
+            let (code, out, err) = ask(&owned(&["list-panes", "-a", "-F", PANE_FORMAT]));
             if code != 0 {
                 anyhow::bail!("{}", err.trim());
             }
+            board.now = chrono::Utc::now().timestamp();
             board.set_rows(out.lines().filter_map(PaneRow::parse).collect());
-            let q = board.query();
-            if !q.is_empty() {
-                let (_, out, err) = ask(&q);
-                let text = if out.is_empty() { err } else { out };
-                board.set_below(text.lines().map(String::from).collect());
-            } else {
-                board.set_below(Vec::new());
+            match board.inbox_query() {
+                Some(q) => board.set_inbox(&lines(ask(&q))),
+                None => board.set_inbox(&[]),
             }
-            board.tick();
-            console.write_str(&board.frame(&chrono::Local::now().format("%H:%M:%S").to_string()));
+            board.set_tasks(&lines(ask(&board.tasks_query())));
+            // The window's size, every time: a resize can pass unannounced
+            // (a popup laid out again).
+            let (cols, rows) = console.size();
+            if (cols, rows) != (board.cols, board.height) {
+                board.resize(cols, rows);
+                console.write_str("\x1b[2J");
+            }
+            match board.main_query() {
+                Some(q) => board.set_main(lines(ask(&q))),
+                None => board.set_main(Vec::new()),
+            }
+            console.write_str(&board.frame());
             // A key, or a second without one: then the board is read again.
             let first = match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(e) => Some(e),
@@ -583,29 +1435,43 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime) -> anyhow::Result<i32> {
                 Err(_) => return Ok(()),
             };
             for ev in first.into_iter().chain(rx.try_iter()) {
-                match ev {
-                    InputEvent::Key(k) => {
-                        let Some(key) = crate::keys::key_from_record(&k) else { continue };
-                        match board.key(key) {
-                            Action::Quit => return Ok(()),
-                            Action::Run(argv) => {
-                                let (code, out, err) = ask(&argv);
-                                board.note = Some(if code == 0 {
-                                    let out = out.trim();
-                                    if out.is_empty() { format!("done: {}", argv.join(" ")) } else { out.to_string() }
-                                } else {
-                                    err.trim().to_string()
-                                });
-                            }
-                            Action::Redraw => {}
-                        }
-                    }
+                let action = match ev {
+                    InputEvent::Key(k) => match crate::keys::key_from_record(&k) {
+                        Some(key) => board.key(key),
+                        None => continue,
+                    },
+                    InputEvent::Mouse(m) => board.mouse(&m),
                     InputEvent::Resize => {
                         let (cols, rows) = console.size();
                         board.resize(cols, rows);
                         console.write_str("\x1b[2J");
+                        Action::Redraw
                     }
-                    InputEvent::Mouse(_) => {}
+                };
+                match action {
+                    Action::Quit => return Ok(()),
+                    Action::Run(argv) | Action::Go(argv) if !popup || argv[0] != "focus-pane" => {
+                        let (code, out, err) = ask(&argv);
+                        board.note = Some(if code == 0 {
+                            let out = out.trim();
+                            if out.is_empty() {
+                                format!("done: {}", argv.join(" "))
+                            } else {
+                                out.lines().next().unwrap_or(out).to_string()
+                            }
+                        } else {
+                            err.trim().to_string()
+                        });
+                    }
+                    Action::Run(argv) | Action::Go(argv) => {
+                        // From the popup: go there, and out of the way.
+                        let (code, _, err) = ask(&argv);
+                        if code == 0 {
+                            return Ok(());
+                        }
+                        board.note = Some(err.trim().to_string());
+                    }
+                    Action::Redraw => {}
                 }
             }
         }
@@ -629,12 +1495,18 @@ mod tests {
             idle,
             inbox,
             command: "pwsh".into(),
+            path: "/home/me/src".into(),
+            pid: "4242".into(),
+            started: 1_000,
+            activity: 1_900,
+            size: "80x24".into(),
             ..Default::default()
         }
     }
 
     fn board() -> Board {
-        let mut b = Board::new(100, 30);
+        let mut b = Board::new(120, 32);
+        b.now = 2_000;
         b.set_rows(vec![
             row("%1", "work", "lead", "ai", false, 0),
             row("%2", "work", "tester", "ai", true, 2),
@@ -643,99 +1515,202 @@ mod tests {
         b
     }
 
+    fn inbox(b: &mut Board) {
+        b.set_inbox(&[
+            "$1:@1.%2 tester (ai, idle) · 2 queued".into(),
+            "  #5  from user  waiting 1s  first".into(),
+            "  #6  from %lead  waiting 3s  second  with  gaps".into(),
+        ]);
+    }
+
     fn every_key() -> Vec<Key> {
         let mut keys: Vec<Key> = (' '..='~').map(Key::ch).collect();
         for code in [
             KeyCode::Enter,
             KeyCode::Escape,
+            KeyCode::Tab,
             KeyCode::Up,
             KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
             KeyCode::PPage,
             KeyCode::NPage,
             KeyCode::BSpace,
         ] {
             keys.push(Key::plain(code));
         }
+        keys.push(Key::with_shift(KeyCode::Tab));
         keys
+    }
+
+    /// Every row of a frame, without its escape sequences.
+    fn screen(b: &Board) -> Vec<String> {
+        let f = b.frame();
+        // Rows start where the frame puts the cursor: ESC [ row ; 1 H, in order.
+        let mut rows = Vec::new();
+        let mut rest = f.trim_start_matches("\x1b[?25l");
+        let mut n = 1;
+        while let Some(r) = rest.strip_prefix(&format!("\x1b[{n};1H")) {
+            let end = r.find(&format!("\x1b[{};1H", n + 1)).unwrap_or(r.len());
+            rows.push(strip(&r[..end]));
+            rest = &r[end..];
+            n += 1;
+        }
+        assert!(rest.is_empty(), "every row put at its place: {rest:?}");
+        assert!(!f.contains('\n'), "no line feed");
+        rows
     }
 
     #[test]
     fn a_pane_line_reads_back() {
-        let line = "$1:@2.%7\twork\t1.0\t%7\ttester\tai\t1\t2\trunning 3/10\tclaude\t12\t0";
+        let line =
+            "$1:@2.%7\twork\t1.0\t%7\ttester\tai\t1\t2\trunning 3/10\tclaude\t12\t0\t/src\t99\t100\t150\t80\t24\t";
         let r = PaneRow::parse(line).unwrap();
         assert_eq!((r.id.as_str(), r.idle, r.inbox, r.doing().as_str()), ("%7", true, 2, "\"running 3/10\""));
+        assert_eq!(
+            (r.path.as_str(), r.pid.as_str(), r.started, r.activity, r.size.as_str()),
+            ("/src", "99", 100, 150, "80x24")
+        );
         assert_eq!(PaneRow::parse("too\tshort"), None);
+        let q = Queued::parse("  #6  from %lead  waiting 3s  second  with  gaps").unwrap();
+        assert_eq!(
+            (q.id.as_str(), q.from.as_str(), q.waiting.as_str(), q.text.as_str()),
+            ("6", "%lead", "3s", "second  with  gaps")
+        );
+        assert_eq!(Queued::parse("$1:@1.%2 tester (ai) · 2 queued"), None);
     }
 
+    /// The one rule of what it may send: only its queries and actions, and
+    /// what needs a yes never without one, whatever is pressed.
     #[test]
-    fn watching_changes_nothing_whatever_is_pressed() {
-        // Every key, in every view, outside manage mode: nothing but queries.
-        for view in [View::Events, View::Messages, View::Tasks, View::Live, View::History] {
-            let mut b = board();
-            b.view = view;
-            b.set_below(vec!["  #5  from user  waiting 1s  hi".into()]);
+    fn nothing_leaves_but_its_actions_and_nothing_harmful_without_a_yes() {
+        for focus in [Panel::Panes, Panel::Inbox, Panel::Tasks, Panel::Main] {
             for k in every_key() {
-                if k.code == KeyCode::Char('E') {
-                    continue;
+                let mut b = board();
+                inbox(&mut b);
+                b.set_tasks(&["TASK  STATUS".into(), "#5  running  x".into()]);
+                b.focus = focus;
+                match b.key(k) {
+                    Action::Run(argv) | Action::Go(argv) => {
+                        assert!(ACTIONS.contains(&argv[0].as_str()), "{focus:?} {k:?} -> {argv:?}");
+                        assert!(!needs_yes(&argv), "{focus:?} {k:?} ran {argv:?} without asking");
+                    }
+                    _ => {}
                 }
-                let a = b.key(k);
-                assert!(!matches!(a, Action::Run(_)), "{view:?} {k:?} -> {a:?}");
-                b.view = view;
-                b.typing = None;
-                b.filter.clear();
+                // Whatever question it asked: only `y` goes on.
+                for answer in every_key().into_iter().filter(|a| *a != Key::ch('y')) {
+                    let mut again = board();
+                    inbox(&mut again);
+                    again.focus = focus;
+                    again.key(k);
+                    if again.dialog.is_some() && matches!(again.dialog, Some(Dialog::Confirm { .. })) {
+                        assert_eq!(again.key(answer), Action::Redraw, "{k:?} then {answer:?}");
+                    }
+                }
             }
+        }
+        for q in [board().main_query().unwrap(), board().inbox_query().unwrap(), board().tasks_query()] {
+            assert!(QUERIES.contains(&q[0].as_str()), "{q:?}");
         }
     }
 
     #[test]
-    fn manage_mode_changes_only_queued_messages_and_ends_by_itself() {
+    fn a_pane_is_sent_renamed_moded_readied_and_closed() {
         let mut b = board();
         b.key(Key::ch('j'));
-        b.key(Key::ch('m'));
-        assert_eq!(b.query(), ["list-messages", "-t", "%2"]);
-        b.set_below(vec![
-            "$1:@1.%2 tester (ai, idle) · 2 queued".into(),
-            "  #5  from user  waiting 1s  first".into(),
-            "  #6  from user  waiting 1s  second".into(),
-        ]);
-        assert!(matches!(b.key(Key::ch('d')), Action::Redraw), "not before E");
-        assert!(b.note.as_deref().unwrap().contains("press E"));
-        b.key(Key::ch('E'));
-        assert!(b.managing() && b.frame("12:00").contains("MANAGE"));
-        b.key(Key::ch('n'));
-        assert_eq!(b.key(Key::ch('g')), Action::Run(vec!["move-message".into(), "6".into(), "top".into()]));
-        assert_eq!(b.pick, 0, "the pick goes with the message to the top");
-        b.pick = 1;
-        assert_eq!(b.key(Key::ch('d')), Action::Run(vec!["drop-message".into(), "6".into()]));
-        assert_eq!(b.key(Key::ch('u')), Action::Run(vec!["drop-message".into(), "-u".into()]));
-        for k in every_key() {
-            if let Action::Run(argv) = b.key(k) {
-                assert!(MANAGES.contains(&argv[0].as_str()), "{argv:?}");
-            }
-            b.manage = Some(Instant::now());
-            b.view = View::Messages;
-            b.typing = None;
+        assert_eq!(b.chosen.as_deref(), Some("%2"));
+        // A message, typed at the bottom.
+        b.key(Key::ch('s'));
+        for c in "run tests".chars() {
+            b.key(Key::ch(c));
         }
-        // Left alone, it ends.
-        b.manage = Some(Instant::now() - MANAGE_IDLE - Duration::from_secs(1));
-        b.tick();
-        assert!(!b.managing() && b.note.as_deref().unwrap().contains("ended"));
-        assert!(matches!(b.key(Key::ch('d')), Action::Redraw));
+        assert!(strip(&b.frame()).contains("message to %2: run tests"));
+        assert_eq!(
+            b.key(Key::plain(KeyCode::Enter)),
+            Action::Run(owned(&["send-message", "-t", "%2", "--", "run tests"]))
+        );
+        // A name, starting from the one it has; Esc changes nothing.
+        b.key(Key::ch('r'));
+        b.key(Key::plain(KeyCode::BSpace));
+        assert_eq!(b.key(Key::plain(KeyCode::Escape)), Action::Redraw);
+        b.key(Key::ch('r'));
+        b.key(Key::ch('2'));
+        assert_eq!(
+            b.key(Key::plain(KeyCode::Enter)),
+            Action::Run(owned(&["rename-pane", "-t", "%2", "--", "tester2"]))
+        );
+        // A mode: ai at once; shell only after a yes.
+        b.key(Key::ch('m'));
+        assert_eq!(b.key(Key::plain(KeyCode::Enter)), Action::Run(owned(&["set-work-mode", "-t", "%2", "ai"])));
+        b.key(Key::ch('m'));
+        b.key(Key::ch('k'));
+        assert_eq!(b.key(Key::plain(KeyCode::Enter)), Action::Redraw, "shell asks first");
+        assert!(strip(&b.frame()).contains("switch %2 to shell?"));
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["set-work-mode", "-t", "%2", "shell"])));
+        assert_eq!(b.key(Key::ch('R')), Action::Run(owned(&["pane-ready", "-t", "%2"])));
+        assert_eq!(b.key(Key::ch('o')), Action::Go(owned(&["focus-pane", "%2"])));
+        // Closing asks; no leaves it.
+        assert_eq!(b.key(Key::ch('x')), Action::Redraw);
+        assert!(strip(&b.frame()).contains("close %2 (tester)?"));
+        assert_eq!(b.key(Key::ch('n')), Action::Redraw);
+        assert_eq!(b.note.as_deref(), Some("left as it was"));
+        b.key(Key::ch('x'));
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["kill-pane", "-t", "%2"])));
     }
 
     #[test]
-    fn the_board_asks_only_queries_and_shows_the_panes() {
+    fn queued_messages_are_read_moved_and_deleted_with_a_yes() {
         let mut b = board();
-        for (k, want) in [('m', "list-messages"), ('t', "list-tasks"), ('v', "capture-pane"), ('h', "capture-pane")] {
-            b.key(Key::ch(k));
-            assert_eq!(b.query()[0], want);
-            assert!(QUERIES.contains(&b.query()[0].as_str()));
-        }
+        b.key(Key::ch('j'));
+        assert_eq!(b.inbox_query().unwrap(), owned(&["list-messages", "-t", "%2"]));
+        inbox(&mut b);
+        b.key(Key::ch('2'));
+        assert_eq!(b.focus, Panel::Inbox);
+        b.key(Key::ch('j'));
+        assert_eq!(b.key(Key::ch('t')), Action::Run(owned(&["move-message", "6", "top"])));
+        assert_eq!(b.inbox_pick, 0, "the pick goes with the message to the top");
+        b.inbox_pick = 1;
+        assert_eq!(b.key(Key::ch('K')), Action::Run(owned(&["move-message", "6", "up"])));
+        assert_eq!(b.key(Key::ch('J')), Action::Run(owned(&["move-message", "5", "down"])));
+        assert_eq!(b.key(Key::ch('d')), Action::Redraw);
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["drop-message", "6"])));
+        assert_eq!(b.key(Key::ch('u')), Action::Run(owned(&["drop-message", "-u"])));
+        // Enter reads it in full on the right.
+        b.inbox_pick = 0;
         b.key(Key::plain(KeyCode::Enter));
-        assert_eq!(b.query()[0], "list-events");
-        let f = b.frame("12:00:00");
-        assert!(f.contains("3 panes · 1 busy · 2 queued"), "{f}");
-        assert!(f.contains("tester") && f.contains(" idle ") && f.contains("ops"), "{f}");
+        assert_eq!((b.focus, b.tab), (Panel::Main, Tab::Detail));
+        assert_eq!(b.main_query().unwrap(), owned(&["trace-message", "5"]));
+        // A task likewise.
+        b.set_tasks(&["TASK  STATUS   AT".into(), "#12   running  $1:@1.%2 (ai)  2s  2  run".into()]);
+        b.key(Key::ch('3'));
+        b.key(Key::plain(KeyCode::Enter));
+        assert_eq!(b.main_query().unwrap(), owned(&["show-task", "12"]));
+    }
+
+    #[test]
+    fn panels_and_tabs_are_gone_through() {
+        let mut b = board();
+        let order: Vec<Panel> = (0..4)
+            .map(|_| {
+                b.key(Key::plain(KeyCode::Tab));
+                b.focus
+            })
+            .collect();
+        assert_eq!(order, [Panel::Inbox, Panel::Tasks, Panel::Main, Panel::Panes]);
+        b.key(Key::with_shift(KeyCode::Tab));
+        assert_eq!(b.focus, Panel::Main);
+        b.key(Key::ch('h'));
+        assert_eq!(b.focus, Panel::Panes, "h goes back to the left panel it came from");
+        b.key(Key::ch('3'));
+        b.key(Key::ch('l'));
+        b.key(Key::ch('h'));
+        assert_eq!(b.focus, Panel::Tasks);
+        for (k, want) in [(']', "capture-pane"), (']', "list-events"), ('[', "capture-pane"), ('[', "capture-pane")] {
+            b.key(Key::ch(k));
+            assert_eq!(b.main_query().unwrap()[0], want, "{:?}", b.tab);
+        }
+        assert_eq!(b.tab, Tab::Screen);
+        assert!(b.main_query().unwrap().contains(&"-e".to_string()), "the screen with its colours");
         // The filter narrows the panes; the chosen one follows.
         b.key(Key::ch('/'));
         for c in "ops".chars() {
@@ -743,39 +1718,157 @@ mod tests {
         }
         b.key(Key::plain(KeyCode::Enter));
         assert_eq!(b.chosen_row().unwrap().id, "%3");
-        assert!(b.frame("x").contains("1 panes"));
+        assert!(strip(&b.frame()).contains("[1] Panes  1 · 0 busy"));
+    }
+
+    /// Whatever the size, every row is exactly the window's width, nothing
+    /// panics, and what fits is there.
+    #[test]
+    fn every_size_draws_rows_of_the_window_width() {
+        for (cols, rows) in [(120, 32), (80, 24), (69, 20), (40, 10), (12, 7), (11, 5), (1, 1), (0, 0), (300, 90)] {
+            for focus in [Panel::Panes, Panel::Main] {
+                let mut b = board();
+                inbox(&mut b);
+                b.set_tasks(&["#1  running  a very long title ".repeat(8)]);
+                b.set_main(vec!["\x1b[31mred\x1b[0m 中文字符 wide".repeat(10), "\x1b]0;title\x07plain".into()]);
+                b.resize(cols, rows);
+                b.focus = focus;
+                // The same board, the same bytes.
+                assert_eq!(b.frame(), b.frame());
+                let lines = screen(&b);
+                assert_eq!(lines.len(), usize::from(rows).max(1), "{cols}x{rows}");
+                for l in &lines {
+                    assert_eq!(width_of(l), usize::from(cols), "{cols}x{rows} {focus:?}: {l:?}");
+                }
+            }
+        }
+        let b = board();
+        let text = screen(&b).join("\n");
+        for want in [
+            "[1] Panes  3 · 1 busy · 2 queued",
+            "[2] Inbox %lead",
+            "[3] Tasks",
+            "[0] %1 lead · ai · busy",
+            "Screen│Scrollback",
+            "pid 4242 · up 16m · quiet 1m",
+            "tester",
+        ] {
+            assert!(text.contains(want), "{want}:\n{text}");
+        }
     }
 
     #[test]
-    fn a_message_opens_in_full_and_every_inbox_shows_at_once() {
+    fn narrow_windows_show_one_side() {
         let mut b = board();
-        b.key(Key::ch('j'));
-        b.key(Key::ch('m'));
-        b.set_below(vec![
-            "hdr".into(),
-            "  #5  from user  waiting 1s  a".into(),
-            "  #6  from user  waiting 1s  b".into(),
-        ]);
-        b.key(Key::ch('n'));
-        b.key(Key::plain(KeyCode::Enter));
-        assert_eq!((b.view, b.query()), (View::Trace, vec!["trace-message".to_string(), "6".into()]));
-        b.key(Key::plain(KeyCode::Enter));
-        assert_eq!(b.view, View::Messages, "Enter again goes back");
-        b.key(Key::ch('a'));
-        assert_eq!(b.query(), ["list-messages", "-a"]);
-        assert!(b.frame("x").contains("a every inbox"));
+        b.resize(60, 20);
+        assert!(screen(&b).join("\n").contains("[1] Panes") && !screen(&b).join("\n").contains("[0] "));
+        b.key(Key::ch('0'));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[0] %1") && !text.contains("[1] Panes"), "{text}");
+    }
+
+    #[test]
+    fn the_mouse_picks_and_scrolls() {
+        let mut b = board();
+        inbox(&mut b);
+        let layout = b.layout();
+        let click = |x: usize, y: usize| MouseRecord { x: x as i16, y: y as i16, buttons: 1, ctrl: 0, flags: 0 };
+        // The second message of the inbox: the row below its border, and one more.
+        let r = layout.inbox.unwrap();
+        b.mouse(&click(r.x + 3, r.y + 2));
+        assert_eq!((b.focus, b.inbox_pick), (Panel::Inbox, 1));
+        // A pane: its line in the table (session headings take lines too).
+        let p = layout.panes.unwrap();
+        b.mouse(&click(p.x + 3, p.y + 1 + 4));
+        assert_eq!((b.focus, b.chosen.as_deref()), (Panel::Panes, Some("%3")));
+        // The main panel takes focus; the wheel scrolls it.
+        b.set_main((0..100).map(|i| format!("line {i}")).collect());
+        let m = layout.main.unwrap();
+        b.mouse(&click(m.x + 5, m.y + 5));
+        assert_eq!(b.focus, Panel::Main);
+        b.mouse(&MouseRecord { x: (m.x + 5) as i16, y: 5, buttons: 120 << 16, ctrl: 0, flags: 4 });
+        assert_eq!(b.scroll, 3);
+        // A release or a move does nothing.
+        b.mouse(&MouseRecord { x: (p.x + 3) as i16, y: 2, buttons: 0, ctrl: 0, flags: 0 });
+        assert_eq!(b.focus, Panel::Main);
+    }
+
+    #[test]
+    fn tasks_read_by_their_columns() {
+        // As list-tasks prints them (the heading's AT is also inside STATUS).
+        let lines: Vec<String> = [
+            "TASK  STATUS   AT             TOOK  STEPS  TITLE",
+            "#2    running  $1:@3.%4 (ai)  15ms  1      then report back",
+            "#10   failed   $1:@3.%12 (shell)  3s  2      a  title  with gaps",
+        ]
+        .map(String::from)
+        .to_vec();
+        let t = TaskRow::parse_all(&lines);
+        assert_eq!(t.len(), 2);
+        assert_eq!((t[0].id.as_str(), t[0].status.as_str(), t[0].at.as_str()), ("2", "running", "%4 (ai)"));
+        assert_eq!((t[0].took.as_str(), t[0].steps.as_str(), t[0].title.as_str()), ("15ms", "1", "then report back"));
+        // A wider address than the heading's column: still its own cells.
+        assert_eq!(t[1].id, "10");
+        // No heading: by words.
+        let t = TaskRow::parse_all(&["#7 done the title".to_string()]);
+        assert_eq!((t[0].id.as_str(), t[0].status.as_str(), t[0].title.as_str()), ("7", "done", "the title"));
+        assert!(strip(&t[0].line()).starts_with("#7   done"), "{}", strip(&t[0].line()));
+        assert_eq!(wrap("abcdefg", 3), ["abc", "def", "g"]);
+        assert_eq!(wrap("中文字", 4), ["中文", "字"]);
+        assert_eq!(wrap("", 5), [""]);
+    }
+
+    #[test]
+    fn an_envelope_reads_as_its_fields() {
+        let env =
+            r#"{"keepane":1,"id":3,"task":3,"from":"$1:@3.%4","mode":"normal","to":"$1:@6.%5","via":"ai","hop":0}"#;
+        let f: Vec<String> = envelope_fields(env).unwrap().iter().map(|l| strip(l)).collect();
+        assert_eq!(
+            f,
+            ["id    3", "task  3", "from  $1:@3.%4", "mode  normal", "to    $1:@6.%5", "via   ai", "hop   0"]
+        );
+        // The fields form reads the same.
+        let fields = "[keepane id=3 task=3 from=$1:@3.%4 mode=normal to=$1:@6.%5 via=ai hop=0]";
+        assert_eq!(envelope_fields(fields).unwrap().iter().map(|l| strip(l)).collect::<Vec<_>>(), f);
+        assert_eq!(envelope_fields("text: {not json"), None);
+        assert_eq!(envelope_fields("[1,2]"), None);
+        assert_eq!(envelope_fields("[keepane nonsense]"), None);
+        // In Detail, the envelope comes as its fields and the rest as it is.
+        let mut b = board();
+        b.tab = Tab::Detail;
+        b.detail = Some(Detail::Message("3".into()));
+        b.set_main(vec!["#3 queued · task #3 · hop 0".into(), env.into(), "text:".into(), "hi".into()]);
+        let text = screen(&b).join("\n");
+        assert!(
+            text.contains("from  $1:@3.%4") && text.contains("via   ai") && !text.contains("{\"keepane\""),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn text_is_cut_to_width_with_its_styles() {
+        assert_eq!(clip("abcdef", 3), ("abc".into(), 3));
+        assert_eq!(clip("\x1b[31mred\x1b[0m", 2), ("\x1b[31mre\x1b[0m".into(), 2), "a cut string ends its styles");
+        assert_eq!(clip("中文", 3).1, 2, "a wide character that does not fit is left out");
+        assert_eq!(clip("\x1b]0;t\x07x", 5), ("x".into(), 1), "an OSC is dropped");
+        assert_eq!(width_of("a\tb"), 3, "a control character is a space");
+        assert_eq!(width_of(&fit("\x1b[1mab", 6)), 6);
+        assert_eq!(window_start(9, 20, 5), 5);
+        assert_eq!(window_start(0, 20, 5), 0);
+        assert_eq!(window_start(19, 20, 5), 15);
     }
 
     #[test]
     fn events_read_short() {
         let sent = r#"{"at":"2026-09-26T14:28:02.000+08:00","ev":"sent","msg":{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"ai","hop":0},"text":"run the tests\nand report"}"#;
-        let line = event_line(sent);
+        let line = strip(&event_line(sent));
         assert!(line.ends_with("sent      #12 %lead → $1:@2.%7 (ai): run the tests"), "{line}");
         let status = r#"{"at":"2026-09-26T14:31:12.000+08:00","ev":"pane","pane":"$1:@2.%7","what":"status","name":"tester","mode":"ai","program":"claude","text":"tests 3/10"}"#;
-        assert!(event_line(status).ends_with("pane      status tests 3/10"), "{}", event_line(status));
+        assert!(strip(&event_line(status)).ends_with("pane      status tests 3/10"), "{}", event_line(status));
         let done =
             r#"{"at":"2026-09-26T14:31:12.000+08:00","ev":"failed","id":14,"ok":false,"output":"x","cut":false}"#;
-        assert!(event_line(done).ends_with("failed    #14 failed"));
+        assert!(strip(&event_line(done)).ends_with("failed    #14 failed"));
+        assert!(event_line(done).contains("\x1b[31m"), "a failure in red");
         assert_eq!(event_line("not json"), "not json");
     }
 }

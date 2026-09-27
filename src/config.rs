@@ -115,6 +115,9 @@ pub struct Options {
     /// Pane messages (docs/design/mailbox.md): the most hops a chain of
     /// messages may take, so two agents cannot answer each other for ever.
     pub message_hop_limit: u32,
+    /// How a message's header reads where people and programs see it
+    /// (`message-envelope`): `fields` (`[keepane id=… from=…]`) or `json`.
+    pub message_envelope: crate::server::actor::EnvelopeStyle,
     /// The most messages one inbox holds.
     pub message_inbox_limit: usize,
     /// The most bytes one message (and a shell command's kept output) holds.
@@ -225,6 +228,7 @@ pub const SHOWABLE: &[&str] = &[
     "animation",
     "animation-time",
     "message-hop-limit",
+    "message-envelope",
     "message-inbox-limit",
     "message-max-size",
     "message-wait-max",
@@ -295,6 +299,7 @@ impl Default for Options {
             animation: true,
             animation_time: 160,
             message_hop_limit: 8,
+            message_envelope: Default::default(),
             message_inbox_limit: 100,
             message_max_size: 64 * 1024,
             message_wait_max: 600,
@@ -407,6 +412,7 @@ pub const KNOWN: &[&str] = &[
     "log-history",
     "log-history-days",
     "log-history-dir",
+    "message-envelope",
     "message-hop-limit",
     "message-inbox-limit",
     "message-max-size",
@@ -681,6 +687,10 @@ impl Options {
             "log-history-dir" => self.log_history_dir = value.to_string(),
             "undo-kill-time" => self.undo_kill_time = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "message-hop-limit" => self.message_hop_limit = ranged(name, value, 1, 100, "hops")?,
+            "message-envelope" => {
+                self.message_envelope = crate::server::actor::EnvelopeStyle::parse(value.trim())
+                    .ok_or_else(|| format!("bad message-envelope '{value}' (fields or json)"))?;
+            }
             "message-inbox-limit" => self.message_inbox_limit = ranged(name, value, 1, 10_000, "messages")?,
             "message-max-size" => {
                 self.message_max_size = parse_size(name, value, 1024, 1024 * 1024)? as usize;
@@ -798,6 +808,7 @@ impl Options {
             "log-history-days" => self.log_history_days.to_string(),
             "undo-kill-time" => self.undo_kill_time.to_string(),
             "message-hop-limit" => self.message_hop_limit.to_string(),
+            "message-envelope" => self.message_envelope.as_str().to_string(),
             "message-inbox-limit" => self.message_inbox_limit.to_string(),
             "message-max-size" => size_name(self.message_max_size as u64),
             "message-wait-max" => self.message_wait_max.to_string(),

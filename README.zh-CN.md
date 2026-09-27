@@ -9,7 +9,7 @@ keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程�
 
 <p align="center">
   <img src="docs/img/keepane-messages.gif" width="880"
-       alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；dashboard 显示所有 pane 和一个 agent 的收件箱，在管理模式下把一条消息置顶">
+       alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；分面板的 dashboard 显示 pane、一个 agent 的收件箱和任务，把一条消息置顶，并按字段展开看全文">
 </p>
 
 - 脱离后，pane 里的程序继续运行。重启电脑后用 `keepane resume` 恢复布局；误关的 pane 可在 10 秒内按 `C-b u` 找回。
@@ -46,19 +46,31 @@ pane 根据工作模式处理消息：
 
 `ai` 模式下，如果 agent 已退出并重新出现 shell 提示符，消息不会投递。投递方式以发送时接收方的模式为准：发给 agent 的文本即使遇到模式切换，也不会作为 shell 命令执行。
 
-消息使用统一的单行信封，包含来源和路由信息：
+每条消息都带一个字段固定的信封头，写明来源和路由：
 
 ```text
-{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
+[keepane id=12 task=12 from=$1:@1.%3 name=lead mode=ai to=$1:@2.%7 via=shell hop=0]
 ```
 
-投给 shell 时，信封放在命令前，写成不执行任何东西、又会留在历史里的形式：PowerShell 里是注释（`<# … #> cargo test`），bash 和 zsh 里是 `:` 的参数（`: '…'; cargo test`）。多行内容会合为一条命令执行，对应一个结果（bash 和 zsh 里取最后一行的结果）。投给 agent 时，内容由信封、正文和结束行 `{"keepane":1,"end":12}` 组成。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
+每个字段是 `名字=值`，用空格隔开；值里不会有空格，程序按空格切开就能读回。`set -g message-envelope json` 改成把同样的字段写成一行 JSON（`{"keepane":1,"id":12,…}`，0.17 之前的写法）；事件日志一直用 JSON。
+
+投给 shell 时，信封头放在命令前，写成不执行任何东西、又会留在历史里的形式：PowerShell 里是注释（`<# [keepane …] #> cargo test`），bash 和 zsh 里是 `:` 的参数（`: '[keepane …]'; cargo test`）。多行内容会合为一条命令执行，对应一个结果（bash 和 zsh 里取最后一行的结果）。投给 agent 时，内容由信封头、正文和结束行 `[keepane end=12]` 组成。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
+
+发送方能选的字段按名字给：`--to`（目标 pane，简写 `-t`）、`--re 12`（回复第 12 条消息，不写 `--to` 就发给它的发送方；`-r` 回复本 pane 正在处理的那条）、`--task 12`（接着第 12 号任务）。其余由 keepane 填：谁发的（`from`、`name`、`mode`）、编号、hop 和 `via`。发送方改不了它们，所以信封头可信，hop 上限也照样管用：
+
+```powershell
+keepane send-message --to %builder "cargo test"
+keepane send-message --re 12 "测试通过了"                # 发给第 12 条的发送方
+keepane send-message --to %lead --task 12 "还有一件事"
+```
 
 在 pane 内运行 `set-work-mode`，只能修改当前 pane；从外部终端、快捷键或 `C-b :` 命令行运行时，可以修改任意 pane。这样，pane 内的程序不能直接把别的 pane 切成自动执行消息的 `shell` 模式。改名、管理收件箱和关闭 pane 不受这条限制；关闭操作可在 10 秒内用 `C-b u` 撤销。此规则用于减少误操作，并非针对同一用户进程的安全隔离。
 
 ## dashboard
 
-按 `C-b v` 或运行 `keepane dashboard` 可查看所有 pane 的模式、空闲状态、收件箱和当前状态。选中 pane 后，可查看事件（Enter）、消息（`m`）、任务（`t`）、实时屏幕（`v`）及带滚动历史的屏幕（`h`）。默认是只读视图。按 `E` 进入管理模式后，可删除排队消息（`d`，`u` 撤销）、调整顺序（`K`、`J`）或置顶（`g`）。管理模式下顶栏变红，30 秒无操作会自动退出。
+按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组，列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[0]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件，或某条消息、某个任务的全文。Tab、`1 2 3 0`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。
+
+也能直接操作。对 pane：`s` 发消息、`r` 改名、`m` 改工作模式、`R` 标记就绪（解卡）、`o` 跳过去（顺带关掉弹窗）、`x` 关掉。对收件箱：`d` 删除排队消息（`u` 撤销）、`K`/`J` 上下移、`t` 放到最前、Enter 看全文。关 pane、删消息、把 pane 切到 `shell`（从此收到的文字会被当命令执行）这三样会先确认。设计见 [docs/design/dashboard.md](docs/design/dashboard.md)。
 
 消息及 pane 状态变化会写入事件日志：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停止时，未投递的消息会被丢弃，并留下日志记录。pane 名字和工作模式随 session 保存。设计细节见 [docs/design/mailbox.md](docs/design/mailbox.md)。
 
@@ -522,6 +534,6 @@ pane 消息：`shell` 工作模式依赖 keepane 的提示符钩子（PowerShell
 
 - `keepane migrate` 一次搬完：还在运行的 wmux 服务端里的会话（先存盘、停掉旧服务端，再在 keepane 里恢复，布局、历史、目录都在；里面的程序会重新启动，和 `restart-server` 一样），wmux 存在 `%LOCALAPPDATA%\wmux` 下的东西（会话存档、历史记录、手机端密钥），开机启动、Windows Terminal 的 profile、通知链接。如果 keepane 里已经有同名会话，wmux 的那个会以 `<名字>-wmux` 恢复在旁边，两个都保留。wmux 服务端还在运行时启动 keepane，会提示你这件事。
 - 你的 `~/.wmux.conf` 照样生效，`WMUX_*` 环境变量、`~/.wmux/plugins` 和 `*.wmux` 插件文件也都认，想改名时再改成 `~/.keepane.conf`、`KEEPANE_*`、`~/.keepane/plugins`、`*.keepane`。
-- MSI 会替换掉"应用和功能"里的 wmux，0.10 到 0.13 的 `wmux update` 会直接装上 keepane。用 scoop 的话：`scoop uninstall wmux`，再装 keepane 的清单（见“安装”一节）。
+- MSI 会替换掉"应用和功能"里的 wmux。`wmux update` 已经找不到新版了，请从 Releases 手动装一次 keepane。用 scoop 的话：`scoop uninstall wmux`，再装 keepane 的清单（见“安装”一节）。
 - 仓库搬到了 github.com/newdee/keepane（旧链接会跳转过去），网站在 dfine.tech/keepane。
 - `$PROFILE` 里的 `tmux` 或 `wmux` 别名要改成指向 keepane。

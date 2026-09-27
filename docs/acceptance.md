@@ -2671,3 +2671,21 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 26 | 静态一致性（发布产物与文档） | 照 release.yml 的打包步骤逐字在本地跑：`keepane-v0.16.0-linux-x86_64.tar.gz`（+ .sha256），内含同名目录与 keepane、两份 README、配置样例、LICENSE，与 README 的下载名和 `install` 路径一致，解出的程序报 `keepane 0.16.0`；中英 README 15 个要点逐一对照都有；Linux 全量 193/85，Windows 全量通过 | 干净（3/3） |
 
 遗留：macOS 只在 CI 上跑过测试，没有人手在 Mac 上用过（交互客户端、剪贴板、通知）；本机没有装 zsh（sudo 要密码），zsh 测试用解包的 zsh 加临时 `~/.zshenv` 跑，真 zsh 由 macOS CI 覆盖；bash 4.4 以下（macOS 自带）只在文档里说明，没有实测；`keepane startup` 在 Linux/macOS 上还没有（systemd user unit / launchd agent）。
+
+## 66. lazygit 式的 dashboard；信封改成字段；按字段发送（0.17.0）
+
+一、dashboard 重做（docs/design/dashboard.md）：左列 [1] 窗格（模式、忙闲、收件数、安静多久、程序）、[2] 所选窗格的收件箱、[3] 任务；右边 [0] 所选窗格（地址、目录、pid、跑了多久、在做什么，下面是带颜色的屏幕、回滚、事件，或一条消息 / 一个任务的全文，信封按字段逐行列出）。能直接操作：发消息、改名、改模式、解卡、跳过去（弹窗里顺带关掉）、关窗格、删 / 移 / 置顶排队消息；关窗格、删消息、切到 shell 三样先确认。鼠标点选与滚动，`?` 列出全部按键。取消了旧的"观测 / 管理模式"。
+
+二、信封（用户要求：直接看 JSON 太难看）：投递、`read-message`、`trace-message` 里写成 `[keepane id=… task=… from=… to=… via=… hop=…]`，结束行 `[keepane end=…]`；`message-envelope json` 保留旧写法；事件日志始终是 JSON。
+
+三、按字段发送：`send-message --to / --re / --task`（MCP 的 `send_message` 同样有 `re`、`task`）。`from`、`name`、`mode`、`id`、`hop`、`via` 由 keepane 填，发送方给了就报错并说明原因（否则来源可伪造、hop 上限拦不住循环）。
+
+实现中顺带发现并修掉的：bash / zsh 的提示符标记原来放在 PS1 里，行编辑器在长行折行、提前打字时会重画 PS1，标记跟着重发，命令还在输入就被当成结束、窗格被当成空闲（改为每个提示符只从 `PROMPT_COMMAND` / `precmd` 发一次；新加确定性测试：比窗格宽的 `sleep 1; echo …` 在 0.5 秒时必须仍在运行，把标记放回 PS1 则 3/3 失败）；命令运行中打的字在提示符重画后不再让窗格保持忙（改为直到有人再打字）；`--task` 把被拒收的消息算进 hop；Windows 弹窗里 dashboard 第一行被顶掉（改为每行按绝对位置画，并每次刷新都重新读窗口大小）；原动画帧数测试在整套并行时帧数不足（只验证"在动"，门槛 20→4）。wmux 名字的安装包按用户要求从 0.16.0 的发布里删除，以后不再生成。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性 | 搜旧说法（管理模式、PS1 里的标记、JSON 信封行）：两份 README 开头动图的替代文字还写"在管理模式下置顶" | **有问题**，改 |
+| 2 | 机制通路（变异 9 项） | 字段分隔、选项不读、`--re` 不默认回发送方、`--task` 的 hop 不加一、拒收算进 hop、受保护字段放行、打的字不保持忙、关窗格不确认、读不出字段式信封：9/9 被抓（其中一项第一次指定错了测试，换对后抓到）；Windows 225/10/84；Linux lib 201、e2e 20/20；三平台 clippy 0 | 干净（1/3） |
+| 3 | 边界与退化输入 | `--re` 取 0、-1、溢出、字母、空：都拒并说明；配置文件设 json 生效；只有拒收消息的任务报"没有这个任务"；64 字符的名字写成字段仍是 8 段、无空格值。但 `--re` 回复窗格外来的消息且没写 `--to` 时，报错写成 `-r` 且没说怎么办 | **有问题**：按实际用的参数说，并提示"用 --to 指定"；e2e 加断言 |
+| 4 | 可复现性 | Windows 全量两次 225/10/84；Linux lib 201、e2e 30/30；同一面板状态画两次整帧逐字节相同（18 种尺寸） | 干净（1/3） |
+| 5 | 不变量（入口审计） | 显示消息的 5 个出口（投递、read-message、trace-message、MCP 的 wait_message 与 current_message/trace_message）都经 `header(style)`，`envelope()` 只剩写日志；新消息只在 `send_message` 一处构造，两个调用方（所有 send-message 与 create-pane 的首条任务）；Windows 225/10/84，Linux 201/85 | 干净（2/3） |

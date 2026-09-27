@@ -243,6 +243,8 @@ $ keepane show-task 12
 
 ### 10.3 Dashboard
 
+（0.17 起由 [dashboard.md](dashboard.md) 的多面板版取代：不再有观测/管理两种模式，改为能直接操作、后果重的先确认。下面是 0.15 的原设计，留作记录。）
+
 - `keepane dashboard`（别名 `dash`），默认绑定 `prefix v`；在 keepane 里以弹出窗口打开，也可在任意终端全屏运行。
 - **两种模式，防误触**：
   - **观测模式**（每次打开的默认）：只调用查询类服务端命令。管理类按键不起作用，只提示"按 E 进入管理模式"。
@@ -285,6 +287,13 @@ $1:@3.%4 tester (ai, busy) · 2 queued · working on #12
 ### 10.4 normal 窗格的提醒
 
 消息进入 normal 窗格时，用现有窗口提醒机制（与 bell、activity 同一套）在状态栏用 `@` 标出那个窗口，并在该会话的客户端显示一条提示；和其他提醒一样，窗口被看到时标记消失。
+
+### 10.5 信封头的写法与按字段发送（0.17）
+
+用户要求（2026-09-27）：直接看 JSON 太难看，并且发送时能按字段指定。
+
+- 投递、`read-message`、`trace-message` 里的信封头改成字段式：`[keepane id=12 task=3 from=… name=… mode=… to=… via=… hop=1 re=9]`，字段名与顺序同 JSON，`名字=值` 以空格分隔；值不含空格和 `]`（名字限字母数字 `-` `_`，地址与模式词都没有），按空格切开即可读回。结束行 `[keepane end=12]`。选项 `message-envelope fields|json`，默认 `fields`；事件日志永远是 JSON（机器格式，不随选项变）。
+- `send-message` 按名字给发送方能选的字段：`--to`（=`-t`）、`--re <id>`（回复某条，默认发给它的发送方）、`--task <id>`（接着某个任务，hop 取该任务已到达的最远一跳 +1，被拒收的消息不算）。`from`、`name`、`mode`、`id`、`hop`、`via` 不能由发送方给：否则来源可以伪造，hop 上限也拦不住循环；给了就报错说明原因。MCP 的 `send_message` 同样多了 `re`、`task`。
 
 ## 11. 持久化
 

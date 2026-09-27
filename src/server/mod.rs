@@ -4903,6 +4903,7 @@ impl Server {
                         "-L".into(),
                         self.socket.clone(),
                         "dashboard".into(),
+                        "--popup".into(),
                     ],
                 };
                 self.exec(cmd, Some(cid))

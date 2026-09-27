@@ -105,23 +105,61 @@ impl Message {
         s
     }
 
+    /// The envelope's fields as the text a pane or a person reads: the
+    /// same fields in the same order as `envelope`, `name=value` apart:
+    /// `[keepane id=12 task=3 from=$1:@3.%7 name=builder mode=ai to=$1:@4.%9
+    /// via=shell hop=1 re=9]`. No value holds a space or a `]` (names are
+    /// letters, digits, `-` and `_`; addresses and words have none), so it
+    /// reads back by splitting.
+    pub fn fields(&self) -> String {
+        let mut s = format!("[keepane id={} task={}", self.id, self.task);
+        match &self.from {
+            Sender::User => s.push_str(" from=user"),
+            Sender::Pane { address, name, mode, .. } => {
+                s.push_str(&format!(" from={address}"));
+                if let Some(n) = name {
+                    s.push_str(&format!(" name={n}"));
+                }
+                s.push_str(&format!(" mode={}", mode.as_str()));
+            }
+        }
+        s.push_str(&format!(" to={} via={} hop={}", self.to, self.via.as_str(), self.hop));
+        if let Some(re) = self.re {
+            s.push_str(&format!(" re={re}"));
+        }
+        s.push(']');
+        s
+    }
+
+    /// The header in `style`: the fields, or the JSON envelope.
+    pub fn header(&self, style: EnvelopeStyle) -> String {
+        match style {
+            EnvelopeStyle::Fields => self.fields(),
+            EnvelopeStyle::Json => self.envelope(),
+        }
+    }
+
     /// The line after the text of a message given to an agent: a header
     /// forged inside the text shows up between the real header and this.
-    pub fn end_line(&self) -> String {
-        format!("{{\"keepane\":{ENVELOPE_VERSION},\"end\":{}}}", self.id)
+    pub fn end_line(&self, style: EnvelopeStyle) -> String {
+        match style {
+            EnvelopeStyle::Fields => format!("[keepane end={}]", self.id),
+            EnvelopeStyle::Json => format!("{{\"keepane\":{ENVELOPE_VERSION},\"end\":{}}}", self.id),
+        }
     }
 
     /// What is typed into the pane to deliver it (Enter follows). A shell
-    /// gets the envelope in front of the command in a form that runs
-    /// nothing and stays in the history (`syntax`: the language of the shell
-    /// at the prompt); an agent gets the envelope, the text, and the end line.
-    pub fn wrapped(&self, syntax: Syntax) -> String {
+    /// gets the header in front of the command in a form that runs nothing
+    /// and stays in the history (`syntax`: the language of the shell at the
+    /// prompt); an agent gets the header, the text, and the end line.
+    pub fn wrapped(&self, syntax: Syntax, style: EnvelopeStyle) -> String {
+        let header = self.header(style);
         match (self.via, syntax) {
-            (WorkMode::Shell, Syntax::PowerShell) => format!("<# {} #> {}", self.envelope(), one_command(&self.text)),
+            (WorkMode::Shell, Syntax::PowerShell) => format!("<# {header} #> {}", one_command(&self.text)),
             (WorkMode::Shell, Syntax::Posix) => {
-                format!(": {}; {}", posix_quote(&self.envelope()), posix_one_command(&self.text))
+                format!(": {}; {}", posix_quote(&header), posix_one_command(&self.text))
             }
-            (WorkMode::Ai | WorkMode::Normal, _) => format!("{}\n{}\n{}", self.envelope(), self.text, self.end_line()),
+            (WorkMode::Ai | WorkMode::Normal, _) => format!("{header}\n{}\n{}", self.text, self.end_line(style)),
         }
     }
 
@@ -169,6 +207,35 @@ pub fn one_command(text: &str) -> String {
          if (-not [object]::ReferenceEquals($Error[0], $__keepane_e)) {{ Write-Error \"a line above failed\" -ErrorAction SilentlyContinue }}",
         quoted.join(", ")
     )
+}
+
+/// How a message's header is written where it is read (the delivery, what
+/// `read-message` and `trace-message` print): `message-envelope`. The
+/// event log keeps the JSON envelope whatever this is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EnvelopeStyle {
+    /// `[keepane id=12 task=3 from=… to=… via=… hop=0]`.
+    #[default]
+    Fields,
+    /// `{"keepane":1,"id":12,"task":3,…}`, as before 0.17.
+    Json,
+}
+
+impl EnvelopeStyle {
+    pub fn parse(s: &str) -> Option<EnvelopeStyle> {
+        match s {
+            "fields" => Some(EnvelopeStyle::Fields),
+            "json" => Some(EnvelopeStyle::Json),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EnvelopeStyle::Fields => "fields",
+            EnvelopeStyle::Json => "json",
+        }
+    }
 }
 
 /// The command language of the shell at a pane's prompt, as its keepane
@@ -241,6 +308,11 @@ pub struct Actor {
     /// prompt. That prompt does not make the pane free, so no message is
     /// typed after what is on its line.
     typed_while_working: bool,
+    /// What was typed while the command ran is on the prompt's line: the
+    /// pane stays busy through any number of prompts (a shell redraws its
+    /// prompt when typed-ahead text comes in: bash does, and says so each
+    /// time) until someone types again: runs it, or clears it.
+    line_left: bool,
 }
 
 impl Actor {
@@ -264,7 +336,10 @@ impl Actor {
     /// The first half of `prompt`, at the marker itself: the pane is at its
     /// prompt from now on, unless someone types (in order, after this).
     pub fn prompt_seen(&mut self) {
-        self.at_prompt = !(self.current.is_some() && std::mem::take(&mut self.typed_while_working));
+        if self.current.is_some() && std::mem::take(&mut self.typed_while_working) {
+            self.line_left = true;
+        }
+        self.at_prompt = !self.line_left;
         self.ready = false;
     }
 
@@ -294,6 +369,8 @@ impl Actor {
     pub fn input(&mut self) {
         self.at_prompt = false;
         self.ready = false;
+        // Someone is at the line now: its next prompt is a free one.
+        self.line_left = false;
         if self.current.is_some() {
             self.typed_while_working = true;
         }
@@ -307,12 +384,14 @@ impl Actor {
         self.at_prompt = false;
         self.ready = false;
         self.typed_while_working = false;
+        self.line_left = false;
         self.current.take()
     }
 
     /// A person unsticks a pane that stays busy (text typed and deleted
     /// again, a prompt that was not redrawn).
     pub fn force_idle(&mut self) {
+        self.line_left = false;
         match self.mode {
             WorkMode::Shell => self.at_prompt = true,
             WorkMode::Ai => self.ready = true,
@@ -459,15 +538,59 @@ mod tests {
         assert_eq!(m.envelope(), m.clone().envelope());
     }
 
+    /// The fields read as the JSON says, in its order, and split back
+    /// into the same names and values.
+    #[test]
+    fn the_fields_say_what_the_envelope_says() {
+        let mut m = msg(12, WorkMode::Shell);
+        m.hop = 1;
+        m.re = Some(9);
+        m.task = 3;
+        let f = m.fields();
+        assert_eq!(f, "[keepane id=12 task=3 from=$1:@3.%7 name=builder mode=ai to=$1:@4.%9 via=shell hop=1 re=9]");
+        // Split back: the JSON's own names and values.
+        let pairs: Vec<(String, String)> = f
+            .trim_start_matches("[keepane ")
+            .trim_end_matches(']')
+            .split(' ')
+            .map(|kv| {
+                let (k, v) = kv.split_once('=').unwrap();
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        let json: serde_json::Value = serde_json::from_str(&m.envelope()).unwrap();
+        let from_json: Vec<(String, String)> = json
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k != "keepane")
+            .map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or_else(|| v.to_string())))
+            .collect();
+        assert_eq!(pairs, from_json);
+        m.from = Sender::User;
+        m.re = None;
+        assert_eq!(m.fields(), "[keepane id=12 task=3 from=user to=$1:@4.%9 via=shell hop=1]");
+        assert_eq!(m.header(EnvelopeStyle::Json), m.envelope());
+        assert_eq!(m.end_line(EnvelopeStyle::Fields), "[keepane end=12]");
+        assert_eq!(m.end_line(EnvelopeStyle::Json), r#"{"keepane":1,"end":12}"#);
+        assert_eq!(EnvelopeStyle::parse("fields"), Some(EnvelopeStyle::Fields));
+        assert_eq!(EnvelopeStyle::parse("xml"), None);
+    }
+
     #[test]
     fn each_mode_wraps_the_same_envelope_its_own_way() {
+        let (f, j) = (EnvelopeStyle::Fields, EnvelopeStyle::Json);
         let m = msg(5, WorkMode::Shell);
-        assert_eq!(m.wrapped(Syntax::PowerShell), format!("<# {} #> text 5", m.envelope()));
-        assert_eq!(m.wrapped(Syntax::Posix), format!(": '{}'; text 5", m.envelope()));
+        assert_eq!(m.wrapped(Syntax::PowerShell, f), format!("<# {} #> text 5", m.fields()));
+        assert_eq!(m.wrapped(Syntax::Posix, f), format!(": '{}'; text 5", m.fields()));
+        assert_eq!(m.wrapped(Syntax::PowerShell, j), format!("<# {} #> text 5", m.envelope()));
+        assert_eq!(m.wrapped(Syntax::Posix, j), format!(": '{}'; text 5", m.envelope()));
         let m = msg(5, WorkMode::Ai);
+        let agent = format!("{}\ntext 5\n[keepane end=5]", m.fields());
+        assert_eq!(m.wrapped(Syntax::PowerShell, f), agent);
+        assert_eq!(m.wrapped(Syntax::Posix, f), agent, "an agent's text is not the shell's");
         let agent = format!("{}\ntext 5\n{{\"keepane\":1,\"end\":5}}", m.envelope());
-        assert_eq!(m.wrapped(Syntax::PowerShell), agent);
-        assert_eq!(m.wrapped(Syntax::Posix), agent, "an agent's text is not the shell's");
+        assert_eq!(m.wrapped(Syntax::Posix, j), agent);
     }
 
     #[test]
@@ -476,7 +599,7 @@ mod tests {
         assert_eq!(posix_one_command("a='x'\r\necho \"$a\""), r#"eval "$(printf '%s\n' 'a='\''x'\''' 'echo "$a"')""#);
         let mut m = msg(3, WorkMode::Shell);
         m.text = "a\nb".into();
-        let w = m.wrapped(Syntax::Posix);
+        let w = m.wrapped(Syntax::Posix, EnvelopeStyle::Fields);
         assert!(w.ends_with(r#"; eval "$(printf '%s\n' 'a' 'b')""#), "{w}");
         assert!(!w.contains('\n'), "one line");
         assert_eq!(posix_quote("it's"), r"'it'\''s'");
@@ -495,11 +618,44 @@ mod tests {
         let mut m = msg(3, WorkMode::Shell);
         m.text = "a\nb".into();
         assert!(
-            m.wrapped(Syntax::PowerShell).contains("#> $__keepane_e = $Error[0]; . ([scriptblock]::Create(('a', 'b')"),
+            m.wrapped(Syntax::PowerShell, EnvelopeStyle::Fields)
+                .contains("#> $__keepane_e = $Error[0]; . ([scriptblock]::Create(('a', 'b')"),
             "{}",
-            m.wrapped(Syntax::PowerShell)
+            m.wrapped(Syntax::PowerShell, EnvelopeStyle::Fields)
         );
-        assert!(!m.wrapped(Syntax::PowerShell).contains('\n'), "one line");
+        assert!(!m.wrapped(Syntax::PowerShell, EnvelopeStyle::Fields).contains('\n'), "one line");
+    }
+
+    /// Text typed while a command runs is on the next prompt's line: the
+    /// pane stays busy however often that prompt is drawn (bash draws it
+    /// again as the typed-ahead text comes in), until someone types again
+    /// and a prompt follows.
+    #[test]
+    fn text_typed_during_a_command_keeps_the_pane_busy_through_redrawn_prompts() {
+        let mut a = actor(WorkMode::Shell);
+        a.enqueue(msg(1, WorkMode::Shell), 10).unwrap();
+        a.enqueue(msg(2, WorkMode::Shell), 10).unwrap();
+        a.prompt();
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(1));
+        a.input(); // typed ahead while #1 runs
+        assert_eq!(a.prompt().map(|(m, _)| m.id), Some(1), "#1 is over");
+        assert!(!a.idle());
+        for _ in 0..3 {
+            a.prompt(); // the same prompt, drawn again
+            assert!(!a.idle(), "still the typed text on the line");
+            assert_eq!(a.next_delivery(), None);
+        }
+        // Someone clears the line and presses Enter: the next prompt is free.
+        a.input();
+        a.prompt();
+        assert!(a.idle());
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(2));
+        // force_idle and a restart forget it too.
+        a.input();
+        a.prompt();
+        assert!(!a.idle());
+        a.force_idle();
+        assert!(a.idle());
     }
 
     #[test]

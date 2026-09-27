@@ -48,11 +48,11 @@ History (what panes printed, a file a day, 30 days):  choose-history (prefix /) 
 Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   rename-pane [-t pane] name   (then -t %name finds it; a full address $1:@3.%7 works too)   whoami
   set-work-mode [-t pane] normal|shell|ai   (shell: runs what it gets; ai: its agent says pane-ready; from a pane, only that pane)
-  send-message [-t pane] [-r] [-w secs] text   read-message [-w secs]   list-messages [-t pane] [-a]
+  send-message [--to pane] [-r | --re id] [--task id] [-w secs] text   read-message [-w secs]   list-messages [-t pane] [-a]
   trace-message id [-w secs]   drop-message id | -u   move-message id up|down|top   pane-status [text]
   list-tasks [-t session]   show-task id   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
   create-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
-  dashboard (prefix v: every pane at a glance; E manages queued messages)   setup claude [--install]
+  dashboard (prefix v: panes, inboxes, tasks and the chosen pane's screen; act on them; ? keys)   setup claude [--install]
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
@@ -207,9 +207,13 @@ fn main() {
         // MCP for an agent in a pane: stdin/stdout, until the agent closes it.
         "mcp" if args.len() > 1 => Some(Err(anyhow::anyhow!("mcp: takes no arguments"))),
         "mcp" => Some(rt.block_on(keepane::mcp::run(&socket))),
-        // Every pane at a glance, in this terminal (prefix v opens it in a popup).
-        "dashboard" | "dash" if args.len() > 1 => Some(Err(anyhow::anyhow!("dashboard: takes no arguments"))),
-        "dashboard" | "dash" => Some(keepane::dashboard::run(&socket, &rt)),
+        // Every pane at a glance, in this terminal (prefix v opens it in a
+        // popup, with `--popup`: going to a pane closes it).
+        "dashboard" | "dash" => match &args[1..] {
+            [] => Some(keepane::dashboard::run(&socket, &rt, false)),
+            [p] if p == "--popup" => Some(keepane::dashboard::run(&socket, &rt, true)),
+            _ => Some(Err(anyhow::anyhow!("dashboard: takes no arguments"))),
+        },
         _ => None,
     };
     if let Some(result) = local {

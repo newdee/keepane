@@ -12,7 +12,7 @@ config file keep working.
 
 <p align="center">
   <img src="docs/img/keepane-messages.gif" width="880"
-       alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows every pane and an agent's inbox, a message put first in manage mode">
+       alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows the panes, an agent's inbox and the tasks in panels, puts a message first and reads it field by field">
 </p>
 
 - After you detach, the programs in the panes keep running. After a reboot,
@@ -70,23 +70,42 @@ nothing is delivered. A message is delivered the way the recipient's mode
 was when it was sent: text sent to an agent is never run as a shell
 command, even if the mode changes in between.
 
-Messages use one single-line envelope, with their source and route:
+Every message carries a header of fixed fields, with its source and route:
 
 ```text
-{"keepane":1,"id":12,"task":12,"from":"$1:@1.%3","name":"lead","mode":"ai","to":"$1:@2.%7","via":"shell","hop":0}
+[keepane id=12 task=12 from=$1:@1.%3 name=lead mode=ai to=$1:@2.%7 via=shell hop=0]
 ```
 
-Delivered to a shell, the envelope goes before the command in a form that
+Each field is `name=value`, separated by spaces; no value holds a space,
+so a program reads it back by splitting. `set -g message-envelope json`
+writes the same fields as one line of JSON instead
+(`{"keepane":1,"id":12,…}`), as before 0.17; the event log always keeps
+the JSON.
+
+Delivered to a shell, the header goes before the command in a form that
 runs nothing and stays in the history: a comment in PowerShell
-(`<# … #> cargo test`), the argument of `:` in bash and zsh
-(`: '…'; cargo test`). Several lines are joined into one command that runs
-them together, with one result (in bash and zsh, the last line's).
-Delivered to an agent, it is the envelope, the text and the end
-line `{"keepane":1,"end":12}`. `task` ties together the order, the work and
-the replies; `hop` counts how many times a message was passed on, and past
+(`<# [keepane …] #> cargo test`), the argument of `:` in bash and zsh
+(`: '[keepane …]'; cargo test`). Several lines are joined into one command
+that runs them together, with one result (in bash and zsh, the last
+line's). Delivered to an agent, it is the header, the text and the end
+line `[keepane end=12]`. `task` ties together the order, the work and the
+replies; `hop` counts how many times a message was passed on, and past
 `message-hop-limit` (8 by default) it is refused, so agents cannot answer
 each other in a loop.
 
+The fields a sender chooses are given by name: `--to` (the pane; `-t` for
+short), `--re 12` (it answers message 12, and goes to 12's sender unless
+`--to` says otherwise; `-r` answers the message the pane is working on)
+and `--task 12` (it carries task 12 on). The rest is keepane's to fill in:
+who sent it (`from`, `name`, `mode`), its number, its hop and `via`. A
+sender cannot set them, so a header can be trusted and the hop limit
+holds:
+
+```powershell
+keepane send-message --to %builder "cargo test"
+keepane send-message --re 12 "the tests pass"          # to whoever sent #12
+keepane send-message --to %lead --task 12 "one more thing"
+```
 Run inside a pane, `set-work-mode` changes only that pane; run from a
 terminal outside keepane, a key or the `C-b :` prompt, it can change any
 pane. So a program in a pane cannot switch another pane into `shell` mode,
@@ -97,13 +116,24 @@ processes of the same user from each other.
 
 ## The dashboard
 
-`C-b v` or `keepane dashboard` shows every pane's mode, whether it is idle,
-its inbox and its status. For the chosen pane you can see its events
-(Enter), messages (`m`), tasks (`t`), its screen live (`v`) and its screen
-with the scrollback (`h`). It is read-only by default. `E` enters manage
-mode, where queued messages can be deleted (`d`, `u` undoes), moved (`K`,
-`J`) or put first (`g`). In manage mode the top bar turns red, and it ends
-by itself after 30 seconds without a key.
+`C-b v` (a popup) or `keepane dashboard` (any terminal) lays everything out
+in panels, lazygit style. On the left: `[1]` every pane, grouped by
+session, with its work mode, whether it is free, its inbox, how long it
+has been quiet and its program; `[2]` the chosen pane's inbox; `[3]` the
+tasks. On the right, `[0]` the chosen pane: its address, directory, pid,
+how long it has run, what it says it is doing, and then its screen live
+(with its colours), its scrollback, its events, or one message or task in
+full. Tab, `1 2 3 0` and `h`/`l` move between panels, `j`/`k` within one,
+`[`/`]` change what the right side shows; the mouse clicks and scrolls;
+`?` lists every key.
+
+It also acts. On a pane: `s` sends it a message, `r` renames it, `m`
+changes its work mode, `R` marks it ready (unsticks it), `o` goes there
+(and closes the popup), `x` closes it. In the inbox: `d` deletes a queued
+message (`u` brings it back), `K`/`J` move it, `t` puts it first, Enter
+reads it in full. Closing a pane, deleting a message and switching a pane
+to `shell` (where what it gets is run) ask first. The design:
+[docs/design/dashboard.md](docs/design/dashboard.md).
 
 Messages and changes to panes are written to an event log,
 `%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`, kept for 30 days
@@ -942,9 +972,10 @@ Coming from wmux:
   variables, `~/.wmux/plugins` and `*.wmux` plugin files, until you rename
   them (`~/.keepane.conf`, `KEEPANE_*`, `~/.keepane/plugins`,
   `*.keepane`).
-- The MSI replaces the wmux one in "Apps & features", and `wmux update`
-  (0.10 to 0.13) installs keepane. With scoop, `scoop uninstall wmux` and
-  install the keepane manifest (see Install).
+- The MSI replaces the wmux one in "Apps & features". `wmux update` no
+  longer finds anything: install keepane from the releases page once. With
+  scoop, `scoop uninstall wmux` and install the keepane manifest (see
+  Install).
 - The repository is now github.com/newdee/keepane (the old links lead
   there) and the site dfine.tech/keepane.
 - A `tmux` or `wmux` alias in your `$PROFILE` needs to point at keepane.

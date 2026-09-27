@@ -72,12 +72,6 @@ jobs:
           $hash = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLower()
           "$hash  $(Split-Path -Leaf $msi)" | Set-Content -NoNewline "$msi.sha256"
           Get-Content "$msi.sha256", "$user.sha256"
-          # wmux (keepane's name up to 0.13.1) updates itself by this file
-          # name: the same MSI under it is what lets `wmux update` install
-          # keepane (same UpgradeCode, so it replaces the wmux install).
-          $old = "dist\wmux-$version-windows-x86_64.msi"
-          Copy-Item $msi $old
-          "$hash  $(Split-Path -Leaf $old)" | Set-Content -NoNewline "$old.sha256"
       - name: package manifests (winget, scoop)
         shell: pwsh
         run: |

@@ -328,26 +328,26 @@ fn record_messages() {
 
     // C-b v: every pane at a glance.
     rec.key("\x02v");
-    rec.wait_for("the dashboard", |s| s.contents().contains("keepane dashboard"), 15);
+    rec.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"), 15);
     rec.hold(6);
     rec.key("j");
     rec.hold(2);
     rec.key("j");
-    rec.hold(4);
-    rec.key("m");
-    rec.wait_for("its inbox", |s| s.contents().contains("then run the tests"), 10);
+    rec.wait_for("its inbox", |s| s.contents().contains("review the diff"), 10);
     rec.hold(6);
-    // Manage mode: the second message first.
-    rec.key("E");
-    rec.hold(3);
-    rec.key("n");
+    // The inbox: the second message first.
+    rec.key("2");
     rec.hold(2);
-    rec.key("g");
+    rec.key("j");
+    rec.hold(2);
+    rec.key("t");
     rec.wait_for("moved", |s| s.contents().contains("done: move-message"), 10);
+    rec.hold(4);
+    // Read in full on the right.
+    rec.key("\r");
+    rec.wait_for("its record", |s| s.contents().contains("text:"), 10);
     rec.hold(6);
     rec.still("dashboard");
-    rec.key("\x1b");
-    rec.hold(2);
     rec.key("q");
     rec.hold(4);
 
