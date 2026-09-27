@@ -603,10 +603,16 @@ impl Grid {
             self.rows
                 .insert(usize::from(self.scroll_bottom) + 1, self.new_row());
             let removed = self.rows.remove(usize::from(self.scroll_top));
-            if !self.scroll_region_active() {
+            // (keepane) A row leaving the top of the screen goes to the
+            // scrollback even when the region stops short of the bottom, as
+            // xterm keeps it: that is how an inline interface (Codex CLI) with
+            // a fixed box below pushes what it printed up and out. A region
+            // lower down scrolls part of the screen and keeps nothing.
+            let off_the_top = self.scroll_top == 0;
+            if off_the_top {
                 self.scrolled += 1;
             }
-            if self.scrollback_len > 0 && !self.scroll_region_active() {
+            if self.scrollback_len > 0 && off_the_top {
                 self.scrollback.push_back(removed);
                 while self.scrollback.len() > self.scrollback_len {
                     self.scrollback.pop_front();
@@ -644,10 +650,6 @@ impl Grid {
 
     fn in_scroll_region(&self) -> bool {
         self.pos.row >= self.scroll_top && self.pos.row <= self.scroll_bottom
-    }
-
-    fn scroll_region_active(&self) -> bool {
-        self.scroll_top != 0 || self.scroll_bottom != self.size.rows - 1
     }
 
     pub fn set_origin_mode(&mut self, mode: bool) {

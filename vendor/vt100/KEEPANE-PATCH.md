@@ -26,6 +26,12 @@ keepane also adds, beside that fix (each marked `(keepane)` in the source):
 - `Screen::rows_wrapped`: `rows` with each row's wrapped flag, in one walk;
   `rows` plus `row_wrapped` per row starts from the top of the scrollback
   every time, which the history log (a screenful at a time) cannot afford.
+- `Grid::scroll_up` keeps a row that leaves the top of the screen in the
+  scrollback (and counts it in `scrolled`) when the scroll region starts at
+  the top row but ends above the bottom, as xterm does. Upstream keeps rows
+  only when no region is set, so an inline interface that pushes its output
+  up past a fixed box at the bottom (Codex CLI) left no history at all.
+  Regression test: `server::pane::tests::a_region_from_the_top_row_keeps_what_scrolls_off`.
 
 Drop this directory and the `[patch]` entry once upstream has all of it,
-which, for the last four, it will not: they are keepane's own.
+which, for the last five, it will not: they are keepane's own.

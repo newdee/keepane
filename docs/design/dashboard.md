@@ -40,7 +40,7 @@
 | Tab / Shift+Tab，1 2 3 0，h / l | 换面板 |
 | j / k，↑ / ↓ | 在列表里移动；在主面板里滚动 |
 | [ / ] | 主面板换标签 |
-| PgUp / PgDn，g / G | 主面板翻页、到顶、到底 |
+| PgUp / PgDn，`C-b` / `C-f`，`C-u` / `C-d`，g / G | 主面板翻页（`C-u` / `C-d` 半页）、到顶、到底；在 prefix v 的弹窗里 `C-b` 是前缀，按两次 `C-b C-b` 才交给 dashboard |
 | Enter | 窗格 → 主面板看屏幕；收件箱 → 这条消息的 Detail；任务 → 这个任务的 Detail |
 | / | 筛选窗格 |
 | ? | 全部按键 |

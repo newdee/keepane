@@ -1764,6 +1764,35 @@ mod tests {
     /// A wide character straddling the new right edge after a shrink used to
     /// leave a half-wide cell in the last column; the next erase then indexed
     /// past the row (vt100 0.16.2 `Row::clear_wide`). Seen live with a CJK
+    /// An inline interface (Codex CLI) keeps a box at the bottom and pushes
+    /// its output up through a scroll region that starts at the top row:
+    /// what leaves the top goes to the scrollback, in order, and the count of
+    /// rows that left moves with it; the box stays. A region lower down
+    /// scrolls part of the screen and keeps nothing.
+    #[test]
+    fn a_region_from_the_top_row_keeps_what_scrolls_off() {
+        let mut p = quiet_pane(20, 6, 100);
+        p.process_output(b"\x1b[6;1Hbox\x1b[1;4r\x1b[4;1H");
+        for i in 1..=10 {
+            p.process_output(format!("\r\nline-{i}").as_bytes());
+        }
+        let s = p.parser.screen_mut();
+        // Four blank rows went first, then line-1 to line-6.
+        assert_eq!(s.scrollback_rows(), 10);
+        assert_eq!(s.scrolled_total(), 10, "the count moves with the scrollback");
+        s.set_scrollback(6);
+        assert_eq!(s.rows(0, 20).next().unwrap().trim_end(), "line-1");
+        s.set_scrollback(0);
+        let rows: Vec<String> = s.rows(0, 20).map(|r| r.trim_end().to_string()).collect();
+        assert_eq!(rows, ["line-7", "line-8", "line-9", "line-10", "", "box"]);
+        // A region from row 3: nothing kept.
+        p.process_output(b"\x1b[3;5r\x1b[5;1H");
+        for _ in 0..5 {
+            p.process_output(b"\r\nmiddle");
+        }
+        assert_eq!(p.parser.screen_mut().scrollback_rows(), 10);
+    }
+
     /// IME in a 50-column pane.
     #[test]
     fn shrink_through_wide_char_then_erase_does_not_panic() {

@@ -656,12 +656,30 @@ impl Board {
                 self.input = Some((Input::Filter, self.filter.clone()));
                 return Action::Redraw;
             }
+            // Paging as in vi and less: C-b / C-f a page, C-u / C-d half
+            // (in the prefix-v popup, C-b is the prefix: C-b C-b sends it).
             KeyCode::PPage => {
+                self.scroll_by(self.page());
+                return Action::Redraw;
+            }
+            KeyCode::Char('b') if k.ctrl && !k.alt => {
                 self.scroll_by(self.page());
                 return Action::Redraw;
             }
             KeyCode::NPage => {
                 self.scroll_by(-self.page());
+                return Action::Redraw;
+            }
+            KeyCode::Char('f') if k.ctrl && !k.alt => {
+                self.scroll_by(-self.page());
+                return Action::Redraw;
+            }
+            KeyCode::Char('u') if k.ctrl && !k.alt => {
+                self.scroll_by((self.page() / 2).max(1));
+                return Action::Redraw;
+            }
+            KeyCode::Char('d') if k.ctrl && !k.alt => {
+                self.scroll_by(-(self.page() / 2).max(1));
                 return Action::Redraw;
             }
             _ => {}
@@ -1288,7 +1306,8 @@ fn help_lines() -> Vec<String> {
         "Everywhere",
         "  Tab / Shift+Tab, 1 2 3 0, h / l   change panel",
         "  [ / ]                             change the tab on the right",
-        "  PgUp / PgDn                       page the right panel",
+        "  PgUp / PgDn, C-b / C-f            page the right panel (C-u / C-d half a page;",
+        "                                    in the prefix-v popup, C-b C-b sends C-b)",
         "  /                                 filter the panes",
         "  q, Esc                            quit (Esc first cancels a question)",
         "  mouse                             click a panel or a row; the wheel scrolls",
@@ -1540,6 +1559,7 @@ mod tests {
             keys.push(Key::plain(code));
         }
         keys.push(Key::with_shift(KeyCode::Tab));
+        keys.extend(['b', 'f', 'u', 'd'].map(Key::ctrl));
         keys
     }
 
@@ -1788,6 +1808,19 @@ mod tests {
         assert_eq!(b.focus, Panel::Main);
         b.mouse(&MouseRecord { x: (m.x + 5) as i16, y: 5, buttons: 120 << 16, ctrl: 0, flags: 4 });
         assert_eq!(b.scroll, 3);
+        // C-b / C-f page it as PgUp / PgDn do, C-u / C-d half a page.
+        let page = b.page() as usize;
+        b.key(Key::ctrl('b'));
+        assert_eq!(b.scroll, 3 + page);
+        b.key(Key::ctrl('f'));
+        assert_eq!(b.scroll, 3);
+        b.key(Key::ctrl('u'));
+        assert_eq!(b.scroll, 3 + (page / 2).max(1));
+        b.key(Key::ctrl('d'));
+        assert_eq!(b.scroll, 3);
+        b.key(Key::plain(KeyCode::PPage));
+        assert_eq!(b.scroll, 3 + page, "the same as PgUp");
+        b.key(Key::plain(KeyCode::NPage));
         // A release or a move does nothing.
         b.mouse(&MouseRecord { x: (p.x + 3) as i16, y: 2, buttons: 0, ctrl: 0, flags: 0 });
         assert_eq!(b.focus, Panel::Main);
