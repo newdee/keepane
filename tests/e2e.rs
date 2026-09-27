@@ -4841,6 +4841,32 @@ async fn wait_format(h: &Harness, pane: u32, format: &str, want: &str) {
     }
 }
 
+/// A command that ends exactly at the pane's right edge keeps the first
+/// line of its output: the rows counted for the command are the ones it
+/// fills, however the shell moves down after it. A pane 30 wide and a
+/// command one longer each time: one of them ends at the edge.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_that_ends_at_the_right_edge_keeps_its_first_line_of_output() {
+    let h = Harness::start("edge").await;
+    // A short prompt (`PS C:\> `): one longer than the pane wraps itself.
+    let root = if cfg!(windows) { "C:\\" } else { "/" };
+    let (code, _, err) =
+        h.cli(&[&["new", "-d", "-s", "edge", "-x", "30", "-y", "40", "-c", root], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let p = pane_id(&h, "edge:0.0").await;
+    let t = format!("%{p}");
+    h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
+    let say = if cfg!(windows) { "Write-Output" } else { "echo" };
+    for pad in 0..30 {
+        wait_format(&h, p, "#{pane_idle}", "1").await;
+        let text = format!("{say} first-line; {say} second #{}", "x".repeat(pad));
+        let (_, out, _) = h.cli(&["send-message", "-t", &t, "--", &text]).await;
+        let (_, trace, _) = h.cli(&["trace-message", &msg_id(&out), "-w", "30"]).await;
+        assert!(trace.contains("output:\nfirst-line\nsecond"), "padded by {pad}:\n{trace}");
+    }
+    h.cli(&["kill-server"]).await;
+}
+
 /// A message sent the moment shell pane `pane` is back at its prompt (the
 /// marker seen, the screen not read yet) waits until the command before it
 /// has been taken as done: typed in then, it would become the pane's current

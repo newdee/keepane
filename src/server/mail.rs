@@ -375,7 +375,10 @@ impl Server {
                 .and_then(|k| k.exit)
                 .map(|c| c == 0);
             let to = p.cursor_line();
-            let (mut body, mut cut) = p.text_between(from, to, max + 4096);
+            let (body, mut cut) = p.text_between(from, to, max + 4096);
+            // A blank row before the output is the terminal's, not the
+            // command's (`Pane::deliver`).
+            let mut body = body.trim_start_matches('\n').to_string();
             if body.len() > max {
                 let mut e = max;
                 while !body.is_char_boundary(e) {

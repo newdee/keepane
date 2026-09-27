@@ -1241,9 +1241,15 @@ impl Pane {
         // screen, where a row's wrap cannot be told from ConPTY's padding.
         let col = usize::from(self.screen().cursor_position().1);
         let width = unicode_width::UnicodeWidthStr::width(text);
-        // A command that ends exactly at the right edge moves the cursor to
-        // the next row, and its Enter one more: a row per width, plus one.
-        let rows = ((col + width) / usize::from(self.cols.max(1)) + 1) as u64;
+        // The rows it fills. One that ends exactly at the right edge fills
+        // just those: its Enter then goes to the next row, where the output
+        // begins; but PSReadLine sometimes moves down a row of its own
+        // first, so the output may begin one lower, after a blank row, which
+        // is not the command's and is dropped from the output
+        // (`pane_prompted`; seen on CI: the first line of output lost to a
+        // row counted for the command).
+        let cols = usize::from(self.cols.max(1));
+        let rows = (col + width).div_ceil(cols).max(1) as u64;
         self.delivered_line = Some((self.cursor_line(), self.cursor_line() + rows));
         let mut bytes = super::input::encode_paste(text, self.screen().bracketed_paste());
         bytes.push(b'\r');
@@ -1791,10 +1797,11 @@ mod tests {
     fn a_delivered_command_takes_the_rows_it_is_typed_over() {
         let mut p = quiet_pane(10, 5, 100);
         p.process_output(b"PS> ");
-        // Up to the right edge exactly: the cursor goes on to the next row,
-        // Enter one more.
+        // Up to the right edge exactly: the one row it fills; the output
+        // begins on the next (a blank row PSReadLine may add before it is
+        // dropped from the output, not counted here).
         p.deliver("abcdef");
-        assert_eq!(p.delivered_line, Some((0, 2)));
+        assert_eq!(p.delivered_line, Some((0, 1)));
         p.process_output(b"\r\n\r\nPS> ");
         p.deliver("ab");
         assert_eq!(p.delivered_line, Some((2, 3)), "short of the edge: its own row");
