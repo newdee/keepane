@@ -375,6 +375,10 @@ impl Server {
                 .and_then(|k| k.exit)
                 .map(|c| c == 0);
             let to = p.cursor_line();
+            // Where the command ended, read off the screen when it can be;
+            // counted from the cursor at delivery otherwise.
+            let text = p.delivered_text.take();
+            let from = text.and_then(|t| p.command_end(typed, to, &t)).map_or(from, |row| row + 1);
             let (body, mut cut) = p.text_between(from, to, max + 4096);
             // A blank row before the output is the terminal's, not the
             // command's (`Pane::deliver`).

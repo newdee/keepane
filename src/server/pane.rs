@@ -392,6 +392,9 @@ pub struct Pane {
     /// it as typed (both `scrolled_total() + row`): what the shell printed
     /// from there to its next prompt is the command's output.
     pub delivered_line: Option<(u64, u64)>,
+    /// What was typed, when on one line: its end is looked for on the
+    /// screen when the command is over (`command_end`).
+    pub delivered_text: Option<String>,
     /// keepane's prompt came and the server waits a moment before taking
     /// the command as done (`PROMPT_SETTLE`); nothing is typed in meanwhile.
     pub settle: bool,
@@ -674,6 +677,7 @@ impl Pane {
             prompted: false,
             syntax: Default::default(),
             delivered_line: None,
+            delivered_text: None,
             settle: false,
             shell_history: None,
         };
@@ -1219,6 +1223,33 @@ impl Pane {
 
     /// Where the cursor is, as a line that keeps its number when it
     /// scrolls (`scrolled_total() + row`).
+    /// The row a command typed from row `from` ended on, found on the screen
+    /// (up to row `to`): the first row by which the rows from `from`, read
+    /// together, hold all of `text`. Blanks are left out on both sides, so
+    /// where the rows broke the text does not matter. None when it is not
+    /// there as typed (a shell that drew something in between).
+    ///
+    /// Counting the rows from the cursor at delivery (`deliver`) is not
+    /// enough on Windows: when a command fills a row exactly, ConPTY may send
+    /// the row and the shell's newline in two frames, and then keeps one row
+    /// more than a terminal does; the next command is drawn a row lower than
+    /// the prompt was seen, and its last row was taken for its output.
+    pub fn command_end(&mut self, from: u64, to: u64, text: &str) -> Option<u64> {
+        let want: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        if want.is_empty() {
+            return None;
+        }
+        let mut seen = String::new();
+        for row in from..=to {
+            let (line, _) = self.text_between(row, row + 1, 64 * 1024);
+            seen.extend(line.chars().filter(|c| !c.is_whitespace()));
+            if seen.contains(&want) {
+                return Some(row);
+            }
+        }
+        None
+    }
+
     pub fn cursor_line(&self) -> u64 {
         let s = self.parser.screen();
         s.scrolled_total() + u64::from(s.cursor_position().0)
@@ -1251,6 +1282,7 @@ impl Pane {
         let cols = usize::from(self.cols.max(1));
         let rows = (col + width).div_ceil(cols).max(1) as u64;
         self.delivered_line = Some((self.cursor_line(), self.cursor_line() + rows));
+        self.delivered_text = (!text.contains('\n')).then(|| text.to_string());
         let mut bytes = super::input::encode_paste(text, self.screen().bracketed_paste());
         bytes.push(b'\r');
         self.write_input(&bytes);
@@ -1836,6 +1868,31 @@ mod tests {
         assert_eq!(p.delivered_line, Some((2, 3)), "short of the edge: its own row");
         p.deliver(&"x".repeat(17));
         assert_eq!(p.delivered_line, Some((2, 5)), "4 + 17 columns: over three rows");
+    }
+
+    /// The command's end read off the screen, wherever it was drawn: here a
+    /// row lower than the prompt was seen at delivery (ConPTY, after a
+    /// command that filled a row exactly), where counting from the cursor
+    /// took its last row for the output.
+    #[test]
+    fn a_command_is_found_where_it_was_drawn() {
+        let mut p = quiet_pane(10, 8, 100);
+        p.process_output(b"PS> ");
+        p.deliver("abcdefghij");
+        assert_eq!(p.delivered_line, Some((0, 2)), "4 + 10 columns, counted from the cursor");
+        // Drawn from row 1, not 0; then its output and the next prompt.
+        p.process_output(b"\x1b[2;5Habcdefghij\r\nout1\r\nPS> ");
+        let to = p.cursor_line();
+        assert_eq!(p.text_between(2, to, 1000).0, "ghij\nout1", "what counting took");
+        assert_eq!(p.command_end(0, to, "abcdefghij"), Some(2));
+        assert_eq!(p.text_between(3, to, 1000).0, "out1");
+        // Broken at a blank between rows, found all the same.
+        let mut p = quiet_pane(10, 8, 100);
+        p.process_output(b"PS> echo a\r\nbcd\r\nout\r\nPS> ");
+        assert_eq!(p.command_end(0, p.cursor_line(), "echo a bcd"), Some(1));
+        // Not there as typed: none, and the count stands.
+        assert_eq!(p.command_end(0, p.cursor_line(), "something else"), None);
+        assert_eq!(p.command_end(0, p.cursor_line(), " "), None);
     }
 
     #[test]
