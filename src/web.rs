@@ -187,7 +187,9 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     let Some(url) = status_url(&status) else { bail!("web-start said: {status}") };
     println!("{}", qr_text(url)?);
     println!("Scan with the phone's camera, or open: {url}");
-    if url.starts_with("http://127.") || url.starts_with("http://[::1]") {
+    // Only when this machine's address was looked for and not found: one
+    // bound on purpose (`--bind 127.0.0.1`) needs no word.
+    if o.bind.is_none() && (url.starts_with("http://127.") || url.starts_with("http://[::1]")) {
         println!("(No network address found: this works on this machine only; --bind picks one.)");
     }
     println!(
@@ -659,7 +661,8 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                                   #{?pane_pid_command,#{pane_pid_command},#{pane_current_command}}\t\
                                   #{pane_active}\t#{window_active}\t#{pane_width}\t\
                                   #{pane_height}\t#{pane_dead}\t#{session_attached}\t\
-                                  #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}";
+                                  #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}\t\
+                                  #{pane_name}\t#{pane_work_mode}";
             match q(vec!["list-panes".into(), "-a".into(), "-F".into(), FIELDS.into()]).await {
                 Ok((0, out, _)) => Response::json(panes_json(&out)),
                 Ok((_, _, err)) => Response::text(500, err.trim()),
@@ -754,7 +757,7 @@ fn panes_json(out: &str) -> String {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() < 15 {
+            if f.len() < 17 {
                 return None;
             }
             let num = |s: &str| s.parse::<u64>().unwrap_or(0);
@@ -763,7 +766,7 @@ fn panes_json(out: &str) -> String {
             Some(format!(
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
                  \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
-                 \"activity\":{},\"bell\":{},\"silence\":{}}}",
+                 \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -778,7 +781,9 @@ fn panes_json(out: &str) -> String {
                 num(f[11]) > 0,
                 f[12] == "1",
                 f[13] == "1",
-                f[14] == "1"
+                f[14] == "1",
+                json_str(f[15]),
+                json_str(f[16])
             ))
         })
         .collect();
@@ -939,10 +944,10 @@ mod tests {
     fn the_code_and_the_pane_list() {
         let qr = qr_text("http://192.168.1.23:7681/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert!(qr.lines().count() > 10 && qr.contains('█'), "{qr}");
-        let json = panes_json("%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\nshort line\n");
+        let json = panes_json("%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\nshort line\n");
         assert_eq!(
             json,
-            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true}]"#
+            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell"}]"#
         );
         assert_eq!(panes_json(""), "[]");
     }

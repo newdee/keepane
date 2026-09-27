@@ -2886,12 +2886,17 @@ async fn pane_border_status_reserves_a_row_for_its_text() {
     c.prefix('%').await;
     c.wait_for("two border texts", |s| s.rows(0, COLS).next().unwrap().matches("] ").count() == 2).await;
     // Splitting while the border row is on divides the layout cell, not the
-    // drawn rect, so the halves come out even: the 23-row cell -> 11 + 1 + 11,
-    // less a border row each = 10 + 10 of content (not 11 + 9).
+    // drawn rect: the 23-row cell -> 11 + 1 + 11. The upper pane gives up
+    // its top row for its text (10); the lower one's text goes on the line
+    // between them, as in tmux (11), not on a second border row.
     h.cli(&["split-window", "-v", "-d", "-t", "b:0.1"]).await;
     let (_, a, _) = h.cli(&["display-message", "-p", "-t", "b:0.1", "#{pane_height}"]).await;
     let (_, b, _) = h.cli(&["display-message", "-p", "-t", "b:0.2", "#{pane_height}"]).await;
-    assert_eq!((a.trim(), b.trim()), ("10", "10"), "even halves with a border row each");
+    assert_eq!((a.trim(), b.trim()), ("10", "11"), "the lower pane's text on the parting line");
+    c.wait_for("the lower pane's text on the line between", |s| {
+        s.rows(0, COLS).nth(11).is_some_and(|r| r.contains("[2] ")) && !s.contents().contains("┬┬")
+    })
+    .await;
 
     // bottom: the row just above the status line.
     h.cli(&["set", "-g", "pane-border-status", "bottom"]).await;

@@ -22,7 +22,10 @@ param(
     [double]$FontSize = 15,
     # Only render these frame numbers (1-based). Empty means all of them.
     [int[]]$Only = @(),
-    [string]$Title = "keepane"
+    [string]$Title = "keepane",
+    # Width of a panel beside the terminal for frames that carry a `side`
+    # (the tour: a chapter's title and lines, or the phone); 0: none.
+    [int]$Panel = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -84,8 +87,54 @@ $barH = 30           # window title bar
 $first = Get-Content $frames[0].FullName -Raw | ConvertFrom-Json
 $gridW = [int][math]::Ceiling($cellW * $first.cols)
 $gridH = [int]($cellH * $first.rows)
-$imgW = $gridW + 2 * $pad
+$termW = $gridW + 2 * $pad
+$imgW = $termW + $Panel
 $imgH = $gridH + 2 * $pad + $barH
+
+# The panel beside the terminal: the chapter's number and title, then either
+# its lines or the phone's picture in a phone-shaped frame.
+$sideFont = New-Object System.Drawing.Font "Segoe UI", 17, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
+$sideTitle = New-Object System.Drawing.Font "Segoe UI Semibold", 27, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
+$sideNum = New-Object System.Drawing.Font "Segoe UI Semibold", 15, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
+$phones = @{}
+function Draw-Side($g, $side) {
+    $x0 = $termW + 26
+    $w = $Panel - 48
+    $accent = [System.Drawing.ColorTranslator]::FromHtml("#7aa2f7")
+    $text = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#c0caf5"))
+    $muted = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#a9b1d6"))
+    # The chapter's number as a chip, then its title.
+    $chip = New-Object System.Drawing.SolidBrush $accent
+    $g.FillRectangle($chip, [float]$x0, [float]($barH + 22), 44, 26)
+    $dark = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#1a1b26"))
+    $g.DrawString(('{0:00}' -f [int]$side.n), $sideNum, $dark, [float]($x0 + 10), [float]($barH + 25))
+    $g.DrawString($side.title, $sideTitle, $text, [float]($x0 - 2), [float]($barH + 56))
+    $y = $barH + 108
+    if ($side.phone) {
+        if (-not $phones.ContainsKey($side.phone)) { $phones[$side.phone] = [System.Drawing.Image]::FromFile($side.phone) }
+        $img = $phones[$side.phone]
+        $h = $imgH - $y - 20
+        $pw = [int]($h * $img.Width / $img.Height)
+        $px = $termW + ($Panel - $pw) / 2
+        # The phone: a dark body a little larger than its screen.
+        $body = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#0c0d12"))
+        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $r = 26; $bx = $px - 8; $by = $y - 8; $bw = $pw + 16; $bh = $h + 16
+        $path.AddArc($bx, $by, $r, $r, 180, 90); $path.AddArc($bx + $bw - $r, $by, $r, $r, 270, 90)
+        $path.AddArc($bx + $bw - $r, $by + $bh - $r, $r, $r, 0, 90); $path.AddArc($bx, $by + $bh - $r, $r, $r, 90, 90)
+        $path.CloseFigure()
+        $g.FillPath($body, $path)
+        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $g.DrawImage($img, [float]$px, [float]$y, [float]$pw, [float]$h)
+        $body.Dispose(); $path.Dispose()
+    } else {
+        foreach ($line in $side.lines) {
+            $g.DrawString($line, $sideFont, $muted, [float]$x0, [float]$y)
+            $y += 27
+        }
+    }
+    $text.Dispose(); $muted.Dispose(); $chip.Dispose(); $dark.Dispose()
+}
 
 foreach ($file in $frames) {
     $n = if ($file.BaseName -match '^f(\d+)$') { [int]$Matches[1] } else { 0 }
@@ -99,7 +148,7 @@ foreach ($file in $frames) {
     # Window chrome: title bar with the usual three dots.
     $g.Clear([System.Drawing.ColorTranslator]::FromHtml($chromeBg))
     $bgBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($defaultBg))
-    $g.FillRectangle($bgBrush, 0, $barH, $imgW, $imgH - $barH)
+    $g.FillRectangle($bgBrush, 0, $barH, $termW, $imgH - $barH)
     foreach ($dot in @(@{x = 18; c = "#e06c75" }, @{x = 38; c = "#e5c07b" }, @{x = 58; c = "#98c379" })) {
         $b = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($dot.c))
         $g.FillEllipse($b, $dot.x - 5, ($barH / 2) - 5, 10, 10)
@@ -108,7 +157,7 @@ foreach ($file in $frames) {
     $titleBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#565f89"))
     $titleFont = New-Object System.Drawing.Font "Segoe UI", 12, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
     $titleSize = $g.MeasureString($Title, $titleFont)
-    $g.DrawString($Title, $titleFont, $titleBrush, ($imgW - $titleSize.Width) / 2, ($barH - $titleSize.Height) / 2)
+    $g.DrawString($Title, $titleFont, $titleBrush, ($termW - $titleSize.Width) / 2, ($barH - $titleSize.Height) / 2)
 
     $y = 0
     foreach ($line in $frame.lines) {
@@ -141,6 +190,8 @@ foreach ($file in $frames) {
         $g.FillRectangle($b, [float]($pad + $cellW * $cx), [float]($barH + $pad + $cy * $cellH), [float]$cellW, [float]$cellH)
         $b.Dispose()
     }
+
+    if ($Panel -gt 0 -and $frame.side) { Draw-Side $g $frame.side }
 
     $g.Dispose()
     $bmp.Save((Join-Path $outDir ($file.BaseName + ".png")), [System.Drawing.Imaging.ImageFormat]::Png)

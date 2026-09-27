@@ -36,12 +36,25 @@ $takes = @(
     @{ Env = "KEEPANE_DEMO_OUT"; Test = "record_demo"; Name = "keepane-demo" },
     @{ Env = "KEEPANE_DEMO_OUT2"; Test = "record_alerts"; Name = "keepane-alerts" },
     @{ Env = "KEEPANE_DEMO_OUT3"; Test = "record_history"; Name = "keepane-history" },
-    @{ Env = "KEEPANE_DEMO_OUT4"; Test = "record_messages"; Name = "keepane-messages" }
+    @{ Env = "KEEPANE_DEMO_OUT4"; Test = "record_messages"; Name = "keepane-messages" },
+    # The tour: a panel beside the terminal, and the phone (Edge through
+    # puppeteer-core, as tools/make-phone-shots.ps1 does).
+    @{ Env = "KEEPANE_DEMO_OUT5"; Test = "record_tour"; Name = "keepane-tour"; Panel = 380 }
 )
 if ($Only.Count -gt 0) {
     $unknown = $Only | Where-Object { $_ -notin $takes.Name }
     if ($unknown) { throw "no demo named $($unknown -join ', ') (there are $($takes.Name -join ', '))" }
     $takes = $takes | Where-Object { $_.Name -in $Only }
+}
+if ($takes.Name -contains "keepane-tour") {
+    $npm = "target/phone-shots/npm"
+    if (-not (Test-Path (Join-Path $npm "node_modules/puppeteer-core"))) {
+        New-Item -ItemType Directory -Force $npm | Out-Null
+        Set-Content (Join-Path $npm "package.json") '{"private":true,"type":"module"}' -Encoding utf8
+        npm install --prefix $npm --no-audit --no-fund --silent puppeteer-core@24
+        if ($LASTEXITCODE -ne 0) { throw "npm install puppeteer-core failed" }
+    }
+    $env:KEEPANE_PHONE_NPM = (Resolve-Path $npm).Path
 }
 foreach ($t in $takes) {
     $frames = Join-Path $Work "$($t.Name)-frames"
@@ -53,7 +66,8 @@ foreach ($t in $takes) {
     Set-Item "env:$($t.Env)" (Resolve-Path $frames).Path
     cargo test --release --test demo_frames -- --ignored --exact $t.Test --nocapture
     if ($LASTEXITCODE -ne 0) { throw "recording $($t.Test) failed" }
-    pwsh -NoProfile -File tools/render-frames.ps1 -In $frames -Out $png
+    $panel = if ($t.Panel) { $t.Panel } else { 0 }
+    pwsh -NoProfile -File tools/render-frames.ps1 -In $frames -Out $png -Panel $panel
     if ($LASTEXITCODE -ne 0) { throw "rendering $($t.Name) failed" }
 
     $pattern = Join-Path $png "f%04d.png"

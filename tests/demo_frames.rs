@@ -354,6 +354,241 @@ fn record_messages() {
     d.finish();
 }
 
+/// The tour's terminal: room for four panes, and for the QR code.
+const TOUR_COLS: u16 = 100;
+const TOUR_ROWS: u16 = 30;
+
+/// A small MCP client, as an agent (Claude Code, Codex...) would call keepane:
+/// `keepane mcp` over stdio, one JSON-RPC call at a time, each shown as it
+/// goes and what came back.
+const MCP_CLIENT: &str = r#"# What an agent does over MCP, one call at a time.
+$p = [System.Diagnostics.Process]::new()
+$p.StartInfo.FileName = (Get-Command keepane).Source
+$p.StartInfo.Arguments = 'mcp'
+$p.StartInfo.RedirectStandardInput = $true
+$p.StartInfo.RedirectStandardOutput = $true
+$p.StartInfo.UseShellExecute = $false
+[void]$p.Start()
+$script:id = 0
+function Call($method, $params) {
+    $script:id++
+    $p.StandardInput.WriteLine((@{ jsonrpc = '2.0'; id = $script:id; method = $method; params = $params } | ConvertTo-Json -Compress -Depth 6))
+    ($p.StandardOutput.ReadLine() | ConvertFrom-Json).result
+}
+function Tool($name, $arguments, [scriptblock]$show) {
+    Write-Host "-> $name " -NoNewline -ForegroundColor Cyan
+    Write-Host (($arguments.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' ') -ForegroundColor DarkGray
+    $r = Call 'tools/call' @{ name = $name; arguments = $arguments }
+    Write-Host "<- $(& $show $r.content[0].text)" -ForegroundColor Green
+    Start-Sleep -Milliseconds 900
+}
+$init = Call 'initialize' @{ protocolVersion = '2025-06-18'; capabilities = @{}; clientInfo = @{ name = 'agent'; version = '1' } }
+$p.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
+Write-Host "-> initialize" -ForegroundColor Cyan
+Write-Host "<- $($init.serverInfo.name) $($init.serverInfo.version), $((Call 'tools/list' @{}).tools.Count) tools" -ForegroundColor Green
+Start-Sleep -Milliseconds 900
+Tool split_pane ([ordered]@{ target = '%lead'; name = 'tests'; mode = 'shell' }) { param($t) ($t -split "`n")[0] }
+Tool send_message ([ordered]@{ to = '%tests'; text = 'git status -sb'; wait_seconds = 10 }) { param($t) ($t -split "`n")[0] }
+Tool list_panes ([ordered]@{}) { param($t) (($t -split "`n") | Where-Object { $_ } | ForEach-Object { $f = $_ -split "`t"; "%$($f[2]) $($f[3])" }) -join ', ' }
+$p.StandardInput.Close()
+[void]$p.WaitForExit(3000)
+"#;
+
+/// The tour for the README's top and the announcement: four chapters, the
+/// terminal on the left and, beside it, what the chapter shows, then the
+/// phone itself.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_tour() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT5").unwrap_or_else(|_| "target/demo-frames-5".into());
+    // Each pane's name, work mode and inbox on its top border.
+    let conf = "set -g pane-border-status top\n\
+                set -g pane-border-format \" #{pane_name} · #{pane_work_mode} · inbox #{pane_inbox} \"\n";
+    let mut d = Demo::start_sized("tour", &out_dir, conf, TOUR_COLS, TOUR_ROWS);
+    // A project with a little history, and the MCP client in it.
+    let project = d.tmp.join("project");
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(["-c", "user.name=demo", "-c", "user.email=demo@example.com"])
+            .args(args)
+            .current_dir(&project)
+            .status()
+            .expect("git");
+    };
+    for (file, message) in
+        [("README.md", "init"), ("greet.ps1", "add greet"), ("greet.tests.ps1", "add tests for greet")]
+    {
+        std::fs::write(project.join(file), format!("# {message}\n")).unwrap();
+        git(&["add", file]);
+        git(&["commit", "-q", "-m", message]);
+    }
+    std::fs::write(project.join("agent.ps1"), MCP_CLIENT).unwrap();
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    // 1. Panes are actors.
+    rec.caption(
+        1,
+        "Panes are actors",
+        &[
+            "Each pane has an inbox,",
+            "and panes send each other",
+            "messages. Its work mode",
+            "says what a message does:",
+            "",
+            "normal  you type in it",
+            "shell   it runs as a command",
+            "ai      its agent gets a prompt",
+        ],
+    );
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s work"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(2);
+    rec.type_line("keepane rename-pane lead");
+    rec.hold(2);
+    rec.type_line("keepane create-pane -h -n build -m shell");
+    rec.hold(3);
+    rec.type_line("keepane create-pane -t %build -n agent -m ai");
+    rec.hold(4);
+    rec.type_line("keepane send-message --to %build 'git log --oneline -3'");
+    rec.until("it ran there", |s| s.contents().contains("add tests for greet"), 20);
+    rec.hold(5);
+    rec.type_line("keepane send-message --to %agent 'review the last commit'");
+    rec.until("queued for the agent", |s| s.contents().contains("ai · inbox 1"), 10);
+    rec.hold(5);
+    rec.type_line("keepane trace-message 1");
+    rec.until("its record", |s| s.contents().contains("output:"), 10);
+    rec.hold(10);
+
+    // 2. MCP.
+    rec.caption(
+        2,
+        "MCP for agents",
+        &[
+            "keepane mcp gives an agent",
+            "tools to make sessions,",
+            "windows and panes, and to",
+            "send, read and trace",
+            "messages between them.",
+            "",
+            "Here a small MCP client",
+            "does what an agent would.",
+        ],
+    );
+    rec.type_line("clear");
+    rec.hold(1);
+    rec.type_line("./agent.ps1");
+    rec.until("the new pane", |s| s.contents().contains("tests · shell"), 20);
+    rec.until("the list", |s| s.contents().contains("%tests shell"), 20);
+    rec.hold(10);
+
+    // 3. Watching.
+    rec.caption(
+        3,
+        "See every pane",
+        &[
+            "prefix v: the dashboard.",
+            "Every pane's state now:",
+            "mode, busy or idle, inbox,",
+            "what it is doing.",
+            "",
+            "And what happened before:",
+            "each pane's events, each",
+            "message from send to done.",
+        ],
+    );
+    rec.key("\x02v");
+    rec.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"), 15);
+    rec.hold(5);
+    // Down the list to a pane: the main panel's title names the chosen one.
+    let choose = |rec: &mut Recorder, name: &str| {
+        // Row by row: ConPTY marks its rows wrapped, so `contents()` runs
+        // the whole screen together.
+        let chosen = |s: &vt100::Screen| {
+            s.rows(0, TOUR_COLS).any(|l| l.split("[0] %").nth(1).is_some_and(|t| t.contains(&format!(" {name} "))))
+        };
+        for _ in 0..8 {
+            if chosen(rec.parser.screen()) {
+                return;
+            }
+            rec.key("j");
+            rec.hold(1);
+        }
+        rec.wait_for(name, chosen, 5);
+    };
+    // The builder: what happened to it.
+    choose(rec, "build");
+    rec.hold(2);
+    rec.key("]");
+    rec.key("]");
+    rec.hold(1);
+    rec.hold(9);
+    // The agent: its inbox.
+    rec.key("[");
+    rec.key("[");
+    choose(rec, "agent");
+    rec.wait_for("its inbox", |s| s.contents().contains("review the last"), 10);
+    rec.hold(8);
+    rec.key("q");
+    rec.hold(2);
+
+    // 4. The phone.
+    rec.caption(
+        4,
+        "On your phone",
+        &[
+            "keepane web, then scan.",
+            "On the Wi-Fi, or through",
+            "Tailscale from anywhere:",
+            "every window and pane,",
+            "live. Type on the phone;",
+            "it runs on the computer.",
+        ],
+    );
+    rec.key("\x02z");
+    rec.type_line("clear");
+    rec.type_line("keepane web --bind 127.0.0.1 --port 7690");
+    rec.wait_for("the code", |s| s.contents().contains("Scan with"), 20);
+    rec.hold(8);
+    let status =
+        std::process::Command::new(&d.exe).args(["-L", &socket, "web", "status"]).output().expect("web status");
+    let status = String::from_utf8_lossy(&status.stdout).to_string();
+    let url = keepane::web::status_url(&status).expect("serving").to_string();
+    let rec = &mut d.rec;
+    let mut phone = Phone::start(&out_dir);
+    let title = "On your phone";
+    phone.step(&format!("{{\"do\":\"open\",\"url\":{}}}", json_string(&url)));
+    let shot = phone.shot();
+    rec.phone(4, title, &shot);
+    rec.hold(8);
+    phone.step("{\"do\":\"tap\",\"name\":\"build\"}");
+    let shot = phone.shot();
+    rec.phone(4, title, &shot);
+    rec.hold(6);
+    for part in ["git log ", "--oneline ", "-1"] {
+        phone.step(&format!("{{\"do\":\"type\",\"text\":{}}}", json_string(part)));
+        let shot = phone.shot();
+        rec.phone(4, title, &shot);
+        rec.hold(2);
+    }
+    phone.step("{\"do\":\"send\"}");
+    phone.step("{\"do\":\"wait\",\"text\":\"git log --oneline -1\"}");
+    std::thread::sleep(Duration::from_millis(600));
+    let shot = phone.shot();
+    rec.phone(4, title, &shot);
+    rec.hold(8);
+    // Back on the computer: it ran in %build.
+    rec.key("\x02z");
+    rec.hold(6);
+    rec.type_line("clear");
+    rec.type_line("keepane web status");
+    rec.wait_for("who is on it", |s| s.contents().contains("watching"), 15);
+    rec.hold(10);
+    drop(phone);
+    d.finish();
+}
+
 /// Everything a recording needs: a pty running a plain shell with keepane on
 /// the PATH, a scratch directory, and the frame recorder itself.
 struct Demo {
@@ -395,6 +630,10 @@ impl Drop for Drive {
 
 impl Demo {
     fn start(socket: &str, out_dir: &str, extra_conf: &str) -> Demo {
+        Demo::start_sized(socket, out_dir, extra_conf, COLS, ROWS)
+    }
+
+    fn start_sized(socket: &str, out_dir: &str, extra_conf: &str, cols: u16, rows: u16) -> Demo {
         let exe = env!("CARGO_BIN_EXE_keepane").to_string();
         std::fs::create_dir_all(out_dir).expect("create out dir");
         // A recording that failed half way leaves its server behind; start
@@ -450,7 +689,7 @@ impl Demo {
         .expect("config");
 
         let pty = native_pty_system();
-        let pair = pty.openpty(PtySize { rows: ROWS, cols: COLS, pixel_width: 0, pixel_height: 0 }).expect("openpty");
+        let pair = pty.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).expect("openpty");
         // The recording starts in a plain shell: keepane is started from it, and
         // detaching comes back to it.
         let mut cmd = CommandBuilder::new("pwsh.exe");
@@ -480,26 +719,39 @@ impl Demo {
         std::mem::forget(pair.master);
 
         let rec = Recorder {
-            parser: vt100::Parser::new(ROWS, COLS, 200),
+            parser: vt100::Parser::new(rows, cols, 200),
             rx,
             writer,
             out_dir: out_dir.to_string(),
             frame: 0,
             raw: Vec::new(),
             child,
+            side: String::new(),
         };
         Demo { rec, tmp, exe, socket: socket.to_string(), _drive: drive }
     }
 
     /// Kill the server (and with it every pane) and the scratch directory.
     fn finish(mut self) {
+        self.kill_server();
+        let _ = self.rec.child.kill();
+        let _ = std::fs::remove_dir_all(&self.tmp);
+        println!("wrote {} frames to {}", self.rec.frame, self.rec.out_dir);
+    }
+
+    fn kill_server(&self) {
         let _ = std::process::Command::new(&self.exe)
             .args(["-L", &self.socket, "kill-server"])
             .env("KEEPANE_SESSIONS_DIR", self.tmp.join("sessions").to_string_lossy().to_string())
             .status();
-        let _ = self.rec.child.kill();
-        let _ = std::fs::remove_dir_all(&self.tmp);
-        println!("wrote {} frames to {}", self.rec.frame, self.rec.out_dir);
+    }
+}
+
+/// A recording that fails half way still takes its server down: left
+/// running, it holds target\release\keepane.exe and the next build fails.
+impl Drop for Demo {
+    fn drop(&mut self) {
+        self.kill_server();
     }
 }
 
@@ -511,6 +763,9 @@ struct Recorder {
     frame: u32,
     raw: Vec<u8>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// What the panel beside the terminal shows in each frame from now (a
+    /// JSON object, "side" in the frame), for the tour; empty: no panel.
+    side: String,
 }
 
 impl Recorder {
@@ -552,6 +807,16 @@ impl Recorder {
                 self.child.try_wait()
             );
             self.pump(Duration::from_millis(100));
+        }
+    }
+
+    /// Wait as `wait_for` does, recording the frames meanwhile: what shows
+    /// up while waiting (a script printing line by line) is in the picture.
+    fn until(&mut self, what: &str, pred: impl Fn(&vt100::Screen) -> bool, secs: u64) {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while !pred(self.parser.screen()) {
+            assert!(Instant::now() < deadline, "timeout waiting for {what}:\n{}", self.parser.screen().contents());
+            self.hold(1);
         }
     }
 
@@ -650,8 +915,96 @@ impl Recorder {
             json.push(']');
         }
         let (cy, cx) = screen.cursor_position();
-        let _ = write!(json, "],\"cursor\":[{cx},{cy}],\"cursor_visible\":{}}}", !screen.hide_cursor());
+        let _ = write!(json, "],\"cursor\":[{cx},{cy}],\"cursor_visible\":{}", !screen.hide_cursor());
+        if !self.side.is_empty() {
+            let _ = write!(json, ",\"side\":{}", self.side);
+        }
+        json.push('}');
         json
+    }
+
+    /// The panel beside the terminal from the next frame on: a chapter's
+    /// number, title and a few lines saying what it shows.
+    fn caption(&mut self, n: u32, title: &str, lines: &[&str]) {
+        let lines: Vec<String> = lines.iter().map(|l| json_string(l)).collect();
+        self.side = format!("{{\"n\":{n},\"title\":{},\"lines\":[{}]}}", json_string(title), lines.join(","));
+    }
+
+    /// The panel shows the phone: the chapter's title over its picture.
+    fn phone(&mut self, n: u32, title: &str, picture: &str) {
+        self.side = format!("{{\"n\":{n},\"title\":{},\"phone\":{}}}", json_string(title), json_string(picture));
+    }
+}
+
+/// `keepane web` in a phone-sized Edge (tools/phone-driver.mjs), one step at
+/// a time, with a picture after each for the tour's panel.
+struct Phone {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+    dir: String,
+    shots: u32,
+}
+
+impl Phone {
+    fn start(dir: &str) -> Phone {
+        // puppeteer-core lives where tools/make-demos.ps1 put it; the driver
+        // is copied beside it so that its import resolves there.
+        let npm = std::env::var("KEEPANE_PHONE_NPM")
+            .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/target/phone-shots/npm").into());
+        let driver = std::path::Path::new(&npm).join("phone-driver.mjs");
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/phone-driver.mjs"), &driver)
+            .expect("copy the phone driver (run tools/make-demos.ps1, which installs puppeteer-core)");
+        let edge = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .expect("Microsoft Edge");
+        let mut child = std::process::Command::new("node")
+            .arg(&driver)
+            .arg(edge)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("node");
+        let stdin = child.stdin.take();
+        let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        Phone { child, stdin, stdout, dir: dir.to_string(), shots: 0 }
+    }
+
+    /// One step; the driver answers when it is done.
+    fn step(&mut self, json: &str) {
+        use std::io::BufRead;
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{json}").expect("to the phone driver");
+        stdin.flush().unwrap();
+        let mut answer = String::new();
+        self.stdout.read_line(&mut answer).expect("from the phone driver");
+        assert_eq!(answer.trim(), "ok", "phone: {json}");
+    }
+
+    /// A picture of the phone's screen now; its path.
+    fn shot(&mut self) -> String {
+        self.shots += 1;
+        let path = format!("{}/phone-{:03}.png", self.dir, self.shots);
+        self.step(&format!("{{\"do\":\"shot\",\"path\":{}}}", json_string(&path)));
+        path
+    }
+}
+
+impl Drop for Phone {
+    fn drop(&mut self) {
+        if let Some(mut stdin) = self.stdin.take() {
+            let _ = writeln!(stdin, "{{\"do\":\"quit\"}}");
+        }
+        // Closed now; a driver that still does not end is ended.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = self.child.kill();
     }
 }
 

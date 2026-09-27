@@ -591,9 +591,15 @@ impl Window {
             self.layout.layout(area, &mut self.rects);
         }
         self.layout_rects = self.rects.clone();
+        // `pane-border-status`: a pane's text goes on the border line above
+        // (or below) it. Between two panes that is the line that parts them,
+        // as in tmux; only a pane at the window's edge, with no line there,
+        // gives up a row for it. (Every pane giving one up put two border
+        // rows between panes, the upper one drawn as a row of ┬.)
         if let Some(top) = border {
             for (_, r) in &mut self.rects {
-                if r.h >= 2 {
+                let at_edge = if top { r.y == area.y } else { r.y + r.h == area.y + area.h };
+                if at_edge && r.h >= 2 {
                     if top {
                         r.y += 1;
                     }

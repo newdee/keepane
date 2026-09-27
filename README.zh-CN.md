@@ -8,14 +8,15 @@
 keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息。常用的 tmux 按键、命令和配置文件可以继续使用。
 
 <p align="center">
-  <img src="docs/img/keepane-messages.gif" width="880"
-       alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；分面板的 dashboard 显示 pane、一个 agent 的收件箱和任务，把一条消息置顶，并按字段展开看全文">
+  <img src="docs/img/keepane-tour.gif" width="900"
+       alt="分四段的功能导览：名叫 lead、build、agent 的 pane，边框上写着各自的工作模式和收件箱；发给 build 的消息在那里作为命令执行，发给 agent 的消息在它的收件箱里等着。一个小的 MCP 客户端创建名叫 tests 的 pane 并给它发命令。dashboard 显示所有 pane、某个 pane 的事件和 agent 的收件箱。keepane web 打出二维码；手机上的列表显示所有 pane，在手机上输入的命令在电脑上的 build 里执行。">
 </p>
 
 - 脱离后，pane 里的程序继续运行。重启电脑后用 `keepane resume` 恢复布局；误关的 pane 可在 10 秒内按 `C-b u` 找回。
 - 给 pane 命名后，就能向它发消息。消息先进入收件箱，等 pane 准备好再投递：shell 回到提示符时执行命令，其他程序主动读取。
 - 每条消息都有固定格式的信封，记录发送方、接收方和任务。事件日志保留 30 天；按 `C-b v` 可查看 pane、消息和任务。
 - 人、脚本和 AI agent 使用同一套消息机制；agent 也可通过内置的 MCP 服务端操作。
+- 在手机上，通过 Wi-Fi 或 Tailscale，`keepane web` 可以查看所有窗口和 pane；在手机上输入的命令在电脑上执行。
 - 支持 tmux 风格的 `C-b` 前缀、分屏、copy mode、命令行、配置写法（`keepane import-config` 可以导入现成的 `.tmux.conf`）、格式串、hook 和插件。
 
 支持 Windows（ConPTY），pane 里可运行 PowerShell、WSL 和 cmd；也支持 Linux 和 macOS，pane 里可运行 bash 和 zsh。
@@ -23,6 +24,11 @@ keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程�
 ## 在 pane 之间派活
 
 每个 pane 都有收件箱，也可以设置名字。消息会排队等待，并按接收方的工作模式投递。
+
+<p align="center">
+  <img src="docs/img/keepane-messages.gif" width="880"
+       alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；分面板的 dashboard 显示 pane、一个 agent 的收件箱和任务，把一条消息置顶，并按字段展开看全文">
+</p>
 
 ```powershell
 keepane rename-pane -t %3 builder          # 之后用 -t %builder 就能找到它

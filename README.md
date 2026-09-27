@@ -11,8 +11,8 @@ messages to each other through inboxes. The usual tmux keys, commands and
 config file keep working.
 
 <p align="center">
-  <img src="docs/img/keepane-messages.gif" width="880"
-       alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows the panes, an agent's inbox and the tasks in panels, puts a message first and reads it field by field">
+  <img src="docs/img/keepane-tour.gif" width="900"
+       alt="A tour in four parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. keepane web prints a QR code; on a phone the list shows every pane, and a command typed there runs in build on the computer.">
 </p>
 
 - After you detach, the programs in the panes keep running. After a reboot,
@@ -26,6 +26,8 @@ config file keep working.
   the panes, messages and tasks.
 - People, scripts and AI agents use the same messages; an agent can also
   work through the built-in MCP server.
+- On your phone, over Wi-Fi or Tailscale, `keepane web` shows every window
+  and pane; what you type there runs on the computer.
 - tmux's `C-b` prefix, splits, copy mode, command line, config syntax
   (`keepane import-config` brings a `.tmux.conf` over), format strings,
   hooks and plugins are there.
@@ -37,6 +39,11 @@ on Linux and macOS, with bash and zsh.
 
 Every pane has an inbox and can be given a name. Messages queue up and are
 delivered according to the receiving pane's work mode.
+
+<p align="center">
+  <img src="docs/img/keepane-messages.gif" width="880"
+       alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows the panes, an agent's inbox and the tasks in panels, puts a message first and reads it field by field">
+</p>
 
 ```powershell
 keepane rename-pane -t %3 builder          # -t %builder finds it from now on

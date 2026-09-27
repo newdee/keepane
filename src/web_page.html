@@ -183,7 +183,8 @@ function renderList() {
     const cls = ["pane", p.active && p.windowActive ? "current" : "", p.dead ? "dead" : "", marks ? "alert" : ""].join(" ");
     html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot"></span><span class="what">` +
       `<div class="cmd">${esc(p.command || "?")}</div>` +
-      `<div class="where">${esc(p.windowName)} · ${p.window}.${p.pane} · ${p.cols}×${p.rows}</div></span>` +
+      `<div class="where">${p.name ? `<b>%${esc(p.name)}</b> · ` : ""}${p.mode && p.mode !== "normal" ? `${esc(p.mode)} · ` : ""}` +
+      `${esc(p.windowName)} · ${p.window}.${p.pane} · ${p.cols}×${p.rows}</div></span>` +
       (marks ? `<span class="marks">${marks}</span>` : "") + `</button>`;
   }
   $("list").innerHTML = html;
