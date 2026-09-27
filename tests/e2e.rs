@@ -3787,6 +3787,13 @@ async fn the_wheel_selects_the_pane_it_scrolls_and_the_prefix_twice_pages_up() {
     c.wait_for("k moved up", |s| cursor_row(s).is_some_and(|r| r + 1 == before)).await;
     c.type_str("j").await;
     c.wait_for("j moved down", |s| cursor_row(s) == Some(before)).await;
+    // g goes to the oldest line: the indicator reads how far up of how many
+    // lines there are, [N/N] (it once read [N/2N]).
+    let history = h.cli(&["display-message", "-p", "-t", "ws:0.0", "#{history_size}"]).await.1.trim().to_string();
+    assert!(history.parse::<usize>().is_ok_and(|n| n > 0), "{history}");
+    c.type_str("g").await;
+    let want = format!("[{history}/{history}]");
+    c.wait_for(&want.clone(), |s| s.rows(0, COLS / 2).next().unwrap().contains(&want)).await;
     c.key(VK_ESCAPE, '\x1b', 0).await;
     c.wait_for("copy mode left", |s| !s.rows(0, COLS / 2).next().unwrap().contains("[")).await;
     h.cli(&["kill-server"]).await;

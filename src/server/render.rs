@@ -422,8 +422,9 @@ pub fn compose(f: &Frame) -> Composed {
                     }
                 }
             }
-            // Position indicator, tmux style, top right of the pane.
-            let ind = format!("[{}/{}]", c.offset, c.offset + p.screen.scrollback());
+            // Position indicator, tmux style, top right of the pane: how far
+            // up the view is, of how many lines of history there are.
+            let ind = format!("[{}/{}]", c.offset, p.screen.scrollback_rows());
             let ind_w = ind.width() as u16;
             if p.rect.w > ind_w + 1 {
                 g.put_str(
