@@ -181,7 +181,11 @@ mod tests {
             assert!(!line.contains('`'), "a backtick left: {line}");
         }
         assert_eq!(roff(MARKDOWN), r);
-        // A Windows checkout has the page with CRLF endings: the same page.
-        assert_eq!(roff(&MARKDOWN.replace('\n', "\r\n")), r);
+        // The page with LF endings and with CRLF ones (a Windows checkout
+        // has either, as git is set): the same page.
+        let lf = MARKDOWN.replace("\r\n", "\n");
+        assert_eq!(roff(&lf), r);
+        assert_eq!(roff(&lf.replace('\n', "\r\n")), r);
+        assert!(!r.contains('\r'), "no carriage return reaches man");
     }
 }
