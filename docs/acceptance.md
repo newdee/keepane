@@ -2843,3 +2843,25 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 4 | 全量（两平台）+ 审查（可复现） | Windows 248/10/87，Linux 225/88；`web-status` 只有时间随时刻变，测试只断言结构；列表按（连着，首次出现）稳定排序；MCP 白名单不含 `web-*` | 干净（1/3） |
 | 5 | 真实终端（tmux 做宿主，Linux） | 服务前状态栏无 `web`；服务后出现 `web 0`；curl 取列表后状态栏提示 `web: 127.0.0.1 connected`；dashboard 标题 `[1] Panes  1 · 0 busy · 0 queued · web 1 connected`；stop 后 `web` 段消失 | 干净（2/3） |
 | 6 | 真机三平台（CI run 36303420739，提交 dbe0161） | windows、ubuntu、macos 的 fmt、clippy、全量测试都通过（含新的 e2e `the_phone_page_runs_in_the_server_and_says_who_is_on_it`） | 干净（3/3），验收通过 |
+
+## 75. 0.20.0 发版前：导览动图、手机上显示 pane 名字、pane-border-status 的双行边框
+
+用户：发版；推特和 GitHub 的动图要体现四个重点（手机控制；pane 是 actor、有收件箱和三种工作模式；MCP；可观测）；V2EX 帖子里的动图地址不变、换成新图。
+
+一、导览动图 `docs/img/keepane-tour.gif`（`tests/demo_frames.rs` 的 `record_tour`，`tools/make-demos.ps1 -Only keepane-tour`）：左边是真实的 keepane，右边一栏写这一段在演示什么；第四段右栏换成手机：`tools/phone-driver.mjs` 用 puppeteer 驱动手机尺寸的 Edge，打开 `keepane web`、点开 %build、输入 `git log --oneline -1` 发送，电脑上 %build 里执行。MCP 一段由一个小 MCP 客户端脚本通过 stdio 调用真实的 `keepane mcp`（split_pane、send_message、list_panes）。README 中英文顶部换成它，原消息动图移到"在 pane 之间派活"。
+
+二、顺带修的产品问题：
+- `pane-border-status top/bottom` 给每个 pane 都让出一行，上下两个 pane 之间出现两行边框，上面那行被画成一排 `┬`。改为 tmux 的做法：只有贴着窗口边缘的 pane 让出一行，其余 pane 的文字写在分隔线上。e2e 断言随之从 10/10 改为 10/11，并检查分隔线上有下方 pane 的文字、画面上没有 `┬┬`；把条件改回旧写法，该测试失败。
+- 手机页面的 pane 列表显示 pane 的名字（`%build`）和工作模式（`/api/panes` 多了 `name`、`mode`）。
+- `keepane web --bind 127.0.0.1` 不再提示"找不到网络地址"（只有自动找地址失败时才提示）。
+- 录制中途失败时 `Demo` 的 `Drop` 关掉录制用的 server（此前残留的 server 锁住 `target\release\keepane.exe`，下一次编译失败）。
+
+三、撤回的修复：CI（run 36305847260）上 Windows 的"写满行尾"测试又失败一次（输出第一行是命令折过去的尾巴）。试过"提示符标记后光标仍在第 0 列就再等"：限定 2 核加 4 个空转进程，修复前 40 次失败 1 次，修复后 40 次也失败 1 次（尾巴 `xx`），没有数据支持有效，已撤回。更可能的原因：ConPTY 先转发 OSC，前面的文字（上一条输出末尾的换行、提示符）下一帧才画，送达时光标可能还在上一行末尾而不在第 0 列。仍记为已知限制，需要加日志单独排查。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量 + 变异 | Windows 248/10/87，Linux 225/88；边框变异（改回每个 pane 都让一行）被 e2e 抓到 | 干净（1/3） |
+| 2 | 真实使用（录制导览） | 录制多次失败，均为录制脚本的等待条件写错（dashboard 筛选、ConPTY 行都标为折行使 `contents()` 连成一行、标题与收件箱截断、事件措辞），以及录制工具自身两处：失败时 server 残留锁住 exe、node 驱动因 stdin 未关不退出 | **有问题**（工具）：`Demo` 加 `Drop`，驱动显式退出、Phone 先关 stdin 再限时等待（不计数） |
+| 3 | 真实使用（录制，重做） | 一次录成 248 帧：边框无 `┬` 行；手机列表显示 `%lead` `%tests · shell` `%build · shell` `%agent · ai`；状态栏提示 `web: 127.0.0.1 connected`、显示 `web 1`；`web status` 显示 `watching %4`；手机发送的命令在电脑上 %build 执行 | 干净（1/3） |
+| 4 | 真机三平台（CI run 36308556398，提交 8f6aec2） | windows、ubuntu、macos 全量通过 | 干净（2/3） |
+| 5 | 静态一致 | README / 中文 README / man 关于 `pane-border-status` 的描述（"放在每个 pane 的边框上"）与新行为一致；手机列表多出的字段在页面与接口两处一致 | 干净（3/3），验收通过 |
