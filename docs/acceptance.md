@@ -2819,4 +2819,4 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 轮 | 视角 | 数据 | 结论 |
 |---|---|---|---|
 | 1 | 全量 + 审查 | Windows 244/10/86，Linux 221/87；审查：vim、less、htop 用备用屏（无历史），不受影响；apt、pip 这类底部固定进度条的输出现在进历史，与 xterm 一致；区域下方固定框的行号随 `scrolled` 平移，只影响该框里的命令标记 | 干净（1/3） |
-| 2 | 机制通路（真实终端 + 变异） | tmux 做宿主，模拟 Codex（第 1–18 行区域、底部固定框、输出 80 行）：`history_size=80`，复制模式 `g` 后 `[80/80]`，前 18 行为区域原有空行，第 19 行起 `codex-1`、`codex-2`…；把条件改回上游（整屏才保存），回归测试 `a_region_from_the_top_row_keeps_what_scrolls_off` 失败 | 干净（2/3） |
+| 2 | 机制通路（真实终端 + 变异） | tmux 做宿主，模拟 Codex（第 1–18 行区域、底部固定框、输出 80 行）：`history_size=80`，复制模式 `g` 后 `[80/80]`，前 18 行为区域原有空行，第 19 行起 `codex-1`、`codex-2`…；把条件改回上游（整屏才保存），回归测试 `a_region_from_the_top_row_keeps_what_scrolls_off` 失败 | 干净（2/3） || 3 | 真机三平台（CI run 36302202400，提交 fa322aa） | windows、ubuntu、macos 全量通过 | 干净（3/3），验收通过 |
