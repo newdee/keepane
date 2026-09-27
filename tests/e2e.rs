@@ -3524,7 +3524,7 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     h.cli(&["kill-server"]).await;
 }
 
-/// The phone renames the session, window and pane a pane is in: the name is
+/// The phone renames the session and window a pane is in: the name is
 /// the body (one starting with `-` included), keepane's rules apply, and a
 /// name it does not take comes back as the phone's mistake (400).
 #[tokio::test(flavor = "multi_thread")]
@@ -3538,27 +3538,25 @@ async fn the_phone_renames_sessions_windows_and_panes() {
     let p = pane_id(&h, "r:0.0").await;
     let at = |what: &str| format!("/api/action?pane=%25{p}&do=rename-{what}");
 
-    let (code, err) = http(addr, "POST", &at("pane"), key, "from_phone").await;
-    assert_eq!(code, 200, "{err}");
     let (code, err) = http(addr, "POST", &at("window"), key, "logs on phone").await;
     assert_eq!(code, 200, "{err}");
     let (code, err) = http(addr, "POST", &at("session"), key, "-phone").await;
     assert_eq!(code, 200, "{err}");
     let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
-    for want in ["\"name\":\"from_phone\"", "\"windowName\":\"logs on phone\"", "\"session\":\"-phone\""] {
+    for want in ["\"windowName\":\"logs on phone\"", "\"session\":\"-phone\""] {
         assert!(list.contains(want), "{want}: {list}");
     }
     assert!(h.cli(&["ls"]).await.1.contains("-phone:"));
 
     // keepane's rules, and the page's: 400 with the reason.
-    let (code, err) = http(addr, "POST", &at("pane"), key, "a b").await;
+    let (code, err) = http(addr, "POST", &at("session"), key, "").await;
     assert_eq!(code, 400);
-    assert!(err.contains("letters, digits"), "{err}");
+    assert!(err.contains("bad session name"), "{err}");
     assert_eq!(http(addr, "POST", &at("window"), key, &"x".repeat(65)).await.0, 400);
     assert_eq!(http(addr, "POST", &at("window"), key, "two\nlines").await.0, 400);
-    // Empty takes a pane's name away.
-    assert_eq!(http(addr, "POST", &at("pane"), key, "").await.0, 200);
-    assert!(http(addr, "GET", "/api/panes", key, "").await.1.contains("\"name\":\"\""));
+    // A pane is not renamed from the phone.
+    let (code, err) = http(addr, "POST", &at("pane"), key, "from_phone").await;
+    assert_eq!(code, 400, "{err}");
     h.cli(&["kill-server"]).await;
 }
 

@@ -13,7 +13,7 @@
 //! the phone in the address a QR code in the terminal carries, after the `#`
 //! so that it is never part of a request line. The phone can only look,
 //! type into a pane, and run the few fixed actions of the page (new
-//! window, split, close a pane; rename a session, window or pane): no
+//! window, split, close a pane; rename a session or window): no
 //! command of its own reaches the server. Plain HTTP, so for a network you trust; over anything else, a
 //! private network such as Tailscale in between.
 
@@ -45,8 +45,7 @@ const KEYS: &[&str] = &[
 ];
 
 /// What the page's + menu and its names can do, and nothing else.
-const ACTIONS: &[&str] =
-    &["new-window", "split-h", "split-v", "kill-pane", "rename-session", "rename-window", "rename-pane"];
+const ACTIONS: &[&str] = &["new-window", "split-h", "split-v", "kill-pane", "rename-session", "rename-window"];
 
 /// How `web-start` serves: its flags (`keepane web` passes its own on).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -779,10 +778,10 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 "split-h" => vec!["split-window".into(), "-h".into(), "-t".into(), pane.into()],
                 "split-v" => vec!["split-window".into(), "-v".into(), "-t".into(), pane.into()],
                 "kill-pane" => vec!["kill-pane".into(), "-t".into(), pane.into()],
-                // The pane's session, its window or itself, by the pane: the
+                // The pane's session or its window, by the pane: the
                 // new name is the body, after `--` so that one starting with
                 // `-` is a name. keepane says what a name may be.
-                "rename-session" | "rename-window" | "rename-pane" => {
+                "rename-session" | "rename-window" => {
                     let name = match rename_body(&req.body) {
                         Ok(n) => n,
                         Err(e) => return Response::text(400, e),
@@ -819,8 +818,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
 }
 
 /// The name a rename's body carries: text on one line, not too long. What
-/// else a name may be is keepane's to say (a pane's: letters, digits, `-`
-/// and `_`; empty takes it away).
+/// else a name may be is keepane's to say.
 fn rename_body(body: &[u8]) -> Result<String, &'static str> {
     let name = std::str::from_utf8(body).map_err(|_| "the name is not text")?.trim();
     if name.chars().count() > 64 {

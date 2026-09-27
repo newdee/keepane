@@ -34,6 +34,8 @@
     border-radius: 8px; padding: 6px 12px; min-height: 36px; cursor: pointer;
   }
   button:active { background: var(--line); }
+  /* No double-tap zoom and no tap delay: a tap is taken as one, at once. */
+  button, textarea, input { touch-action: manipulation; }
   .icon { width: 36px; padding: 0; font-size: 20px; line-height: 1; }
   main { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; }
   .hidden { display: none !important; }
@@ -44,6 +46,9 @@
   .session { margin: 14px 12px 2px; color: var(--accent); font-size: 14px; font-weight: 600; }
   .window { margin: 6px 12px 0 22px; color: var(--muted); font-size: 13px; }
   .window.current { color: var(--fg); }
+  .group[data-fold] { cursor: pointer; min-height: 34px; user-select: none; }
+  .chev { width: 14px; flex: none; color: var(--muted); font-size: 12px; }
+  .count { flex: none; color: var(--muted); font-size: 12px; font-weight: 400; }
   .rename { min-height: 28px; width: 32px; padding: 0; font-size: 14px; color: var(--muted); background: transparent; border-color: transparent; flex: none; }
   .pane {
     display: flex; align-items: center; gap: 10px; margin: 6px 12px 6px 22px; padding: 10px 12px;
@@ -141,7 +146,6 @@
     <button data-do="split-h">Split left | right</button>
     <button data-do="split-v">Split top / bottom</button>
     <button data-do="new-window">New window</button>
-    <button data-do="rename-pane">Rename this pane</button>
     <button data-do="rename-window">Rename this window</button>
     <button data-do="rename-session">Rename this session</button>
     <button data-do="kill-pane" class="danger">Close this pane</button>
@@ -191,7 +195,8 @@ async function api(path, opts = {}) {
 
 function toast(msg) {
   const el = $("toast"); el.textContent = msg; el.classList.remove("hidden");
-  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add("hidden"), 2200);
+  // Long enough to read: longer for more words.
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add("hidden"), Math.min(7000, Math.max(2200, msg.length * 60)));
 }
 
 function esc(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
@@ -213,17 +218,30 @@ function renderList() {
   if (!panes.length) { $("list").innerHTML = `<p class="empty">${t("No panes.", "没有 pane。")}</p>`; return; }
   const pen = (kind, p, name) => readOnly ? "" :
     `<button class="rename" data-kind="${kind}" data-id="${esc(p.id)}" data-name="${esc(name)}" aria-label="${t("Rename", "重命名")}">&#9998;</button>`;
+  // How much each session and window holds, for a folded one's line.
+  const count = new Map();
+  for (const p of panes) {
+    const s = count.get(sKey(p)) || { windows: new Set(), panes: 0 };
+    s.windows.add(p.window); s.panes++; count.set(sKey(p), s);
+    count.set(wKey(p), (count.get(wKey(p)) || 0) + 1);
+  }
+  const chev = (k) => `<span class="chev">${folded.has(k) ? "&#9656;" : "&#9662;"}</span>`;
   let html = "", lastSession = null, lastWindow = null;
   for (const p of panes) {
     if (p.session !== lastSession) {
-      html += `<div class="group session"><span class="name">${esc(p.session)}</span>${pen("session", p, p.session)}</div>`;
+      const c = count.get(sKey(p));
+      const sum = folded.has(sKey(p)) ? `<span class="count">${t(`${c.windows.size} windows · ${c.panes} panes`, `${c.windows.size} 个窗口 · ${c.panes} 个 pane`)}</span>` : "";
+      html += `<div class="group session" data-fold="${esc(sKey(p))}">${chev(sKey(p))}<span class="name">${esc(p.session)}</span>${sum}${pen("session", p, p.session)}</div>`;
       lastSession = p.session; lastWindow = null;
     }
+    if (folded.has(sKey(p))) continue;
     if (p.window !== lastWindow) {
-      html += `<div class="group window${p.windowActive ? " current" : ""}"><span class="name">${p.window}: ${esc(p.windowName)}</span>` +
-        `${pen("window", p, p.windowName)}</div>`;
+      const sum = folded.has(wKey(p)) ? `<span class="count">${t(`${count.get(wKey(p))} panes`, `${count.get(wKey(p))} 个 pane`)}</span>` : "";
+      html += `<div class="group window${p.windowActive ? " current" : ""}" data-fold="${esc(wKey(p))}">${chev(wKey(p))}` +
+        `<span class="name">${p.window}: ${esc(p.windowName)}</span>${sum}${pen("window", p, p.windowName)}</div>`;
       lastWindow = p.window;
     }
+    if (folded.has(wKey(p))) continue;
     const marks = (p.activity ? `<span class="mark activity" title="${t("printed", "有输出")}">#</span>` : "") +
       (p.bell ? `<span class="mark bell" title="${t("bell", "响铃")}">!</span>` : "") +
       (p.silence ? `<span class="mark silence" title="${t("silent", "没动静")}">~</span>` : "");
@@ -237,11 +255,24 @@ function renderList() {
   $("list").innerHTML = html;
 }
 
+// Folded sessions and windows, kept on this phone: the list is drawn anew
+// every two seconds and the next visit, and stays as it was left.
+const sKey = (p) => `s ${p.session}`;
+const wKey = (p) => `w ${p.session}:${p.window}`;
+const folded = new Set((() => { try { return JSON.parse(localStorage.getItem("keepane-folded") || "[]"); } catch (e) { return []; } })());
+function toggleFold(k) {
+  if (folded.has(k)) folded.delete(k); else folded.add(k);
+  try { localStorage.setItem("keepane-folded", JSON.stringify([...folded])); } catch (e) {}
+  renderList();
+}
+
 $("list").addEventListener("click", (e) => {
   const r = e.target.closest("button.rename");
   if (r) { rename(r.dataset.kind, r.dataset.id, r.dataset.name); return; }
+  const g = e.target.closest(".group[data-fold]");
+  if (g) { if (!bounced("fold " + g.dataset.fold)) toggleFold(g.dataset.fold); return; }
   const b = e.target.closest("button.pane");
-  if (b) open(b.dataset.id, true);
+  if (b && !bounced("open")) open(b.dataset.id, true);
 });
 
 // ---- Names ----
@@ -257,17 +288,19 @@ function askName(title, value) {
     $("askName").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); done($("askName").value.trim()); } if (e.key === "Escape") done(null); };
   });
 }
+let renaming = false;
 async function rename(kind, id, now) {
-  const title = { session: t("Rename the session", "重命名 session"), window: t("Rename the window", "重命名窗口"),
-    pane: t("Name the pane (letters, digits, - and _; empty: none)", "给 pane 命名（字母、数字、- 和 _；留空即去掉名字）") }[kind];
-  const name = await askName(title, now);
-  if (name === null || name === now) return;
+  if (renaming) return;
+  renaming = true;
   try {
+    const title = kind === "session" ? t("Rename the session", "重命名 session") : t("Rename the window", "重命名窗口");
+    const name = await askName(title, now);
+    if (name === null || name === now) return;
     await api(`/api/action?pane=${encodeURIComponent(id)}&do=rename-${kind}`, { method: "POST", body: name });
     panes = await (await api("/api/panes")).json();
     if (current) setTitle(); else renderList();
     toast(t("Renamed", "已重命名"));
-  } catch (e) { toast(e.message); }
+  } catch (e) { toast(e.message); } finally { renaming = false; }
 }
 
 // ---- One pane ----
@@ -382,6 +415,11 @@ $("detail").addEventListener("click", () => {
   try { localStorage.setItem("keepane-detail", detail ? "1" : "0"); } catch (e) {}
   $("detail").classList.toggle("on", detail);
   fitFont(); lastText = null; showScreen(shown.text, shown.marks);
+  // Nothing to show is said, not left to look like a broken button.
+  if (detail && !shown.marks.length) {
+    toast(t("No command times here yet: a time is kept for each command the pane's shell (PowerShell, zsh, bash 4.4+) finishes, from the pane's start",
+      "这个 pane 还没有命令时间：只记录 pane 启动后、在 shell（PowerShell、zsh、bash 4.4+）里执行完的命令"));
+  }
 });
 $("screen").addEventListener("click", (e) => {
   const s = e.target.closest(".stamp");
@@ -465,23 +503,54 @@ async function watchScreen() {
 }
 
 // ---- Typing ----
-async function send(query, body) {
-  if (!current) return;
-  try {
-    await api(`/api/send?pane=${encodeURIComponent(current)}${query}`, { method: "POST", body: body || "" });
-    if (!streaming) setTimeout(loadScreen, 120); // pushed otherwise
-  } catch (e) { toast(e.message); }
+// Everything typed goes out in the order it was tapped, one after the
+// other (a key tapped while text is on its way lands after it). Resolves
+// to whether it got there.
+let queue = Promise.resolve(true);
+function send(query, body) {
+  if (!current) return Promise.resolve(false);
+  const id = current;
+  queue = queue.then(async () => {
+    try {
+      await api(`/api/send?pane=${encodeURIComponent(id)}${query}`, { method: "POST", body: body || "" });
+      if (!streaming) setTimeout(loadScreen, 120); // pushed otherwise
+      return true;
+    } catch (e) { toast(e.message); return false; }
+  });
+  return queue;
 }
 const sendKey = (k) => (k.startsWith("=") ? send("", k.slice(1)) : send(`&key=${encodeURIComponent(k)}`));
 
-$("keys").innerHTML = KEYS.map(([label, k]) => `<button data-k="${esc(k)}">${esc(label)}</button>`).join("");
-$("keys").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) sendKey(b.dataset.k); });
+// A tap is one press: the same button again within BOUNCE_MS is a finger
+// bouncing or a tap reported twice, not a second press (a key pressed on
+// purpose again comes later than that).
+const BOUNCE_MS = 250;
+const lastTap = new Map();
+function bounced(what) {
+  const now = Date.now(), last = lastTap.get(what) || 0;
+  lastTap.set(what, now);
+  return now - last < BOUNCE_MS;
+}
 
+$("keys").innerHTML = KEYS.map(([label, k]) => `<button data-k="${esc(k)}">${esc(label)}</button>`).join("");
+$("keys").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b && !bounced("key " + b.dataset.k)) sendKey(b.dataset.k);
+});
+
+// The text leaves the box at once, so a second tap while it is on its way
+// finds nothing to send again; while it goes, Send does nothing. Put back
+// if it did not get there.
+let sending = false;
 async function sendText() {
+  if (sending || bounced("send")) return;
   const box = $("text"); const text = box.value;
-  if (text) await send("", text);
-  await send("&key=Enter");
   box.value = ""; box.style.height = "";
+  sending = true;
+  try {
+    if (text && !(await send("", text))) { if (!box.value) box.value = text; return; }
+    await send("&key=Enter");
+  } finally { sending = false; }
 }
 $("send").addEventListener("click", sendText);
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendText(); } });
@@ -489,19 +558,23 @@ $("text").addEventListener("input", (e) => { e.target.style.height = ""; e.targe
 
 // ---- The + menu ----
 $("plus").addEventListener("click", () => $("menu").classList.remove("hidden"));
+// One action at a time: a second tap while one runs (a split, a new
+// window) would make a second one.
+let acting = false;
 $("menu").addEventListener("click", async (e) => {
   const b = e.target.closest("button");
   if (!b && e.target !== $("menu")) return;
   $("menu").classList.add("hidden");
   const what = b ? b.dataset.do : "";
-  if (!what || !current) return;
+  if (!what || !current || acting) return;
   if (what.startsWith("rename-")) {
     const p = paneInfo(current) || {};
     const kind = what.slice("rename-".length);
-    rename(kind, current, kind === "session" ? p.session : kind === "window" ? p.windowName : p.name || "");
+    rename(kind, current, kind === "session" ? p.session : p.windowName);
     return;
   }
   if (what === "kill-pane" && !confirm(t("Close this pane? What runs in it stops.", "关闭这个 pane？里面运行的程序会被结束。"))) return;
+  acting = true;
   try {
     const before = new Set(panes.map((p) => p.id));
     await api(`/api/action?pane=${encodeURIComponent(current)}&do=${what}`, { method: "POST" });
@@ -510,7 +583,7 @@ $("menu").addEventListener("click", async (e) => {
     // Go to the pane the action made.
     const made = panes.find((p) => !before.has(p.id));
     if (made) open(made.id, true);
-  } catch (err) { toast(err.message); }
+  } catch (err) { toast(err.message); } finally { acting = false; }
 });
 
 // ---- Colours: the SGR sequences capture-pane -e writes ----
@@ -589,7 +662,7 @@ if (window.visualViewport) {
   $("detail").title = t("When each command ran", "每条命令的时间");
   const labels = { "split-h": t("Split left | right", "左右分屏"), "split-v": t("Split top / bottom", "上下分屏"),
     "new-window": t("New window", "新窗口"), "kill-pane": t("Close this pane", "关闭这个 pane"), "": t("Cancel", "取消"),
-    "rename-pane": t("Rename this pane", "重命名这个 pane"), "rename-window": t("Rename this window", "重命名这个窗口"),
+    "rename-window": t("Rename this window", "重命名这个窗口"),
     "rename-session": t("Rename this session", "重命名这个 session") };
   $("askOk").textContent = t("OK", "确定"); $("askCancel").textContent = t("Cancel", "取消");
   $("wrap").title = t("Wrap long lines", "长行换行");

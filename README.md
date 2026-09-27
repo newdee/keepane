@@ -626,8 +626,8 @@ type into it from the box at the bottom, or with the row of keys the phone
 keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
 + menu splits the pane, opens a window or closes the pane; the ⏱ button adds
 a column with the time each command started (tap one for its date, how long
-it took and its exit code; see "Command times and history"). The ✎ beside a session or
-window, and the + menu, rename a session, window or pane. A pane wider than the
+it took and its exit code; see "Command times and history"). A tap on a session or
+window folds it (the phone remembers), and the ✎ beside it renames it. A pane wider than the
 phone wraps its long lines at the phone's edge (the ↩ button turns that off, for
 a full-screen program). Everything runs
 on the computer; the phone only shows and types. "Add to Home Screen" makes
