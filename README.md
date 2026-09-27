@@ -152,7 +152,15 @@ on macOS. The paths below are written the Windows way.
 
 ### Linux and macOS
 
-From the [releases page](https://github.com/newdee/keepane/releases):
+With [Homebrew](https://brew.sh) (macOS on Apple silicon or Intel, Linux
+x86_64):
+
+```bash
+brew install newdee/tap/keepane
+```
+
+`brew upgrade keepane` takes a new version. Or from the
+[releases page](https://github.com/newdee/keepane/releases):
 `keepane-v<version>-linux-x86_64.tar.gz` (a static build that runs on any
 x86_64 Linux), `keepane-v<version>-macos-aarch64.tar.gz` (Apple silicon) or
 `keepane-v<version>-macos-x86_64.tar.gz` (Intel). Unpack it and put
@@ -167,8 +175,9 @@ Or build it (below). The server listens on a socket in
 `$XDG_RUNTIME_DIR/keepane-<uid>/` (else `/tmp/keepane-<uid>/`), a directory
 only you can open. `keepane startup`, `keepane update` and the Windows
 Terminal profile are Windows matters: on Linux and macOS, start the server
-from your login files if you want it at logon, and update from the
-releases page (`keepane update` says so).
+from your login files if you want it at logon, and update it the way you
+installed it (`brew upgrade keepane`, or the releases page; `keepane update`
+says which).
 
 ### Windows
 

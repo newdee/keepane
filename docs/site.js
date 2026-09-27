@@ -119,6 +119,8 @@ const ZH = {
   "c5.unix.sub": "每个系统一个 .tar.gz（Linux 版静态编译；Mac 分 Apple 芯片和 Intel），解压后把 keepane 放进 PATH。",
   "c5.msi": "Windows 安装包",
   "c5.msi.sub": "下载 .msi 双击，装到 Program Files，自动进系统 PATH，卸载在“应用和功能”里。",
+  "c5.brew": "Homebrew",
+  "c5.brew.sub": "macOS 和 Linux，装的是发布页上编译好的包；以后用 brew upgrade keepane 升级。",
   "c5.scoop": "Scoop",
   "c5.scoop.sub": "仓库里的清单直接装 zip，以后跟着新版本更新。",
   "c5.zip": "Windows 免安装",

@@ -80,14 +80,20 @@ keepane 的文件（日志、事件日志、会话存档、pane 历史）放在�
 
 ### Linux 和 macOS
 
-从 [Releases](https://github.com/newdee/keepane/releases) 下载 `keepane-v<版本>-linux-x86_64.tar.gz`（静态编译，任何 x86_64 Linux 都能跑）、`keepane-v<版本>-macos-aarch64.tar.gz`（Apple 芯片）或 `keepane-v<版本>-macos-x86_64.tar.gz`（Intel），解压后把 `keepane` 放进 `PATH`：
+用 [Homebrew](https://brew.sh) 安装（macOS 的 Apple 芯片和 Intel、Linux x86_64）：
+
+```bash
+brew install newdee/tap/keepane
+```
+
+以后用 `brew upgrade keepane` 升级。也可以从 [Releases](https://github.com/newdee/keepane/releases) 下载 `keepane-v<版本>-linux-x86_64.tar.gz`（静态编译，任何 x86_64 Linux 都能跑）、`keepane-v<版本>-macos-aarch64.tar.gz`（Apple 芯片）或 `keepane-v<版本>-macos-x86_64.tar.gz`（Intel），解压后把 `keepane` 放进 `PATH`：
 
 ```bash
 tar xzf keepane-v<版本>-linux-x86_64.tar.gz
 install keepane-v<版本>-linux-x86_64/keepane ~/.local/bin/
 ```
 
-也可以从源码编译（见下）。server 监听的 socket 在 `$XDG_RUNTIME_DIR/keepane-<uid>/`（没有这个变量就用 `/tmp/keepane-<uid>/`），这个目录只有你自己能进。`keepane startup`、`keepane update` 和 Windows Terminal 配置是 Windows 上的功能：在 Linux 和 macOS 上，想登录时启动 server 就写进自己的登录脚本，升级从 Releases 下载（`keepane update` 会这么提示）。
+也可以从源码编译（见下）。server 监听的 socket 在 `$XDG_RUNTIME_DIR/keepane-<uid>/`（没有这个变量就用 `/tmp/keepane-<uid>/`），这个目录只有你自己能进。`keepane startup`、`keepane update` 和 Windows Terminal 配置是 Windows 上的功能：在 Linux 和 macOS 上，想登录时启动 server 就写进自己的登录脚本，升级按当初的安装方式来（`brew upgrade keepane`，或从 Releases 下载；`keepane update` 会告诉你用哪种）。
 
 ### Windows
 
@@ -514,7 +520,7 @@ CI 在 Windows、Linux、macOS 上都跑这两步。平台相关的代码在 `sr
 
 ## 还没做的
 
-Linux 和 macOS 上暂时没有 `keepane startup`（登录时启动 server）、`keepane update`（只提示去哪下载新版）和带“跳到 pane”按钮的桌面通知，Tab 补全也只有 PowerShell 的。
+Linux 和 macOS 上暂时没有 `keepane startup`（登录时启动 server）、`keepane update`（只提示怎么升级，用 Homebrew 装的就提示 `brew upgrade keepane`）和带“跳到 pane”按钮的桌面通知，Tab 补全也只有 PowerShell 的。
 
 与 tmux 相比，目前有这些差异：
 

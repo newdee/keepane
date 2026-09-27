@@ -2701,3 +2701,15 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 15 | 全量（两平台） | fmt/clippy 0；Windows 225/10/84；Linux 201/85；bash 版该测试 Linux 连跑 10 次 10/10 | 干净（1/3） |
 | 16 | 慢机器（Linux） | 测试与 4 个空转进程绑在同样 2 个核上：shell 测试 8/8；e2e 全量两次 85/85（每次 34.7 秒，平时 8.7 秒） | 干净（2/3） |
 | 17 | 真机三平台（CI run 36288770227，提交 c22768a） | windows、ubuntu、macos 的 fmt、clippy、全量测试都通过。（其间 b391684 误带进一个本机工具的 `.codegraph/.gitignore`，c22768a 删掉，并在本地 `.git/info/exclude` 里排除） | 干净（3/3），验收通过 |
+## 67. Homebrew；winget 更新到 0.17.0
+
+一、Homebrew：`newdee/homebrew-tap`（原有 magpie 的 cask）加 `Formula/keepane.rb`，装发布页上编译好的包（macOS arm64 / x86_64、Linux x86_64）；`scripts/bump-keepane.sh` 跟进最新发布（改 url 里的版本和每个 url 后的 sha256，哈希取发布页的 `.sha256`）；`formula.yml` 照 `cask.yml` 的做法：每次改动在 macOS、Linux 上 audit、安装、`brew test`、核对版本、卸载，定时跟进新版本，两平台都过才提交，只用 tap 自己的令牌，keepane 不需要跨仓库的密钥。tap PR #1：第一次 `brew audit --strict` 指出 `version` 行多余、`livecheck` 应在前，改为版本只写在 url 里后两平台通过（run 36290620965，`brew test` 里真起了服务器、建会话、列出）。bump 脚本用真实 0.17.0 的 `.sha256` 和替身 `gh` 测了四种输入：已是最新不动文件；旧版本旧哈希更新后与手写公式逐字节相同；少一个 url、三个 url 版本不一致都报错且不改公式。
+
+二、`keepane update`（Unix）：程序真实路径在 `Cellar/keepane/` 下时直接提示 `brew upgrade keepane`，否则列出各种方式并加上 brew。两份 README 与网站安装区加 Homebrew。
+
+三、winget PR #441466 改为 0.17.0（两个 MSI 的哈希与发布页的 `.sha256` 核对一致）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量（两平台） | fmt/clippy 0；Windows 225/10/84；Linux 202/85（多出的 1 个是新单元测试） | 干净（1/3） |
+| 2 | 机制通路 | 照 Homebrew 的布局放一份（`bin/keepane` 链接到 `Cellar/keepane/0.17.0/bin/keepane`）：经链接运行 `keepane update` 给 brew 的提示，放在别处给通用提示；把 Homebrew 判断改成恒假，单元测试在第 42 行变红 | 干净（2/3） |
