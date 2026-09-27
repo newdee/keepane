@@ -3589,7 +3589,14 @@ async fn the_phone_gets_joined_lines_with_their_command_times() {
         let (_, screen, _) = h.cli(&["capture-pane", "-p", "-J", "-t", &format!("%{p}")]).await;
         screen.lines().any(|l| l.trim_end() == output)
     };
-    while !(printed().await && done(&h.cli(&["list-marks", "-t", &format!("%{p}")]).await.1)) {
+    // bash reports a command's start from 4.4 on (PS0); macOS's own is 3.2,
+    // and has no command times to place (README: "Command times").
+    let timed = cfg!(windows)
+        || std::process::Command::new(HOOKED_SHELL[0])
+            .args(["-c", "(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) ))"])
+            .status()
+            .is_ok_and(|s| s.success());
+    while !(printed().await && (!timed || done(&h.cli(&["list-marks", "-t", &format!("%{p}")]).await.1))) {
         assert!(Instant::now() < deadline, "the command was never marked");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -3615,7 +3622,10 @@ async fn the_phone_gets_joined_lines_with_their_command_times() {
         out
     };
     let on = |m: &serde_json::Value| plain(lines.get(m[0].as_u64().unwrap() as usize).copied().unwrap_or(""));
-    assert!(marks.iter().any(|m| on(m).contains(&command)), "no mark on the whole command:\n{lines:#?}\n{marks:?}");
+    assert!(lines.iter().any(|l| plain(l).contains(&command)), "the command is not one line:\n{lines:#?}");
+    if timed {
+        assert!(marks.iter().any(|m| on(m).contains(&command)), "no mark on the whole command:\n{lines:#?}\n{marks:?}");
+    }
     h.cli(&["kill-server"]).await;
 }
 
