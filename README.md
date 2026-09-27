@@ -483,18 +483,33 @@ them would pin the old version's defaults on the new one).
 While a terminal is attached to a server of another version, its title
 says so. `update` downloads the MSI, checks it against the SHA-256
 published beside it, and hands it to Windows Installer; nothing is ever
-checked or installed in the background.
+installed in the background.
 
-Tab completion in PowerShell (command names, each command's flags, `-t`
-targets from the running server, and option names and values after `set`
-/ `show`; aliases like `splitw` and prefixes like `split-w` count as the
-command they stand for) comes from a completer the program prints, for
-`keepane` and for a `tmux` alias of it; one line in `$PROFILE` loads it.
-Windows PowerShell 5.1 does not ask a program's completer about words
-starting with `-`, so flags complete in PowerShell 7 only.
+Once a day the server asks GitHub for the latest release's version (one
+request to `api.github.com`, with `curl`, sending nothing about you or
+your sessions), and when it is newer the status line says so (`⇡ 0.19.0`,
+the `#{keepane_update}` format variable) and `show-messages` says how to
+get it. What it heard is kept in the data directory, so a restarted server
+does not ask again that day. `set -g update-check off` (or the environment
+variable `KEEPANE_NO_UPDATE_CHECK`) stops it.
+
+Tab completion in PowerShell, bash, zsh and fish (command names, each
+command's flags, `-t` targets from the running server, and option names and
+values after `set` / `show`; aliases like `splitw` and prefixes like
+`split-w` count as the command they stand for) comes from a completer the
+program prints; one line loads it. In PowerShell it also covers a `tmux`
+alias of keepane. Windows PowerShell 5.1 does not ask a program's completer
+about words starting with `-`, so there flags complete in PowerShell 7 only.
+Homebrew installs the bash, zsh and fish ones itself.
 
 ```powershell
-keepane completion powershell | Out-String | Invoke-Expression
+keepane completion powershell | Out-String | Invoke-Expression   # $PROFILE
+```
+
+```bash
+eval "$(keepane completion bash)"                                # ~/.bashrc
+source <(keepane completion zsh)                                 # ~/.zshrc, after compinit
+keepane completion fish > ~/.config/fish/completions/keepane.fish
 ```
 
 Inside keepane, Tab at the `:` prompt completes the command name, its flags
@@ -628,6 +643,14 @@ It is plain HTTP, meant for your own network: on a shared one, someone
 watching the traffic could read the key. From elsewhere, put a private
 network such as Tailscale in between and bind to its address. Windows asks
 once whether keepane may use the network; allow it for private networks.
+
+## The manual
+
+`keepane man` prints the whole manual (every command, the default keys,
+the config, the environment and the files) as Markdown, the way
+[docs/keepane.1.md](docs/keepane.1.md) is written: for reading, or to hand to
+a program. `keepane man --roff` writes it as a manual page;
+Homebrew installs that, so `man keepane` works.
 
 ## Configuration
 

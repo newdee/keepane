@@ -121,6 +121,9 @@ pub struct Context {
     /// The branch (or short commit) of the repository the pane's directory
     /// is in, empty outside one.
     pub git_branch: String,
+    /// A newer keepane's version when the daily check found one
+    /// (`update-check`), else empty.
+    pub keepane_update: String,
     /// The pane's directory with the home directory as `~`.
     pub pane_path_short: String,
     /// The program running in the pane right now (its newest descendant),
@@ -293,6 +296,7 @@ impl Context {
             "battery_charging" => flag(self.battery_charging),
             "uptime" => human_duration(self.uptime),
             "git_branch" => self.git_branch.clone(),
+            "keepane_update" => self.keepane_update.clone(),
             "pane_current_path_short" => self.pane_path_short.clone(),
             "pane_pid_command" => self.pane_pid_command.clone(),
             "version" => env!("CARGO_PKG_VERSION").to_string(),

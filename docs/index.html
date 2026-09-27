@@ -279,7 +279,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
         <ul class="points">
           <li data-i18n="c6.p1"><code>#{git_branch}</code>, <code>#{cpu_percentage}</code>, <code>#{ram_percentage}</code>, <code>#{battery_percentage}</code>, <code>#{pane_current_path_short}</code> and <code>#{pane_pid_command}</code> (the program running in the pane right now) can go anywhere in <code>status-right</code>. <code>set -g status off</code> hides the line.</li>
           <li data-i18n="c6.p2">When two terminals attach at different sizes, <code>window-size</code> decides which one sizes the session. The smaller terminal sees part of the window and pans with <kbd>Shift</kbd> + arrows.</li>
-          <li data-i18n="c6.p3">A right click pastes. At the <kbd>:</kbd> prompt, <kbd>Tab</kbd> completes commands, flags, targets and option names, and <code>keepane completion powershell</code> gives PowerShell the same completions.</li>
+          <li data-i18n="c6.p3">A right click pastes. At the <kbd>:</kbd> prompt, <kbd>Tab</kbd> completes commands, flags, targets and option names, and <code>keepane completion powershell</code> (or <code>bash</code>, <code>zsh</code>, <code>fish</code>) gives your shell the same completions.</li>
           <li data-i18n="c6.p4"><code>keepane update</code> installs a new release, and <code>keepane restart-server</code> moves every running session to it with history and directories. Attached terminals reconnect on their own.</li>
         </ul>
       </section>

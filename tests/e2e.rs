@@ -156,6 +156,8 @@ impl Harness {
         // No toasts from tests: a toast registers the running binary as the
         // keepane:// handler on the developer's machine.
         unsafe { std::env::set_var("KEEPANE_NO_TOAST", "1") };
+        // Nor asks of GitHub whether a newer keepane is out.
+        unsafe { std::env::set_var("KEEPANE_NO_UPDATE_CHECK", "1") };
         // The replay helper is keepane.exe; this test binary is not it.
         unsafe { std::env::set_var("KEEPANE_EXE", env!("CARGO_BIN_EXE_keepane")) };
         keep_history_out();
@@ -3953,9 +3955,27 @@ async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(script.contains("Register-ArgumentCompleter -Native -CommandName keepane"), "{script}");
     assert!(script.contains("'split-window'") && script.contains("'completion'"), "{script}");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_keepane")).args(["completion", "bash"]).output().unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("no script for 'bash'"));
+    // bash, zsh and fish get a few lines that ask `keepane __complete`,
+    // which answers from the same tables and the running server.
+    let run = |args: &[&str]| {
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_keepane")).args(args).output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    for shell in ["bash", "zsh", "fish"] {
+        let (ok, script, err) = run(&["completion", shell]);
+        assert!(ok && script.contains("keepane __complete"), "{shell}: {err}");
+    }
+    let (ok, _, err) = run(&["completion", "tcsh"]);
+    assert!(!ok && err.contains("no script for 'tcsh'"), "{err}");
+    let (_, offered, _) = run(&["__complete", "splitw", "-"]);
+    assert!(offered.lines().any(|l| l == "-h"), "{offered}");
+    let session = h.cli(&["display-message", "-p", "#{session_name}"]).await.1;
+    let (_, offered, _) = run(&["__complete", "-L", &h.socket, "attach", "-t", ""]);
+    assert!(offered.lines().any(|l| l == session.trim()), "the running server's sessions: {offered:?}");
     h.cli(&["kill-server"]).await;
 }
 

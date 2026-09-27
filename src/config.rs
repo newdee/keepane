@@ -37,6 +37,9 @@ pub struct Options {
     /// Also raise a desktop notification for an alert, so a job that ends
     /// while keepane is not on screen still reaches you.
     pub notify: bool,
+    /// Ask GitHub once a day whether a newer keepane is out; the status
+    /// line says so (`#{keepane_update}`).
+    pub update_check: bool,
     /// A line of text on every pane's top or bottom border ("off", "top",
     /// "bottom"), from `pane-border-format`.
     pub pane_border_status: String,
@@ -208,6 +211,7 @@ pub const SHOWABLE: &[&str] = &[
     "visual-bell",
     "visual-activity",
     "notify",
+    "update-check",
     "pane-border-status",
     "pane-border-format",
     "pane-base-index",
@@ -262,6 +266,7 @@ impl Default for Options {
             visual_bell: false,
             visual_activity: false,
             notify: false,
+            update_check: true,
             pane_border_status: "off".into(),
             pane_border_format: " #{?pane_active,#[bold],}#{pane_index}: #{pane_title}#[default] ".into(),
             base_index: 0,
@@ -276,11 +281,11 @@ impl Default for Options {
             pane_border_fg: Color::Rgb(0x3b, 0x42, 0x61),
             // The session name on a blue block.
             status_left: "#[fg=#1a1b26,bg=#7aa2f7,bold] #S #[default] ".into(),
-            // What is useful at a glance and costs nothing to read: the
-            // branch when in a repository, where the pane is, the machine's
-            // load, the battery when there is one, then the time on a blue
-            // block.
-            status_right: "#{?git_branch,#[fg=#bb9af7]#{git_branch} ,}#[fg=#7dcfff]#{pane_current_path_short} #[fg=#9ece6a]CPU #{cpu_percentage} #[fg=#e0af68]MEM #{ram_percentage} #{?battery_percentage,#[fg=#9ece6a]BAT #{battery_percentage} ,}#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M ".into(),
+            // What is useful at a glance and costs nothing to read: a newer
+            // keepane when there is one, the branch when in a repository,
+            // where the pane is, the machine's load, the battery when there
+            // is one, then the time on a blue block.
+            status_right: "#{?keepane_update,#[fg=#1a1b26,bg=#e0af68,bold] ⇡ #{keepane_update} #[default] ,}#{?git_branch,#[fg=#bb9af7]#{git_branch} ,}#[fg=#7dcfff]#{pane_current_path_short} #[fg=#9ece6a]CPU #{cpu_percentage} #[fg=#e0af68]MEM #{ram_percentage} #{?battery_percentage,#[fg=#9ece6a]BAT #{battery_percentage} ,}#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M ".into(),
             status_left_length: 40,
             status_right_length: 100, // the default right side is a long one; the window list still wins the room
             status_justify: "left".into(),
@@ -456,6 +461,7 @@ pub const KNOWN: &[&str] = &[
     "status-style",
     "synchronize-panes",
     "undo-kill-time",
+    "update-check",
     "visual-activity",
     "visual-bell",
     "window-size",
@@ -501,6 +507,7 @@ const BOOLEAN: &[&str] = &[
     "restore-on-start",
     "status",
     "synchronize-panes",
+    "update-check",
     "visual-activity",
     "visual-bell",
 ];
@@ -645,6 +652,7 @@ impl Options {
             "visual-bell" => self.visual_bell = parse_bool(value)?,
             "visual-activity" => self.visual_activity = parse_bool(value)?,
             "notify" => self.notify = parse_bool(value)?,
+            "update-check" => self.update_check = parse_bool(value)?,
             "pane-border-status" => {
                 self.pane_border_status = match value {
                     "off" | "top" | "bottom" => value.to_string(),
@@ -791,6 +799,7 @@ impl Options {
             "visual-bell" => onoff(self.visual_bell),
             "visual-activity" => onoff(self.visual_activity),
             "notify" => onoff(self.notify),
+            "update-check" => onoff(self.update_check),
             "pane-border-status" => self.pane_border_status.clone(),
             "pane-border-format" => self.pane_border_format.clone(),
             "pane-base-index" => self.pane_base_index.to_string(),

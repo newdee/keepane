@@ -31,6 +31,7 @@ fn keepane() -> std::process::Command {
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_keepane"));
     c.env("KEEPANE_SESSIONS_DIR", sessions_dir());
     c.env("KEEPANE_CONFIG", empty_config());
+    c.env("KEEPANE_NO_UPDATE_CHECK", "1");
     c
 }
 
@@ -69,6 +70,7 @@ impl Term {
         cmd.env_remove("KEEPANE");
         cmd.env("KEEPANE_SESSIONS_DIR", sessions_dir()); // keep autosave out of the real directory
         cmd.env("KEEPANE_CONFIG", empty_config()); // and the machine's config out of the test
+        cmd.env("KEEPANE_NO_UPDATE_CHECK", "1"); // and GitHub
         for (k, v) in env {
             cmd.env(k, v);
         }

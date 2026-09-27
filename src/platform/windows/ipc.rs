@@ -28,6 +28,22 @@ pub fn address(socket_name: &str) -> String {
     format!(r"\\.\pipe\keepane-{user}-{socket}")
 }
 
+/// The socket names (`-L`) that servers of this user listen on: the pipes
+/// named like `address` makes them.
+pub fn sockets() -> Vec<String> {
+    let prefix = address("");
+    let prefix = prefix.trim_end_matches("default").trim_start_matches(r"\\.\pipe\");
+    let mut v: Vec<String> = std::fs::read_dir(r"\\.\pipe\")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().strip_prefix(prefix).map(str::to_string))
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// Open a connection to the server at `addr`.
 pub fn connect(addr: &str) -> std::io::Result<Stream> {
     ClientOptions::new().open(addr)

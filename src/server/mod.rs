@@ -6,6 +6,7 @@ pub mod import;
 pub mod input;
 pub mod layout;
 mod mail;
+mod newer;
 pub mod observe;
 pub mod pane;
 pub mod render;
@@ -87,6 +88,8 @@ enum Event {
     /// keepane's prompt came back in a pane a moment ago, and what the
     /// command printed has been drawn by now (see `PROMPT_SETTLE`).
     PromptSettled(PaneId),
+    /// The daily look for a newer keepane came back (`newer`).
+    NewerChecked(Option<String>),
 }
 
 /// How long after keepane's prompt marker a pane's command is taken as
@@ -742,6 +745,8 @@ pub struct Server {
     msg_dropped: Vec<mail::Dropped>,
     /// When old event log files were last cleared out (once a day).
     events_pruned: Option<Instant>,
+    /// The daily look for a newer keepane.
+    newer: newer::Check,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -846,6 +851,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     srv.config_override = options.config;
     srv.load_config();
     srv.mail_start();
+    srv.newer_start();
     // A persistent interval: a fresh `sleep` per iteration would never fire
     // while events keep arriving, and autosave / idle-exit hang off the tick.
     let mut tick = tokio::time::interval(Duration::from_millis(1000));
@@ -1086,6 +1092,7 @@ impl Server {
             msg_waits: Vec::new(),
             msg_dropped: Vec::new(),
             events_pruned: None,
+            newer: newer::Check::default(),
         }
     }
 
@@ -1897,6 +1904,7 @@ impl Server {
                 crate::histlog::flush(Duration::from_secs(2));
                 let _ = done.send(());
             }
+            Event::NewerChecked(latest) => self.newer_checked(latest),
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -1909,6 +1917,7 @@ impl Server {
                 self.autosave_changed();
                 self.history_tick();
                 self.mail_tick();
+                self.newer_tick();
                 // Kept long enough: gone for good.
                 let keep = Duration::from_secs(self.opts.undo_kill_time);
                 self.killed.retain(|k| k.at().elapsed() < keep);
@@ -5375,6 +5384,7 @@ impl Server {
             battery_percentage: sys.battery_percentage,
             battery_charging: sys.battery_charging,
             uptime: sys.uptime,
+            keepane_update: self.newer.newer.clone().unwrap_or_default(),
             ..Default::default()
         };
         let unix = unix_seconds;

@@ -281,12 +281,20 @@ keepane update           # Windows：按当初的安装方式（MSI 或 scoop）
 keepane restart-server   # 把正在跑的 session 全部挪到新版本的 server
 ```
 
-`restart-server` 会先存档正在跑的 session，停掉旧 server，起一个新版本的，再只恢复刚才在跑的那几个（布局、历史、目录都在）；接着的终端会自己重新接上（0.10 起；更老的 server 上的终端会被断开，`keepane attach` 接回去）。在 pane 里面运行时，它会跑到 pane 外面去完成，结果写进 `%LOCALAPPDATA%\keepane\restart.log`。选项和按键绑定会重新从配置文件读，和 `kill-server` 之后一样：之后用 `set` / `bind` 临时改的不会带过去（旧 server 分不清哪些是默认值、哪些是你改的，全搬过去会把旧版本的默认值钉在新版本上）。终端接着一个不同版本的 server 时，标题栏会提示。`update` 下载 MSI 后先核对旁边发布的 SHA-256 再交给 Windows Installer；任何检查和安装都不会在后台偷偷进行。
+`restart-server` 会先存档正在跑的 session，停掉旧 server，起一个新版本的，再只恢复刚才在跑的那几个（布局、历史、目录都在）；接着的终端会自己重新接上（0.10 起；更老的 server 上的终端会被断开，`keepane attach` 接回去）。在 pane 里面运行时，它会跑到 pane 外面去完成，结果写进 `%LOCALAPPDATA%\keepane\restart.log`。选项和按键绑定会重新从配置文件读，和 `kill-server` 之后一样：之后用 `set` / `bind` 临时改的不会带过去（旧 server 分不清哪些是默认值、哪些是你改的，全搬过去会把旧版本的默认值钉在新版本上）。终端接着一个不同版本的 server 时，标题栏会提示。`update` 下载 MSI 后先核对旁边发布的 SHA-256 再交给 Windows Installer；任何安装都不会在后台偷偷进行。
 
-PowerShell 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从运行中的 server 取 session / 窗口名、`set` / `show` 后面的选项名和取值；`splitw` 这样的别名、`split-w` 这样的前缀都按它代表的命令补）由程序自己吐出一段补全脚本，对 `keepane` 和别名成 `tmux` 的都有效。Windows PowerShell 5.1 不会拿 `-` 开头的词来问程序的补全脚本，所以 flag 只在 PowerShell 7 里能补。`$PROFILE` 里加一行就有：
+server 每天会向 GitHub 查一次最新发布的版本号（用 `curl` 向 `api.github.com` 发一个请求，不发送任何关于你或你的 session 的信息）。如果比当前版本新，状态栏会显示出来（比如 `⇡ 0.19.0`，也就是格式变量 `#{keepane_update}`），`show-messages` 里也会说明怎么升级。查到的结果存在数据目录里，所以 server 重启后当天不会再查。不想让它联网，就 `set -g update-check off`（或者设置环境变量 `KEEPANE_NO_UPDATE_CHECK`）。
+
+PowerShell、bash、zsh、fish 里的 Tab 补全（命令名、每条命令的 flag、`-t` 后面从运行中的 server 取 session / 窗口名、`set` / `show` 后面的选项名和取值；`splitw` 这样的别名、`split-w` 这样的前缀都按它代表的命令补）由程序自己吐出一段补全脚本，加一行就能用。PowerShell 里对别名成 `tmux` 的也有效。Windows PowerShell 5.1 不会拿 `-` 开头的词来问程序的补全脚本，所以那里 flag 只在 PowerShell 7 里能补。用 Homebrew 装的，bash、zsh、fish 的补全会自动装好。
 
 ```powershell
-keepane completion powershell | Out-String | Invoke-Expression
+keepane completion powershell | Out-String | Invoke-Expression   # $PROFILE
+```
+
+```bash
+eval "$(keepane completion bash)"                                # ~/.bashrc
+source <(keepane completion zsh)                                 # ~/.zshrc，放在 compinit 之后
+keepane completion fish > ~/.config/fish/completions/keepane.fish
 ```
 
 keepane 里面 `:` 命令行按 Tab 也能补：命令名、输到 `-` 时这条命令的 flag（别名和前缀按它代表的命令算，已经写过的不再列）、`-t` 后面的目标、`set` / `show` 后面的选项名（缩写也行：`sync`、`mon-act`），以及只有几个取值的选项的值（`on`/`off`、`top`/`bottom`）；多个候选时补到相同的部分为止，候选列在提示符里。
@@ -362,6 +370,10 @@ keepane web --port 8080 --bind 192.168.1.23   # 换端口，或者指定网卡
 ```
 
 用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络，绑定到它的地址。第一次运行时 Windows 会问是否允许 keepane 联网，选“专用网络”允许即可。
+
+## 手册
+
+`keepane man` 以 Markdown 格式打印完整手册（所有命令、默认按键、配置、环境变量和文件位置），内容就是 [docs/keepane.1.md](docs/keepane.1.md)，可以直接阅读，也可以交给程序或 AI 去读。`keepane man --roff` 把它输出成 man 页面；用 Homebrew 安装会自动装好，所以可以直接用 `man keepane` 查看。
 
 ## 配置
 
@@ -535,7 +547,7 @@ CI 在 Windows、Linux、macOS 上都跑这两步。平台相关的代码在 `sr
 
 ## 还没做的
 
-Linux 和 macOS 上暂时没有 `keepane startup`（登录时启动 server）、`keepane update`（只提示怎么升级，用 Homebrew 装的就提示 `brew upgrade keepane`）和带“跳到 pane”按钮的桌面通知，Tab 补全也只有 PowerShell 的。
+Linux 和 macOS 上暂时没有 `keepane startup`（登录时启动 server）、`keepane update`（只提示怎么升级，用 Homebrew 装的就提示 `brew upgrade keepane`）和带“跳到 pane”按钮的桌面通知。
 
 与 tmux 相比，目前有这些差异：
 

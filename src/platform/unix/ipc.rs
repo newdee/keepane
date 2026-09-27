@@ -33,6 +33,20 @@ pub fn address(socket_name: &str) -> String {
     socket_dir().join(clean).to_string_lossy().into_owned()
 }
 
+/// The socket names (`-L`) that servers of this user listen on.
+pub fn sockets() -> Vec<String> {
+    use std::os::unix::fs::FileTypeExt;
+    let mut v: Vec<String> = std::fs::read_dir(socket_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_socket()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
 /// Open a connection to the server at `addr`.
 pub fn connect(addr: &str) -> std::io::Result<Stream> {
     let s = std::os::unix::net::UnixStream::connect(addr)?;

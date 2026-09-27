@@ -110,7 +110,7 @@ const ZH = {
   "c6.p2":
     "两个终端以不同尺寸接入时，由 <code>window-size</code> 决定按哪个终端的尺寸来。较小的终端只看到窗口的一部分，用 <kbd>Shift</kbd> + 方向键平移。",
   "c6.p3":
-    "右键粘贴。<kbd>:</kbd> 命令行里 <kbd>Tab</kbd> 可以补全命令、flag、目标和选项名，<code>keepane completion powershell</code> 让 PowerShell 也能这样补全。",
+    "右键粘贴。<kbd>:</kbd> 命令行里 <kbd>Tab</kbd> 可以补全命令、flag、目标和选项名，<code>keepane completion powershell</code>（或 <code>bash</code>、<code>zsh</code>、<code>fish</code>）让你的 shell 也能这样补全。",
   "c6.p4":
     "<code>keepane update</code> 安装新版本，<code>keepane restart-server</code> 把正在运行的 session 连同历史和目录一起迁过去，已经接入的终端会自动重新连接。",
 

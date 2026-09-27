@@ -60,6 +60,8 @@ Plugins / scripting:
 Config: ~/.keepane.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name).
   import-config [-n] [-o file] [file]   (bring what keepane can use from ~/.tmux.conf or any config into it;
   the rest goes in commented out, with why; -n shows it and writes nothing; tmux.conf is never read on its own)
+Tab completion:  completion powershell|bash|zsh|fish   (prints the completer to load; see README)
+The manual:  man   (every command, key, option and file, as Markdown; man --roff gives it to man(1))
 Any unambiguous prefix of a command name works: `keepane att`, `keepane lsp`, `keepane splitw -h`.
 Option names too (`set sync`, `set mon-act on`); an on/off option with no value flips it.
 Default prefix: C-b.  Prefix ? lists key bindings, prefix q shows pane numbers.";
@@ -181,6 +183,20 @@ fn main() {
         "startup" => Some(keepane::startup::run(&socket, &args[1..])),
         "windows-terminal" | "wt" => Some(keepane::wt::run(&socket, &args[1..])),
         "completion" => Some(keepane::completion::run(&args[1..])),
+        // The manual as Markdown (docs/keepane.1.md), or as roff for `man`.
+        "man" => match &args[1..] {
+            [] => {
+                print!("{}", keepane::man::MARKDOWN);
+                Some(Ok(0))
+            }
+            [f] if f == "--roff" => {
+                print!("{}", keepane::man::roff(keepane::man::MARKDOWN));
+                Some(Ok(0))
+            }
+            _ => Some(Err(anyhow::anyhow!("man: takes nothing, or --roff"))),
+        },
+        // What the bash / zsh / fish completers ask, on every Tab.
+        "__complete" => Some(keepane::completion::run_complete(&args[1..])),
         "setup" => Some(keepane::setup::run(&args[1..])),
         // A file of ours from a file of someone else's: no server needed.
         "import-config" => Some(rt.block_on(async { keepane::server::import::run(&args[1..]) })),

@@ -2750,3 +2750,23 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 |---|---|---|---|
 | 1 | 全量 + 审查 | Windows 231/10/85，Linux 208/86；降级只动 `ESC[…m`，鼠标、备用屏、标题等原样；只改 `status-style` 时默认色块保留（与 tmux 主题一致） | 干净（1/3） |
 | 2 | 机制通路（真实伪终端） | `script` 给真实客户端分配 pty，抓它写给终端的字节：未声明 11 个 `;2` / 0 个 `;5`；Apple_Terminal 0 / 11；Apple_Terminal+COLORTERM=truecolor 13 / 0；iTerm 11 / 0；pane 里程序输出的红色在 Apple_Terminal 下也换成 256 色 | 干净（2/3） || 3 | 真机三平台（CI run 36293922236，提交 d907ed7） | windows、ubuntu、macos 的 fmt、clippy、全量测试都通过（含第 68 条的导入功能与改过的 bash 测试） | 干净（3/3），验收通过；第 68 条第 10 轮那次丢行仍未复现，诊断已就位 |
+
+## 70. bash / zsh / fish 补全；每天检查更新；`keepane man`
+
+用户：Mac 上 `keep` 按 Tab 补不出来（命令名的补全是 shell 自己的，装完要 `rehash` 或开新终端；缺的是子命令的补全）→ 加补全；每天检查一次更新，在底部状态栏提示；Unix 上要有 man 文档，Markdown 格式便于 AI 读，有个命令能打印 Markdown 版就行。
+
+一、补全：逻辑只写一份，在 Rust 里（`completion::complete`，`keepane __complete 已输入的词… 正在输入的词`）；bash / zsh / fish 各一段转接脚本（`keepane completion bash|zsh|fish`）。bash 从 `COMP_LINE` 切词（`COMP_WORDS` 会在 `session:window` 的冒号处断开），兼容 macOS 自带的 bash 3.2；zsh 既能作为 `_keepane` 放在 `$fpath` 自动加载，也能 source；Unix 上不给 `tmux` 注册（那里有真 tmux）。`-t` 后的目标取自当前窗格所属的 server（`KEEPANE`），`-L` 后列出正在运行的 server（新增两个平台的 `ipc::sockets()`）。补全列表补上了 `mcp`、`setup`、`man`，本地命令的 flag 表。顺带修掉 PowerShell 版同样的错：`new -s` 后面是新会话名，不该补现有会话。
+
+二、每日检查更新（`src/server/newer.rs`）：server 在自己的线程里用 `curl` 每 24 小时问一次 GitHub 最新发布（启动 30 秒后才问；失败 1 小时后重试），结果与时间存数据目录的 `update-check`，重启当天不再问；较新时 `#{keepane_update}` 有值，默认状态栏右侧最前面显示黄色 `⇡ 版本`（`plain.conf`、`tokyo-night.conf` 同样带上），`show-messages` 记一次怎么升级。`update-check on|off`（默认 on）、环境变量 `KEEPANE_NO_UPDATE_CHECK`；测试全部设置它，永不联网。README 原写"任何检查都不会在后台进行"，改为"任何安装都不会"并写明每日检查发出什么、怎么关。
+
+三、手册：`docs/keepane.1.md`（Markdown）；`keepane man` 原样打印；`keepane man --roff` 由内置的小转换器（标题、段落、定义列表、缩进代码、表格转成带标签段落、行内代码/强调/链接、roff 转义）输出 man 页面，供 Homebrew 装进 man1。测试要求每个命令都出现在手册里。内容里的说法逐条对过（按键取自真实 `list-keys`；`list-commands` 只列名字，已改正）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量 + 审查 | Windows 238/10/85，Linux 215/86；审查：zsh 用了 `compadd -Q`，名字带空格等特殊字符时插入不转义 | **有问题**：去掉 `-Q`（bash 的补全机制做不到干净转义，名字带空格少见，记为已知限制）（不计数） |
+| 2 | 机制通路（真实环境） | Linux 独立 HOME：缓存里今天的 `0.99.0` → 启动即显示；两天前的缓存 → 30 秒后真实联网，缓存更新为当时与 `0.18.0`（GitHub 实际最新）、无提示；`update-check off` → 不联网、缓存不变；另加单元测试：新版本只提示一次、离线保留已知并一小时后重试、新 server 从缓存读回 | 干净（1/3） |
+| 3 | 静态一致性 | README 两处"不会在后台检查"与新功能矛盾 | **有问题**：改正并补全说明（不计数） |
+| 4 | 可复现性 | Windows 239/10/85，Linux 216/86；`man --roff` 在 Windows 与 Linux 上 sha256 相同 `cd2ed35357d2`；补测试：CRLF 的手册生成同样字节 | 干净（1/3） |
+| 5 | 机制通路（变异 5 项） | 不认命令前缀、总说有新版、行首 `.` 不转义、手册少一个命令：4 项被抓；"不理会 `update-check off`"没被抓（只手动测过） | **有问题**：补单元测试（只测不联网的路径），重跑该项被抓（不计数） |
+| 6 | 边界与退化输入 | `__complete` 无参数、空串、只有 `-L`、不存在的 server、命令前未知参数、中文、2000 个词、未知选项的取值、`man` 多余参数：都合理、不崩；对不存在的 server 补全不会启动它（Windows 管道、Linux socket 均无残留）；Windows 240/10/85，Linux 217/86 | 干净（1/3） |
+| 7 | 真实环境（最终代码） | bash 5.3、zsh 5.9 真实补全（含 `work:` 冒号目标）全部正确；每日检查三种情况同第 2 轮；`groff -ww` 0 警告，`man` 渲染 237 行；fish 在 WSL 未装，未实测 | 干净（2/3） |

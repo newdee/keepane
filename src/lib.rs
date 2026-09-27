@@ -11,6 +11,7 @@ pub mod ipc;
 pub mod keys;
 pub mod legacy;
 pub mod logger;
+pub mod man;
 pub mod mcp;
 pub mod pager;
 pub mod platform;
