@@ -2820,3 +2820,26 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 |---|---|---|---|
 | 1 | 全量 + 审查 | Windows 244/10/86，Linux 221/87；审查：vim、less、htop 用备用屏（无历史），不受影响；apt、pip 这类底部固定进度条的输出现在进历史，与 xterm 一致；区域下方固定框的行号随 `scrolled` 平移，只影响该框里的命令标记 | 干净（1/3） |
 | 2 | 机制通路（真实终端 + 变异） | tmux 做宿主，模拟 Codex（第 1–18 行区域、底部固定框、输出 80 行）：`history_size=80`，复制模式 `g` 后 `[80/80]`，前 18 行为区域原有空行，第 19 行起 `codex-1`、`codex-2`…；把条件改回上游（整屏才保存），回归测试 `a_region_from_the_top_row_keeps_what_scrolls_off` 失败 | 干净（2/3） || 3 | 真机三平台（CI run 36302202400，提交 fa322aa） | windows、ubuntu、macos 全量通过 | 干净（3/3），验收通过 |
+
+## 74. `keepane web` 在后台运行：status / stop，连接数上状态栏与 dashboard
+
+用户：`keepane web` 之后不能放后台吗，一停链接就断；希望直接后台运行，能用命令查看 web 状态、用命令关闭；连着几个客户端也要能看到，可以加到 dashboard。另问：后开的会话手机上能不能看到——实测能：先开 web，再 `new -d -s later`，`/api/panes` 立即列出 `later`（页面每次都向 server 取列表）。
+
+做法：手机页面由 server 进程自己提供（`src/server/web_host.rs`），不再是一个前台客户端进程。
+- `web-start [-p port] [-b ip] [-r] [-k]` 绑定端口、在 server 的 tokio 里起服务；`keepane web` 发它、打印二维码后立即返回。已在服务时，不带参数或参数相同只返回状态（再打一次二维码；配置重读不报错），参数不同则报错要求先 stop。`-p 0` 任选空闲端口。
+- `web-stop` 结束：监听与所有连接在一个 `JoinSet` 里，任务被 abort 时一起断开（包括正在看屏幕的长连接）。server 退出时 `Drop` 同样 abort。
+- `web-status`：第一行 `serving <url> · [read-only · kept key ·] since HH:MM · N connected`，其后每个客户端的地址、在看哪个 pane / 在看列表 / 已离开及最后时间，以及被拒绝的地址。
+- "连着"的判定来自请求本身：页面显示时每 2 秒取列表、看某个 pane 时保持一个推送流，页面隐藏或锁屏时什么都不发；所以"有推送流或 10 秒内请求过"即连着。每次请求通过回调送 `Event::Web(代数, Seen)` 给 server 的事件循环；代数区分 stop 之后仍在途的旧请求。
+- 新手机连上、离开后再连上、错误密钥的地址，各在状态栏提示一次并记入 `show-messages`。列表有上限（32 / 16）。
+- 格式变量 `#{web_url}`、`#{web_clients}`；默认主题（与 `themes/tokyo-night.conf`、`themes/plain.conf`）在服务时显示 `web N`。dashboard 每秒问 `web-status`（加入 `QUERIES`），[1] 标题显示 `· web N connected`。
+- 配置里写 `web-start -k` 即随 server 启动（已实测）。对 0.20 之前的 server（升级后旧 server 还在跑），`keepane web` 的 "unknown command" 后附上版本不一致与 `restart-server` 的提示（用本机安装的 0.15.1 实测）。
+- 补全：`keepane web status|stop`（bash/zsh/fish 与 PowerShell）。文档：README 中英、man、官网、dashboard 设计。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量 + 审查（静态一致） | Windows 248/10/87；审查发现：stop 后旧实例在途请求会记到新实例上；相同参数再次 `web-start -k`（配置重读）会报错；文档未写配置自启 | **有问题**：加代数过滤、相同参数视同查询、补文档（不计数） |
+| 2 | 机制通路（真实 + 变异） | 真实：配置 `web-start -k` 启动即在服务，`source-file` 重读退出码 0。变异 8 个（去掉 abort、代数过滤、请求通知、关流通知、10 秒过期、dashboard 标题、相同参数、格式变量）中 6 个被抓；"去掉请求通知""关流不通知"未被抓 | **有问题**：e2e 补"只取列表也算连着""错误密钥列出""关流后不再列为 watching"（不计数） |
+| 3 | 全量 + 变异重跑 + 审查（边界输入） | Windows 248/10/87；变异 8/8 被抓；审查发现升级后旧 server 不认识 `web-*`，只报 unknown command | **有问题**：附版本不一致提示，对 0.15.1 实测（不计数） |
+| 4 | 全量（两平台）+ 审查（可复现） | Windows 248/10/87，Linux 225/88；`web-status` 只有时间随时刻变，测试只断言结构；列表按（连着，首次出现）稳定排序；MCP 白名单不含 `web-*` | 干净（1/3） |
+| 5 | 真实终端（tmux 做宿主，Linux） | 服务前状态栏无 `web`；服务后出现 `web 0`；curl 取列表后状态栏提示 `web: 127.0.0.1 connected`；dashboard 标题 `[1] Panes  1 · 0 busy · 0 queued · web 1 connected`；stop 后 `web` 段消失 | 干净（2/3） |
+| 6 | 真机三平台（CI run 36303420739，提交 dbe0161） | windows、ubuntu、macos 的 fmt、clippy、全量测试都通过（含新的 e2e `the_phone_page_runs_in_the_server_and_says_who_is_on_it`） | 干净（3/3），验收通过 |
