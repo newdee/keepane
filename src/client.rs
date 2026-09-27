@@ -189,7 +189,7 @@ pub async fn server_version(socket: &str) -> Option<String> {
 }
 
 /// The line that says the server is a different keepane from this one.
-fn mismatch_note(server: &str) -> String {
+pub fn mismatch_note(server: &str) -> String {
     format!(
         "the running server is keepane {server}, this is keepane {}: `keepane restart-server` moves your sessions to it",
         env!("CARGO_PKG_VERSION")

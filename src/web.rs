@@ -1,10 +1,12 @@
 //! `keepane web`: the panes on a phone, over the local network.
 //!
-//! A client of the server like any other (it asks the server with the same
-//! commands the CLI sends), which also answers HTTP on the LAN: a page that
-//! lists every pane, shows one as it is on the screen (colours included),
-//! and sends what is typed on the phone to it. Everything runs on this
-//! machine; the phone only shows and types.
+//! HTTP on the LAN: a page that lists every pane, shows one as it is on the
+//! screen (colours included), and sends what is typed on the phone to it.
+//! Everything runs on this machine; the phone only shows and types. The
+//! server hosts it (`web-start`, `web-status`, `web-stop`), so it runs in the
+//! background for as long as the server does; each request is still asked
+//! of the server as a client would ask it, with the same commands the CLI
+//! sends. `keepane web` starts it and prints the code to scan.
 //!
 //! Off unless started. Every request but the page itself needs the key: 128
 //! random bits, made anew each start (or kept, with `--keep-key`), handed to
@@ -16,9 +18,8 @@
 //! private network such as Tailscale in between.
 
 use anyhow::{Context, Result, bail};
-use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -46,32 +47,70 @@ const KEYS: &[&str] = &[
 /// What the page's + menu can do, and nothing else.
 const ACTIONS: &[&str] = &["new-window", "split-h", "split-v", "kill-pane"];
 
-struct Options {
-    port: u16,
-    bind: Option<IpAddr>,
-    read_only: bool,
-    keep_key: bool,
+/// How `web-start` serves: its flags (`keepane web` passes its own on).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Options {
+    /// None: `DEFAULT_PORT`; 0, any free one.
+    pub port: Option<u16>,
+    /// None: the address this machine reaches the network through.
+    pub bind: Option<IpAddr>,
+    pub read_only: bool,
+    pub keep_key: bool,
 }
 
-fn parse_args(args: &[String]) -> Result<Options> {
-    let mut o = Options { port: DEFAULT_PORT, bind: None, read_only: false, keep_key: false };
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "-p" | "--port" => {
-                let v = it.next().context("--port: a port number")?;
-                o.port = v.parse().ok().filter(|p| *p > 0).with_context(|| format!("--port: not a port: {v}"))?;
+impl Options {
+    /// The flags, long or short, one value after each of `-p` and `-b`.
+    pub fn parse(args: &[&str]) -> Result<Options, String> {
+        let mut o = Options::default();
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            match *a {
+                "-p" | "--port" => {
+                    let v = it.next().ok_or("--port: a port number")?;
+                    o.port = Some(v.parse().map_err(|_| format!("--port: not a port: {v}"))?);
+                }
+                "-b" | "--bind" => {
+                    let v = it.next().ok_or("--bind: an address of this machine")?;
+                    o.bind = Some(v.parse().map_err(|_| format!("--bind: not an IP address: {v}"))?);
+                }
+                "-r" | "--read-only" => o.read_only = true,
+                "-k" | "--keep-key" => o.keep_key = true,
+                other => {
+                    return Err(format!(
+                        "web: unknown argument '{other}' (--port N, --bind IP, --read-only, --keep-key; or status, stop)"
+                    ));
+                }
             }
-            "-b" | "--bind" => {
-                let v = it.next().context("--bind: an address of this machine")?;
-                o.bind = Some(v.parse().with_context(|| format!("--bind: not an IP address: {v}"))?);
-            }
-            "-r" | "--read-only" => o.read_only = true,
-            "-k" | "--keep-key" => o.keep_key = true,
-            other => bail!("web: unknown argument '{other}' (--port N, --bind IP, --read-only, --keep-key)"),
         }
+        Ok(o)
     }
-    Ok(o)
+
+    /// As `web-start`'s flags, the way `parse` reads them back.
+    pub fn flags(&self) -> Vec<String> {
+        let mut f = Vec::new();
+        if let Some(p) = self.port {
+            f.extend(["-p".to_string(), p.to_string()]);
+        }
+        if let Some(b) = self.bind {
+            f.extend(["-b".to_string(), b.to_string()]);
+        }
+        if self.read_only {
+            f.push("-r".into());
+        }
+        if self.keep_key {
+            f.push("-k".into());
+        }
+        f
+    }
+}
+
+/// What a request tells the server about who is asking, for `web-status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seen {
+    /// A request for anything behind the key, with the key (`ok`) or not.
+    Asked { peer: IpAddr, ok: bool },
+    /// A pane's screen streamed to `peer` from now (`open`) or no longer.
+    Watching { peer: IpAddr, pane: String, open: bool },
 }
 
 /// Everything a request handler needs.
@@ -79,59 +118,123 @@ pub struct State {
     pub socket: String,
     pub key: String,
     pub read_only: bool,
-    /// Addresses already announced in the terminal, and refused ones.
-    seen: Mutex<HashSet<(IpAddr, bool)>>,
-    /// Print who connects (off in tests).
-    pub announce: bool,
+    /// Told who asks and what they watch (the server, to list the phones).
+    notify: Option<Box<dyn Fn(Seen) + Send + Sync>>,
 }
 
 impl State {
-    pub fn new(socket: &str, key: &str, read_only: bool, announce: bool) -> State {
-        State { socket: socket.into(), key: key.into(), read_only, seen: Mutex::new(HashSet::new()), announce }
+    pub fn new(socket: &str, key: &str, read_only: bool) -> State {
+        State { socket: socket.into(), key: key.into(), read_only, notify: None }
+    }
+
+    pub fn notify(mut self, f: impl Fn(Seen) + Send + Sync + 'static) -> State {
+        self.notify = Some(Box::new(f));
+        self
+    }
+
+    fn tell(&self, seen: Seen) {
+        if let Some(f) = &self.notify {
+            f(seen);
+        }
     }
 }
 
-/// `keepane web [--port N] [--bind IP] [--read-only] [--keep-key]`.
+/// `keepane web [--port N] [--bind IP] [--read-only] [--keep-key]`: have the
+/// server serve (or keep serving) and print the code to scan;
+/// `keepane web status` and `keepane web stop`.
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
-    let o = parse_args(args)?;
-    if !crate::client::server_running(&crate::ipc::pipe_name(socket)) {
+    let ask = |argv: Vec<String>| async move {
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (code, out, mut err) = crate::client::query(socket, &argv).await?;
+        // A server from before 0.20 (still running after an upgrade) does
+        // not know these commands: say why, and what to do.
+        if code != 0
+            && err.contains("unknown command: web-")
+            && let Some(v) = crate::client::server_version(socket).await
+            && v != env!("CARGO_PKG_VERSION")
+        {
+            err.push_str(&format!("note: {}\n", crate::client::mismatch_note(&v)));
+        }
+        anyhow::Ok((code, out, err))
+    };
+    let say = |(code, out, err): (i32, String, String)| {
+        print!("{out}");
+        eprint!("{err}");
+        code
+    };
+    let running = crate::client::server_running(&crate::ipc::pipe_name(socket));
+    if let Some(sub @ ("status" | "stop")) = args.first().map(String::as_str) {
+        if args.len() > 1 {
+            bail!("web {sub}: takes nothing more");
+        }
+        if !running {
+            println!("off: no keepane server is running (socket '{socket}')");
+            return Ok(if sub == "stop" { 1 } else { 0 });
+        }
+        let (code, out, err) = ask(vec![format!("web-{sub}")]).await?;
+        let out = if sub == "stop" && code == 0 { "stopped\n".into() } else { out };
+        return Ok(say((code, out, err)));
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let o = Options::parse(&args).map_err(anyhow::Error::msg)?;
+    if !running {
         bail!("no keepane server is running (socket '{socket}'): start a session first, then `keepane web`");
     }
-    let ip = o.bind.unwrap_or_else(lan_ip);
-    let key = if o.keep_key { kept_key()? } else { new_key()? };
-    let listener = TcpListener::bind((ip, o.port))
-        .await
-        .with_context(|| format!("listen on {ip}:{} (in use? another --port)", o.port))?;
-    let url = format!("http://{ip}:{}/#k={key}", o.port);
-    println!("{}", qr_text(&url)?);
+    let (code, status, err) = ask([vec!["web-start".to_string()], o.flags()].concat()).await?;
+    if code != 0 {
+        return Ok(say((code, status, err)));
+    }
+    let Some(url) = status_url(&status) else { bail!("web-start said: {status}") };
+    println!("{}", qr_text(url)?);
     println!("Scan with the phone's camera, or open: {url}");
-    if ip.is_loopback() {
+    if url.starts_with("http://127.") || url.starts_with("http://[::1]") {
         println!("(No network address found: this works on this machine only; --bind picks one.)");
     }
     println!(
-        "Anyone with this code can {} your panes. Ctrl+C stops it{}.",
-        if o.read_only { "see" } else { "see and type into" },
-        if o.keep_key { "; the key stays for next time (--keep-key)" } else { "; the next start makes a new key" }
+        "Anyone with this code can {} your panes.",
+        if status.lines().next().unwrap_or("").contains(" · read-only") { "see" } else { "see and type into" }
     );
+    println!("It runs in the background: `keepane web status` shows who is connected, `keepane web stop` ends it.");
     println!("Windows may ask to let keepane onto the network: allow it for private networks.");
-    serve(listener, Arc::new(State::new(socket, &key, o.read_only, true))).await
+    Ok(0)
 }
 
-/// Answer HTTP on `listener` until the process ends.
-pub async fn serve(listener: TcpListener, state: Arc<State>) -> Result<i32> {
+/// The address `web-status` (or `web-start`) gives on its first line, when
+/// serving: `serving <url> · ...`.
+pub fn status_url(status: &str) -> Option<&str> {
+    let first = status.lines().next()?.strip_prefix("serving ")?;
+    Some(first.split(" · ").next().unwrap_or(first))
+}
+
+/// Answer HTTP on `listener` until the task is dropped: the connections go
+/// with it (a watching phone included).
+pub async fn serve(listener: TcpListener, state: Arc<State>) {
+    let mut conns = tokio::task::JoinSet::new();
     loop {
-        let (stream, peer) = listener.accept().await?;
-        let state = state.clone();
-        tokio::spawn(async move {
-            let _ = connection(stream, peer.ip(), &state).await;
-        });
+        tokio::select! {
+            r = listener.accept() => match r {
+                Ok((stream, peer)) => {
+                    let state = state.clone();
+                    conns.spawn(async move {
+                        let _ = connection(stream, peer.ip(), &state).await;
+                    });
+                }
+                // Out of handles, a connection reset before it was taken:
+                // the next one may do; a moment's pause, not a spin.
+                Err(e) => {
+                    log::warn!("web: accept: {e}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            },
+            Some(_) = conns.join_next(), if !conns.is_empty() => {}
+        }
     }
 }
 
 /// The address the phone should use: the one this machine reaches the
 /// network through. Nothing is sent: connecting a UDP socket only picks the
 /// route.
-fn lan_ip() -> IpAddr {
+pub fn lan_ip() -> IpAddr {
     UdpSocket::bind("0.0.0.0:0")
         .and_then(|s| {
             s.connect("8.8.8.8:53")?;
@@ -151,7 +254,7 @@ pub fn new_key() -> Result<String> {
 }
 
 /// The key kept from last time (`--keep-key`), or a new one kept from now.
-fn kept_key() -> Result<String> {
+pub fn kept_key() -> Result<String> {
     let dir = dirs::data_local_dir().context("no local app data folder")?.join("keepane");
     let path = dir.join("web.key");
     if let Ok(k) = std::fs::read_to_string(&path) {
@@ -327,6 +430,15 @@ async fn connection(mut stream: TcpStream, peer: IpAddr, state: &State) -> Resul
             return write_response(&mut stream, &Response::text(400, "pane: %N")).await;
         };
         let history = req.param("history").and_then(|h| h.parse().ok()).unwrap_or(0).min(MAX_HISTORY);
+        // Told when it ends however it ends, `web-stop` dropping it included.
+        struct Watching<'a>(&'a State, IpAddr, String);
+        impl Drop for Watching<'_> {
+            fn drop(&mut self) {
+                self.0.tell(Seen::Watching { peer: self.1, pane: std::mem::take(&mut self.2), open: false });
+            }
+        }
+        state.tell(Seen::Watching { peer, pane: pane.to_string(), open: true });
+        let _watching = Watching(state, peer, pane.to_string());
         return watch(&mut stream, state, pane, history).await;
     }
     let resp = handle(&req, peer, state).await;
@@ -478,17 +590,10 @@ fn without_escapes(s: &str) -> String {
 }
 
 /// None when the request carries the key; otherwise the refusal to send.
-/// The first request from each address, let in or not, is announced in the
-/// terminal.
+/// Either way the server hears of it (who is connected, who was refused).
 fn check_key(req: &Request, peer: IpAddr, state: &State) -> Option<Response> {
     let ok = req.key.as_deref().is_some_and(|k| same_key(k, &state.key));
-    if state.announce && state.seen.lock().map(|mut s| s.insert((peer, ok))).unwrap_or(false) {
-        if ok {
-            println!("{peer} connected");
-        } else {
-            println!("{peer} refused: no key or a wrong one");
-        }
-    }
+    state.tell(Seen::Asked { peer, ok });
     (!ok).then(|| Response::text(401, "wrong key: scan the code again"))
 }
 
@@ -701,6 +806,7 @@ fn json_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     fn req(method: &str, path: &str, key: Option<&str>) -> Request {
         Request {
@@ -727,6 +833,28 @@ mod tests {
             assert!(k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "{k}");
         }
         assert!(same_key("abc", "abc") && !same_key("abc", "abd") && !same_key("abc", "ab"));
+    }
+
+    /// `keepane web`'s flags, long or short, reach `web-start` as they were
+    /// given; the address comes back out of what it says.
+    #[test]
+    fn the_flags_pass_through_and_the_address_comes_back() {
+        let o = Options::parse(&["--port", "8080", "-b", "192.168.1.23", "--read-only", "-k"]).unwrap();
+        let want =
+            Options { port: Some(8080), bind: Some("192.168.1.23".parse().unwrap()), read_only: true, keep_key: true };
+        assert_eq!(o, want);
+        let flags = o.flags();
+        assert_eq!(Options::parse(&flags.iter().map(String::as_str).collect::<Vec<_>>()).unwrap(), want);
+        let argv: Vec<String> = [vec!["web-start".to_string()], flags].concat();
+        assert_eq!(crate::command::parse(&argv), Ok(crate::command::Cmd::WebStart(want.clone())));
+        assert_eq!(crate::command::Cmd::WebStart(want).to_string(), "web-start -p 8080 -b 192.168.1.23 -r -k");
+        assert_eq!(Options::parse(&[]).unwrap(), Options::default());
+        for bad in [&["--port"][..], &["-p", "x"], &["-p", "70000"], &["-b", "somewhere"], &["--nope"]] {
+            assert!(Options::parse(bad).is_err(), "{bad:?}");
+        }
+        let status = "serving http://10.0.0.2:7681/#k=abc · kept key · since 09:00 · 1 connected\n  10.0.0.3 ...";
+        assert_eq!(status_url(status), Some("http://10.0.0.2:7681/#k=abc"));
+        assert_eq!(status_url("off: `keepane web` starts it"), None);
     }
 
     #[test]
@@ -769,7 +897,7 @@ mod tests {
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         // No server behind this state: every answer here comes before one
         // would be asked.
-        let s = State::new("keepane-web-test-no-server", "sekrit", false, false);
+        let s = State::new("keepane-web-test-no-server", "sekrit", false);
         assert_eq!(handle(&req("GET", "/", None), ip, &s).await.status, 200);
         assert_eq!(handle(&req("GET", "/icon.svg", None), ip, &s).await.status, 200);
         assert_eq!(handle(&req("GET", "/manifest.webmanifest", None), ip, &s).await.status, 200);
@@ -787,7 +915,7 @@ mod tests {
         badkey.query = vec![("pane".into(), "%1".into()), ("key".into(), "-X".into())];
         assert_eq!(handle(&badkey, ip, &s).await.status, 400, "only the page's keys");
         // Read-only: looking is allowed, typing and the menu are not.
-        let ro = State::new("keepane-web-test-no-server", "sekrit", true, false);
+        let ro = State::new("keepane-web-test-no-server", "sekrit", true);
         assert_eq!(handle(&req("POST", "/api/send", Some("sekrit")), ip, &ro).await.status, 403);
         assert_eq!(handle(&req("POST", "/api/action", Some("sekrit")), ip, &ro).await.status, 403);
         let info = handle(&req("GET", "/api/info", Some("sekrit")), ip, &ro).await;

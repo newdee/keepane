@@ -78,6 +78,8 @@ pub fn complete(
         let canon = canonical(&rest[0]);
         if canon == "completion" {
             owned(SHELLS)
+        } else if canon == "web" && rest.len() == 1 && !current.starts_with('-') {
+            owned(&["status", "stop"])
         } else if (canon == "set-option" || canon == "show-options") && prev != "-t" && !current.starts_with('-') {
             // The option's name, then its value when it is one of a few;
             // flags are skipped, and so is the word after -t.
@@ -308,6 +310,8 @@ Register-ArgumentCompleter -Native -CommandName keepane,tmux -ScriptBlock {{
     }}
   }} elseif ($rest[0] -eq 'completion') {{
     $out = @({shells})
+  }} elseif ($canon -eq 'web' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
+    $out = @('status', 'stop')
   }} elseif ($canon -in @('set-option','show-options') -and $prev -ne '-t' -and $wordToComplete -notlike '-*') {{
     # After set / show: the option's name, then its value when it is one
     # of a few. Flags are skipped, and so is the word after -t.
@@ -420,6 +424,10 @@ mod tests {
         assert_eq!(offer(&["set", "-t", "x"], "mou"), ["mouse"]);
         assert!(offer(&["set", "-g", "mouse", "on"], "").is_empty());
         assert_eq!(offer(&["completion"], ""), SHELLS);
+        // `web`'s own words, then nothing more; its flags as usual.
+        assert_eq!(offer(&["web"], "st"), ["status", "stop"]);
+        assert!(offer(&["web", "status"], "").is_empty());
+        assert_eq!(offer(&["web"], "--r"), ["--read-only"]);
         // -s names a source, except new-session's, which names the new one.
         assert_eq!(offer(&["join-pane", "-s"], "w"), ["work:1"]);
         // Nothing to offer is nothing, not everything.

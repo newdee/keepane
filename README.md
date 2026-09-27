@@ -631,7 +631,23 @@ it open like an app.
 The code carries the address and a key made fresh at each start (128 random
 bits); nothing but the page itself answers without it, and the phone can only
 look, type into a pane and use that menu: no command of its own reaches keepane.
-It is off until started and stops with Ctrl+C.
+It is off until started. Once started, the keepane server serves it in the
+background, so the terminal you ran `keepane web` in is free again, and it
+keeps serving until you stop it or the server exits:
+
+```powershell
+keepane web status   # the address, and who is connected (watching which pane)
+keepane web stop     # end it; the phones on it are cut off
+keepane web          # while it runs: the same code again, to scan
+```
+
+To have it on whenever keepane runs, put `web-start -k` in `~/.keepane.conf`: the
+server starts it itself, with the same code each time (`-k`, below).
+
+While it serves, the status line shows `web` and how many are connected
+(`#{web_url}` and `#{web_clients}`, for a status line of your own), the
+dashboard (`prefix v`) says the same over its pane list, and a phone
+connecting, or a request with a wrong key, is said on the status line.
 
 ```powershell
 keepane web --read-only     # look, but not type

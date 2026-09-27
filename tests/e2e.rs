@@ -3461,7 +3461,7 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     h.wait_capture("w:0", "shell prompt", |t| t.contains("keepane>")).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = std::sync::Arc::new(keepane::web::State::new(&h.socket, "k3y-for-the-test", false, false));
+    let state = std::sync::Arc::new(keepane::web::State::new(&h.socket, "k3y-for-the-test", false));
     tokio::spawn(keepane::web::serve(listener, state));
     let key = "k3y-for-the-test";
 
@@ -3518,10 +3518,7 @@ async fn the_phone_page_is_pushed_changes_and_sees_alerts() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let key = "push-test-key";
-    tokio::spawn(keepane::web::serve(
-        listener,
-        std::sync::Arc::new(keepane::web::State::new(&h.socket, key, false, false)),
-    ));
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, key, false))));
     let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
     let ids: Vec<String> = list.split("\"id\":\"%").skip(1).map(|s| s.split('"').next().unwrap().to_string()).collect();
     assert_eq!(ids.len(), 2, "{list}");
@@ -3584,6 +3581,82 @@ async fn the_phone_page_is_pushed_changes_and_sees_alerts() {
     h.cli(&["kill-pane", "-t", &front.replace("%25", "%")]).await;
     read_until(&mut s, &mut got, "gone", &|g| g.contains("event: gone")).await;
     let _ = back;
+    h.cli(&["kill-server"]).await;
+}
+
+/// The server serves the page in the background (`web-start`), says who
+/// is on it (`web-status`, `#{web_clients}`, the dashboard's line), and
+/// `web-stop` closes the port and cuts off a phone that was watching.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_phone_page_runs_in_the_server_and_says_who_is_on_it() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = Harness::start("webhost").await;
+    h.cli(&["new", "-d", "-s", "b"]).await;
+    h.wait_capture("b:0", "shell prompt", |t| t.contains("keepane>")).await;
+    assert_eq!(h.cli(&["web-status"]).await.1.trim(), "off: `keepane web` starts it");
+    let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+    assert_eq!(code, 0, "{err}");
+    let url = keepane::web::status_url(&status).expect(&status).to_string();
+    let addr: std::net::SocketAddr = url["http://".len()..].split('/').next().unwrap().parse().unwrap();
+    let key = url.split("#k=").nth(1).unwrap().to_string();
+    assert_eq!(h.cli(&["display", "-p", "#{web_clients} #{web_url}"]).await.1.trim(), format!("0 {url}"));
+
+    // The pane list alone makes a phone connected; a wrong key is listed.
+    let (code, list) = http(addr, "GET", "/api/panes", &key, "").await;
+    assert_eq!(code, 200, "{list}");
+    assert_eq!(http(addr, "GET", "/api/panes", "wrong", "").await.0, 401);
+    let status_until = async |what: &str, pred: &dyn Fn(&str) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (_, status, _) = h.cli(&["web-status"]).await;
+            if pred(&status) {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "{what}: {status}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let status = status_until("the list asked for", &|s| s.contains("refused")).await;
+    assert!(status.lines().next().unwrap().ends_with(" · 1 connected"), "{status}");
+    assert!(status.contains("127.0.0.1        on the pane list"), "{status}");
+    assert!(status.ends_with("refused (no key or a wrong one): 127.0.0.1"), "{status}");
+    assert_eq!(h.cli(&["display", "-p", "#{web_clients}"]).await.1.trim(), "1");
+    let (_, said, _) = h.cli(&["show-messages"]).await;
+    assert!(said.contains("web: 127.0.0.1 connected"), "{said}");
+
+    // A pane's stream is listed while it is open, and not once it closes.
+    let id = list.split("\"id\":\"%").nth(1).and_then(|s| s.split('"').next()).unwrap().to_string();
+    let watching = format!("watching %{id}");
+    let watch = async || {
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        s.write_all(format!("GET /api/watch?pane=%25{id} HTTP/1.1\r\nX-Keepane-Key: {key}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        s
+    };
+    let s = watch().await;
+    status_until("the stream listed", &|s| s.contains(&watching)).await;
+    drop(s);
+    status_until("the closed stream no longer listed", &|s| !s.contains(&watching)).await;
+    let mut s = watch().await;
+    status_until("the second stream listed", &|s| s.contains(&watching)).await;
+
+    // Stopped: the watching phone is cut off, and nothing answers.
+    assert_eq!(h.cli(&["web-stop"]).await.0, 0);
+    let mut buf = [0u8; 65536];
+    let cut = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match s.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    })
+    .await;
+    assert!(cut.is_ok(), "the stream outlived web-stop");
+    assert!(tokio::net::TcpStream::connect(addr).await.is_err(), "the port is still open");
+    assert_eq!(h.cli(&["display", "-p", "[#{web_url}]"]).await.1.trim(), "[]");
+    assert_eq!(h.cli(&["web-stop"]).await.0, 1);
     h.cli(&["kill-server"]).await;
 }
 

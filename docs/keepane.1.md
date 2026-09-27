@@ -124,6 +124,20 @@ key), `migrate` (from wmux, keepane's old name). On Windows: `startup`
 (start the server at logon) and `windows-terminal` (a Windows Terminal
 profile).
 
+### The panes on a phone
+
+`keepane web [--port N] [--bind IP] [--read-only] [--keep-key]` has the
+server serve a page for a phone on the local network, in the background, and
+prints a QR code carrying its address and a key. `keepane web status` (the
+server command `web-status`) says how it serves and who is connected;
+`keepane web stop` (`web-stop`) ends it, cutting off the phones on it. The
+server command `web-start` takes the same flags as `-p`, `-b`, `-r`, `-k`
+(`-p 0`: any free port). It stops with the server; a `web-start -k` line in the
+config has it on whenever the server runs, with the same code each time. `#{web_url}` is its
+address (empty while it is off) and `#{web_clients}` how many are on it; the
+default status line shows `web` and that number while it serves, and a phone
+connecting, or a wrong key, is said on the status line.
+
 ## KEYS
 
 Keys are pressed after the prefix, `C-b` (`set -g prefix C-a` changes it).

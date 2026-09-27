@@ -233,7 +233,7 @@
           <li data-i18n="cw.p1">keepane sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it.</li>
           <li data-i18n="cw.p2">A row under the screen has the keys a phone keyboard lacks: Esc, Tab, Shift+Tab, the arrows, Ctrl+C, y, n, 1, 2 and 3. Longer input goes in the text box. The <kbd>+</kbd> menu splits the pane, opens a window or closes the pane.</li>
           <li data-i18n="cw.p3">Commands run on the computer. The phone can read panes, type into them and use that menu, nothing more; <code>--read-only</code> leaves out the typing.</li>
-          <li data-i18n="cw.p4">It works only while <code>keepane web</code> is running, and the QR code carries a new 128-bit key each time. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
+          <li data-i18n="cw.p4">It is off until you start it; the keepane server then serves it in the background until <code>keepane web stop</code>, and <code>keepane web status</code> shows who is connected. The QR code carries a new 128-bit key each start. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
         </ul>
       </section>
 

@@ -20,8 +20,16 @@ use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
 /// The only server commands the dashboard sends to look.
-pub const QUERIES: &[&str] =
-    &["list-panes", "list-events", "list-messages", "list-tasks", "capture-pane", "trace-message", "show-task"];
+pub const QUERIES: &[&str] = &[
+    "list-panes",
+    "list-events",
+    "list-messages",
+    "list-tasks",
+    "capture-pane",
+    "trace-message",
+    "show-task",
+    "web-status",
+];
 /// The only ones it sends to change anything.
 pub const ACTIONS: &[&str] = &[
     "send-message",
@@ -340,6 +348,8 @@ pub struct Board {
     pub height: u16,
     /// Unix seconds, from the refresh (how long ago panes started, went quiet).
     pub now: i64,
+    /// How many are connected to the phones' page, while it is served.
+    pub web: Option<usize>,
 }
 
 /// Visible width of text that may hold SGR sequences.
@@ -465,6 +475,7 @@ impl Board {
             cols,
             height,
             now: 0,
+            web: None,
         }
     }
 
@@ -503,6 +514,15 @@ impl Board {
     pub fn set_tasks(&mut self, lines: &[String]) {
         self.tasks = TaskRow::parse_all(lines);
         self.task_pick = self.task_pick.min(self.tasks.len().saturating_sub(1));
+    }
+
+    /// `web-status`'s first line: `serving <url> · ... · N connected`, or off.
+    pub fn set_web(&mut self, status: &str) {
+        let first = status.lines().next().unwrap_or("");
+        self.web = first
+            .starts_with("serving ")
+            .then(|| first.rsplit(" · ").next()?.strip_suffix(" connected")?.parse().ok())
+            .flatten();
     }
 
     pub fn set_main(&mut self, lines: Vec<String>) {
@@ -990,7 +1010,8 @@ impl Board {
         let busy = shown.iter().filter(|r| r.mode != "normal" && !r.idle && !r.dead).count();
         let queued: usize = shown.iter().map(|r| r.inbox).sum();
         let filtered = if self.filter.is_empty() { String::new() } else { format!(" · /{}", self.filter) };
-        let title = format!("[1] Panes  {} · {busy} busy · {queued} queued{filtered}", shown.len());
+        let web = self.web.map(|n| format!(" · web {n} connected")).unwrap_or_default();
+        let title = format!("[1] Panes  {} · {busy} busy · {queued} queued{web}{filtered}", shown.len());
         let (start, table) = self.pane_table(r.inner_h());
         let chosen = self.chosen_id();
         let focused = self.focus == Panel::Panes;
@@ -1435,6 +1456,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool) -> anyhow::R
                 None => board.set_inbox(&[]),
             }
             board.set_tasks(&lines(ask(&board.tasks_query())));
+            board.set_web(&ask(&owned(&["web-status"])).1);
             // The window's size, every time: a resize can pass unannounced
             // (a popup laid out again).
             let (cols, rows) = console.size();
@@ -1775,6 +1797,23 @@ mod tests {
         ] {
             assert!(text.contains(want), "{want}:\n{text}");
         }
+    }
+
+    /// While the phones' page is served, the pane panel says how many are
+    /// on it; off, nothing.
+    #[test]
+    fn the_phones_on_the_web_page_are_counted() {
+        let mut b = board();
+        b.resize(200, 30);
+        b.set_web("serving http://192.168.1.5:7681/#k=abc · read-only · since 14:02 · 2 connected\n  192.168.1.20 ...");
+        assert_eq!(b.web, Some(2));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[1] Panes  3 · 1 busy · 2 queued · web 2 connected"), "{text}");
+        for off in ["off: `keepane web` starts it", "", "serving nonsense"] {
+            b.set_web(off);
+            assert_eq!(b.web, None, "{off}");
+        }
+        assert!(!screen(&b).join("\n").contains("web "));
     }
 
     #[test]

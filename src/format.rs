@@ -129,6 +129,10 @@ pub struct Context {
     /// not known.
     pub local_ip: String,
     pub public_ip: String,
+    /// The phones' page address (`keepane web`), empty while it is off;
+    /// and how many phones are on it.
+    pub web_url: String,
+    pub web_clients: String,
     /// The pane's directory with the home directory as `~`.
     pub pane_path_short: String,
     /// The program running in the pane right now (its newest descendant),
@@ -304,6 +308,8 @@ impl Context {
             "keepane_update" => self.keepane_update.clone(),
             "local_ip" => self.local_ip.clone(),
             "public_ip" => self.public_ip.clone(),
+            "web_url" => self.web_url.clone(),
+            "web_clients" => self.web_clients.clone(),
             "pane_current_path_short" => self.pane_path_short.clone(),
             "pane_pid_command" => self.pane_pid_command.clone(),
             "version" => env!("CARGO_PKG_VERSION").to_string(),

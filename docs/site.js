@@ -31,7 +31,7 @@ const ZH = {
     "屏幕下方有一排手机键盘上没有的键：Esc、Tab、Shift+Tab、方向键、Ctrl+C，以及 y、n、1、2、3。长一点的内容在输入框里打。<kbd>+</kbd> 菜单可以分屏、开新窗口或关掉当前 pane。",
   "cw.p3": "命令在电脑上执行。手机只能看 pane、往里输入、用那个菜单，别的做不了；加 <code>--read-only</code> 就只能看。",
   "cw.p4":
-    "只有 <code>keepane web</code> 在运行时才能连，二维码里的 128 位密钥每次启动都重新生成。用的是普通 HTTP，在家里的网络没问题；在外面用，中间接一层 Tailscale 之类的私有网络。",
+    "不启动就不开；启动后由 keepane 的 server 在后台提供服务，直到 <code>keepane web stop</code>，<code>keepane web status</code> 可以看谁连着。二维码里的 128 位密钥每次启动都重新生成。用的是普通 HTTP，在家里的网络没问题；在外面用，中间接一层 Tailscale 之类的私有网络。",
   "c1.p3":
     "<kbd>C-b S</kbd> 或 <code>:set sync</code>（Tab 能补全选项名）会把每个按键同时发给窗口里的所有 pane。<code>split-window -N 3</code> 一次加三个 pane 并平铺。",
 

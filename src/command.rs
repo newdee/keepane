@@ -536,6 +536,14 @@ pub enum Cmd {
         input: bool,
         output: bool,
     },
+    /// `web-start [-p port] [-b address] [-r] [-k]`: serve the panes to a
+    /// phone from the server, in the background (`keepane web`); when it
+    /// already serves and no flag is given, say how it serves.
+    WebStart(crate::web::Options),
+    /// `web-status`: how the phones' page is served, and who is connected.
+    WebStatus,
+    /// `web-stop`: stop serving it, the connected phones cut off.
+    WebStop,
     /// `wait-for [-L|-S|-U] channel`: block a client until another one signals
     /// (or unlocks) the channel, so scripts can wait for each other.
     WaitFor {
@@ -1340,6 +1348,15 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
+            Cmd::WebStart(o) => {
+                f.write_str("web-start")?;
+                for w in o.flags() {
+                    write!(f, " {w}")?;
+                }
+                Ok(())
+            }
+            Cmd::WebStatus => f.write_str("web-status"),
+            Cmd::WebStop => f.write_str("web-stop"),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 f.write_str("wait-for")?;
                 if *lock {
@@ -1881,6 +1898,9 @@ pub const COMMANDS: &[&str] = &[
     "undo-kill",
     "version",
     "wait-for",
+    "web-start",
+    "web-status",
+    "web-stop",
 ];
 
 /// The flags each command takes, for completion (the shell's and the `:`
@@ -2004,6 +2024,9 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("undo-kill", &[]),
     ("version", &[]),
     ("wait-for", &["-L", "-U", "-S"]),
+    ("web-start", &["-p", "-b", "-r", "-k"]),
+    ("web-status", &[]),
+    ("web-stop", &[]),
 ];
 
 /// The flags of a command, for completion.
@@ -3231,6 +3254,30 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 return Err("wait-for: -L, -S and -U are exclusive".into());
             }
             Cmd::WaitFor { channel, lock, unlock, signal }
+        }
+        "web-start" => {
+            let mut o = crate::web::Options::default();
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-p" => {
+                        let v = a.value("-p")?;
+                        o.port = Some(v.parse().map_err(|_| format!("{n}: not a port: {v}"))?);
+                    }
+                    "-b" => {
+                        let v = a.value("-b")?;
+                        o.bind = Some(v.parse().map_err(|_| format!("{n}: not an IP address: {v}"))?);
+                    }
+                    "-r" => o.read_only = true,
+                    "-k" => o.keep_key = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::WebStart(o)
+        }
+        "web-status" | "web-stop" => {
+            a.none_left(n)?;
+            if n == "web-status" { Cmd::WebStatus } else { Cmd::WebStop }
         }
         "clock-mode" => {
             let mut target = None;

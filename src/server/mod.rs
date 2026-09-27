@@ -11,6 +11,7 @@ pub mod observe;
 pub mod pane;
 mod public_ip;
 pub mod render;
+mod web_host;
 
 use crate::command::{Cmd, Dir, MenuItem, PaneSel, Target};
 use crate::config::{Options, resolve_shell};
@@ -93,6 +94,8 @@ enum Event {
     NewerChecked(Option<String>),
     /// The address the internet sees this machine at came back (`public_ip`).
     PublicIp(Option<String>),
+    /// A request to the phones' page told who asked (`web_host`).
+    Web(u64, crate::web::Seen),
 }
 
 /// How long after keepane's prompt marker a pane's command is taken as
@@ -752,6 +755,10 @@ pub struct Server {
     newer: newer::Check,
     /// `#{public_ip}`, while a format uses it.
     public_ip: public_ip::PublicIp,
+    /// The phones' page, while it is served (`web-start`).
+    web: Option<web_host::WebHost>,
+    /// Starts of it so far (`web_host`: stale requests are told apart).
+    web_generation: u64,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -1099,6 +1106,8 @@ impl Server {
             events_pruned: None,
             newer: newer::Check::default(),
             public_ip: public_ip::PublicIp::default(),
+            web: None,
+            web_generation: 0,
         }
     }
 
@@ -1912,6 +1921,7 @@ impl Server {
             }
             Event::NewerChecked(latest) => self.newer_checked(latest),
             Event::PublicIp(ip) => self.public_ip_answered(ip),
+            Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -1926,6 +1936,7 @@ impl Server {
                 self.mail_tick();
                 self.newer_tick();
                 self.public_ip_tick();
+                self.web_tick();
                 // Kept long enough: gone for good.
                 let keep = Duration::from_secs(self.opts.undo_kill_time);
                 self.killed.retain(|k| k.at().elapsed() < keep);
@@ -5078,6 +5089,9 @@ impl Server {
                     },
                 }
             }
+            Cmd::WebStart(o) => self.web_start(o),
+            Cmd::WebStatus => Outcome::Text(self.web_status()),
+            Cmd::WebStop => self.web_stop(),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };
                 let mut wake: Vec<ClientId> = Vec::new();
@@ -5395,6 +5409,8 @@ impl Server {
             keepane_update: self.newer.newer.clone().unwrap_or_default(),
             local_ip: crate::sysinfo::local_ip(),
             public_ip: self.public_ip.value.clone(),
+            web_url: self.web.as_ref().map(|w| w.url().to_string()).unwrap_or_default(),
+            web_clients: self.web.as_ref().map(|w| w.clients().to_string()).unwrap_or_default(),
             ..Default::default()
         };
         let unix = unix_seconds;
