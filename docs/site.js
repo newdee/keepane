@@ -10,7 +10,7 @@ const ZH = {
   "hero.download": "下载",
   "hero.source": "看源码",
   "hero.meta": "MIT 许可 · Windows、Linux、macOS · 单个可执行文件 · 原名 wmux",
-  "hero.caption": "一段完整录制：分屏、一次输入到所有 pane、移动、全屏、弹出 pane 菜单、切窗口、脱离，再接回来。",
+  "hero.caption": "功能导览：pane 之间互发消息、三种工作模式，给 agent 用的 MCP，dashboard，以及在手机上看和操作 pane。",
   "stat.exe": "个文件就够",
   "stat.deps": "依赖 Cygwin / WSL",
   "stat.tests": "项自动化测试",
