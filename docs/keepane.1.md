@@ -165,10 +165,15 @@ keepane or the `C-b :` prompt, never from inside a pane. A message for a
 to allow it. A message from another machine reads `from=host:port/…` in its
 envelope. A machine is known by its key, not its address: when it turns up
 from a new address (another network, Tailscale), its entry follows. The two
-machines' clocks must agree to within 2 minutes. `keepane web` listens on
-this machine's network address and on its Tailscale addresses, so either
-network works; `web-status` lists them. `link-inbound` is how `keepane web`
-hands a request from another machine to the server, which holds the keys.
+machines' clocks must agree to within 2 minutes. When the other machine
+cannot be reached the message fails at once; nothing is queued to go later.
+`-w` waits on the other machine, and a message still queued there when it
+runs out is a time-out here. Pairing and unpairing are said on the status line
+and kept in the event log, as are refused requests, once a minute for each
+address. `keepane web` listens on this machine's network address and on its
+Tailscale addresses, so either network works; `web-status` lists them.
+`link-inbound` is how `keepane web` hands a request from another machine to
+the server, which holds the keys.
 
 ## KEYS
 

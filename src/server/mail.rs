@@ -242,9 +242,17 @@ impl Server {
                     "send-message {how}: #{cur_id} came from {addr}, and the way back is gone (the server restarted since)"
                 ));
             };
-            let (addr, address) = (addr.clone(), address.clone());
+            // The pane there by its id alone, as an answer here goes by id:
+            // it finds the sender wherever its pane has moved since.
+            let Some(pane) = address.rsplit_once('%').map(|(_, id)| format!("%{id}")) else {
+                let instead = if re.is_some() { "; say where with --to" } else { "" };
+                return Outcome::Error(format!(
+                    "send-message {how}: #{cur_id} came from outside any pane on {addr}{instead}"
+                ));
+            };
+            let addr = addr.clone();
             let from = self.sender_of(cid);
-            return self.send_remote(cid, &addr, &address, text, from, carry, Some((cur_id, origin)), wait);
+            return self.send_remote(cid, &addr, &pane, text, from, carry, Some((cur_id, origin)), wait);
         }
         let to = if reply {
             let Some(cur) = &answering else {

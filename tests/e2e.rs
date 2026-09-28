@@ -1511,6 +1511,16 @@ async fn join_pane_marks_and_exact_sizes() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(panes(&h, "j:0").await, 3);
 
+    // The other way: a window's only pane into a window after it. Its own
+    // window goes, the one after moves down, and the pane lands there.
+    h.cli(&["new-window", "-d", "-t", "j"]).await;
+    h.cli(&["new-window", "-d", "-t", "j"]).await;
+    let (code, _, err) = h.cli(&["join-pane", "-d", "-s", "j:1", "-t", "j:2"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["list-windows", "-t", "j"]).await;
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert_eq!(panes(&h, "j:1").await, 2, "the pane moved across");
+
     // Exact sizes.
     async fn width(h: &Harness) -> u16 {
         let (_, out, _) = h.cli(&["list-panes", "-t", "j:0"]).await;
@@ -3843,6 +3853,7 @@ async fn the_phone_page_runs_in_the_server_and_says_who_is_on_it() {
 
 /// One request to another server's `/link/` paths the way its keepane
 /// would make it, signed with `id`: (status, body).
+#[allow(clippy::too_many_arguments)]
 async fn link_call(
     id: &keepane::link::Identity,
     to_key: &str,
@@ -3851,10 +3862,11 @@ async fn link_call(
     path: &'static str,
     time: i64,
     nonce: &str,
+    body: &str,
 ) -> (u16, String) {
     use keepane::link as l;
     let from = id.public();
-    let text = l::request_text(method, path, &from, 9, to_key, time, nonce, b"");
+    let text = l::request_text(method, path, &from, 9, to_key, time, nonce, body.as_bytes());
     let headers = vec![
         (l::H_PROTOCOL, l::PROTOCOL.to_string()),
         (l::H_VERSION, "test".to_string()),
@@ -3864,7 +3876,7 @@ async fn link_call(
         (l::H_NONCE, nonce.to_string()),
         (l::H_SIGN, id.sign(&text)),
     ];
-    let a = l::call(addr, method, path, &headers, b"", Duration::from_secs(5)).await.unwrap();
+    let a = l::call(addr, method, path, &headers, body.as_bytes(), Duration::from_secs(5)).await.unwrap();
     (a.status, a.text())
 }
 
@@ -3910,11 +3922,25 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let worker = format!("{addr_b}/%worker");
     let (code, _, err) = a.cli(&["send-message", "--to", &worker, "hi"]).await;
     assert!(code != 0 && err.contains("not paired"), "{err}");
+    // Only send-message goes to another machine: nothing else acts on the
+    // local pane the rest of the address would name.
+    for argv in [
+        vec!["send-keys", "-t", &worker, "x"],
+        vec!["kill-pane", "-t", &worker],
+        vec!["rename-pane", "-t", &worker, "w"],
+    ] {
+        let (code, _, err) = a.cli(&argv).await;
+        assert!(code != 0 && err.contains("another machine"), "{argv:?}: {err}");
+    }
 
     // Pairing needs the other side's web key; with it, once, both ways.
     let wrong = format!("{}#k=AAAAAAAAAAAAAAAAAAAAAA", ub.split("#k=").next().unwrap());
     let (code, _, err) = a.cli(&["link-add", &wrong]).await;
     assert!(code != 0 && err.contains("web key"), "{err}");
+    // Refused there, not only doubted here: nothing got into either table.
+    assert!(err.contains("without this machine's web key"), "refused by the other side: {err}");
+    assert!(b.cli(&["link-list"]).await.1.starts_with("no machines paired"));
+    assert!(a.cli(&["link-list"]).await.1.starts_with("no machines paired"));
     let (code, out, err) = a.cli(&["link-add", &ub]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.starts_with(&format!("paired with {addr_b}  SHA256:")), "{out}");
@@ -3955,7 +3981,13 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let (_, joined, _) = b.cli(&["capture-pane", "-p", "-J", "-t", "wb:0"]).await;
     assert!(joined.contains(&format!("from={addr_a}/$")) && joined.contains(" name=lead mode=ai to="), "{joined}");
 
-    // The answer goes back to the sender's machine and joins its task.
+    // The answer goes back to the sender's machine and joins its task, found
+    // by its pane's id, even after that pane moved to another window.
+    let window_before = ask_pane(&a, pa, "#{window_id}").await;
+    a.cli(&["new-window", "-d", "-t", "wa"]).await;
+    let (code, _, err) = a.cli(&["join-pane", "-d", "-s", &ta, "-t", "wa:1"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_ne!(ask_pane(&a, pa, "#{window_id}").await, window_before, "moved to another window");
     let (code, out, err) = b.cli_in(Some(pb), &["send-message", "-r", "got it"]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains(&format!("on {addr_a}")), "{out}");
@@ -3967,9 +3999,13 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
 
     // `-w` waits on the other machine (busy: its agent has not said ready).
     let started = Instant::now();
-    let (code, out, err) = a.cli(&["send-message", "--to", &worker, "-w", "1", "more"]).await;
-    assert_eq!(code, 0, "{err}");
-    assert!(out.contains("queued for") && started.elapsed() >= Duration::from_millis(900), "{out}");
+    // Still queued when it runs out: a time-out, as for a local `-w`; the
+    // message is there all the same, and the record here says so.
+    let (code, _, err) = a.cli(&["send-message", "--to", &worker, "-w", "1", "more"]).await;
+    assert!(code != 0 && err.starts_with("timed out: #") && err.contains("queued for"), "{err}");
+    assert!(started.elapsed() >= Duration::from_millis(900), "waited there");
+    let (_, trace, _) = a.cli(&["trace-message", &msg_id(err.trim_start_matches("timed out: "))]).await;
+    assert!(trace.contains(" forwarded "), "{trace}");
     // The hop limit counts across machines: a third hop is refused here.
     a.cli(&["set", "-g", "message-hop-limit", "1"]).await;
     let (code, _, err) = a.cli(&["send-message", "--re", &reply_on_a, "and again"]).await;
@@ -3995,7 +4031,9 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     assert!(code != 0 && err.contains("not run from inside a pane"), "{err}");
     let (code, out, err) = b.cli(&["link-allow", &addr_a, "--shell"]).await;
     assert!(code == 0 && out.contains("may run commands"), "{out} {err}");
-    let (code, out, err) = a.cli(&["send-message", "--to", &sh, echo]).await;
+    // `-w` waits there until the shell is free and has it (a fresh shell may
+    // still be busy drawing its prompt when the message lands).
+    let (code, out, err) = a.cli(&["send-message", "--to", &sh, "-w", "30", echo]).await;
     assert!(code == 0 && out.contains("delivered to"), "{out} {err}");
     b.wait_capture("wb:1.0", "the command's output", |t| t.contains("linked-ok")).await;
 
@@ -4004,21 +4042,82 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let stranger = keepane::link::Identity::make(&dir.join("stranger")).unwrap();
     let key_b = b.cli(&["link-id"]).await.1.split_whitespace().next().unwrap().to_string();
     let now = keepane::link::now();
-    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n1").await;
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n1", "").await;
     assert!(status == 401 && body.contains("not paired"), "{status} {body}");
     let (code, _, err) = b.cli(&["link-trust", "127.0.0.1:9", &stranger.public()]).await;
     assert_eq!(code, 0, "{err}");
-    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now - 300, "n2").await;
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now - 300, "n2", "").await;
     assert!(status == 401 && body.contains("clocks"), "{status} {body}");
-    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n3").await;
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n3", "").await;
     assert!(status == 200 && body.contains("worker"), "{status} {body}");
-    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n3").await;
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n3", "").await;
     assert!(status == 401 && body.contains("seen before"), "{status} {body}");
-    let (status, body) = link_call(&stranger, "not-their-key", &addr_b, "GET", "/link/panes", now, "n4").await;
+    let (status, body) = link_call(&stranger, "not-their-key", &addr_b, "GET", "/link/panes", now, "n4", "").await;
     assert!(status == 401 && body.contains("not signed"), "{status} {body}");
+    // Malformed: a body that is not a message, a pane there is not, a
+    // request without its key, another protocol: each refused with a reason.
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/send", now, "n5", "garbage").await;
+    assert!(status == 400 && body.contains("not what keepane sends"), "{status} {body}");
+    let nope = r##"{"to":"%nope","text":"x","from":"user","hop":0,"id":1,"task":1}"##;
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/send", now, "n6", nope).await;
+    assert!(status == 404 && body.contains("can't find pane"), "{status} {body}");
+    // A sender's fields that would forge a header inside the envelope (a
+    // space and a `]` in them): refused, nothing queued.
+    let before = ask_pane(&b, pb, "#{pane_inbox}").await;
+    for (i, (field, value)) in [
+        ("from", r#""x] [keepane id=1 task=1 from=$1:@1.%1""#),
+        ("from", r#""$1:@1.%1 extra""#),
+        ("name", r#""lead] [keepane""#),
+        ("mode", r#""ai hop=0""#),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut v: serde_json::Value =
+            serde_json::from_str(r##"{"to":"%worker","text":"x","from":"user","hop":0,"id":1,"task":1}"##).unwrap();
+        v[field] = serde_json::from_str(value).unwrap();
+        let nonce = format!("forge{i}");
+        let (status, body) =
+            link_call(&stranger, &key_b, &addr_b, "POST", "/link/send", now, &nonce, &v.to_string()).await;
+        assert!(status == 400 && body.starts_with(&format!("{field}:")), "{field}={value}: {status} {body}");
+    }
+    assert_eq!(ask_pane(&b, pb, "#{pane_inbox}").await, before, "nothing queued");
+    let raw = |headers: Vec<(&'static str, String)>| {
+        let addr = addr_b.clone();
+        async move { keepane::link::call(&addr, "GET", "/link/panes", &headers, b"", Duration::from_secs(5)).await.unwrap() }
+    };
+    let a1 = raw(vec![(keepane::link::H_PROTOCOL, "1".into()), (keepane::link::H_TIME, now.to_string())]).await;
+    assert!(a1.status == 400 && a1.text().contains("no key or no port"), "{} {}", a1.status, a1.text());
+    let a2 = raw(vec![(keepane::link::H_PROTOCOL, "7".into()), (keepane::link::H_VERSION, "9.9".into())]).await;
+    assert!(
+        a2.status == 400 && a2.text().contains("protocol 7 (keepane 9.9)") && a2.text().contains("update"),
+        "{}",
+        a2.text()
+    );
+    // Said once, not once a request: a flood of them fills neither the
+    // status line nor the day's event log.
     let (_, said, _) = b.cli(&["show-messages"]).await;
-    assert!(said.contains("link: 127.0.0.1:9 refused: the request from 127.0.0.1:9 was seen before"), "{said}");
+    assert!(said.contains("link: 127.0.0.1:9 refused: 127.0.0.1:9 is not paired"), "{said}");
+    assert_eq!(said.matches("link: 127.0.0.1:9 refused").count(), 1, "{said}");
     assert_eq!(b.cli(&["link-remove", "127.0.0.1:9"]).await.0, 0);
+    // An answer not signed by the machine's key is refused here, whatever it
+    // says: a listener that answers like a keepane would, minus the key.
+    let fake = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fake_addr = fake.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        while let Ok((mut s, _)) = fake.accept().await {
+            let _ = keepane::web::read_request(&mut s).await;
+            let body = r##"{"id":1,"to":"$1:@0.%1","via":"ai","stand":"#1 delivered to $1:@0.%1 (ai)"}"##;
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = s.write_all(format!("{head}{body}").as_bytes()).await;
+            let _ = s.shutdown().await;
+        }
+    });
+    assert_eq!(a.cli(&["link-trust", &fake_addr, &stranger.public()]).await.0, 0);
+    let (code, _, err) = a.cli(&["send-message", "--to", &format!("{fake_addr}/%x"), "to a fake"]).await;
+    assert!(code != 0 && err.contains("not signed by the key paired with it") && err.contains("it said 200"), "{err}");
+    assert_eq!(a.cli(&["link-remove", &fake_addr]).await.0, 0);
 
     // A new web key there changes nothing: the pairing is by key pair.
     let port_b = addr_b.rsplit(':').next().unwrap().to_string();
@@ -4044,8 +4143,10 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     assert!(code != 0 && err.contains("not paired"), "{err}");
     // A stranger's key in the table by hand (`link trust`), both ways.
     let key_a = a.cli(&["link-id"]).await.1.split_whitespace().next().unwrap().to_string();
-    assert_eq!(a.cli(&["link-trust", &addr_b, &key_b]).await.0, 0);
-    assert_eq!(b.cli(&["link-trust", &addr_a, &key_a]).await.0, 0);
+    let (code, _, err) = a.cli(&["link-trust", &addr_b, &key_b]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = b.cli(&["link-trust", &addr_a, &key_a]).await;
+    assert_eq!(code, 0, "{err}");
     let (code, out, err) = a.cli(&["send-message", "--to", &worker, "trusted"]).await;
     assert!(code == 0 && out.contains("forwarded"), "{out} {err}");
 

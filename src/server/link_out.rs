@@ -17,7 +17,8 @@ pub(super) enum LinkOp {
     /// `link-add`: their key comes back, proved with their web key.
     Pair { addr: String, webkey: String },
     /// A message handed over: its record here ends with what they said.
-    Send { id: MsgId, addr: String, key: String },
+    /// `waited`: a `-w` was asked, so still queued there is a time-out.
+    Send { id: MsgId, addr: String, key: String, waited: bool },
     /// `link-panes`: their text, shown as it is.
     Panes { addr: String, key: String },
     /// `link-remove`: told them; done here whatever they say.
@@ -234,7 +235,7 @@ impl Server {
         };
         let body = serde_json::to_vec(&body).expect("a body serializes");
         let longest = ANSWER_GRACE + Duration::from_secs(wait.unwrap_or(0));
-        let op = LinkOp::Send { id, addr: addr.to_string(), key: key.clone() };
+        let op = LinkOp::Send { id, addr: addr.to_string(), key: key.clone(), waited: wait.is_some() };
         match self.link_signed(cid, addr, &key, "POST", "/link/send", body, longest, op) {
             Ok(()) => Outcome::Pending,
             Err(e) => {
@@ -249,12 +250,17 @@ impl Server {
         let LinkAnswer { cid, nonce, op, result } = a;
         let out = match op {
             LinkOp::Pair { addr, webkey } => self.paired(&addr, &webkey, &nonce, result),
-            LinkOp::Send { id, addr, key } => match Self::checked(&addr, &key, &nonce, result) {
+            LinkOp::Send { id, addr, key, waited } => match Self::checked(&addr, &key, &nonce, result) {
                 Ok(ans) if ans.status == 200 => match serde_json::from_slice::<SendAnswer>(&ans.body) {
                     Ok(said) => {
                         let stand = format!("{} on {addr}", said.stand);
+                        // There either way: the record here says so.
                         self.observe.forwarded(id, &stand);
-                        Outcome::Text(format!("#{id} forwarded: {stand}"))
+                        if waited && said.stage == "queued" {
+                            Outcome::Error(format!("timed out: #{id} forwarded: {stand}"))
+                        } else {
+                            Outcome::Text(format!("#{id} forwarded: {stand}"))
+                        }
                     }
                     Err(_) => {
                         let why = format!("{addr} answered with something that is not a keepane answer");

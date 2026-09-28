@@ -53,6 +53,10 @@ Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   list-tasks [-t session]   show-task id   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
   create-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
   dashboard (prefix v: panes, inboxes, tasks and the chosen pane's screen; act on them; ? keys)   setup claude [--install]
+Panes on other machines (both run `keepane web`; docs/design/link.md):
+  link add <its keepane web address>   (pair, like SSH keys, once, both ways)   link list   link panes host:port
+  send-message --to host:port/%name text   link allow host:port --shell|--no-shell   (not from inside a pane)
+  link id   link trust host:port key [--shell]   link remove host:port   link rekey
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins

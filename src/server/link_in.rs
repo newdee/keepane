@@ -28,6 +28,30 @@ impl Inbound {
     }
 }
 
+/// The sender's fields as keepane writes them: `from` is `user` or a full
+/// address (`$1:@3.%7`), `name` a pane name, `mode` a work mode.
+fn sender_fields_ok(body: &SendBody) -> Result<(), String> {
+    let full_address = |s: &str| {
+        let digits = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+        let Some(rest) = s.strip_prefix('$') else { return false };
+        let Some((sid, rest)) = rest.split_once(":@") else { return false };
+        let Some((wid, pid)) = rest.split_once(".%") else { return false };
+        digits(sid) && digits(wid) && digits(pid)
+    };
+    if body.from != "user" && !full_address(&body.from) {
+        return Err(format!("from: '{}' is not a pane's full address or `user`", body.from));
+    }
+    if let Some(n) = &body.name {
+        super::actor::check_name(n).map_err(|e| format!("name: {e}"))?;
+    }
+    if let Some(m) = &body.mode
+        && WorkMode::parse(m).is_none()
+    {
+        return Err(format!("mode: '{m}' is not a work mode"));
+    }
+    Ok(())
+}
+
 /// The pane list as another machine sees it.
 const PANES: &str =
     "#{pane_address}\t#{pane_name}\t#{pane_work_mode}\t#{?pane_idle,idle,busy}\t#{pane_inbox}\t#{pane_current_command}";
@@ -49,7 +73,8 @@ impl Server {
         };
         let (to, via) = (r.msg.to.clone(), r.msg.via.as_str().to_string());
         let stand = self.stand(id);
-        let body = serde_json::to_string(&SendAnswer { id, to, via, stand }).expect("an answer serializes");
+        let stage = self.observe.get(id).map(|r| r.stage.as_str().to_string()).unwrap_or_default();
+        let body = serde_json::to_string(&SendAnswer { id, to, via, stand, stage }).expect("an answer serializes");
         self.link_answer(nonce, 200, body)
     }
 
@@ -173,7 +198,11 @@ impl Server {
 
     /// A refused request is said on the status line and kept in the event
     /// log: something on the network is trying, and should not go unnoticed.
+    /// Once a minute per address at most (`LinkHost::say_refused`).
     fn link_refused(&mut self, addr: &str, why: &str) {
+        if !self.link().is_ok_and(|l| l.say_refused(addr)) {
+            return;
+        }
         self.link_note(
             &format!("link: {addr} refused: {why}"),
             "refused",
@@ -245,6 +274,12 @@ impl Server {
         let Ok(body) = serde_json::from_str::<SendBody>(&req.body) else {
             return self.link_answer(nonce, 400, "the message is not what keepane sends".into());
         };
+        // What goes into the envelope is held to what keepane itself writes
+        // there: no value with a space or a `]` (docs/design/mailbox.md §5),
+        // so no header can be forged inside one.
+        if let Err(why) = sender_fields_ok(&body) {
+            return self.link_answer(nonce, 400, why);
+        }
         let t = Target::parse(&body.to);
         if t.remote.is_some() {
             return self.link_answer(nonce, 400, format!("{}: a pane is named as this machine knows it", body.to));
@@ -286,6 +321,12 @@ impl Server {
         }
         if let Ok(l) = self.link() {
             l.origin.insert(id, Origin { key: peer.key.clone(), id: body.id, task: body.task });
+            // Bounded like the message records: the oldest go first (an
+            // answer to one of those has no way back, and says so).
+            while l.origin.len() > super::link_state::ORIGINS_KEPT {
+                let oldest = l.origin.keys().min().copied().expect("not empty");
+                l.origin.remove(&oldest);
+            }
         }
         match (body.wait, cid) {
             (Some(secs), Some(cid)) if self.observe.get(id).is_some_and(|r| r.stage == Stage::Queued) => {

@@ -246,13 +246,19 @@ impl Identity {
     /// this user alone.
     pub fn load_or_make(dir: &Path) -> Result<Identity> {
         let path = dir.join("key");
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let seed = unb64(text.trim()).filter(|s| s.len() == 32).with_context(|| {
-                format!("{} is not a keepane link key (move it away to make a new one)", path.display())
-            })?;
-            return Ok(Identity { key: SigningKey::from_bytes(&seed.try_into().expect("32 bytes")) });
-        }
-        Self::make(dir)
+        // Only a key that is not there is made: one that cannot be read or
+        // is damaged is an error, never replaced (that would void every
+        // pairing made with it without a word).
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::make(dir),
+            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        };
+        let seed =
+            std::str::from_utf8(&bytes).ok().and_then(|t| unb64(t.trim())).filter(|s| s.len() == 32).with_context(
+                || format!("{} is not a keepane link key (move it away to make a new one)", path.display()),
+            )?;
+        Ok(Identity { key: SigningKey::from_bytes(&seed.try_into().expect("32 bytes")) })
     }
 
     /// A new key pair in `dir`, in place of any before it.
@@ -554,6 +560,10 @@ pub struct SendAnswer {
     pub via: String,
     /// Where it stands there, as `send-message` says it.
     pub stand: String,
+    /// Its stage there (`queued`, `delivered`, ...): a `-w` that ran out
+    /// with it still queued is a time-out here, as it is for a local one.
+    #[serde(default)]
+    pub stage: String,
 }
 
 #[cfg(test)]
@@ -569,6 +579,22 @@ mod tests {
             assert_eq!(split_remote(local), None, "{local}");
         }
         assert!(valid_hostport("localhost:1") && !valid_hostport("localhost") && !valid_hostport(":80"));
+    }
+
+    #[test]
+    fn tailscale_addresses_are_listened_on_beside_the_lan_one() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        for yes in ["100.64.0.3", "100.127.255.255", "fd7a:115c:a1e0::1"] {
+            assert!(tailscale(ip(yes)), "{yes}");
+        }
+        for no in ["100.63.255.255", "100.128.0.0", "10.0.0.1", "fd7b:115c:a1e0::1", "fd7a:115c:a1e1::1"] {
+            assert!(!tailscale(ip(no)), "{no}");
+        }
+        assert_eq!(listen_addrs(Some(ip("192.168.1.5"))), vec![ip("192.168.1.5")], "--bind: that one alone");
+        let all = listen_addrs(None);
+        assert_eq!(all[0], crate::web::lan_ip());
+        assert!(all[1..].iter().all(|a| tailscale(*a)), "{all:?}");
+        assert_eq!(hostport(ip("fd7a:115c:a1e0::1"), 7681), "[fd7a:115c:a1e0::1]:7681");
     }
 
     #[test]
@@ -627,6 +653,13 @@ mod tests {
         assert!(fingerprint(&a.public()).starts_with("SHA256:"));
         let made = Identity::make(&dir).unwrap();
         assert_ne!(made.public(), a.public(), "rekey makes a new one");
+        // A damaged key, text or not, is an error and stays as it was.
+        for junk in [&b"not a key"[..], &[0xff, 0xfe, 0x00, 0x80][..]] {
+            std::fs::write(dir.join("key"), junk).unwrap();
+            let e = Identity::load_or_make(&dir).err().expect("an error").to_string();
+            assert!(e.contains("is not a keepane link key"), "{e}");
+            assert_eq!(std::fs::read(dir.join("key")).unwrap(), junk, "not replaced");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -641,6 +674,34 @@ mod tests {
             n.fresh(&format!("x{i}"), 10_000);
         }
         assert!(!n.seen.contains_key("a"));
+    }
+
+    /// A key is base64url, so one in 64 starts with `-`: it is still a key,
+    /// not a flag, to `link-trust` (only `--shell` is one).
+    #[test]
+    fn a_key_that_starts_with_a_dash_is_a_key() {
+        let key = (0u8..=255)
+            .map(|n| Identity { key: SigningKey::from_bytes(&[n; 32]) }.public())
+            .chain((0u16..10_000).map(|n| {
+                let mut seed = [0u8; 32];
+                seed[..2].copy_from_slice(&n.to_le_bytes());
+                seed[2] = 7;
+                Identity { key: SigningKey::from_bytes(&seed) }.public()
+            }))
+            .find(|k| k.starts_with('-'))
+            .expect("one in 64 keys starts with -");
+        let parse = |w: &[&str]| crate::command::parse(&w.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let want = |shell| crate::command::Cmd::LinkTrust { addr: "10.0.0.1:7681".into(), key: key.clone(), shell };
+        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key]), Ok(want(false)));
+        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--shell"]), Ok(want(true)));
+        assert_eq!(parse(&["link-trust", "--shell", "10.0.0.1:7681", &key]), Ok(want(true)));
+        // Written back, it reads the same.
+        let line = want(true).to_string();
+        let words = crate::command::tokenize(&line).unwrap();
+        assert_eq!(crate::command::parse(&words), Ok(want(true)), "{line}");
+        // Anything else is a word, checked as one: a flag mistyped is not a key.
+        let e = parse(&["link-trust", "10.0.0.1:7681", &key, "--shel"]).unwrap_err();
+        assert!(e.contains("host:port and the machine's public key"), "{e}");
     }
 
     #[test]

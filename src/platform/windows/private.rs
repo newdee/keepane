@@ -11,9 +11,10 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SetFileSecurityW};
 
 pub fn restrict(path: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
     let sddl = super::winsec::owner_only_sddl(&super::winsec::current_user_sid()?);
     let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
-    let file: Vec<u16> = path.as_os_str().encode_wide_lossy().chain(std::iter::once(0)).collect();
+    let file: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     unsafe {
         let mut sd = std::ptr::null_mut();
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -32,17 +33,6 @@ pub fn restrict(path: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-trait EncodeWideLossy {
-    fn encode_wide_lossy(&self) -> std::vec::IntoIter<u16>;
-}
-
-impl EncodeWideLossy for std::ffi::OsStr {
-    fn encode_wide_lossy(&self) -> std::vec::IntoIter<u16> {
-        use std::os::windows::ffi::OsStrExt;
-        self.encode_wide().collect::<Vec<u16>>().into_iter()
-    }
 }
 
 #[cfg(test)]

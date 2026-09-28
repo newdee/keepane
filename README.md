@@ -717,9 +717,13 @@ keepane link rekey                             # a new key: every pairing has to
 A message for a `shell` pane from a machine not allowed is refused, and the
 sender told how to allow it. `keepane web --read-only` takes nothing from
 other machines either. When the other machine cannot be reached, the message
-fails at once (nothing is queued to be sent later). Pairing, unpairing and
-refused requests are said on the status line and kept in the event log. The
-design and every decision: [docs/design/link.md](docs/design/link.md).
+fails at once (nothing is queued to be sent later); with `-w`, the other
+machine waits for it to be delivered, and one still queued when the time runs
+out is a time-out here, as it is for a pane on this machine. Pairing and
+unpairing are said on the status line and kept in the event log, and so are
+refused requests, once a minute for each address that sends them (a flood of
+bad requests fills neither). The design and every decision:
+[docs/design/link.md](docs/design/link.md).
 
 ## The manual
 

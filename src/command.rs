@@ -3407,13 +3407,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::LinkAllow { addr, shell }
         }
         "link-trust" => {
+            // `--shell` is the one flag: a key is base64url, and one in 64
+            // starts with `-`, so any other word is a word (and is checked
+            // as a key or an address below).
             let (mut words, mut shell) = (Vec::new(), false);
             while let Some(w) = a.next() {
                 match w {
                     "--shell" => shell = true,
-                    f if f.starts_with('-') && !f.starts_with("--") || f.starts_with("--") => {
-                        return Err(bad_flag(n, f));
-                    }
                     v => words.push(v.to_string()),
                 }
             }

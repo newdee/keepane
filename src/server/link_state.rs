@@ -23,6 +23,35 @@ pub(super) struct LinkHost {
     /// machine's key, and the message's number and task there, so that an
     /// answer goes back and is filed under them.
     pub(super) origin: HashMap<MsgId, Origin>,
+    /// When each address was last said to be refused: said once a while,
+    /// so that a flood of bad requests fills neither the status line nor
+    /// the day's event log (whose cap would then keep real events out).
+    pub(super) refused: HashMap<String, std::time::Instant>,
+}
+
+/// Origins remembered at most (as many as message records, `observe`).
+pub(super) const ORIGINS_KEPT: usize = 10_000;
+/// A refusal from the same address is said again after this.
+pub(super) const REFUSED_QUIET: std::time::Duration = std::time::Duration::from_secs(60);
+/// Addresses whose refusal is remembered at most.
+const REFUSED_KEPT: usize = 1024;
+
+impl LinkHost {
+    /// Whether a refusal from `addr` is to be said now (and remember that it was).
+    pub(super) fn say_refused(&mut self, addr: &str) -> bool {
+        let now = std::time::Instant::now();
+        if self.refused.get(addr).is_some_and(|t| now.duration_since(*t) < REFUSED_QUIET) {
+            return false;
+        }
+        if self.refused.len() >= REFUSED_KEPT {
+            self.refused.retain(|_, t| now.duration_since(*t) < REFUSED_QUIET);
+        }
+        if self.refused.len() >= REFUSED_KEPT {
+            return false;
+        }
+        self.refused.insert(addr.to_string(), now);
+        true
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +97,7 @@ impl Server {
                 nonces: Nonces::default(),
                 seen: HashMap::new(),
                 origin: HashMap::new(),
+                refused: HashMap::new(),
             });
         }
         Ok(self.link.as_mut().expect("just made"))

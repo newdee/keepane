@@ -327,7 +327,10 @@ impl Store {
             let at = v["at"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.into());
             let Some(at) = at else { continue };
             let ev = v["ev"].as_str().unwrap_or_default();
-            if ev == "sent" || ev == "rejected" {
+            // A message sent, or refused as it was sent, carries itself; one
+            // refused later (another machine would not take it: `refused`)
+            // carries its id, and ends the record that is there.
+            if ev == "sent" || (ev == "rejected" && v.get("msg").is_some()) {
                 if let Some(m) = message_of(&v["msg"], v["text"].as_str().unwrap_or_default(), at) {
                     let rejected = ev == "rejected";
                     self.records.insert(
@@ -572,11 +575,33 @@ mod tests {
         s.ended(7, End::Done, Some(true), Some(("ok".into(), false)));
         s.sent(&msg(8, 7, "still queued"), None);
         s.sent(&msg(9, 9, "refused"), Some("hop limit 8"));
+        // From another machine, and one handed to another machine (link.md).
+        let mut remote = msg(10, 10, "from afar");
+        remote.from = Sender::Remote {
+            addr: "100.64.0.3:7681".into(),
+            address: "$2:@5.%8".into(),
+            name: Some("lead".into()),
+            mode: Some(WorkMode::Ai),
+        };
+        s.sent(&remote, None);
+        s.delivered(10);
+        s.ended(10, End::Done, None, None);
+        let mut away = msg(11, 11, "far away");
+        away.to = "100.64.0.3:7681/%worker".into();
+        s.sent(&away, None);
+        s.forwarded(11, "#4 queued for $1:@0.%1 (ai, busy, 0 ahead) on 100.64.0.3:7681");
+        s.sent(&msg(12, 12, "unreachable"), None);
+        s.refused(12, "100.64.0.3:7681 is not reachable");
         crate::histlog::flush(std::time::Duration::from_secs(5));
 
         let mut back = Store { dir: Some(dir.clone()), ..Default::default() };
         assert_eq!(back.load(1), 1, "the queued one is gone with the old server");
-        assert_eq!(back.last_id(), 9);
+        assert_eq!(back.last_id(), 12);
+        assert_eq!(back.get(10).unwrap().msg, remote, "the remote sender reads back as it was");
+        let r = back.get(11).unwrap();
+        assert_eq!(r.stage, Stage::Forwarded, "handed over is done with here, not dropped at a restart");
+        assert!(r.why.as_deref().unwrap().starts_with("#4 queued"), "{:?}", r.why);
+        assert_eq!(back.get(12).unwrap().stage, Stage::Rejected);
         let r = back.get(7).unwrap();
         assert_eq!((r.stage, r.ok, r.output.as_deref()), (Stage::Done, Some(true), Some("ok")));
         assert_eq!(r.msg, s.get(7).unwrap().msg.clone(), "the envelope reads back as the message");

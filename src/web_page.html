@@ -281,12 +281,16 @@ function renderList() {
       (p.bell ? `<span class="mark bell" title="${t("bell", "响铃")}">!</span>` : "") +
       (p.silence ? `<span class="mark silence" title="${t("silent", "没动静")}">~</span>` : "");
     const cls = ["pane", p.active && p.windowActive ? "current" : "", p.dead ? "dead" : "", marks ? "alert" : ""].join(" ");
-    // What it runs and how long it has been quiet; its name, mode and
-    // directory; the last line it printed.
-    const where = [p.name ? `<b>%${esc(p.name)}</b>` : "", p.mode && p.mode !== "normal" ? esc(p.mode) : "", esc(p.path || "")]
+    // The title the program set (what it says it is doing), else what it
+    // runs, and how long it has been quiet; then what it runs when the
+    // title took the first line, its name, mode and directory; the last
+    // line it printed.
+    const title = titleOf(p);
+    const where = [title ? esc(p.command || "?") : "", p.name ? `<b>%${esc(p.name)}</b>` : "",
+      p.mode && p.mode !== "normal" ? esc(p.mode) : "", esc(p.path || "")]
       .filter(Boolean).join(" · ");
     html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot"></span><span class="what">` +
-      `<div class="top"><span class="cmd">${esc(p.command || "?")}</span><span class="quiet">${quietFor(p.quiet)}</span></div>` +
+      `<div class="top"><span class="cmd">${esc(title || p.command || "?")}</span><span class="quiet">${quietFor(p.quiet)}</span></div>` +
       (where ? `<div class="where">${where}</div>` : "") +
       (p.last ? `<div class="last">${esc(p.last)}</div>` : "") + `</span>` +
       (marks ? `<span class="marks">${marks}</span>` : "") + `</button>`;
@@ -351,9 +355,23 @@ async function rename(kind, id, now) {
 // ---- One pane ----
 function paneInfo(id) { return panes.find((p) => p.id === id); }
 
+// The title a pane's program set, when it says more than the program's
+// name: a shell that sets its own path as the title (`C:\...\pwsh.exe`), or
+// no title at all (keepane then gives the command), says nothing new.
+function titleOf(p) {
+  const title = (p.title || "").trim();
+  const base = title.split(/[\\/]/).pop().replace(/\.exe$/i, "").toLowerCase();
+  return !title || base === (p.command || "").toLowerCase() ? "" : title;
+}
+
 function setTitle() {
   const p = paneInfo(current);
-  $("title").innerHTML = p ? `${esc(p.name ? "%" + p.name : p.command || "?")} <span class="sub">${esc(p.session)}:${p.window}.${p.pane} &#9662;</span>` : esc(current || "");
+  const title = p && titleOf(p);
+  // The title large, then the program and where the pane is; with no title,
+  // its name (or program) large, as before.
+  $("title").innerHTML = !p ? esc(current || "")
+    : title ? `${esc(title)} <span class="sub">${esc([p.name ? "%" + p.name : "", p.command || "?"].filter(Boolean).join(" · "))} · ${esc(p.session)}:${p.window}.${p.pane} &#9662;</span>`
+    : `${esc(p.name ? "%" + p.name : p.command || "?")} <span class="sub">${esc(p.session)}:${p.window}.${p.pane} &#9662;</span>`;
   $("title").classList.toggle("switch", !!current);
 }
 
@@ -374,7 +392,7 @@ $("title").addEventListener("click", () => {
   for (const p of panes) {
     if (p.session !== lastS) { html += `<div class="sub">${esc(p.session)}</div>`; lastS = p.session; lastW = null; }
     if (p.window !== lastW) { html += `<div class="sub">&nbsp;&nbsp;${p.window}: ${esc(p.windowName)}</div>`; lastW = p.window; }
-    const label = `${p.name ? "%" + p.name + " · " : ""}${p.command || "?"}${p.last ? " — " + p.last : ""}`;
+    const label = `${p.name ? "%" + p.name + " · " : ""}${titleOf(p) || p.command || "?"}${p.last ? " — " + p.last : ""}`;
     html += `<div class="item"><button class="pick${p.id === current ? " here" : ""}" data-id="${esc(p.id)}">${esc(label)}</button></div>`;
   }
   $("switchList").innerHTML = html;

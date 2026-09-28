@@ -2286,6 +2286,9 @@ impl Server {
     /// session, else the session of the pane the client runs in, else the
     /// most recently used.
     fn resolve_session(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<SessionId, String> {
+        if let Some(t) = target {
+            Self::here(t)?;
+        }
         if let Some(t) = target.filter(|t| t.names_pane()) {
             return Ok(self.named_pane(t)?.expect("names a pane").0);
         }
@@ -2366,8 +2369,24 @@ impl Server {
         }
     }
 
+    /// A target of this machine: one on another (`host:port/…`,
+    /// docs/design/link.md) is only for `send-message`, which never comes
+    /// here with it.
+    fn here(t: &Target) -> Result<(), String> {
+        match &t.remote {
+            Some(machine) => Err(format!(
+                "{}: a pane on another machine ({machine}); only send-message goes there",
+                crate::command::target_string(t)
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// (session id, window index, pane id) for a command context.
     fn resolve(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<(SessionId, usize, PaneId), String> {
+        if let Some(t) = target {
+            Self::here(t)?;
+        }
         if let Some(t) = target.filter(|t| t.names_pane()) {
             return Ok(self.named_pane(t)?.expect("names a pane"));
         }
@@ -4318,6 +4337,11 @@ impl Server {
                 }
                 let Some(pane) = self.take_pane(ssid, swidx, spid) else {
                     return Outcome::Error("join-pane: no such pane".into());
+                };
+                // The pane's own window goes when it was its last, and the
+                // windows after it move down one: find the destination again.
+                let Some((dsid, dwidx)) = self.window_of_pane(dpid) else {
+                    return Outcome::Error("join-pane: the target pane is gone".into());
                 };
                 let dw = &mut self.session_mut(dsid).unwrap().windows[dwidx];
                 dw.layout.split_at(dpid, horizontal, spid, rect, before);

@@ -566,6 +566,35 @@ mod tests {
         assert_eq!(m.envelope(), m.clone().envelope());
     }
 
+    /// A pane of another machine (docs/design/link.md) is `from=host:port/…`
+    /// with its name and mode as it said them, in both forms, the same
+    /// bytes every time; the event log reads it back as the same sender,
+    /// and it is never taken for a pane of this machine.
+    #[test]
+    fn a_sender_on_another_machine_reads_as_its_address_there() {
+        let mut m = msg(12, WorkMode::Ai);
+        m.from = Sender::Remote {
+            addr: "100.64.0.3:7681".into(),
+            address: "$2:@5.%8".into(),
+            name: Some("lead".into()),
+            mode: Some(WorkMode::Ai),
+        };
+        assert_eq!(
+            m.envelope(),
+            r#"{"keepane":1,"id":12,"task":12,"from":"100.64.0.3:7681/$2:@5.%8","name":"lead","mode":"ai","to":"$1:@4.%9","via":"ai","hop":0}"#
+        );
+        assert_eq!(
+            m.fields(),
+            "[keepane id=12 task=12 from=100.64.0.3:7681/$2:@5.%8 name=lead mode=ai to=$1:@4.%9 via=ai hop=0]"
+        );
+        assert_eq!(m.sender_pane(), None, "not a pane of this machine");
+        assert_eq!((m.envelope(), m.fields()), (m.clone().envelope(), m.clone().fields()));
+        // Someone outside the panes there: no name, no mode.
+        m.from =
+            Sender::Remote { addr: "[fd7a:115c:a1e0::3]:7681".into(), address: "user".into(), name: None, mode: None };
+        assert_eq!(m.fields(), "[keepane id=12 task=12 from=[fd7a:115c:a1e0::3]:7681/user to=$1:@4.%9 via=ai hop=0]");
+    }
+
     /// The fields read as the JSON says, in its order, and split back
     /// into the same names and values.
     #[test]
