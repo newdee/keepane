@@ -866,6 +866,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
             }
         });
     }
+    crate::platform::process::let_panes_take_ctrl_c();
     let mut srv = Server::new(pane_tx, socket, tx.clone());
     srv.force_restore = options.force_restore;
     srv.config_override = options.config;
@@ -5471,6 +5472,7 @@ impl Server {
             ctx.pane_start_command = p.argv.join(" ");
             ctx.pane_path = p.current_path().unwrap_or_default();
             ctx.pane_path_short = crate::sysinfo::short_path(&ctx.pane_path);
+            ctx.pane_last_line = p.last_line();
             ctx.git_branch =
                 if ctx.pane_path.is_empty() { String::new() } else { crate::sysinfo::git_branch(&ctx.pane_path) };
             ctx.pane_pid_command = p.pid.map(crate::sysinfo::program_of).unwrap_or_default();

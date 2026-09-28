@@ -1223,6 +1223,25 @@ impl Pane {
 
     /// Where the cursor is, as a line that keeps its number when it
     /// scrolls (`scrolled_total() + row`).
+    /// The last line with something on it above the cursor: what the pane
+    /// printed last, not the line being typed at (a shell at its prompt
+    /// gives its last command's last line); the cursor's own row when
+    /// nothing is above it. `#{pane_last_line}`, at most 200 characters.
+    pub fn last_line(&self) -> String {
+        let s = self.screen();
+        let (row, _) = s.cursor_position();
+        let rows: Vec<String> = s.rows(0, s.size().1).take(usize::from(row) + 1).collect();
+        let pick = |l: &String| !l.trim().is_empty();
+        let line = rows[..rows.len().saturating_sub(1)]
+            .iter()
+            .rev()
+            .find(|l| pick(l))
+            .or_else(|| rows.last().filter(|l| pick(l)))
+            .map(|l| l.trim_end().replace('\t', " "))
+            .unwrap_or_default();
+        line.chars().take(200).collect()
+    }
+
     /// The row a command typed from row `from` ended on, found on the screen
     /// (up to row `to`): the first row by which the rows from `from`, read
     /// together, hold all of `text`. Blanks are left out on both sides, so
@@ -1868,6 +1887,21 @@ mod tests {
         assert_eq!(p.delivered_line, Some((2, 3)), "short of the edge: its own row");
         p.deliver(&"x".repeat(17));
         assert_eq!(p.delivered_line, Some((2, 5)), "4 + 17 columns: over three rows");
+    }
+
+    /// What a pane printed last, for the phone's list: above the line being
+    /// typed at, blank lines passed over; the cursor's own line when there
+    /// is nothing above; nothing on a blank screen.
+    #[test]
+    fn the_last_line_is_what_was_printed_last() {
+        let mut p = quiet_pane(20, 6, 100);
+        assert_eq!(p.last_line(), "");
+        p.process_output(b"PS> ");
+        assert_eq!(p.last_line(), "PS>", "only the prompt");
+        p.process_output(b"cargo test\r\ntests: 42 passed\r\n\r\nPS> ");
+        assert_eq!(p.last_line(), "tests: 42 passed");
+        p.process_output(b"echo a\tb\r\na\tb\r\nPS> x");
+        assert_eq!(p.last_line(), "a       b", "a tab as the screen shows it");
     }
 
     /// The command's end read off the screen, wherever it was drawn: here a

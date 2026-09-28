@@ -618,12 +618,17 @@ keepane web
 
 prints a QR code in the terminal. Scan it with the phone's camera (same
 network) and the browser opens a page that lists every pane, under its session
-and window, with the program running in it, and with the window's alert marks from the status line (`#`
-printed, `!` bell, `~` silent, with `monitor-activity` and friends on), so
-you can see which job finished. Tap one to see its screen, colours and all;
-keepane sends it again whenever it changes, so there is no refresh to wait for;
-type into it from the box at the bottom, or with the row of keys the phone
-keyboard lacks (Esc, Tab, Shift+Tab, arrows, Ctrl+C, y / n / 1 / 2 / 3). The
+and window: the program running in it, its directory, the last line it printed
+and how long it has been quiet, and the window's alert marks from the status
+line (`#` printed, `!` bell, `~` silent, with `monitor-activity` and friends
+on), so you can see which job finished without opening it. Tap one to see its
+screen, colours and all; keepane sends it again whenever it changes, so there
+is no refresh to wait for. Swipe across it for the next pane, or tap its title
+to pick one. Send sends what is in the box at the bottom, with no Enter after
+it; Send again (the box empty) is the Enter. The ☰ beside the box brings back
+what you sent before (☆ keeps one at the top). The keys the phone keyboard
+lacks are in a row above it (Esc, Tab, arrows, Enter, Ctrl+C, more under ⋯);
+Ctrl or Alt, then a letter typed, sends Ctrl or Alt with it. The
 + menu splits the pane, opens a window or closes the pane; the ⏱ button adds
 a column with the time each command started (tap one for its date, how long
 it took and its exit code; see "Command times and history"). A tap on a session or

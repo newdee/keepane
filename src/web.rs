@@ -724,7 +724,8 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                                   #{pane_active}\t#{window_active}\t#{pane_width}\t\
                                   #{pane_height}\t#{pane_dead}\t#{session_attached}\t\
                                   #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}\t\
-                                  #{pane_name}\t#{pane_work_mode}";
+                                  #{pane_name}\t#{pane_work_mode}\t#{pane_current_path_short}\t\
+                                  #{pane_activity}\t#{pane_last_line}";
             match q(vec!["list-panes".into(), "-a".into(), "-F".into(), FIELDS.into()]).await {
                 Ok((0, out, _)) => Response::json(panes_json(&out)),
                 Ok((_, _, err)) => Response::text(500, err.trim()),
@@ -836,16 +837,26 @@ fn is_pane_id(p: &str) -> bool {
 
 /// A button's key: one of the named keys, or Ctrl with a letter (`C-c`).
 fn is_named_key(k: &str) -> bool {
-    KEYS.contains(&k) || (k.len() == 3 && k.starts_with("C-") && k.as_bytes()[2].is_ascii_lowercase())
+    // Ctrl with a letter, Alt with a letter or digit (the page's Ctrl and
+    // Alt keys, then a character typed).
+    let with = |prefix: &str, ok: fn(&u8) -> bool| k.len() == 3 && k.starts_with(prefix) && ok(&k.as_bytes()[2]);
+    KEYS.contains(&k)
+        || with("C-", u8::is_ascii_lowercase)
+        || with("M-", |b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 /// The list-panes lines (tab-separated, in FIELDS order) as a JSON array.
 fn panes_json(out: &str) -> String {
+    panes_json_at(out, chrono::Utc::now().timestamp().max(0) as u64)
+}
+
+/// `panes_json` with the time now given, for the tests.
+fn panes_json_at(out: &str, now: u64) -> String {
     let items: Vec<String> = out
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() < 17 {
+            if f.len() < 20 {
                 return None;
             }
             let num = |s: &str| s.parse::<u64>().unwrap_or(0);
@@ -854,7 +865,7 @@ fn panes_json(out: &str) -> String {
             Some(format!(
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
                  \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
-                 \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{}}}",
+                 \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{},\"path\":{},\"quiet\":{},\"last\":{}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -871,7 +882,12 @@ fn panes_json(out: &str) -> String {
                 f[13] == "1",
                 f[14] == "1",
                 json_str(f[15]),
-                json_str(f[16])
+                json_str(f[16]),
+                json_str(f[17]),
+                // Seconds since it last printed, by this machine's clock (the
+                // phone's may be off).
+                now.saturating_sub(num(f[18])),
+                json_str(f[19])
             ))
         })
         .collect();
@@ -1046,11 +1062,22 @@ mod tests {
     fn the_code_and_the_pane_list() {
         let qr = qr_text("http://192.168.1.23:7681/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert!(qr.lines().count() > 10 && qr.contains('█'), "{qr}");
-        let json = panes_json("%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\nshort line\n");
+        let json = panes_json_at(
+            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\nshort line\n",
+            1060,
+        );
         assert_eq!(
             json,
-            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell"}]"#
+            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed"}]"#
         );
         assert_eq!(panes_json(""), "[]");
+        // The keys the page sends: named ones, Ctrl with a letter, Alt with
+        // a letter or digit; nothing else.
+        for k in ["Enter", "C-c", "C-x", "M-x", "M-1"] {
+            assert!(is_named_key(k), "{k}");
+        }
+        for k in ["C-X", "M-X", "M-", "C-cc", "x", "send-keys", "C-Left"] {
+            assert!(!is_named_key(k), "{k}");
+        }
     }
 }

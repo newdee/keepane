@@ -77,6 +77,21 @@ pub fn pipe_command(command: &str) -> (std::process::Command, &'static str) {
     (c, exe)
 }
 
+/// Let the panes' programs take Ctrl+C. The server is started in a process
+/// group of its own (`spawn_self`), and a process so started ignores Ctrl+C,
+/// which its children inherit: a pane's shell, and a `ping` or a build in
+/// it, would never stop at Ctrl+C (only programs that read the key
+/// themselves, as PSReadLine or an agent's prompt, would). Turned back on
+/// here, for the panes started from now on, as Windows documents it
+/// (`SetConsoleCtrlHandler(NULL, FALSE)`). The server has no console, so
+/// no Ctrl+C reaches it.
+pub fn let_panes_take_ctrl_c() {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    if unsafe { SetConsoleCtrlHandler(None, 0) } == 0 {
+        log::warn!("could not let the panes take Ctrl+C: {}", std::io::Error::last_os_error());
+    }
+}
+
 /// Whether starting with `breakaway` failed only because the caller's job
 /// does not allow leaving it (CreateProcess says access denied).
 pub fn leave_job_denied(e: &anyhow::Error) -> bool {

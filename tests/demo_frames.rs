@@ -572,6 +572,8 @@ fn record_tour() {
         rec.phone(4, title, &shot);
         rec.hold(2);
     }
+    // Send puts the text in; Send again (the box empty) is the Enter.
+    phone.step("{\"do\":\"send\"}");
     phone.step("{\"do\":\"send\"}");
     phone.step("{\"do\":\"wait\",\"text\":\"git log --oneline -1\"}");
     std::thread::sleep(Duration::from_millis(600));

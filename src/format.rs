@@ -135,6 +135,8 @@ pub struct Context {
     pub web_clients: String,
     /// The pane's directory with the home directory as `~`.
     pub pane_path_short: String,
+    /// The last line the pane printed (`Pane::last_line`).
+    pub pane_last_line: String,
     /// The program running in the pane right now (its newest descendant),
     /// e.g. `cargo` during a build; the shell's own name when idle.
     pub pane_pid_command: String,
@@ -311,6 +313,7 @@ impl Context {
             "web_url" => self.web_url.clone(),
             "web_clients" => self.web_clients.clone(),
             "pane_current_path_short" => self.pane_path_short.clone(),
+            "pane_last_line" => self.pane_last_line.clone(),
             "pane_pid_command" => self.pane_pid_command.clone(),
             "version" => env!("CARGO_PKG_VERSION").to_string(),
             "pid" => std::process::id().to_string(),

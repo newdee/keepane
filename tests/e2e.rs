@@ -3560,6 +3560,44 @@ async fn the_phone_renames_sessions_windows_and_panes() {
     h.cli(&["kill-server"]).await;
 }
 
+/// Ctrl+C stops what a pane runs. On Windows the server's own process group
+/// ignores Ctrl+C and its children inherited that, so a `ping` in a pane ran
+/// on through every Ctrl+C (from a key, `send-keys C-c` or the phone).
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_c_stops_what_a_pane_runs() {
+    // As `keepane` starts the server (`spawn_self`, a process group of its
+    // own): Ctrl+C ignored, which the panes would inherit. The server must
+    // turn it back on (this test's servers run in this process).
+    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1) };
+    let h = Harness::start("ctrlc").await;
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "c"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let p = pane_id(&h, "c:0.0").await;
+    let t = format!("%{p}");
+    h.wait_capture("c:0", "the prompt", |s| s.contains('>')).await;
+    let running = async |yes: bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (_, prog, _) = h.cli(&["display", "-p", "-t", &t, "#{pane_pid_command}"]).await;
+            if prog.to_ascii_lowercase().contains("ping") == yes {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "ping {} (the pane runs {prog:?})",
+                if yes { "never ran" } else { "ran on" }
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    h.cli(&["send-keys", "-t", &t, "ping -n 120 127.0.0.1", "Enter"]).await;
+    running(true).await;
+    h.cli(&["send-keys", "-t", &t, "C-c"]).await;
+    running(false).await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// A phone that wraps lines at its own width asks for them joined; a
 /// command's time then goes on the joined line that holds the whole
 /// command, not on a piece of it.

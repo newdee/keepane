@@ -77,6 +77,10 @@ impl Drop for Tree {
 /// A command line run through `/bin/sh -c`, in a process group of its own so
 /// a `Tree` can end it with everything it started. Returns the command and
 /// the program's name.
+/// Nothing to do here: a pane's program gets SIGINT from its terminal as
+/// usual (Windows keeps a flag that needs turning back on).
+pub fn let_panes_take_ctrl_c() {}
+
 pub fn shell_command(command: &str) -> (std::process::Command, &'static str) {
     let mut c = std::process::Command::new("/bin/sh");
     c.arg("-c").arg(command).process_group(0);

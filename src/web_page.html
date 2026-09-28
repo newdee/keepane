@@ -68,6 +68,13 @@
   .mark.bell { color: var(--bar); background: var(--red); }
   .mark.silence { color: var(--bar); background: var(--muted); }
   .pane .where { color: var(--muted); font-size: 13px; }
+  .pane .top { display: flex; align-items: baseline; gap: 8px; }
+  .pane .top .cmd { flex: 1; min-width: 0; }
+  .pane .quiet { flex: none; color: var(--muted); font-size: 12px; }
+  .pane .last {
+    margin-top: 3px; font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; color: var(--fg); opacity: .7;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .empty, .error { margin: 24px 16px; color: var(--muted); }
   .error { color: var(--red); }
 
@@ -84,15 +91,35 @@
   .stamp { color: var(--muted); cursor: pointer; }
   .stamp.fail { color: var(--red); }
   footer { background: var(--bar); border-top: 1px solid var(--line); padding: 8px 8px calc(env(safe-area-inset-bottom) + 8px); }
-  .keys { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
-  .keys::-webkit-scrollbar { display: none; }
-  .keys button { flex: none; min-width: 44px; padding: 6px 10px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  /* The keys: the usual ones in one row, the rest under ⋯; nothing to scroll. */
+  .keys { display: flex; flex-wrap: wrap; gap: 5px; padding-bottom: 8px; }
+  .keys button { flex: 1 0 auto; min-width: 32px; padding: 6px 4px; font: 13px ui-monospace, Menlo, Consolas, monospace; }
+  .keys button.on { background: var(--accent); color: var(--bar); border-color: var(--accent); }
+  #keys2 { padding-top: 0; }
   .typing { display: flex; gap: 6px; }
   .typing textarea {
     flex: 1; resize: none; font: 16px/1.3 ui-monospace, Menlo, Consolas, monospace; color: var(--fg);
     background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; height: 40px; max-height: 120px;
   }
-  .typing .send { background: var(--accent); color: var(--bar); border-color: var(--accent); font-weight: 600; }
+  .typing .send { background: var(--accent); color: var(--bar); border-color: var(--accent); font-weight: 600; min-width: 64px; }
+  .typing .icon { flex: none; font-size: 18px; }
+  header h1.switch { cursor: pointer; }
+  /* Sheets from the bottom: the pane switcher, the history. */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; z-index: 5; }
+  .overlay .sheet {
+    width: 100%; max-height: 75vh; overflow: auto; background: var(--bar); border-top: 1px solid var(--line);
+    border-radius: 14px 14px 0 0; padding: 8px 12px calc(env(safe-area-inset-bottom) + 12px);
+  }
+  .overlay .head { margin: 6px 2px 8px; color: var(--muted); font-size: 13px; }
+  .overlay .item { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+  .overlay .item .pick {
+    flex: 1; min-width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .overlay .item .pick.mono { font: 14px ui-monospace, Menlo, Consolas, monospace; }
+  .overlay .item .pick.here { border-color: var(--accent); }
+  .overlay .item .small { flex: none; width: 36px; padding: 0; color: var(--muted); }
+  .overlay .item .small.on { color: var(--yellow); }
+  .overlay .sub { color: var(--muted); font-size: 12px; margin: 10px 2px 2px; }
 
   /* The + menu */
   #menu { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; }
@@ -136,7 +163,9 @@
 </main>
 <footer id="footer" class="hidden">
   <div class="keys" id="keys"></div>
+  <div class="keys hidden" id="keys2"></div>
   <div class="typing">
+    <button class="icon" id="histBtn" aria-label="History">&#9776;</button>
     <textarea id="text" rows="1" placeholder="Type, then send" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
     <button class="send" id="send">Send</button>
   </div>
@@ -159,6 +188,8 @@
     <div class="row"><button id="askCancel">Cancel</button><button id="askOk" class="ok">OK</button></div>
   </div>
 </div>
+<div id="switch" class="overlay hidden"><div class="sheet" id="switchList"></div></div>
+<div id="hist" class="overlay hidden"><div class="sheet" id="histList"></div></div>
 <div id="toast" class="hidden"></div>
 <script>
 "use strict";
@@ -179,11 +210,15 @@ const zh = /^zh/i.test(navigator.language);
 const t = (en, cn) => (zh ? cn : en);
 let readOnly = false, panes = [], current = null, lastText = "", timer = null;
 
-// Buttons: what they show, what they send (a named key, or text).
+// Buttons: what they show, what they send (a named key, `=` text, `@` the
+// page's own: Ctrl, Alt, more keys). The usual ones, then the rest.
 const KEYS = [
-  ["Esc", "Escape"], ["Tab", "Tab"], ["⇧Tab", "BTab"], ["↑", "Up"], ["↓", "Down"], ["←", "Left"], ["→", "Right"],
-  ["^C", "C-c"], ["^D", "C-d"], ["⏎", "Enter"], ["y", "=y"], ["n", "=n"], ["1", "=1"], ["2", "=2"], ["3", "=3"],
-  ["⌫", "BSpace"], ["PgUp", "PPage"], ["PgDn", "NPage"],
+  ["Ctrl", "@ctrl"], ["Alt", "@alt"], ["Esc", "Escape"], ["Tab", "Tab"], ["↑", "Up"], ["↓", "Down"],
+  ["←", "Left"], ["→", "Right"], ["⏎", "Enter"], ["^C", "C-c"], ["⋯", "@more"],
+];
+const MORE_KEYS = [
+  ["⇧Tab", "BTab"], ["^D", "C-d"], ["^Z", "C-z"], ["^L", "C-l"], ["⌫", "BSpace"], ["Home", "Home"], ["End", "End"],
+  ["PgUp", "PPage"], ["PgDn", "NPage"], ["y", "=y"], ["n", "=n"], ["1", "=1"], ["2", "=2"], ["3", "=3"],
 ];
 
 async function api(path, opts = {}) {
@@ -246,10 +281,14 @@ function renderList() {
       (p.bell ? `<span class="mark bell" title="${t("bell", "响铃")}">!</span>` : "") +
       (p.silence ? `<span class="mark silence" title="${t("silent", "没动静")}">~</span>` : "");
     const cls = ["pane", p.active && p.windowActive ? "current" : "", p.dead ? "dead" : "", marks ? "alert" : ""].join(" ");
+    // What it runs and how long it has been quiet; its name, mode and
+    // directory; the last line it printed.
+    const where = [p.name ? `<b>%${esc(p.name)}</b>` : "", p.mode && p.mode !== "normal" ? esc(p.mode) : "", esc(p.path || "")]
+      .filter(Boolean).join(" · ");
     html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot"></span><span class="what">` +
-      `<div class="cmd">${esc(p.command || "?")}</div>` +
-      `<div class="where">${p.name ? `<b>%${esc(p.name)}</b> · ` : ""}${p.mode && p.mode !== "normal" ? `${esc(p.mode)} · ` : ""}` +
-      `${t("pane", "pane")} ${p.pane} · ${p.cols}×${p.rows}</div></span>` +
+      `<div class="top"><span class="cmd">${esc(p.command || "?")}</span><span class="quiet">${quietFor(p.quiet)}</span></div>` +
+      (where ? `<div class="where">${where}</div>` : "") +
+      (p.last ? `<div class="last">${esc(p.last)}</div>` : "") + `</span>` +
       (marks ? `<span class="marks">${marks}</span>` : "") + `</button>`;
   }
   $("list").innerHTML = html;
@@ -274,6 +313,12 @@ $("list").addEventListener("click", (e) => {
   const b = e.target.closest("button.pane");
   if (b && !bounced("open")) open(b.dataset.id, true);
 });
+
+// How long since a pane printed: "5s", "3m", "2h", "4d".
+function quietFor(s) {
+  if (s == null || isNaN(s)) return "";
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
+}
 
 // ---- Names ----
 // A sheet with the name to change; resolves to the new one, or null.
@@ -308,8 +353,99 @@ function paneInfo(id) { return panes.find((p) => p.id === id); }
 
 function setTitle() {
   const p = paneInfo(current);
-  $("title").innerHTML = p ? `${esc(p.name ? "%" + p.name : p.command || "?")} <span class="sub">${esc(p.session)}:${p.window}.${p.pane}</span>` : esc(current || "");
+  $("title").innerHTML = p ? `${esc(p.name ? "%" + p.name : p.command || "?")} <span class="sub">${esc(p.session)}:${p.window}.${p.pane} &#9662;</span>` : esc(current || "");
+  $("title").classList.toggle("switch", !!current);
 }
+
+// ---- Going from pane to pane ----
+// The panes in the list's order.
+const order = () => panes.map((p) => p.id);
+// To another pane without a new step in the history: Back still goes to
+// the list.
+function switchTo(id) {
+  if (!id || id === current) return;
+  open(id, false);
+  history.replaceState({ pane: id }, "");
+}
+// The title: every pane, to jump to.
+$("title").addEventListener("click", () => {
+  if (!current || bounced("switch")) return;
+  let html = `<div class="head">${t("Go to a pane", "切换到 pane")}</div>`, lastS = null, lastW = null;
+  for (const p of panes) {
+    if (p.session !== lastS) { html += `<div class="sub">${esc(p.session)}</div>`; lastS = p.session; lastW = null; }
+    if (p.window !== lastW) { html += `<div class="sub">&nbsp;&nbsp;${p.window}: ${esc(p.windowName)}</div>`; lastW = p.window; }
+    const label = `${p.name ? "%" + p.name + " · " : ""}${p.command || "?"}${p.last ? " — " + p.last : ""}`;
+    html += `<div class="item"><button class="pick${p.id === current ? " here" : ""}" data-id="${esc(p.id)}">${esc(label)}</button></div>`;
+  }
+  $("switchList").innerHTML = html;
+  $("switch").classList.remove("hidden");
+});
+$("switch").addEventListener("click", (e) => {
+  const b = e.target.closest("button.pick");
+  if (!b && e.target !== $("switch")) return;
+  $("switch").classList.add("hidden");
+  if (b) switchTo(b.dataset.id);
+});
+// Swiping across the pane: the next pane (to the left) or the one before
+// (to the right), in the list's order. Not while the screen itself can
+// still scroll that way (lines kept wide, the ↩ button off).
+let swipe = null;
+$("main").addEventListener("touchstart", (e) => {
+  if (!current || e.touches.length !== 1) { swipe = null; return; }
+  const m = $("main");
+  swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY, at: Date.now(), left: m.scrollLeft, room: m.scrollWidth - m.clientWidth };
+}, { passive: true });
+$("main").addEventListener("touchend", (e) => {
+  if (!swipe || !current) return;
+  const s = swipe; swipe = null;
+  const dx = e.changedTouches[0].clientX - s.x, dy = e.changedTouches[0].clientY - s.y;
+  if (Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * 0.6 || Date.now() - s.at > 800) return;
+  if (dx < 0 && s.room > 1 && s.left < s.room - 1) return; // can still scroll right
+  if (dx > 0 && s.room > 1 && s.left > 1) return; // can still scroll left
+  const ids = order(), i = ids.indexOf(current);
+  if (ids.length < 2 || i < 0) return;
+  const next = ids[(i + (dx < 0 ? 1 : ids.length - 1)) % ids.length];
+  switchTo(next);
+  const p = paneInfo(next);
+  toast(p ? `${p.name ? "%" + p.name : p.command || "?"} · ${p.session}:${p.window}.${p.pane}` : next);
+}, { passive: true });
+
+// ---- What was sent, to send again ----
+// Kept on this phone: the last HISTORY_MAX texts sent, newest first, and
+// the ones starred, which stay.
+const HISTORY_MAX = 50;
+let sent = (() => { try { return JSON.parse(localStorage.getItem("keepane-sent") || "[]"); } catch (e) { return []; } })();
+function saveSent() { try { localStorage.setItem("keepane-sent", JSON.stringify(sent)); } catch (e) {} }
+function remember(text) {
+  const had = sent.find((s) => s.t === text);
+  sent = [{ t: text, star: !!(had && had.star) }, ...sent.filter((s) => s.t !== text)];
+  let loose = 0;
+  sent = sent.filter((s) => s.star || ++loose <= HISTORY_MAX);
+  saveSent();
+}
+function showSent() {
+  const row = (s, i) => `<div class="item"><button class="pick mono" data-i="${i}">${esc(s.t)}</button>` +
+    `<button class="small${s.star ? " on" : ""}" data-star="${i}" aria-label="${t("Star", "常用")}">${s.star ? "&#9733;" : "&#9734;"}</button>` +
+    `<button class="small" data-drop="${i}" aria-label="${t("Remove", "删除")}">&#10005;</button></div>`;
+  const starred = sent.map((s, i) => [s, i]).filter(([s]) => s.star), recent = sent.map((s, i) => [s, i]).filter(([s]) => !s.star);
+  let html = `<div class="head">${t("Tap one to put it in the box; ☆ keeps it at the top", "点一条放进输入框；☆ 设为常用，固定在最上面")}</div>`;
+  if (starred.length) html += `<div class="sub">${t("Starred", "常用")}</div>` + starred.map(([s, i]) => row(s, i)).join("");
+  if (recent.length) html += `<div class="sub">${t("Recent", "最近")}</div>` + recent.map(([s, i]) => row(s, i)).join("");
+  if (!sent.length) html += `<p class="empty">${t("Nothing sent yet.", "还没有发过命令。")}</p>`;
+  $("histList").innerHTML = html;
+}
+$("histBtn").addEventListener("click", () => { if (bounced("hist")) return; showSent(); $("hist").classList.remove("hidden"); });
+$("hist").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) { if (e.target === $("hist")) $("hist").classList.add("hidden"); return; }
+  if (b.dataset.star != null) { const s = sent[+b.dataset.star]; s.star = !s.star; saveSent(); showSent(); return; }
+  if (b.dataset.drop != null) { sent.splice(+b.dataset.drop, 1); saveSent(); showSent(); return; }
+  if (b.dataset.i != null) {
+    const box = $("text"); box.value = sent[+b.dataset.i].t; sendLabel();
+    box.style.height = ""; box.style.height = Math.min(120, box.scrollHeight) + "px";
+    $("hist").classList.add("hidden"); box.focus();
+  }
+});
 
 function open(id, push) {
   current = id;
@@ -532,29 +668,71 @@ function bounced(what) {
   return now - last < BOUNCE_MS;
 }
 
-$("keys").innerHTML = KEYS.map(([label, k]) => `<button data-k="${esc(k)}">${esc(label)}</button>`).join("");
-$("keys").addEventListener("click", (e) => {
-  const b = e.target.closest("button");
-  if (b && !bounced("key " + b.dataset.k)) sendKey(b.dataset.k);
-});
-
-// The text leaves the box at once, so a second tap while it is on its way
-// finds nothing to send again; while it goes, Send does nothing. Put back
-// if it did not get there.
-let sending = false;
-async function sendText() {
-  if (sending || bounced("send")) return;
-  const box = $("text"); const text = box.value;
-  box.value = ""; box.style.height = "";
-  sending = true;
-  try {
-    if (text && !(await send("", text))) { if (!box.value) box.value = text; return; }
-    await send("&key=Enter");
-  } finally { sending = false; }
+// The key bar: the usual keys in one row, the rest under ⋯ (open or not,
+// kept on this phone). Ctrl and Alt stay down for the next character typed
+// in the box: Ctrl then c is C-c, sent as a key, not put in the box.
+function keyButtons(list) { return list.map(([label, k]) => `<button data-k="${esc(k)}">${esc(label)}</button>`).join(""); }
+$("keys").innerHTML = keyButtons(KEYS);
+$("keys2").innerHTML = keyButtons(MORE_KEYS);
+let moreKeys = (() => { try { return localStorage.getItem("keepane-more-keys") === "1"; } catch (e) { return false; } })();
+let held = null; // "C" or "M": Ctrl or Alt, down for the next character
+function showKeys() {
+  $("keys2").classList.toggle("hidden", !moreKeys);
+  for (const b of document.querySelectorAll("#keys button, #keys2 button")) {
+    const k = b.dataset.k;
+    b.classList.toggle("on", (k === "@ctrl" && held === "C") || (k === "@alt" && held === "M") || (k === "@more" && moreKeys));
+  }
 }
+function onKey(e) {
+  const b = e.target.closest("button");
+  if (!b || bounced("key " + b.dataset.k)) return;
+  const k = b.dataset.k;
+  if (k === "@more") {
+    moreKeys = !moreKeys;
+    try { localStorage.setItem("keepane-more-keys", moreKeys ? "1" : "0"); } catch (err) {}
+  } else if (k === "@ctrl" || k === "@alt") {
+    const want = k === "@ctrl" ? "C" : "M";
+    held = held === want ? null : want;
+    if (held) { $("text").focus(); toast(t("Now type a key", "现在输入一个键")); }
+  } else {
+    held = null;
+    sendKey(k);
+  }
+  showKeys();
+}
+$("keys").addEventListener("click", onKey);
+$("keys2").addEventListener("click", onKey);
+showKeys();
+
+// Send sends what is in the box, no Enter after it: a second Send (the box
+// empty), or ⏎ among the keys, is the Enter. The text leaves the box at
+// once, so the next tap cannot send it again, only the Enter, which goes
+// after it (everything goes out in order). Put back if it did not get there.
+async function sendText() {
+  if (bounced("send")) return;
+  const box = $("text"); const text = box.value;
+  box.value = ""; box.style.height = ""; sendLabel();
+  if (!text) { await send("&key=Enter"); return; }
+  if (await send("", text)) remember(text);
+  else if (!box.value) { box.value = text; sendLabel(); }
+}
+// What Send will do now.
+function sendLabel() { $("send").textContent = $("text").value ? t("Send", "发送") : t("Enter ⏎", "回车 ⏎"); }
 $("send").addEventListener("click", sendText);
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendText(); } });
-$("text").addEventListener("input", (e) => { e.target.style.height = ""; e.target.style.height = Math.min(120, e.target.scrollHeight) + "px"; });
+$("text").addEventListener("input", (e) => {
+  // Ctrl or Alt held: the character typed is the key, not text.
+  if (held && e.data && e.data.length === 1 && !e.isComposing) {
+    const box = e.target, at = box.selectionStart;
+    box.value = box.value.slice(0, at - 1) + box.value.slice(at);
+    const c = e.data.toLowerCase(), mod = held;
+    held = null; showKeys();
+    if (mod === "C" ? /[a-z]/.test(c) : /[a-z0-9]/.test(c)) sendKey(`${mod}-${c}`);
+    else toast(t("Ctrl goes with a letter, Alt with a letter or digit", "Ctrl 只能配字母，Alt 只能配字母或数字"));
+  }
+  sendLabel();
+  e.target.style.height = ""; e.target.style.height = Math.min(120, e.target.scrollHeight) + "px";
+});
 
 // ---- The + menu ----
 $("plus").addEventListener("click", () => $("menu").classList.remove("hidden"));
@@ -657,8 +835,9 @@ if (window.visualViewport) {
 }
 
 (async () => {
-  $("text").placeholder = t("Type, then send", "输入后发送");
-  $("send").textContent = t("Send", "发送");
+  $("text").placeholder = t("Type; Send sends it, Send again is Enter", "输入内容；点发送只发文字，再点一次是回车");
+  sendLabel();
+  $("histBtn").title = t("Sent before", "发过的命令");
   $("detail").title = t("When each command ran", "每条命令的时间");
   const labels = { "split-h": t("Split left | right", "左右分屏"), "split-v": t("Split top / bottom", "上下分屏"),
     "new-window": t("New window", "新窗口"), "kill-pane": t("Close this pane", "关闭这个 pane"), "": t("Cancel", "取消"),

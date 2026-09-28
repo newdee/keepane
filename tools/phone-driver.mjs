@@ -10,7 +10,7 @@
 //   {"do":"open","url":"http://..."}   the page, until its pane list shows
 //   {"do":"tap","name":"build"}         the pane named so (%build)
 //   {"do":"type","text":"git log"}      into the box, as typed
-//   {"do":"send"}                       the Send button
+//   {"do":"send"}                       the Send button (the text; again: Enter)
 //   {"do":"wait","text":"..."}          until the pane's screen shows it
 //   {"do":"back"}                       to the list
 //   {"do":"shot","path":"p.png"}        a picture of the screen
@@ -54,7 +54,9 @@ async function run(c) {
       await page.keyboard.type(c.text, { delay: 35 });
       return;
     case "send":
+      // The page takes a second tap within a quarter second as the same one.
       await page.click("#send");
+      await settle(400);
       return;
     case "wait":
       await page.waitForFunction((t) => document.getElementById("screen").textContent.includes(t), { timeout: 15000 }, c.text);
