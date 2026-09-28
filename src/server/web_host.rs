@@ -28,10 +28,16 @@ pub(super) struct WebHost {
     /// was stopped is not counted against this one.
     generation: u64,
     options: Options,
+    /// The address to scan: on the first of the addresses served.
     url: String,
+    /// The other addresses served (this machine's Tailscale ones), the
+    /// same port and key.
+    also: Vec<IpAddr>,
+    port: u16,
+    key: String,
     since: DateTime<Local>,
-    /// Taken by `web-stop`, which waits for it to end.
-    task: Option<tokio::task::JoinHandle<()>>,
+    /// One per address; taken by `web-stop`, which waits for them to end.
+    tasks: Vec<tokio::task::JoinHandle<()>>,
     peers: Vec<Peer>,
     refused: Vec<IpAddr>,
     /// The count the status line was last drawn with.
@@ -40,8 +46,8 @@ pub(super) struct WebHost {
 
 impl Drop for WebHost {
     fn drop(&mut self) {
-        // The listener and every connection go with the task.
-        if let Some(task) = &self.task {
+        // The listeners and every connection go with the tasks.
+        for task in &self.tasks {
             task.abort();
         }
     }
@@ -71,6 +77,21 @@ impl WebHost {
         &self.url
     }
 
+    /// The port served on: what another machine's keepane answers to.
+    pub(super) fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// The key in the address the phone scans: what pairing with another
+    /// machine is proved with (docs/design/link.md).
+    pub(super) fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub(super) fn read_only(&self) -> bool {
+        self.options.read_only
+    }
+
     /// `web-status`'s text. The first line is read back by `keepane web`
     /// (`web::status_url`) and the dashboard: `serving <url> · ... · N connected`.
     fn status(&self) -> String {
@@ -83,6 +104,9 @@ impl WebHost {
         }
         first.push_str(&format!(" · since {} · {} connected", self.since.format("%H:%M"), self.clients()));
         let mut lines = vec![first];
+        for ip in &self.also {
+            lines.push(format!("also http://{}/#k={}", crate::link::hostport(*ip, self.port), self.key));
+        }
         let mut peers: Vec<&Peer> = self.peers.iter().collect();
         // Connected first; each group in the order they came.
         peers.sort_by_key(|p| (!p.connected(), p.since));
@@ -117,41 +141,62 @@ impl Server {
                 w.url
             ));
         }
-        let ip = o.bind.unwrap_or_else(crate::web::lan_ip);
+        // The address this machine reaches the network through and its
+        // Tailscale addresses (or the one asked for), one port for all.
+        let addrs = crate::link::listen_addrs(o.bind);
+        let ip = addrs[0];
         let port = o.port.unwrap_or(crate::web::DEFAULT_PORT);
         let key = match if o.keep_key { crate::web::kept_key() } else { crate::web::new_key() } {
             Ok(k) => k,
             Err(e) => return Outcome::Error(format!("web: {e:#}")),
         };
-        let listener = match std::net::TcpListener::bind((ip, port))
-            .and_then(|l| l.set_nonblocking(true).map(|_| l))
-            .and_then(tokio::net::TcpListener::from_std)
-        {
+        let bind = |ip: IpAddr, port: u16| {
+            std::net::TcpListener::bind((ip, port))
+                .and_then(|l| l.set_nonblocking(true).map(|_| l))
+                .and_then(tokio::net::TcpListener::from_std)
+        };
+        let listener = match bind(ip, port) {
             Ok(l) => l,
             Err(e) => return Outcome::Error(format!("web: listen on {ip}:{port}: {e} (in use? --port picks another)")),
         };
-        // `-p 0`: whichever port the system gave.
+        // `-p 0`: whichever port the system gave; the other addresses take
+        // the same one (one that cannot is left out, and said).
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+        let mut listeners = vec![listener];
+        let mut also = Vec::new();
+        for other in addrs.iter().skip(1) {
+            match bind(*other, port) {
+                Ok(l) => {
+                    listeners.push(l);
+                    also.push(*other);
+                }
+                Err(e) => log::warn!("web: not on {other}:{port}: {e}"),
+            }
+        }
         self.web_generation += 1;
         let generation = self.web_generation;
         let events = self.events.clone();
-        let state = crate::web::State::new(&self.socket, &key, o.read_only).notify(move |seen| {
+        let state = std::sync::Arc::new(crate::web::State::new(&self.socket, &key, o.read_only).notify(move |seen| {
             let _ = events.send(Event::Web(generation, seen));
-        });
-        let task = tokio::spawn(crate::web::serve(listener, std::sync::Arc::new(state)));
-        let host = match ip {
-            IpAddr::V6(v6) => format!("[{v6}]"),
-            IpAddr::V4(v4) => v4.to_string(),
-        };
-        let url = format!("http://{host}:{port}/#k={key}");
-        log::info!("web: serving on {ip}:{port}");
-        self.note_message(&format!("web: serving on {ip}:{port}"));
+        }));
+        let tasks = listeners.into_iter().map(|l| tokio::spawn(crate::web::serve(l, state.clone()))).collect();
+        let url = format!("http://{}/#k={key}", crate::link::hostport(ip, port));
+        let where_ = std::iter::once(ip)
+            .chain(also.iter().copied())
+            .map(|ip| crate::link::hostport(ip, port))
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::info!("web: serving on {where_}");
+        self.note_message(&format!("web: serving on {where_}"));
         self.web = Some(WebHost {
             generation,
             options: o,
             url,
+            also,
+            port,
+            key,
             since: Local::now(),
-            task: Some(task),
+            tasks,
             peers: Vec::new(),
             refused: Vec::new(),
             drawn: 0,
@@ -170,12 +215,17 @@ impl Server {
         log::info!("web: stopped");
         self.note_message("web: stopped");
         self.web_redraw();
-        let (Some(task), Some(cid)) = (host.task.take(), cid) else { return Outcome::Ok };
-        task.abort();
+        let tasks = std::mem::take(&mut host.tasks);
+        let Some(cid) = cid else { return Outcome::Ok };
+        for task in &tasks {
+            task.abort();
+        }
         let events = self.events.clone();
         tokio::spawn(async move {
-            // Cancelled: the future, the listener in it, is dropped by now.
-            let _ = task.await;
+            // Cancelled: the futures, the listeners in them, are dropped by now.
+            for task in tasks {
+                let _ = task.await;
+            }
             let _ = events.send(Event::WebStopped(cid));
         });
         Outcome::Pending

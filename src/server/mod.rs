@@ -5,6 +5,9 @@ pub mod actor;
 pub mod import;
 pub mod input;
 pub mod layout;
+mod link_in;
+mod link_out;
+mod link_state;
 mod mail;
 mod newer;
 pub mod observe;
@@ -98,6 +101,8 @@ enum Event {
     Web(u64, crate::web::Seen),
     /// `web-stop`'s task has ended: answer the client that asked.
     WebStopped(ClientId),
+    /// Another machine answered a request of ours, or could not (`link_out`).
+    LinkAnswer(Box<link_out::LinkAnswer>),
 }
 
 /// How long after keepane's prompt marker a pane's command is taken as
@@ -762,6 +767,8 @@ pub struct Server {
     web: Option<web_host::WebHost>,
     /// Starts of it so far (`web_host`: stale requests are told apart).
     web_generation: u64,
+    /// The links to other machines (docs/design/link.md), once first used.
+    link: Option<link_state::LinkHost>,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -1112,6 +1119,7 @@ impl Server {
             public_ip: public_ip::PublicIp::default(),
             web: None,
             web_generation: 0,
+            link: None,
         }
     }
 
@@ -1927,6 +1935,7 @@ impl Server {
             Event::PublicIp(ip) => self.public_ip_answered(ip),
             Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
+            Event::LinkAnswer(a) => self.link_answered(*a),
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -5097,17 +5106,11 @@ impl Server {
             Cmd::WebStart(o) => self.web_start(o),
             Cmd::WebStatus => Outcome::Text(self.web_status()),
             Cmd::WebStop => self.web_stop(cid),
-            // The server side of `keepane link` (docs/design/link.md) is not
-            // built yet: the commands parse, and say so.
-            c @ (Cmd::LinkId
-            | Cmd::LinkAdd { .. }
-            | Cmd::LinkTrust { .. }
-            | Cmd::LinkList
-            | Cmd::LinkPanes { .. }
-            | Cmd::LinkAllow { .. }
-            | Cmd::LinkRemove { .. }
-            | Cmd::LinkRekey
-            | Cmd::LinkInbound { .. }) => Outcome::Error(format!("{c}: not served by this server yet")),
+            c @ (Cmd::LinkId | Cmd::LinkTrust { .. } | Cmd::LinkList | Cmd::LinkAllow { .. } | Cmd::LinkRekey) => {
+                self.exec_link_local(c, cid)
+            }
+            c @ (Cmd::LinkAdd { .. } | Cmd::LinkPanes { .. } | Cmd::LinkRemove { .. }) => self.exec_link_out(c, cid),
+            Cmd::LinkInbound { peer, request } => self.link_inbound(cid, &peer, &request),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };
                 let mut wake: Vec<ClientId> = Vec::new();

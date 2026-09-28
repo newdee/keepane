@@ -672,8 +672,54 @@ keepane web --port 8080 --bind 192.168.1.23   # another port, or another network
 
 It is plain HTTP, meant for your own network: on a shared one, someone
 watching the traffic could read the key. From elsewhere, put a private
-network such as Tailscale in between and bind to its address. Windows asks
-once whether keepane may use the network; allow it for private networks.
+network such as Tailscale in between: `keepane web` listens on this
+machine's network address and on its Tailscale addresses (`web status` lists
+them). Windows asks once whether keepane may use the network; allow it for
+private networks.
+
+## Across machines
+
+Panes on two computers can message each other the same way panes on one do,
+over the port `keepane web` serves on, once the two keepane servers are
+paired. It works like SSH keys: each server has a key pair of its own and a
+table of the machines it lets in, and pairing puts each one's key in the
+other's table, once. On the machine to pair with, run `keepane web` and
+take the address it prints (the one the phone scans, key included); on this
+one:
+
+```powershell
+keepane link add http://100.64.0.3:7681/#k=...     # pairs both ways, once
+keepane link list                                  # the machines paired
+keepane link panes 100.64.0.3:7681                 # their panes
+keepane send-message --to 100.64.0.3:7681/%worker "run the tests"
+```
+
+A pane there is written `host:port/` and then the pane as that machine names
+it (`%worker`, `$1:@3.%7`). The message arrives with `from=` this machine and
+pane, so `send-message -r` there answers back here, into the same task. Both
+machines need `keepane web` running; the web key is used for the pairing only,
+and every request after it is signed with the server's own key, so a new web
+key changes nothing. A machine is known by its key, not its address: turning
+up from another network (Tailscale instead of the LAN), it is the same
+machine. The two clocks must agree to within two minutes.
+
+A paired machine's messages reach `ai` and `normal` panes only. To let them
+run as commands in `shell` panes, allow that machine, from a terminal outside
+keepane (never from inside a pane, where an agent could):
+
+```powershell
+keepane link allow 100.64.0.3:7681 --shell     # --no-shell takes it back
+keepane link remove 100.64.0.3:7681            # unpair, on both
+keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
+keepane link rekey                             # a new key: every pairing has to be made again
+```
+
+A message for a `shell` pane from a machine not allowed is refused, and the
+sender told how to allow it. `keepane web --read-only` takes nothing from
+other machines either. When the other machine cannot be reached, the message
+fails at once (nothing is queued to be sent later). Pairing, unpairing and
+refused requests are said on the status line and kept in the event log. The
+design and every decision: [docs/design/link.md](docs/design/link.md).
 
 ## The manual
 

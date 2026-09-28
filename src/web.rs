@@ -31,6 +31,9 @@ const MAX_HEAD: usize = 16 * 1024;
 const MAX_BODY: usize = 64 * 1024;
 /// Scrollback a screen request may ask for, in lines.
 const MAX_HISTORY: u32 = 2000;
+/// A message from another machine (`/link/`): `message-max-size` goes up
+/// to 1 MB, plus its envelope.
+const MAX_LINK_BODY: usize = 1024 * 1024 + 4096;
 /// A connection that has not sent its request by then is dropped.
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -302,6 +305,9 @@ pub struct Request {
     pub path: String,
     pub query: Vec<(String, String)>,
     pub key: Option<String>,
+    /// The `x-keepane-*` headers (names in lower case): what another
+    /// machine's request carries (docs/design/link.md).
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -339,7 +345,7 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
         (Some(m), Some(t)) if !m.is_empty() && t.starts_with('/') => (m.to_string(), t),
         _ => bail!("not an HTTP request"),
     };
-    let (mut length, mut key) = (0usize, None);
+    let (mut length, mut key, mut headers) = (0usize, None, Vec::new());
     for line in lines {
         let Some((name, value)) = line.split_once(':') else { continue };
         let value = value.trim();
@@ -347,9 +353,11 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
             length = value.parse().context("bad Content-Length")?;
         } else if name.eq_ignore_ascii_case("x-keepane-key") {
             key = Some(value.to_string());
+        } else if name.len() > 10 && name[..10].eq_ignore_ascii_case("x-keepane-") {
+            headers.push((name.to_ascii_lowercase(), value.to_string()));
         }
     }
-    if length > MAX_BODY {
+    if length > if target.starts_with("/link/") { MAX_LINK_BODY } else { MAX_BODY } {
         bail!("request body too large");
     }
     let mut body = buf[head_end + 4..].to_vec();
@@ -370,7 +378,7 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
             (percent_decode(k), percent_decode(v))
         })
         .collect();
-    Ok(Some(Request { method, path: percent_decode(path), query, key, body }))
+    Ok(Some(Request { method, path: percent_decode(path), query, key, headers, body }))
 }
 
 /// `%XX` escapes and `+` for a space, as a browser writes a query; a `%`
@@ -398,12 +406,14 @@ fn percent_decode(s: &str) -> String {
 pub struct Response {
     pub status: u16,
     pub content_type: &'static str,
+    /// Beyond the usual ones: what another machine reads (`/link/`).
+    pub headers: Vec<(&'static str, String)>,
     pub body: Vec<u8>,
 }
 
 impl Response {
     fn new(status: u16, content_type: &'static str, body: impl Into<Vec<u8>>) -> Response {
-        Response { status, content_type, body: body.into() }
+        Response { status, content_type, headers: Vec::new(), body: body.into() }
     }
     fn text(status: u16, body: &str) -> Response {
         Response::new(status, "text/plain; charset=utf-8", body)
@@ -672,13 +682,17 @@ async fn write_response(stream: &mut TcpStream, r: &Response) -> Result<()> {
         413 => "Content Too Large",
         _ => "Error",
     };
-    let head = format!(
+    let mut head = format!(
         "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
-         X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+         X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n",
         r.status,
         r.content_type,
         r.body.len()
     );
+    for (k, v) in &r.headers {
+        head.push_str(&format!("{k}: {v}\r\n"));
+    }
+    head.push_str("\r\n");
     stream.write_all(head.as_bytes()).await?;
     stream.write_all(&r.body).await?;
     stream.shutdown().await.ok();
@@ -695,6 +709,9 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
         (true, "/icon.svg") => return Response::new(200, "image/svg+xml", ICON),
         (true, "/manifest.webmanifest") => return Response::new(200, "application/manifest+json", MANIFEST),
         _ => {}
+    }
+    if req.path.starts_with("/link/") {
+        return link_forward(req, peer, state).await;
     }
     if !req.path.starts_with("/api/") {
         return Response::text(404, "not found");
@@ -818,6 +835,38 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
     }
 }
 
+/// A request from another machine's keepane (docs/design/link.md), handed
+/// whole to the server (`link-inbound`), which holds the keys: it checks
+/// the request and signs the answer (a read-only refusal included, so the
+/// other side can tell it from an impostor's); what comes back is the
+/// status, signature and body to send.
+async fn link_forward(req: &Request, peer: IpAddr, state: &State) -> Response {
+    let forwarded = serde_json::json!({
+        "method": req.method,
+        "path": req.path,
+        "headers": req.headers,
+        "body": String::from_utf8_lossy(&req.body),
+    })
+    .to_string();
+    let argv = ["link-inbound", &peer.to_string(), &forwarded];
+    let answer = match crate::client::query(&state.socket, &argv).await {
+        Ok((0, out, _)) => out,
+        Ok((_, _, err)) => return Response::text(500, err.trim()),
+        Err(e) => return Response::text(500, &format!("{e:#}")),
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&answer) else {
+        return Response::text(500, "the server's answer is not what keepane web sends on");
+    };
+    let status = v["status"].as_u64().unwrap_or(500) as u16;
+    let mut r = Response::text(status, v["body"].as_str().unwrap_or_default());
+    r.headers = vec![
+        ("X-Keepane-Sign", v["sign"].as_str().unwrap_or_default().to_string()),
+        ("X-Keepane-Link", crate::link::PROTOCOL.to_string()),
+        ("X-Keepane-Version", env!("CARGO_PKG_VERSION").to_string()),
+    ];
+    r
+}
+
 /// The name a rename's body carries: text on one line, not too long. What
 /// else a name may be is keepane's to say.
 fn rename_body(body: &[u8]) -> Result<String, &'static str> {
@@ -923,6 +972,7 @@ mod tests {
             path: path.into(),
             query: Vec::new(),
             key: key.map(String::from),
+            headers: Vec::new(),
             body: Vec::new(),
         }
     }

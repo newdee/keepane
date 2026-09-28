@@ -223,6 +223,9 @@ fn main() {
         // The panes on a phone: a client of the server that also answers
         // HTTP on the local network, until Ctrl+C.
         "web" => Some(rt.block_on(keepane::web::run(&socket, &args[1..]))),
+        // Panes on other machines (docs/design/link.md): pairing, the
+        // machines paired, what each may do.
+        "link" => Some(rt.block_on(keepane::link::run(&socket, &args[1..]))),
         // MCP for an agent in a pane: stdin/stdout, until the agent closes it.
         "mcp" if args.len() > 1 => Some(Err(anyhow::anyhow!("mcp: takes no arguments"))),
         "mcp" => Some(rt.block_on(keepane::mcp::run(&socket))),

@@ -38,6 +38,9 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_ANSWER: usize = 4 * 1024 * 1024;
 
 pub const H_PROTOCOL: &str = "x-keepane-link";
+/// The keepane version at the other end, for the message when the
+/// protocols differ.
+pub const H_VERSION: &str = "x-keepane-version";
 pub const H_FROM: &str = "x-keepane-from";
 pub const H_PORT: &str = "x-keepane-port";
 pub const H_TIME: &str = "x-keepane-time";
@@ -91,6 +94,37 @@ pub fn listen_addrs(bind: Option<IpAddr>) -> Vec<IpAddr> {
         }
     }
     out
+}
+
+/// `keepane link <what> ...`: each is the server command `link-<what>`
+/// with the same words (`id`, `add`, `trust`, `list`, `panes`, `allow`,
+/// `remove`, `rekey`).
+pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
+    const WORDS: &[&str] = &["id", "add", "trust", "list", "panes", "allow", "remove", "rekey"];
+    const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
+                         trust <host:port> <key> [--shell] | list | panes <host:port> | \
+                         allow <host:port> --shell|--no-shell | remove <host:port> | rekey";
+    let Some(what) = args.first().map(String::as_str).filter(|w| WORDS.contains(w)) else {
+        bail!("{USAGE}");
+    };
+    if !crate::client::server_running(&crate::ipc::pipe_name(socket)) {
+        bail!("no keepane server is running (socket '{socket}'): start a session first, then `keepane web`");
+    }
+    let argv: Vec<String> = std::iter::once(format!("link-{what}")).chain(args[1..].iter().cloned()).collect();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, out, mut err) = crate::client::query(socket, &argv).await?;
+    // A server from before this (still running after an upgrade) does not
+    // know these commands: say why, and what to do.
+    if code != 0
+        && err.contains("unknown command: link-")
+        && let Some(v) = crate::client::server_version(socket).await
+        && v != env!("CARGO_PKG_VERSION")
+    {
+        err.push_str(&format!("note: {}\n", crate::client::mismatch_note(&v)));
+    }
+    print!("{out}");
+    eprint!("{err}");
+    Ok(code)
 }
 
 /// `host:port/rest` split into the machine and what names the pane there.
@@ -456,7 +490,8 @@ pub async fn call(
         anyhow::Ok(buf)
     };
     let buf = match tokio::time::timeout(longest, exchange).await {
-        Ok(r) => r?,
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => bail!("{addr} dropped the connection: {e}"),
         Err(_) => bail!("{addr} did not answer within {}s", longest.as_secs()),
     };
     parse_answer(&buf).with_context(|| format!("{addr} answered with something that is not HTTP"))

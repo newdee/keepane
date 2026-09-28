@@ -3841,6 +3841,243 @@ async fn the_phone_page_runs_in_the_server_and_says_who_is_on_it() {
     h.cli(&["kill-server"]).await;
 }
 
+/// One request to another server's `/link/` paths the way its keepane
+/// would make it, signed with `id`: (status, body).
+async fn link_call(
+    id: &keepane::link::Identity,
+    to_key: &str,
+    addr: &str,
+    method: &'static str,
+    path: &'static str,
+    time: i64,
+    nonce: &str,
+) -> (u16, String) {
+    use keepane::link as l;
+    let from = id.public();
+    let text = l::request_text(method, path, &from, 9, to_key, time, nonce, b"");
+    let headers = vec![
+        (l::H_PROTOCOL, l::PROTOCOL.to_string()),
+        (l::H_VERSION, "test".to_string()),
+        (l::H_FROM, from),
+        (l::H_PORT, "9".to_string()),
+        (l::H_TIME, time.to_string()),
+        (l::H_NONCE, nonce.to_string()),
+        (l::H_SIGN, id.sign(&text)),
+    ];
+    let a = l::call(addr, method, path, &headers, b"", Duration::from_secs(5)).await.unwrap();
+    (a.status, a.text())
+}
+
+/// Two servers in this process stand for two machines (docs/design/link.md):
+/// paired once through one's web address, their panes message each other
+/// and answer, a `-w` waits there, the hop limit holds across, a `shell`
+/// pane takes commands only from a machine allowed to, a stranger's or a
+/// stale or repeated request is refused, a new web key changes nothing,
+/// unpairing works on both, a read-only web takes nothing in, and a machine
+/// that is off is an error at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_on_two_machines_pass_messages_once_paired() {
+    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
+    let a = Harness::start("linka").await;
+    let b = Harness::start("linkb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    a.wait_capture("wa:0", "shell prompt", |t| t.contains("keepane>")).await;
+    b.wait_capture("wb:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let (pa, pb) = (pane_id(&a, "wa:0.0").await, pane_id(&b, "wb:0.0").await);
+    let (ta, tb) = (format!("%{pa}"), format!("%{pb}"));
+    a.cli(&["rename-pane", "-t", &ta, "lead"]).await;
+    b.cli(&["rename-pane", "-t", &tb, "worker"]).await;
+    assert_eq!(a.cli(&["set-work-mode", "-t", &ta, "ai"]).await.0, 0);
+    assert_eq!(b.cli(&["set-work-mode", "-t", &tb, "ai"]).await.0, 0);
+
+    // The link goes through `keepane web`: without it, nothing to answer to.
+    let (code, _, err) = a.cli(&["link-add", "http://127.0.0.1:1/#k=AAAAAAAAAAAAAAAAAAAAAA"]).await;
+    assert!(code != 0 && err.contains("keepane web") && err.contains("running here"), "{err}");
+    let web = async |h: &Harness, flags: &[&str]| {
+        let argv: Vec<&str> =
+            ["web-start", "-p", "0", "-b", "127.0.0.1"].into_iter().chain(flags.iter().copied()).collect();
+        let (code, status, err) = h.cli(&argv).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_ua, addr_a) = web(&a, &[]).await;
+    let (ub, addr_b) = web(&b, &[]).await;
+    let worker = format!("{addr_b}/%worker");
+    let (code, _, err) = a.cli(&["send-message", "--to", &worker, "hi"]).await;
+    assert!(code != 0 && err.contains("not paired"), "{err}");
+
+    // Pairing needs the other side's web key; with it, once, both ways.
+    let wrong = format!("{}#k=AAAAAAAAAAAAAAAAAAAAAA", ub.split("#k=").next().unwrap());
+    let (code, _, err) = a.cli(&["link-add", &wrong]).await;
+    assert!(code != 0 && err.contains("web key"), "{err}");
+    let (code, out, err) = a.cli(&["link-add", &ub]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with(&format!("paired with {addr_b}  SHA256:")), "{out}");
+    let (_, list, _) = a.cli(&["link-list"]).await;
+    assert!(list.contains(&addr_b) && list.contains("no"), "{list}");
+    let (_, list, _) = b.cli(&["link-list"]).await;
+    assert!(list.contains(&addr_a), "{list}");
+    let (_, said, _) = b.cli(&["show-messages"]).await;
+    assert!(said.contains(&format!("link: {addr_a} (SHA256:")), "{said}");
+    let (code, panes, err) = a.cli(&["link-panes", &addr_b]).await;
+    assert!(code == 0 && panes.contains("worker") && panes.contains("\tai\t"), "{panes} {err}");
+
+    // A message goes over, queued there until the agent is ready; its
+    // record here says so, and there it reads from=<this machine>/<pane>.
+    let (code, out, err) = a.cli_in(Some(pa), &["send-message", "--to", &worker, "hello worker"]).await;
+    assert_eq!(code, 0, "{err}");
+    let first = msg_id(&out);
+    assert!(
+        out.contains("forwarded: #")
+            && out.contains("queued for")
+            && out.contains(&format!("(ai, busy, 0 ahead) on {addr_b}")),
+        "{out}"
+    );
+    let (_, trace, _) = a.cli(&["trace-message", &first]).await;
+    assert!(
+        trace.starts_with(&format!("#{first} forwarded")) && trace.contains(&format!("to={addr_b}/%worker")),
+        "{trace}"
+    );
+    let (_, inbox, _) = b.cli(&["list-messages", "-t", &tb]).await;
+    assert!(
+        inbox.contains(&format!("from {addr_a}/$")) && inbox.contains(" lead (ai)") && inbox.contains("hello worker"),
+        "{inbox}"
+    );
+    assert_eq!(b.cli_in(Some(pb), &["pane-ready"]).await.0, 0);
+    wait_format(&b, pb, "#{pane_inbox}", "0").await;
+    // The envelope line is wider than the pane, so it is read with -J.
+    b.wait_capture("wb:0", "the message", |t| t.contains("hello worker")).await;
+    let (_, joined, _) = b.cli(&["capture-pane", "-p", "-J", "-t", "wb:0"]).await;
+    assert!(joined.contains(&format!("from={addr_a}/$")) && joined.contains(" name=lead mode=ai to="), "{joined}");
+
+    // The answer goes back to the sender's machine and joins its task.
+    let (code, out, err) = b.cli_in(Some(pb), &["send-message", "-r", "got it"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(&format!("on {addr_a}")), "{out}");
+    let (_, task, _) = a.cli(&["show-task", &first]).await;
+    assert!(task.contains("hello worker") && task.contains("got it") && task.contains("%worker → "), "{task}");
+    let (_, inbox, _) = a.cli(&["list-messages", "-t", &ta]).await;
+    assert!(inbox.contains("got it") && inbox.contains(&format!("from {addr_b}/$")), "{inbox}");
+    let reply_on_a = inbox.split("  #").nth(1).and_then(|s| s.split_whitespace().next()).unwrap().to_string();
+
+    // `-w` waits on the other machine (busy: its agent has not said ready).
+    let started = Instant::now();
+    let (code, out, err) = a.cli(&["send-message", "--to", &worker, "-w", "1", "more"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("queued for") && started.elapsed() >= Duration::from_millis(900), "{out}");
+    // The hop limit counts across machines: a third hop is refused here.
+    a.cli(&["set", "-g", "message-hop-limit", "1"]).await;
+    let (code, _, err) = a.cli(&["send-message", "--re", &reply_on_a, "and again"]).await;
+    assert!(code != 0 && err.contains("message-hop-limit"), "{err}");
+    a.cli(&["set", "-g", "message-hop-limit", "8"]).await;
+
+    // A shell pane there takes commands from here only once this machine is
+    // allowed to, by a person outside every pane.
+    #[cfg(windows)]
+    let (shell, echo): (&[&str], &str) = (&["pwsh", "-NoLogo", "-NoProfile"], "Write-Output linked-ok");
+    #[cfg(unix)]
+    let (shell, echo): (&[&str], &str) = (&["bash"], "echo linked-ok");
+    let argv: Vec<&str> = ["new-window", "-d", "-t", "wb"].into_iter().chain(shell.iter().copied()).collect();
+    b.cli(&argv).await;
+    let ps = pane_id(&b, "wb:1.0").await;
+    b.cli(&["rename-pane", "-t", &format!("%{ps}"), "sh"]).await;
+    assert_eq!(b.cli(&["set-work-mode", "-t", &format!("%{ps}"), "shell"]).await.0, 0);
+    wait_format(&b, ps, "#{pane_idle}", "1").await;
+    let sh = format!("{addr_b}/%sh");
+    let (code, _, err) = a.cli(&["send-message", "--to", &sh, echo]).await;
+    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --shell")), "{err}");
+    let (code, _, err) = b.cli_in(Some(pb), &["link-allow", &addr_a, "--shell"]).await;
+    assert!(code != 0 && err.contains("not run from inside a pane"), "{err}");
+    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--shell"]).await;
+    assert!(code == 0 && out.contains("may run commands"), "{out} {err}");
+    let (code, out, err) = a.cli(&["send-message", "--to", &sh, echo]).await;
+    assert!(code == 0 && out.contains("delivered to"), "{out} {err}");
+    b.wait_capture("wb:1.0", "the command's output", |t| t.contains("linked-ok")).await;
+
+    // A stranger, a stale clock, a repeat, a signature for another request:
+    // refused, and said on the status line.
+    let stranger = keepane::link::Identity::make(&dir.join("stranger")).unwrap();
+    let key_b = b.cli(&["link-id"]).await.1.split_whitespace().next().unwrap().to_string();
+    let now = keepane::link::now();
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n1").await;
+    assert!(status == 401 && body.contains("not paired"), "{status} {body}");
+    let (code, _, err) = b.cli(&["link-trust", "127.0.0.1:9", &stranger.public()]).await;
+    assert_eq!(code, 0, "{err}");
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now - 300, "n2").await;
+    assert!(status == 401 && body.contains("clocks"), "{status} {body}");
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n3").await;
+    assert!(status == 200 && body.contains("worker"), "{status} {body}");
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n3").await;
+    assert!(status == 401 && body.contains("seen before"), "{status} {body}");
+    let (status, body) = link_call(&stranger, "not-their-key", &addr_b, "GET", "/link/panes", now, "n4").await;
+    assert!(status == 401 && body.contains("not signed"), "{status} {body}");
+    let (_, said, _) = b.cli(&["show-messages"]).await;
+    assert!(said.contains("link: 127.0.0.1:9 refused: the request from 127.0.0.1:9 was seen before"), "{said}");
+    assert_eq!(b.cli(&["link-remove", "127.0.0.1:9"]).await.0, 0);
+
+    // A new web key there changes nothing: the pairing is by key pair.
+    let port_b = addr_b.rsplit(':').next().unwrap().to_string();
+    assert_eq!(b.cli(&["web-stop"]).await.0, 0);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (code, status, _) = b.cli(&["web-start", "-p", &port_b, "-b", "127.0.0.1"]).await;
+        if code == 0 {
+            assert_ne!(keepane::web::status_url(&status), Some(ub.as_str()), "a new key");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the port was not free again");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (code, out, err) = a.cli(&["send-message", "--to", &worker, "still here"]).await;
+    assert!(code == 0 && out.contains("forwarded"), "{out} {err}");
+
+    // Unpaired from either side, on both.
+    let (code, out, err) = a.cli(&["link-remove", &addr_b]).await;
+    assert!(code == 0 && out.contains("both machines"), "{out} {err}");
+    assert!(b.cli(&["link-list"]).await.1.starts_with("no machines paired"));
+    let (code, _, err) = a.cli(&["send-message", "--to", &worker, "gone?"]).await;
+    assert!(code != 0 && err.contains("not paired"), "{err}");
+    // A stranger's key in the table by hand (`link trust`), both ways.
+    let key_a = a.cli(&["link-id"]).await.1.split_whitespace().next().unwrap().to_string();
+    assert_eq!(a.cli(&["link-trust", &addr_b, &key_b]).await.0, 0);
+    assert_eq!(b.cli(&["link-trust", &addr_a, &key_a]).await.0, 0);
+    let (code, out, err) = a.cli(&["send-message", "--to", &worker, "trusted"]).await;
+    assert!(code == 0 && out.contains("forwarded"), "{out} {err}");
+
+    // Read-only takes nothing from other machines; a machine that moved (a
+    // new port here stands for a new address) is known by its key.
+    assert_eq!(b.cli(&["web-stop"]).await.0, 0);
+    let (_, addr_b2) = web(&b, &["-r"]).await;
+    assert_ne!(addr_b2, addr_b);
+    let (code, out, err) = b.cli(&["send-message", "--to", &format!("{addr_a}/%lead"), "from a new port"]).await;
+    assert!(code == 0 && out.contains("forwarded"), "{out} {err}");
+    let (_, list, _) = a.cli(&["link-list"]).await;
+    assert!(list.contains(&addr_b2) && !list.contains(&format!("{addr_b} ")), "{list}");
+    let (code, _, err) = a.cli(&["send-message", "--to", &format!("{addr_b2}/%worker"), "in?"]).await;
+    assert!(code != 0 && err.contains("read-only"), "{err}");
+
+    // Off: an error at once, nothing queued here. (The port closes a moment
+    // after kill-server answers; a connection cut while it closes is an
+    // error of its own wording.)
+    b.cli(&["kill-server"]).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while tokio::net::TcpStream::connect(&addr_b2).await.is_ok() {
+        assert!(Instant::now() < deadline, "the port is still open");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (code, _, err) = a.cli(&["send-message", "--to", &format!("{addr_b2}/%worker"), "anyone?"]).await;
+    assert!(code != 0 && err.contains("not reachable"), "{err}");
+    let (_, trace, _) = a.cli(&["trace-message", &msg_id(&err.trim_start_matches('#').replace("rejected", ""))]).await;
+    assert!(trace.contains("rejected"), "nothing queued: {trace}");
+    a.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The prefix handed over as a bare byte (character 0x02, no Ctrl flag, no
 /// key code), as hosts that pass input on as bytes do: it is still C-b.
 #[tokio::test(flavor = "multi_thread")]

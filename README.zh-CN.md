@@ -385,7 +385,31 @@ keepane web --keep-key      # 下次还用同一个二维码，收藏的网页�
 keepane web --port 8080 --bind 192.168.1.23   # 换端口，或者指定网卡
 ```
 
-用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络，绑定到它的地址。第一次运行时 Windows 会问是否允许 keepane 联网，选“专用网络”允许即可。
+用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络：`keepane web` 会同时监听本机的局域网地址和 Tailscale 地址（`web status` 会列出来）。第一次运行时 Windows 会问是否允许 keepane 联网，选“专用网络”允许即可。
+
+## 跨电脑
+
+两台电脑上的 pane 也能像同一台上那样互发消息，走的是 `keepane web` 监听的那个端口，前提是两边的 keepane server 配过对。做法和 SSH 的公钥一样：每个 server 有自己的一对密钥，还有一张“允许哪些机器进来”的表；配对就是把双方的公钥各写进对方的表里，只做一次。在要配对的那台机器上运行 `keepane web`，拿到它打出的地址（就是手机扫的那个，带密钥）；然后在这台上：
+
+```powershell
+keepane link add http://100.64.0.3:7681/#k=...     # 配对，一次双向生效
+keepane link list                                  # 配过对的机器
+keepane link panes 100.64.0.3:7681                 # 对方的 pane
+keepane send-message --to 100.64.0.3:7681/%worker "run the tests"
+```
+
+对方的 pane 写成 `主机:端口/` 加上它在那台机器上的名字（`%worker`、`$1:@3.%7`）。消息到了那边，信封里的 `from=` 是这台机器和发送的 pane，所以那边用 `send-message -r` 回信就直接回到这里，并且归到同一个任务里。两边都要开着 `keepane web`；web 密钥只在配对那一次用到，之后每个请求都用 server 自己的密钥签名，所以 web 换了密钥也不影响。认的是公钥，不是地址：对方换个网络出现（从局域网换到 Tailscale），还是同一台机器。两边的时钟相差不能超过两分钟。
+
+配过对的机器发来的消息只进 `ai` 和 `normal` 模式的 pane。要让它们在 `shell` 模式的 pane 里当命令执行，得在 keepane 之外的终端里给那台机器授权（不能在 pane 里面做，否则 agent 就能自己开权限）：
+
+```powershell
+keepane link allow 100.64.0.3:7681 --shell     # --no-shell 收回
+keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
+keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
+keepane link rekey                             # 换一对新密钥：所有配对都要重做
+```
+
+没授权的机器发给 `shell` pane 的消息会被拒收，发送方会看到怎么授权。`keepane web --read-only` 的机器也不收别的机器的消息。对方连不上时立刻报错，不会在本机排队等以后再发。配对、解除配对和被拒的请求都会在状态栏提示，并记进事件日志。设计和每条决定见 [docs/design/link.md](docs/design/link.md)。
 
 ## 手册
 

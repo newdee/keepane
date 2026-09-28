@@ -23,6 +23,9 @@ enum WaitKind {
     Finished(MsgId),
     /// `read-message -w`: until the pane's inbox has one to take.
     Inbox(PaneId),
+    /// Another machine's `-w` on a message it sent here: until it leaves
+    /// the inbox, answered as that machine reads it (`link_in`).
+    Link { id: MsgId, nonce: String },
 }
 
 /// What a message answers and carries on: `-r` (the message the calling
@@ -51,7 +54,7 @@ impl Server {
         self.sessions.iter().find_map(|s| s.windows.iter().position(|w| w.pane(id).is_some()).map(|widx| (s.id, widx)))
     }
 
-    fn address_of(&self, id: PaneId) -> String {
+    pub(super) fn address_of(&self, id: PaneId) -> String {
         match self.place_of(id) {
             Some((sid, widx)) => self.address(sid, widx, id),
             None => format!("%{id}"),
@@ -98,7 +101,7 @@ impl Server {
         false
     }
 
-    fn sender_of(&self, cid: Option<ClientId>) -> Sender {
+    pub(super) fn sender_of(&self, cid: Option<ClientId>) -> Sender {
         match self.caller_pane(cid).and_then(|id| self.pane_ref(id).map(|p| (id, p))) {
             Some((id, p)) => {
                 Sender::Pane { id, address: self.address_of(id), name: p.actor.name.clone(), mode: p.actor.mode }
@@ -108,7 +111,7 @@ impl Server {
     }
 
     /// Who did it, for the event log: a pane's address, or `user`.
-    fn by(&self, cid: Option<ClientId>) -> String {
+    pub(super) fn by(&self, cid: Option<ClientId>) -> String {
         self.caller_pane(cid).map_or_else(|| "user".to_string(), |p| self.address_of(p))
     }
 
@@ -117,7 +120,7 @@ impl Server {
     }
 
     /// Where a message stands, the way `send-message` reports it.
-    fn stand(&self, id: MsgId) -> String {
+    pub(super) fn stand(&self, id: MsgId) -> String {
         let Some(r) = self.observe.get(id) else { return format!("#{id}") };
         let to = &r.msg.to;
         let via = r.msg.via.as_str();
@@ -219,6 +222,30 @@ impl Server {
             carry = Some((t, furthest + 1));
         }
         let reply = reply || (re.is_some() && target.is_none());
+        // A pane of another machine (docs/design/link.md): what was asked
+        // for by `host:port/…`, or the sender of a message that came from
+        // there. It goes out through `send_remote`; the record here says so.
+        if let Some(t) = target.filter(|_| !reply)
+            && let Some(machine) = &t.remote
+        {
+            let there = crate::command::target_string(&Target { remote: None, ..t.clone() });
+            let from = self.sender_of(cid);
+            return self.send_remote(cid, machine, &there, text, from, carry, None, wait);
+        }
+        if reply
+            && let Some(cur) = &answering
+            && let Sender::Remote { addr, address, .. } = &cur.from
+        {
+            let (how, cur_id) = (if re.is_some() { "--re" } else { "-r" }, cur.id);
+            let Some(origin) = self.link.as_ref().and_then(|l| l.origin.get(&cur_id)).cloned() else {
+                return Outcome::Error(format!(
+                    "send-message {how}: #{cur_id} came from {addr}, and the way back is gone (the server restarted since)"
+                ));
+            };
+            let (addr, address) = (addr.clone(), address.clone());
+            let from = self.sender_of(cid);
+            return self.send_remote(cid, &addr, &address, text, from, carry, Some((cur_id, origin)), wait);
+        }
         let to = if reply {
             let Some(cur) = &answering else {
                 return Outcome::Error(match me {
@@ -266,6 +293,23 @@ impl Server {
             // The event log keeps milliseconds; so does the message.
             at: chrono::SubsecRound::trunc_subsecs(chrono::Local::now(), 3),
         };
+        if let Err(why) = self.enqueue(to, m) {
+            return Outcome::Error(format!("#{id} rejected: {why}"));
+        }
+        match (wait, cid) {
+            (Some(secs), Some(cid)) if self.observe.get(id).is_some_and(|r| r.stage == Stage::Queued) => {
+                self.wait(cid, secs, WaitKind::Delivered(id));
+                Outcome::Pending
+            }
+            _ => Outcome::Text(self.stand(id)),
+        }
+    }
+
+    /// A message with its number, sender and text made up, into pane `to`'s
+    /// inbox: refused (and recorded so) when too big, too many hops on, or
+    /// the pane is gone or full; else recorded as sent, and typed in at
+    /// once when the pane is free.
+    pub(super) fn enqueue(&mut self, to: PaneId, m: Message) -> Result<(), String> {
         let refuse = if m.text.len() > self.opts.message_max_size {
             Some(format!("the message is {} bytes; message-max-size is {}", m.text.len(), self.opts.message_max_size))
         } else if m.hop > self.opts.message_hop_limit {
@@ -288,20 +332,20 @@ impl Server {
         };
         if let Err(why) = queued {
             self.observe.sent(&m, Some(&why));
-            return Outcome::Error(format!("#{id} rejected: {why}"));
+            return Err(why);
         }
         self.observe.sent(&m, None);
         if m.via == WorkMode::Normal {
             self.mail_alert(to, &m);
         }
         self.deliver(to);
-        match (wait, cid) {
-            (Some(secs), Some(cid)) if self.observe.get(id).is_some_and(|r| r.stage == Stage::Queued) => {
-                self.wait(cid, secs, WaitKind::Delivered(id));
-                Outcome::Pending
-            }
-            _ => Outcome::Text(self.stand(id)),
-        }
+        Ok(())
+    }
+
+    /// A `-w` on a message another machine sent in (`link_in`): answered
+    /// with the signed JSON that machine reads, not the text a person does.
+    pub(super) fn wait_link(&mut self, cid: ClientId, secs: u64, id: MsgId, nonce: String) {
+        self.wait(cid, secs, WaitKind::Link { id, nonce });
     }
 
     /// A message for a pane that takes none on its own: its window is
@@ -939,13 +983,20 @@ impl Server {
         let mut i = 0;
         while i < self.msg_waits.len() {
             let w = &self.msg_waits[i];
-            let answer = match w.kind {
-                WaitKind::Delivered(id) => match self.observe.get(id).map(|r| r.stage) {
+            let answer = match &w.kind {
+                WaitKind::Link { id, nonce } => match self.observe.get(*id).map(|r| r.stage) {
+                    Some(Stage::Queued) => None,
+                    _ => {
+                        let (id, nonce) = (*id, nonce.clone());
+                        Some(self.link_send_answer(id, &nonce))
+                    }
+                },
+                &WaitKind::Delivered(id) => match self.observe.get(id).map(|r| r.stage) {
                     Some(Stage::Queued) => None,
                     Some(Stage::Dropped | Stage::Rejected) => Some(Outcome::Error(self.stand(id))),
                     _ => Some(Outcome::Text(self.stand(id))),
                 },
-                WaitKind::Finished(id) => match self.observe.get(id) {
+                &WaitKind::Finished(id) => match self.observe.get(id) {
                     Some(r) if !r.stage.finished() => None,
                     _ => Some(
                         self.observe
@@ -953,7 +1004,7 @@ impl Server {
                             .map_or(Outcome::Error(format!("no message #{id}")), Outcome::Text),
                     ),
                 },
-                WaitKind::Inbox(pid) => {
+                &WaitKind::Inbox(pid) => {
                     if self.pane_ref(pid).is_none() {
                         Some(Outcome::Error(format!("%{pid} is gone")))
                     } else if self.pane_ref(pid).is_some_and(|p| !p.actor.inbox.is_empty()) {
@@ -987,6 +1038,13 @@ impl Server {
                         self.observe.get(id).map_or(format!("#{id}"), |r| format!("#{id} {}", r.stage.as_str()))
                     }
                     WaitKind::Inbox(pid) => format!("no message for %{pid}"),
+                    // Still queued: the other machine hears so, as a fact,
+                    // not a failure.
+                    WaitKind::Link { id, nonce } => {
+                        let out = self.link_send_answer(id, &nonce);
+                        self.reply(w.cid, out);
+                        continue;
+                    }
                 };
                 self.reply(w.cid, Outcome::Error(format!("timed out: {what}")));
             } else {

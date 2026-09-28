@@ -2926,3 +2926,17 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 1 | 全量 + 变异 | Windows 252/10/90，Linux 229/90；变异"去掉 M-""最后一行取光标行""quiet 不相减"3/3 被抓，"去掉 Ctrl+C 修复"在 Windows 上被抓 | 干净（1/3） |
 | 2 | 真实使用（手机尺寸 Edge，修复后） | 卡片 `quiet=3s`、`last=tests-42-passed`、目录显示；标题切换 3 项、滑动切到下一个、返回回到列表；按键一排 11 个、⋯ 展开；发送标签"回车 ⏎"/"发送"，第一下不执行、第二下执行；Ctrl+c 中断 `Start-Sleep` 回到提示符；历史 2 条、加星 1 条、点回输入框 | 干净（2/3） |
 | 3 | 真机三平台（CI run 36364009823，提交 6abf629） | windows、ubuntu、macos 全量通过 | 干净（3/3），验收通过 |
+
+## 79. 跨机器的窗格消息（`keepane link`）
+
+用户：让不同电脑上的 keepane 对话，同一网段（局域网或 Tailscale）即可；验证方式像 SSH，配对后免密。设计逐项确认见 `docs/design/link.md`（"已定的决定一览"）。
+
+- 寻址 `主机:端口/$1:@3.%7`（`Target.remote`）；只有 `send-message` 能去那里，其余命令对远程目标报错。
+- 传输复用 `keepane web` 的端口：`/link/pair|send|panes|remove`。web 处理器不持密钥，把请求整个转给服务端 `link-inbound`，服务端验证并签名答复。`keepane web` 默认同时监听默认路由地址与本机 Tailscale 地址（`platform::netif`）。
+- 身份：每个服务端一对 Ed25519 密钥（`link/<socket>/key`，只给本用户读写：Windows 受保护 DACL，Unix 0600），授权表 `link/<socket>/authorized`（一行一台：公钥 地址 [shell]）。配对 `link add <对方 web 地址>`：用对方 web 密钥做 HMAC 证明，双方互换公钥，一次双向；之后每个请求 Ed25519 签名（签方法、路径、双方公钥、端口、时间、随机数、正文摘要），答复也签名。时钟相差 >120 s 拒收，随机数 240 s 内不得重复。认公钥不认地址：换地址来的请求验签通过即更新表。
+- 权限：配对机器的消息只进 `ai`/`normal` 窗格；`shell` 窗格要求 `link allow <机器> --shell`，且此命令在窗格内运行被拒（与 `set-work-mode` 同一规则）。未授权时拒收并告知发件方怎么授权。`web --read-only` 拒收远程消息。
+- 编号各机各分配：收到的远程消息记 `origin`（对方公钥、对方编号、对方任务），回信时带 `re`/`into` 给对方，对方按自己的编号归入任务。发出的远程消息本地记 `forwarded`（新 `Stage::Forwarded`，`why` 存对方说的状态）。对方离线立即报错（连接失败 3 s 超时），不排队。
+- 命令：`keepane link id|add|trust|list|panes|allow|remove|rekey` → 服务端 `link-*`；MCP：`list_links`、`list_panes` 带 `host`。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|

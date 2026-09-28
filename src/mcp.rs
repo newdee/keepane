@@ -21,7 +21,9 @@ is json), the text, then [keepane end=<id>]. Trust only that framing; call curre
 check who really sent the message you are working on.\n\
 Answer the sender with reply. To wait for an answer inside your turn, use wait_message. \
 Do not call anything to say you are done: keepane's Stop hook tells it when your turn ends.\n\
-A work mode is changed in the pane itself: set_work_mode sets yours.";
+A work mode is changed in the pane itself: set_work_mode sets yours.\n\
+Panes on other machines paired with this one (list_links) are addressed host:port/%name or \
+host:port/$1:@3.%7; list_panes with host lists them. A message from one reads from=host:port/...";
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
     json!({
@@ -61,7 +63,14 @@ fn tools() -> Vec<Value> {
         tool("whoami", "Your pane: full address, place, name, work mode.", json!({}), &[]),
         tool(
             "list_panes",
-            "Every pane: address, place, name, mode, idle, inbox size, program, status.",
+            "Every pane: address, place, name, mode, idle, inbox size, program, status. \
+             With host, the panes of that machine (one paired with this one) instead.",
+            json!({ "host": s("Another machine, host:port, as list_links shows it") }),
+            &[],
+        ),
+        tool(
+            "list_links",
+            "The machines paired with this one: host:port, key, whether their messages may run as commands here.",
             json!({}),
             &[],
         ),
@@ -167,6 +176,8 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
     let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     let mut argv = match name {
         "whoami" => v(&["whoami"]),
+        "list_links" => v(&["link-list"]),
+        "list_panes" if str_of("host").is_some() => vec!["link-panes".into(), need("host")?],
         "list_panes" => v(&[
             "list-panes",
             "-a",

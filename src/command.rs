@@ -1612,7 +1612,8 @@ impl fmt::Display for Cmd {
 }
 
 /// A target as `session:window.pane`, the way `-t` takes it back.
-fn target_string(t: &Target) -> String {
+/// A target written back the way `Target::parse` reads it.
+pub fn target_string(t: &Target) -> String {
     let pane = t.pane_id.map(|id| format!("%{id}")).or_else(|| t.pane_name.as_ref().map(|n| format!("%{n}")));
     let mut s = t.remote.as_ref().map(|r| format!("{r}/")).unwrap_or_default();
     if let Some(p) = &pane

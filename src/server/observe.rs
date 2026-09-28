@@ -239,6 +239,18 @@ impl Store {
         });
     }
 
+    /// Another machine would not take it (or could not be reached), after
+    /// it was recorded as sent.
+    pub fn refused(&mut self, id: MsgId, why: &str) {
+        let t = now();
+        self.write(t, "rejected", &format!(",\"id\":{id},\"why\":{}", js(why)));
+        self.update(id, |r| {
+            r.stage = Stage::Rejected;
+            r.ended = Some(t);
+            r.why = Some(why.to_string());
+        });
+    }
+
     /// Another machine took it: `stand` is what it said of it there.
     pub fn forwarded(&mut self, id: MsgId, stand: &str) {
         let t = now();

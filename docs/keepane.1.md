@@ -119,8 +119,9 @@ way this one was installed), `restart-server` (sessions move to a server of
 this version), `import-config` (bring what keepane can use from a tmux
 config), `completion` (a Tab completer for PowerShell, bash, zsh or fish), `man`
 (this page),
-`web` (the panes on a phone), `show-keys` (what the terminal sends for each
-key), `migrate` (from wmux, keepane's old name). On Windows: `startup`
+`web` (the panes on a phone), `link` (panes on other machines), `show-keys`
+(what the terminal sends for each key), `migrate` (from wmux, keepane's old
+name). On Windows: `startup`
 (start the server at logon) and `windows-terminal` (a Windows Terminal
 profile).
 
@@ -140,14 +141,34 @@ connecting, or a wrong key, is said on the status line.
 
 ### Panes on other machines
 
-Being built (docs/design/link.md): `send-message --to host:port/$1:@3.%7`
-reaches a pane of the keepane on another machine over `keepane web`'s port,
-once the two are paired. The commands parse but are not served yet:
-`link-id` (this server's public key), `link-add` (pair with a machine by
-its `keepane web` address), `link-trust` (let a machine in by its key),
-`link-list`, `link-panes`, `link-allow` (whether its messages may run as
-commands here), `link-remove`, `link-rekey`, and `link-inbound` (how
-`keepane web` hands a request from another machine to the server).
+`send-message --to host:port/$1:@3.%7` (or `host:port/%name`) reaches a pane
+of the keepane server on another machine, over the port `keepane web` serves
+on there, once the two servers are paired; the answer comes back the same
+way (`send-message -r`). Both machines need `keepane web` running. Pairing
+is like SSH keys: each server has a key pair of its own, and a table of the
+machines it lets in. `keepane link add <address>` (`link-add`), given the
+address `keepane web` prints on the other machine (the one the phone scans,
+key included), puts each server's key in the other's table, once; from then
+on every request is signed, and the web key plays no part. `keepane link
+trust <host:port> <key> [--shell]` (`link-trust`) lets a machine in by hand,
+by the key `keepane link id` (`link-id`) prints there. `keepane link list`
+(`link-list`) shows the machines paired; `keepane link panes <host:port>`
+(`link-panes`) their panes; `keepane link remove <host:port>`
+(`link-remove`) unpairs; `keepane link rekey` (`link-rekey`) makes a new key,
+after which every pairing has to be made again.
+
+A paired machine's messages go to `ai` and `normal` panes only. To let them
+run as commands in `shell` panes here: `keepane link allow <host:port>
+--shell` (`link-allow`; `--no-shell` takes it back), from a terminal outside
+keepane or the `C-b :` prompt, never from inside a pane. A message for a
+`shell` pane from a machine not allowed is refused, and the sender told how
+to allow it. A message from another machine reads `from=host:port/…` in its
+envelope. A machine is known by its key, not its address: when it turns up
+from a new address (another network, Tailscale), its entry follows. The two
+machines' clocks must agree to within 2 minutes. `keepane web` listens on
+this machine's network address and on its Tailscale addresses, so either
+network works; `web-status` lists them. `link-inbound` is how `keepane web`
+hands a request from another machine to the server, which holds the keys.
 
 ## KEYS
 
