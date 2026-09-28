@@ -276,7 +276,10 @@ status line (`#{keepane_update}`) and in `show-messages`.
 
 `~/.local/share/keepane/` (Linux), `~/Library/Application Support/keepane/` (macOS), `%LOCALAPPDATA%\keepane\` (Windows)
 : The data directory: logs, saved sessions, what panes printed, the event
-  log.
+  log, `web.key` (the phone's code kept by `keepane web --keep-key`), and
+  `link/`*socket*`/`: a server's key pair (`key`, readable by its user alone)
+  and the machines it lets in (`authorized`: a public key, an address, and
+  `shell` and `screen` for what they may do, one machine a line).
 
 `$XDG_RUNTIME_DIR/keepane-`*uid*`/`*socket-name* (or under `/tmp`)
 : A server's socket; only its user can open the directory.

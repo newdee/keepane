@@ -60,7 +60,7 @@ mac.tail1234.ts.net:7681/$1:@3.%7  # 主机也可以是名字（Tailscale MagicD
 |---|---|
 | `~/.ssh/id_ed25519`（私钥，永不离开本机） | `link/<socket>/key`：每个服务端一对 Ed25519 密钥（种子，base64url），第一次用到时生成，存在本机数据目录，只给本用户读写（Windows 受保护的 DACL，Unix 0600）；损坏时报错、不重建 |
 | `ssh-keygen -y`、`id_ed25519.pub` | `keepane link id`：打印本机公钥 |
-| `authorized_keys`（谁能登录，行尾可带选项） | `link/<socket>/authorized`：谁能发消息进来，一行一台机器：`公钥 地址 [shell]`，可以手工编辑（坏行跳过） |
+| `authorized_keys`（谁能登录，行尾可带选项） | `link/<socket>/authorized`：谁能发消息进来，一行一台机器：`公钥 地址 [shell] [screen]`，可以手工编辑（坏行跳过） |
 | `known_hosts`（记住对方主机的公钥） | 同一份表：配对即记下对方公钥，之后对方的回应也要用这把公钥验证，换了机器（同一 IP 上的另一台）会被拒绝 |
 | `ssh-copy-id`（用一次密码把公钥装过去） | `keepane link add <对方 web 地址>`：用一次对方的 web 密钥把公钥装过去 |
 
@@ -88,10 +88,12 @@ A$ keepane link add http://100.64.0.3:7681/#k=...   # 手机扫的同一个地�
 ```
 keepane link id                              # 本机公钥
 keepane link add <对方 web 地址>             # 配对（ssh-copy-id）
-keepane link trust <主机:端口> <公钥> [--shell]  # 手工授权一台机器
+keepane link trust <主机:端口> <公钥> [--shell] [--screen]  # 手工授权一台机器
 keepane link list                            # 已配对的机器：地址、公钥指纹、能否执行命令、最近一次通信（不探测在不在线）
 keepane link panes <主机:端口>               # 对方的窗格列表（完整地址、名字、模式、空闲、收件箱、程序）
-keepane link allow <主机:端口> --shell | --no-shell
+keepane link info <主机:端口>                # 对方机器：主机名、系统、版本、开机时长、CPU、内存、pane 数（第 10 条）
+keepane link capture [-S 行数] <主机:端口/pane>  # 对方 pane 的屏幕文字，要对方 --screen 授权（第 10 条）
+keepane link allow <主机:端口> [--shell | --no-shell] [--screen | --no-screen]
 keepane link remove <主机:端口>              # 删本机这一条，并通知对方删它那一条（对方不在线时只删本机）
 ```
 
