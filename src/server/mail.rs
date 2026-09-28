@@ -309,10 +309,7 @@ impl Server {
     fn mail_alert(&mut self, to: PaneId, m: &Message) {
         let Some((sid, widx)) = self.place_of(to) else { return };
         let base = self.opts.base_index;
-        let from = match &m.from {
-            Sender::User => "user".to_string(),
-            Sender::Pane { address, name, .. } => name.clone().unwrap_or_else(|| address.clone()),
-        };
+        let from = m.from.short();
         let text = format!("Message #{} for %{to} in window {} from {from}", m.id, widx + base);
         if let Some(s) = self.session_mut(sid)
             && s.cur != widx
@@ -498,13 +495,12 @@ impl Server {
             for m in &a.inbox {
                 let from = match &m.from {
                     Sender::User => "user".to_string(),
-                    Sender::Pane { address, name, mode, .. } => {
-                        format!(
-                            "{address}{} ({})",
-                            name.as_deref().map(|n| format!(" {n}")).unwrap_or_default(),
-                            mode.as_str()
-                        )
-                    }
+                    s => format!(
+                        "{}{}{}",
+                        s.from_field(),
+                        s.name().map(|n| format!(" {n}")).unwrap_or_default(),
+                        s.mode().map(|m| format!(" ({})", m.as_str())).unwrap_or_default()
+                    ),
                 };
                 let waited = super::observe::since(m.at, now);
                 let first = m.text.lines().next().unwrap_or_default();
@@ -828,7 +824,7 @@ impl Server {
         }
         let who = |s: &Sender| match s {
             Sender::User => "user".to_string(),
-            Sender::Pane { address, name, .. } => name.clone().map_or_else(|| address.clone(), |n| format!("%{n}")),
+            s => s.name().map_or_else(|| s.from_field(), |n| format!("%{n}")),
         };
         let out: Vec<String> = steps
             .iter()

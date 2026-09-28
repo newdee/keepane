@@ -47,12 +47,47 @@ impl WorkMode {
     }
 }
 
-/// Who sent a message: a pane, as it was when it sent it, or someone
-/// outside every pane (a terminal, a key binding).
+/// Who sent a message: a pane, as it was when it sent it, someone outside
+/// every pane (a terminal, a key binding), or a pane of another machine
+/// (docs/design/link.md: `addr` is that machine, `host:port`, and
+/// `address` the pane's full address there, or `user` for someone outside
+/// its panes).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sender {
     User,
     Pane { id: PaneId, address: String, name: Option<String>, mode: WorkMode },
+    Remote { addr: String, address: String, name: Option<String>, mode: Option<WorkMode> },
+}
+
+impl Sender {
+    /// How `from` reads: `user`, a pane's address, or `host:port/address`.
+    pub fn from_field(&self) -> String {
+        match self {
+            Sender::User => "user".into(),
+            Sender::Pane { address, .. } => address.clone(),
+            Sender::Remote { addr, address, .. } => format!("{addr}/{address}"),
+        }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Sender::User => None,
+            Sender::Pane { name, .. } | Sender::Remote { name, .. } => name.as_deref(),
+        }
+    }
+
+    pub fn mode(&self) -> Option<WorkMode> {
+        match self {
+            Sender::User => None,
+            Sender::Pane { mode, .. } => Some(*mode),
+            Sender::Remote { mode, .. } => *mode,
+        }
+    }
+
+    /// The sender's name, else its address, the way a person is shown it.
+    pub fn short(&self) -> String {
+        self.name().map_or_else(|| self.from_field(), |n| n.to_string())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,15 +120,12 @@ impl Message {
     /// shown: fixed field order, no spaces, absent fields left out.
     pub fn envelope(&self) -> String {
         let mut s = format!("{{\"keepane\":{ENVELOPE_VERSION},\"id\":{},\"task\":{}", self.id, self.task);
-        match &self.from {
-            Sender::User => push_str_field(&mut s, "from", "user"),
-            Sender::Pane { address, name, mode, .. } => {
-                push_str_field(&mut s, "from", address);
-                if let Some(n) = name {
-                    push_str_field(&mut s, "name", n);
-                }
-                push_str_field(&mut s, "mode", mode.as_str());
-            }
+        push_str_field(&mut s, "from", &self.from.from_field());
+        if let Some(n) = self.from.name() {
+            push_str_field(&mut s, "name", n);
+        }
+        if let Some(m) = self.from.mode() {
+            push_str_field(&mut s, "mode", m.as_str());
         }
         push_str_field(&mut s, "to", &self.to);
         push_str_field(&mut s, "via", self.via.as_str());
@@ -112,16 +144,12 @@ impl Message {
     /// letters, digits, `-` and `_`; addresses and words have none), so it
     /// reads back by splitting.
     pub fn fields(&self) -> String {
-        let mut s = format!("[keepane id={} task={}", self.id, self.task);
-        match &self.from {
-            Sender::User => s.push_str(" from=user"),
-            Sender::Pane { address, name, mode, .. } => {
-                s.push_str(&format!(" from={address}"));
-                if let Some(n) = name {
-                    s.push_str(&format!(" name={n}"));
-                }
-                s.push_str(&format!(" mode={}", mode.as_str()));
-            }
+        let mut s = format!("[keepane id={} task={} from={}", self.id, self.task, self.from.from_field());
+        if let Some(n) = self.from.name() {
+            s.push_str(&format!(" name={n}"));
+        }
+        if let Some(m) = self.from.mode() {
+            s.push_str(&format!(" mode={}", m.as_str()));
         }
         s.push_str(&format!(" to={} via={} hop={}", self.to, self.via.as_str(), self.hop));
         if let Some(re) = self.re {
@@ -163,11 +191,11 @@ impl Message {
         }
     }
 
-    /// The pane that sent it, if a pane did.
+    /// The pane that sent it, if a pane of this machine did.
     pub fn sender_pane(&self) -> Option<PaneId> {
         match self.from {
             Sender::Pane { id, .. } => Some(id),
-            Sender::User => None,
+            Sender::User | Sender::Remote { .. } => None,
         }
     }
 }

@@ -129,19 +129,14 @@ pub const HOOKS: &[&str] = &[
 
 enum PromptKind {
     /// Run the input as a command line, or substitute it into a template.
-    Command {
-        template: Option<String>,
-    },
-    Confirm(Cmd),
+    Command { template: Option<String> },
+    /// Boxed: a `Cmd` is many times the size of the other kinds.
+    Confirm(Box<Cmd>),
     /// `/` or `?` in copy mode: the input is a pattern, not a command.
-    Search {
-        back: bool,
-    },
+    Search { back: bool },
     /// `f` in a picker: the input filters its lines as it is typed;
     /// Escape puts `prev` back.
-    Filter {
-        prev: String,
-    },
+    Filter { prev: String },
 }
 
 struct Prompt {
@@ -4714,7 +4709,7 @@ impl Server {
                     prompt.map(|p| self.expand_format(&p, cid)).unwrap_or_else(|| format!("Confirm '{cmd}'? (y/n)"));
                 if let Some(c) = self.clients.get_mut(&cid) {
                     c.prompt = Some(Prompt {
-                        kind: PromptKind::Confirm(*cmd),
+                        kind: PromptKind::Confirm(cmd),
                         label: format!("{label} "),
                         input: String::new(),
                         cursor: 0,
@@ -5102,6 +5097,17 @@ impl Server {
             Cmd::WebStart(o) => self.web_start(o),
             Cmd::WebStatus => Outcome::Text(self.web_status()),
             Cmd::WebStop => self.web_stop(cid),
+            // The server side of `keepane link` (docs/design/link.md) is not
+            // built yet: the commands parse, and say so.
+            c @ (Cmd::LinkId
+            | Cmd::LinkAdd { .. }
+            | Cmd::LinkTrust { .. }
+            | Cmd::LinkList
+            | Cmd::LinkPanes { .. }
+            | Cmd::LinkAllow { .. }
+            | Cmd::LinkRemove { .. }
+            | Cmd::LinkRekey
+            | Cmd::LinkInbound { .. }) => Outcome::Error(format!("{c}: not served by this server yet")),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };
                 let mut wake: Vec<ClientId> = Vec::new();
@@ -5783,7 +5789,7 @@ impl Server {
                     && !k.alt
                     && let PromptKind::Confirm(cmd) = prompt.kind
                 {
-                    let out = self.exec(cmd, Some(cid));
+                    let out = self.exec(*cmd, Some(cid));
                     self.reply(cid, out);
                 }
             }

@@ -15,14 +15,21 @@ pub struct Target {
     pub pane_id: Option<u32>,
     /// `%name`: a pane by the name `rename-pane` gave it, wherever it is.
     pub pane_name: Option<String>,
+    /// `host:port/…`: the rest names a pane of the keepane server on that
+    /// machine (docs/design/link.md). Only `send-message` goes there.
+    pub remote: Option<String>,
 }
 
 impl Target {
     /// Parse `session`, `session:window`, `:window`, `session:window.pane`,
     /// `%N` for a pane by its id, `%name` for a pane by its name, or a
     /// pane's full address `$1:@3.%7`, where the session and window say
-    /// where the pane is expected to be.
+    /// where the pane is expected to be; `host:port/` in front of any of
+    /// these names it on another machine.
     pub fn parse(s: &str) -> Target {
+        if let Some((machine, rest)) = crate::link::split_remote(s) {
+            return Target { remote: Some(machine.to_string()), ..Target::parse(rest) };
+        }
         if let Some(p) = s.strip_prefix('%') {
             let (pane_id, pane_name) = pane_ref(p);
             return Target { pane_id, pane_name, ..Default::default() };
@@ -48,7 +55,7 @@ impl Target {
             },
             None => (None, None),
         };
-        Target { session: sess, window: win, pane, pane_id, pane_name }
+        Target { session: sess, window: win, pane, pane_id, pane_name, remote: None }
     }
 
     /// The pane is named by id or name, not by its place in a window.
@@ -544,6 +551,47 @@ pub enum Cmd {
     WebStatus,
     /// `web-stop`: stop serving it, the connected phones cut off.
     WebStop,
+    /// `link-id`: this server's public key, for another machine to trust
+    /// (docs/design/link.md).
+    LinkId,
+    /// `link-add url`: pair with the machine whose `keepane web` address
+    /// (with its key) `url` is, so panes on both can message each other.
+    LinkAdd {
+        url: String,
+    },
+    /// `link-trust host:port key [--shell]`: let the machine with that
+    /// public key send messages here, by hand (no web key needed).
+    LinkTrust {
+        addr: String,
+        key: String,
+        shell: bool,
+    },
+    /// `link-list`: the machines paired with this server.
+    LinkList,
+    /// `link-panes host:port`: the panes of that machine.
+    LinkPanes {
+        addr: String,
+    },
+    /// `link-allow host:port --shell|--no-shell`: whether that machine's
+    /// messages may run as commands in `shell` panes here.
+    LinkAllow {
+        addr: String,
+        shell: bool,
+    },
+    /// `link-remove host:port`: unpair (both sides, when it can be reached).
+    LinkRemove {
+        addr: String,
+    },
+    /// `link-rekey`: a new key pair; every pairing has to be made again.
+    LinkRekey,
+    /// `link-inbound peer-ip request`: a request another machine made to
+    /// the `/link/` paths of `keepane web`, which forwards it whole (as
+    /// JSON) since the keys are the server's. The answer is JSON too:
+    /// its status, signature and body.
+    LinkInbound {
+        peer: String,
+        request: String,
+    },
     /// `wait-for [-L|-S|-U] channel`: block a client until another one signals
     /// (or unlocks) the channel, so scripts can wait for each other.
     WaitFor {
@@ -1357,6 +1405,23 @@ impl fmt::Display for Cmd {
             }
             Cmd::WebStatus => f.write_str("web-status"),
             Cmd::WebStop => f.write_str("web-stop"),
+            Cmd::LinkId => f.write_str("link-id"),
+            Cmd::LinkAdd { url } => write!(f, "link-add {}", quote(url)),
+            Cmd::LinkTrust { addr, key, shell } => {
+                write!(f, "link-trust {} {}", quote(addr), quote(key))?;
+                if *shell {
+                    f.write_str(" --shell")?;
+                }
+                Ok(())
+            }
+            Cmd::LinkList => f.write_str("link-list"),
+            Cmd::LinkPanes { addr } => write!(f, "link-panes {}", quote(addr)),
+            Cmd::LinkAllow { addr, shell } => {
+                write!(f, "link-allow {} {}", quote(addr), if *shell { "--shell" } else { "--no-shell" })
+            }
+            Cmd::LinkRemove { addr } => write!(f, "link-remove {}", quote(addr)),
+            Cmd::LinkRekey => f.write_str("link-rekey"),
+            Cmd::LinkInbound { peer, request } => write!(f, "link-inbound {} {}", quote(peer), quote(request)),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 f.write_str("wait-for")?;
                 if *lock {
@@ -1549,13 +1614,15 @@ impl fmt::Display for Cmd {
 /// A target as `session:window.pane`, the way `-t` takes it back.
 fn target_string(t: &Target) -> String {
     let pane = t.pane_id.map(|id| format!("%{id}")).or_else(|| t.pane_name.as_ref().map(|n| format!("%{n}")));
+    let mut s = t.remote.as_ref().map(|r| format!("{r}/")).unwrap_or_default();
     if let Some(p) = &pane
         && t.session.is_none()
         && t.window.is_none()
     {
-        return p.clone();
+        s.push_str(p);
+        return s;
     }
-    let mut s = t.session.clone().unwrap_or_default();
+    s.push_str(t.session.as_deref().unwrap_or_default());
     if let Some(w) = &t.window {
         s.push(':');
         s.push_str(w);
@@ -1818,6 +1885,15 @@ pub const COMMANDS: &[&str] = &[
     "kill-window",
     "last-pane",
     "last-window",
+    "link-add",
+    "link-allow",
+    "link-id",
+    "link-inbound",
+    "link-list",
+    "link-panes",
+    "link-rekey",
+    "link-remove",
+    "link-trust",
     "list-buffers",
     "list-clients",
     "list-commands",
@@ -2027,6 +2103,15 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("web-start", &["-p", "-b", "-r", "-k"]),
     ("web-status", &[]),
     ("web-stop", &[]),
+    ("link-add", &[]),
+    ("link-allow", &["--shell", "--no-shell"]),
+    ("link-id", &[]),
+    ("link-inbound", &[]),
+    ("link-list", &[]),
+    ("link-panes", &[]),
+    ("link-rekey", &[]),
+    ("link-remove", &[]),
+    ("link-trust", &["--shell"]),
 ];
 
 /// The flags of a command, for completion.
@@ -3279,6 +3364,74 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             if n == "web-status" { Cmd::WebStatus } else { Cmd::WebStop }
         }
+        "link-id" | "link-list" | "link-rekey" => {
+            a.none_left(n)?;
+            match n {
+                "link-id" => Cmd::LinkId,
+                "link-list" => Cmd::LinkList,
+                _ => Cmd::LinkRekey,
+            }
+        }
+        "link-add" => {
+            let url =
+                a.next().ok_or("link-add: the other machine's `keepane web` address (http://host:port/#k=...)")?;
+            let url = url.to_string();
+            a.none_left(n)?;
+            Cmd::LinkAdd { url }
+        }
+        "link-panes" | "link-remove" => {
+            let addr = a.next().ok_or_else(|| format!("{n}: host:port required"))?.to_string();
+            a.none_left(n)?;
+            if !crate::link::valid_hostport(&addr) {
+                return Err(format!("{n}: '{addr}' is not host:port"));
+            }
+            if n == "link-panes" { Cmd::LinkPanes { addr } } else { Cmd::LinkRemove { addr } }
+        }
+        "link-allow" => {
+            let (mut addr, mut shell) = (None, None);
+            while let Some(w) = a.next() {
+                match w {
+                    "--shell" => shell = Some(true),
+                    "--no-shell" => shell = Some(false),
+                    f if f.starts_with('-') => return Err(bad_flag(n, f)),
+                    v if addr.is_none() => addr = Some(v.to_string()),
+                    v => return Err(format!("{n}: what is '{v}'?")),
+                }
+            }
+            let Some(addr) = addr else { return Err(format!("{n}: host:port required")) };
+            if !crate::link::valid_hostport(&addr) {
+                return Err(format!("{n}: '{addr}' is not host:port"));
+            }
+            let Some(shell) = shell else { return Err(format!("{n}: --shell or --no-shell required")) };
+            Cmd::LinkAllow { addr, shell }
+        }
+        "link-trust" => {
+            let (mut words, mut shell) = (Vec::new(), false);
+            while let Some(w) = a.next() {
+                match w {
+                    "--shell" => shell = true,
+                    f if f.starts_with('-') && !f.starts_with("--") || f.starts_with("--") => {
+                        return Err(bad_flag(n, f));
+                    }
+                    v => words.push(v.to_string()),
+                }
+            }
+            let [addr, key] = <[String; 2]>::try_from(words)
+                .map_err(|_| format!("{n}: host:port and the machine's public key (its `keepane link id`)"))?;
+            if !crate::link::valid_hostport(&addr) {
+                return Err(format!("{n}: '{addr}' is not host:port"));
+            }
+            if !crate::link::valid_public(&key) {
+                return Err(format!("{n}: '{key}' is not a keepane link public key"));
+            }
+            Cmd::LinkTrust { addr, key, shell }
+        }
+        "link-inbound" => {
+            let peer = a.next().ok_or("link-inbound: peer address required")?.to_string();
+            let request = a.next().ok_or("link-inbound: the request (JSON) required")?.to_string();
+            a.none_left(n)?;
+            Cmd::LinkInbound { peer, request }
+        }
         "clock-mode" => {
             let mut target = None;
             while a.is_flag() {
@@ -3784,6 +3937,7 @@ mod tests {
             pane,
             pane_id: None,
             pane_name: None,
+            remote: None,
         };
         assert_eq!(Target::parse("main"), t(Some("main"), None, None));
         assert_eq!(Target::parse("main:2"), t(Some("main"), Some("2"), None));

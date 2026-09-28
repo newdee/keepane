@@ -26,6 +26,9 @@ pub enum Stage {
     Dropped,
     /// Never queued: over the hop limit, a full inbox, not allowed.
     Rejected,
+    /// Handed to another machine (docs/design/link.md): what became of it
+    /// there is in that machine's event log; `why` holds what it said.
+    Forwarded,
 }
 
 impl Stage {
@@ -39,6 +42,7 @@ impl Stage {
             Stage::Abandoned => "abandoned",
             Stage::Dropped => "dropped",
             Stage::Rejected => "rejected",
+            Stage::Forwarded => "forwarded",
         }
     }
 
@@ -52,6 +56,7 @@ impl Stage {
             Stage::Abandoned,
             Stage::Dropped,
             Stage::Rejected,
+            Stage::Forwarded,
         ]
         .into_iter()
         .find(|st| st.as_str() == s)
@@ -232,6 +237,23 @@ impl Store {
             r.ended = Some(t);
             r.why = Some(why.to_string());
         });
+    }
+
+    /// Another machine took it: `stand` is what it said of it there.
+    pub fn forwarded(&mut self, id: MsgId, stand: &str) {
+        let t = now();
+        self.write(t, "forwarded", &format!(",\"id\":{id},\"why\":{}", js(stand)));
+        self.update(id, |r| {
+            r.stage = Stage::Forwarded;
+            r.ended = Some(t);
+            r.why = Some(stand.to_string());
+        });
+    }
+
+    /// Something about the links to other machines: `what` it was (paired,
+    /// removed, allowed, refused) and its fields, already JSON.
+    pub fn link(&mut self, what: &str, fields: &str) {
+        self.write(now(), "link", &format!(",\"what\":\"{what}\"{fields}"));
     }
 
     /// A deleted message put back in its inbox.
@@ -429,12 +451,17 @@ pub fn since(a: Time, b: Time) -> String {
 /// A message back from its envelope, as the event log holds it.
 fn message_of(env: &serde_json::Value, text: &str, at: Time) -> Option<Message> {
     let mode = |k: &str| env[k].as_str().and_then(WorkMode::parse);
+    let name = env["name"].as_str().map(String::from);
     let from = match env["from"].as_str()? {
         "user" => Sender::User,
+        remote if crate::link::split_remote(remote).is_some() => {
+            let (addr, address) = crate::link::split_remote(remote).expect("checked");
+            Sender::Remote { addr: addr.to_string(), address: address.to_string(), name, mode: mode("mode") }
+        }
         address => Sender::Pane {
             id: address.rsplit_once('%').and_then(|(_, n)| n.parse().ok()).unwrap_or(0),
             address: address.to_string(),
-            name: env["name"].as_str().map(String::from),
+            name,
             mode: mode("mode").unwrap_or_default(),
         },
     };

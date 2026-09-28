@@ -138,6 +138,17 @@ address (empty while it is off) and `#{web_clients}` how many are on it; the
 default status line shows `web` and that number while it serves, and a phone
 connecting, or a wrong key, is said on the status line.
 
+### Panes on other machines
+
+Being built (docs/design/link.md): `send-message --to host:port/$1:@3.%7`
+reaches a pane of the keepane on another machine over `keepane web`'s port,
+once the two are paired. The commands parse but are not served yet:
+`link-id` (this server's public key), `link-add` (pair with a machine by
+its `keepane web` address), `link-trust` (let a machine in by its key),
+`link-list`, `link-panes`, `link-allow` (whether its messages may run as
+commands here), `link-remove`, `link-rekey`, and `link-inbound` (how
+`keepane web` hands a request from another machine to the server).
+
 ## KEYS
 
 Keys are pressed after the prefix, `C-b` (`set -g prefix C-a` changes it).
