@@ -618,7 +618,8 @@ keepane web
 
 prints a QR code in the terminal. Scan it with the phone's camera (same
 network) and the browser opens a page that lists every pane, under its session
-and window: the program running in it, its directory, the last line it printed
+and window: its name large (else the title its program set, else the
+program), then the program under it, its directory, the last line it printed
 and how long it has been quiet, and the window's alert marks from the status
 line (`#` printed, `!` bell, `~` silent, with `monitor-activity` and friends
 on), so you can see which job finished without opening it. Tap one to see its
