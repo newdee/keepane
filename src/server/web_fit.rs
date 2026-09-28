@@ -25,8 +25,10 @@ pub(super) struct WebFit {
     rows: u16,
     /// The size it had before.
     saved: (u16, u16),
-    /// The fit zoomed the pane (and so unzooms it after).
-    zoomed: bool,
+    /// The window as the fit found it, when the fit changed it (the pane it
+    /// had active, whether it was zoomed): put back after, unless someone
+    /// has changed the window since.
+    before: Option<(PaneId, bool)>,
     /// When a phone was last seen not showing it.
     unwatched: Option<Instant>,
 }
@@ -74,12 +76,12 @@ impl Server {
         let Some(w) = self.session_mut(sid).and_then(|s| s.windows.get_mut(widx)) else {
             return Outcome::Error("no such window".into());
         };
-        let zoomed = w.panes.len() > 1 && !(w.zoomed && w.active == pid);
-        if zoomed {
+        let before = (w.panes.len() > 1 && !(w.zoomed && w.active == pid)).then_some((w.active, w.zoomed));
+        if before.is_some() {
             w.active = pid;
             w.zoomed = true;
         }
-        self.web_fits.insert(sid, WebFit { pane: pid, cols, rows: rows + extra, saved, zoomed, unwatched: None });
+        self.web_fits.insert(sid, WebFit { pane: pid, cols, rows: rows + extra, saved, before, unwatched: None });
         self.resize_session(sid, cols, rows + extra);
         let name = self.session(sid).map(|s| s.name.clone()).unwrap_or_default();
         let text = format!("web: a phone fitted session {name} to {cols}x{rows} (until it leaves %{pid})");
@@ -97,15 +99,19 @@ impl Server {
         ))
     }
 
+    /// The window back as the fit found it: its active pane (when that is
+    /// still there) and its zoom. Not when someone changed it meanwhile (a
+    /// pane chosen, the zoom taken off): theirs is the later word.
     fn unzoom_fitted(&mut self, sid: SessionId, f: &WebFit) {
-        if !f.zoomed {
-            return;
-        }
+        let Some((active, zoomed)) = f.before else { return };
         if let Some(w) = self.session_mut(sid).and_then(|s| s.windows.iter_mut().find(|w| w.pane(f.pane).is_some()))
             && w.zoomed
             && w.active == f.pane
         {
-            w.zoomed = false;
+            if w.pane(active).is_some() {
+                w.active = active;
+            }
+            w.zoomed = zoomed;
         }
     }
 

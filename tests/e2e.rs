@@ -3901,6 +3901,17 @@ async fn a_pane_fitted_to_a_phone_gets_its_size_back() {
     let (code, _) = http(addr, "POST", &format!("/api/fit?pane=%25{p}&off=1"), &key, "").await;
     assert_eq!(code, 200);
     assert_eq!(size().await, before);
+    // The window zoomed on its other pane before: after, it is again.
+    let other = pane_id(&h, "f:0.0").await;
+    assert_eq!(h.cli(&["resize-pane", "-Z", "-t", &format!("%{other}")]).await.0, 0);
+    let state = async || ask_pane(&h, other, "#{window_zoomed_flag} #{pane_active}").await;
+    assert_eq!(state().await, "1 1");
+    http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await;
+    assert_eq!(state().await, "1 0", "the fitted pane is the one shown");
+    http(addr, "POST", &format!("/api/fit?pane=%25{p}&off=1"), &key, "").await;
+    assert_eq!(state().await, "1 1", "zoomed on the other pane again");
+    h.cli(&["resize-pane", "-Z", "-t", &format!("%{other}")]).await;
+    assert_eq!(size().await, before);
 
     // Left: fitted while a phone watches it, back once none has for a while.
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -3916,6 +3927,16 @@ async fn a_pane_fitted_to_a_phone_gets_its_size_back() {
         assert!(Instant::now() < deadline, "not back: {}", size().await);
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    // A terminal attaching meanwhile (its own size, 80x24) does not undo it:
+    // the fit holds the session until it ends.
+    http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await;
+    let mut term = h.connect().await;
+    term.attach(&["attach", "-t", "f"]).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(size().await, "40x21 40x20 1", "a terminal attaching keeps the phone's size");
+    drop(term);
+    http(addr, "POST", &format!("/api/fit?pane=%25{p}&off=1"), &key, "").await;
 
     // Sized by hand: the fit gives way, and ends no size later.
     http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await;
