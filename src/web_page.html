@@ -153,6 +153,7 @@
 <header>
   <button id="back" class="icon hidden" aria-label="Back">&#8249;</button>
   <h1 id="title">keepane</h1>
+  <button id="fit" class="icon hidden" aria-label="Fit to phone">&#10530;</button>
   <button id="wrap" class="icon hidden" aria-label="Wrap">&#8617;</button>
   <button id="detail" class="icon hidden" aria-label="Times">&#9201;</button>
   <button id="plus" class="icon hidden" aria-label="More">+</button>
@@ -466,25 +467,72 @@ $("hist").addEventListener("click", (e) => {
 });
 
 function open(id, push) {
+  // Fitted to this phone: the pane left goes back to its size.
+  if (current && current !== id) unfit(current);
   current = id;
   if (push) history.pushState({ pane: id }, "");
   setTitle();
   $("list").classList.add("hidden"); $("screen").classList.remove("hidden");
   $("back").classList.remove("hidden"); $("detail").classList.remove("hidden"); $("wrap").classList.remove("hidden");
+  $("fit").classList.toggle("hidden", readOnly);
   $("plus").classList.toggle("hidden", readOnly); $("footer").classList.toggle("hidden", readOnly);
   lastText = ""; shown = { text: "", marks: [] }; $("screen").innerHTML = ""; stick = true;
   stopWatch(); fitFont(); tick();
+  fitNow(false);
 }
 
 function showList(push) {
+  if (current) unfit(current);
   current = null;
   stopWatch();
   if (push) history.pushState({}, "");
   $("title").textContent = "keepane";
   $("screen").classList.add("hidden"); $("list").classList.remove("hidden");
   $("back").classList.add("hidden"); $("detail").classList.add("hidden"); $("wrap").classList.add("hidden"); $("plus").classList.add("hidden"); $("footer").classList.add("hidden");
+  $("fit").classList.add("hidden");
   tick();
 }
+
+// ---- The pane sized to this phone ----
+// On, the pane shown takes the phone's columns and rows (zoomed in its
+// window), so a full-screen program draws for the phone; leaving the pane,
+// going back to the list, or putting the phone away gives it its size back
+// (keepane also does, when no phone has shown it for a few seconds). A
+// session has one size: the computer and any other phone see it at this
+// one meanwhile, and the page says so.
+let fitting = false;
+function phoneSize() {
+  const m = $("main");
+  return { cols: Math.max(10, Math.floor((m.clientWidth - 16) / (WRAPPED * charRatio))),
+           rows: Math.max(3, Math.floor((m.clientHeight - 8) / (WRAPPED * 1.2))) };
+}
+async function fitNow(say) {
+  if (!fitting || readOnly || !current) return;
+  const { cols, rows } = phoneSize();
+  try {
+    await api(`/api/fit?pane=${encodeURIComponent(current)}&cols=${cols}&rows=${rows}`, { method: "POST" });
+    if (say) toast(t(`Fitted to this phone (${cols}×${rows}). The computer and any other phone see this session at this size too, until you leave this pane.`,
+      `已适配这台手机（${cols}×${rows}）。电脑和其他连着的手机看这个会话也会变成这个大小，离开这个 pane 后自动恢复。`));
+    panes = await (await api("/api/panes")).json(); fitFont();
+  } catch (e) { toast(e.message); }
+}
+function unfit(id) {
+  if (!fitting || readOnly || !id) return;
+  api(`/api/fit?pane=${encodeURIComponent(id)}&off=1`, { method: "POST" }).catch(() => {});
+}
+$("fit").addEventListener("click", () => {
+  if (bounced("fit")) return;
+  if (fitting) { unfit(current); fitting = false; toast(t("Back to its size", "已恢复原来的大小")); }
+  else { fitting = true; fitNow(true); }
+  $("fit").classList.toggle("on", fitting);
+});
+// Put away: back to its size; taken out again: fitted again.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) unfit(current); else fitNow(false);
+});
+// Turned sideways: the phone's size changed.
+let refitTimer = null;
+window.addEventListener("resize", () => { clearTimeout(refitTimer); refitTimer = setTimeout(() => fitNow(false), 400); });
 
 $("back").addEventListener("click", () => history.back());
 window.addEventListener("popstate", (e) => (e.state && e.state.pane ? open(e.state.pane, false) : showList(false)));

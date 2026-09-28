@@ -307,7 +307,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `C-t` | show when each command ran, how long it took and how it ended, at the end of its line (`pane-timestamps`) |
 | `/` | browse what panes printed, by pane and day (`choose-history`) |
 | `{` / `}` | swap pane with previous / next |
-| `q` | show the pane numbers; press one to go there |
+| `q` | show the pane numbers (and names, `%name`, under them); press one to go there |
 | `Space` / `M-1`…`M-5` / `E` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) / even out the panes next to this one |
 | `C-o` / `M-o` | rotate the panes through the layout |
 | `!` | break the pane out into its own window |
@@ -634,7 +634,14 @@ a column with the time each command started (tap one for its date, how long
 it took and its exit code; see "Command times and history"). A tap on a session or
 window folds it (the phone remembers), and the ✎ beside it renames it. A pane wider than the
 phone wraps its long lines at the phone's edge (the ↩ button turns that off, for
-a full-screen program). Everything runs
+a full-screen program). The ⤢ button sizes the pane to the phone: it fills
+its window and its session takes the phone's columns and rows, so a
+full-screen program (vim, htop, an agent's screen) draws for the phone.
+Meanwhile the computer and any other phone see that session at the phone's
+size too (a session has one size; the page and the status line say so);
+leaving the pane, going back to the list or putting the phone away gives it
+back its size, and so does keepane when no phone has shown it for 10
+seconds. Everything runs
 on the computer; the phone only shows and types. "Add to Home Screen" makes
 it open like an app.
 

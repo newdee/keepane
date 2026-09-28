@@ -139,6 +139,16 @@ address (empty while it is off) and `#{web_clients}` how many are on it; the
 default status line shows `web` and that number while it serves, and a phone
 connecting, or a wrong key, is said on the status line.
 
+The page's ⤢ button sizes the pane shown to the phone (`web-fit`): `web-fit -t pane -x
+cols -y rows` zooms the pane in its window and gives its session the phone's
+columns and rows, so a full-screen program draws for the phone. A session has
+one size, so meanwhile the computer and any other phone see that session at
+the phone's size too (the page and the status line say so). It ends with
+`web-fit -t pane -u` (the button again, another pane, the list, the phone
+put away), when no phone has shown the pane for 10 seconds, when `keepane
+web` stops, or when the session is sized by hand (`resize-window`); the
+session gets its size back.
+
 ### Panes on other machines
 
 `send-message --to host:port/$1:@3.%7` (or `host:port/%name`) reaches a pane

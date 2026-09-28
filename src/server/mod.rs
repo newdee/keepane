@@ -14,6 +14,7 @@ pub mod observe;
 pub mod pane;
 mod public_ip;
 pub mod render;
+mod web_fit;
 mod web_host;
 
 use crate::command::{Cmd, Dir, MenuItem, PaneSel, Target};
@@ -769,6 +770,8 @@ pub struct Server {
     web_generation: u64,
     /// The links to other machines (docs/design/link.md), once first used.
     link: Option<link_state::LinkHost>,
+    /// Sessions sized to a phone (`web-fit`), by session.
+    web_fits: HashMap<SessionId, web_fit::WebFit>,
 }
 
 pub async fn run(socket: String) -> Result<()> {
@@ -1120,6 +1123,7 @@ impl Server {
             web: None,
             web_generation: 0,
             link: None,
+            web_fits: HashMap::new(),
         }
     }
 
@@ -1951,6 +1955,7 @@ impl Server {
                 self.newer_tick();
                 self.public_ip_tick();
                 self.web_tick();
+                self.web_fit_tick();
                 // Kept long enough: gone for good.
                 let keep = Duration::from_secs(self.opts.undo_kill_time);
                 self.killed.retain(|k| k.at().elapsed() < keep);
@@ -2431,6 +2436,11 @@ impl Server {
     /// is attached), `smallest` and `largest` fold every attached client,
     /// and `manual` leaves the size to `resize-window`.
     fn fit_session(&mut self, sid: SessionId, latest: Option<ClientId>) {
+        // Sized to a phone (`web-fit`): that holds until it is undone.
+        if let Some((cols, rows)) = self.web_fit_size(sid) {
+            self.resize_session(sid, cols, rows);
+            return;
+        }
         let sizes = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| (c.cols, c.rows));
         let pick = match self.opts.window_size.as_str() {
             "smallest" => sizes.reduce(|a, b| (a.0.min(b.0), a.1.min(b.1))),
@@ -4211,6 +4221,8 @@ impl Server {
                     Some((Dir::Down, n)) => rows = rows.saturating_add(n),
                     None => {}
                 }
+                // Sized by hand: a phone's fit (`web-fit`) gives way.
+                self.web_fit_dropped(sid);
                 // The same floor `new -x/-y` has: anything smaller has no
                 // room for a pane and a status line.
                 self.resize_session(sid, cols.max(10), rows.max(3));
@@ -5130,6 +5142,7 @@ impl Server {
             Cmd::WebStart(o) => self.web_start(o),
             Cmd::WebStatus => Outcome::Text(self.web_status()),
             Cmd::WebStop => self.web_stop(cid),
+            Cmd::WebFit { target, size } => self.web_fit(cid, target.as_ref(), size),
             c @ (Cmd::LinkId | Cmd::LinkTrust { .. } | Cmd::LinkList | Cmd::LinkAllow { .. } | Cmd::LinkRekey) => {
                 self.exec_link_local(c, cid)
             }
@@ -7379,7 +7392,8 @@ impl Server {
                 } else {
                     self.opts.display_panes_colour
                 };
-                render::draw_pane_number(&mut grid, *rect, n, colour);
+                let name = w.pane(*id).and_then(|p| p.actor.name.as_deref());
+                render::draw_pane_number(&mut grid, *rect, n, colour, name);
             }
             cursor = None;
         }

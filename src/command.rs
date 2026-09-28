@@ -551,6 +551,13 @@ pub enum Cmd {
     WebStatus,
     /// `web-stop`: stop serving it, the connected phones cut off.
     WebStop,
+    /// `web-fit -t pane -x cols -y rows | -u`: size the pane's session to a
+    /// phone, the pane zoomed, until undone or no phone shows the pane
+    /// (the phone page's fit button).
+    WebFit {
+        target: Option<Target>,
+        size: Option<(u16, u16)>,
+    },
     /// `link-id`: this server's public key, for another machine to trust
     /// (docs/design/link.md).
     LinkId,
@@ -1405,6 +1412,14 @@ impl fmt::Display for Cmd {
             }
             Cmd::WebStatus => f.write_str("web-status"),
             Cmd::WebStop => f.write_str("web-stop"),
+            Cmd::WebFit { target, size } => {
+                f.write_str("web-fit")?;
+                fmt_target(f, target)?;
+                match size {
+                    Some((c, r)) => write!(f, " -x {c} -y {r}"),
+                    None => f.write_str(" -u"),
+                }
+            }
             Cmd::LinkId => f.write_str("link-id"),
             Cmd::LinkAdd { url } => write!(f, "link-add {}", quote(url)),
             Cmd::LinkTrust { addr, key, shell } => {
@@ -1975,6 +1990,7 @@ pub const COMMANDS: &[&str] = &[
     "undo-kill",
     "version",
     "wait-for",
+    "web-fit",
     "web-start",
     "web-status",
     "web-stop",
@@ -2101,6 +2117,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("undo-kill", &[]),
     ("version", &[]),
     ("wait-for", &["-L", "-U", "-S"]),
+    ("web-fit", &["-t", "-x", "-y", "-u"]),
     ("web-start", &["-p", "-b", "-r", "-k"]),
     ("web-status", &[]),
     ("web-stop", &[]),
@@ -3364,6 +3381,28 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "web-status" | "web-stop" => {
             a.none_left(n)?;
             if n == "web-status" { Cmd::WebStatus } else { Cmd::WebStop }
+        }
+        "web-fit" => {
+            let (mut target, mut cols, mut rows, mut undo) = (None, None, None, false);
+            let size = |flag: &str, v: &str| -> Result<u16, String> {
+                v.parse::<u16>().ok().filter(|n| *n > 0).ok_or_else(|| format!("{n}: {flag} takes a size, not '{v}'"))
+            };
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-x" => cols = Some(size("-x", a.value("-x")?)?),
+                    "-y" => rows = Some(size("-y", a.value("-y")?)?),
+                    "-u" => undo = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            let size = match (cols, rows, undo) {
+                (Some(c), Some(r), false) => Some((c, r)),
+                (None, None, true) => None,
+                _ => return Err(format!("{n}: -x cols -y rows, or -u")),
+            };
+            Cmd::WebFit { target, size }
         }
         "link-id" | "link-list" | "link-rekey" => {
             a.none_left(n)?;

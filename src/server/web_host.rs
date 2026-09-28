@@ -92,6 +92,11 @@ impl WebHost {
         self.options.read_only
     }
 
+    /// Some phone shows pane `pane` (`%N`) now.
+    pub(super) fn watching(&self, pane: &str) -> bool {
+        self.peers.iter().any(|p| p.watching.iter().any(|w| w == pane))
+    }
+
     /// `web-status`'s text. The first line is read back by `keepane web`
     /// (`web::status_url`) and the dashboard: `serving <url> · ... · N connected`.
     fn status(&self) -> String {

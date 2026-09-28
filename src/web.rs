@@ -719,7 +719,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
     if let Some(refused) = check_key(req, peer, state) {
         return refused;
     }
-    if get && matches!(req.path.as_str(), "/api/send" | "/api/action") {
+    if get && matches!(req.path.as_str(), "/api/send" | "/api/action" | "/api/fit") {
         return Response::text(405, "POST");
     }
     let q = |argv: Vec<String>| async move {
@@ -759,7 +759,31 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 Err((status, msg)) => Response::text(status, &msg),
             }
         }
-        (false, "/api/send") | (false, "/api/action") if state.read_only => Response::text(403, "read-only"),
+        (false, "/api/send") | (false, "/api/action") | (false, "/api/fit") if state.read_only => {
+            Response::text(403, "read-only")
+        }
+        // The pane sized to the phone (`cols`, `rows`: what fits on its
+        // screen), or back (`off`): `web-fit`.
+        (false, "/api/fit") => {
+            let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
+                return Response::text(400, "pane: %N");
+            };
+            let mut argv: Vec<String> = vec!["web-fit".into(), "-t".into(), pane.into()];
+            if req.param("off").is_some() {
+                argv.push("-u".into());
+            } else {
+                let num = |k: &str| req.param(k).and_then(|v| v.parse::<u16>().ok()).filter(|n| (1..=1000).contains(n));
+                let (Some(cols), Some(rows)) = (num("cols"), num("rows")) else {
+                    return Response::text(400, "cols and rows: 1 to 1000");
+                };
+                argv.extend(["-x".into(), cols.to_string(), "-y".into(), rows.to_string()]);
+            }
+            match q(argv).await {
+                Ok((0, out, _)) => Response::text(200, out.trim()),
+                Ok((_, _, err)) => Response::text(404, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
         (false, "/api/send") => {
             let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
                 return Response::text(400, "pane: %N");

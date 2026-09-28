@@ -697,12 +697,27 @@ pub fn draw_frame(g: &mut Grid, r: Rect, style: Style) {
     put(x1, y1, "╯");
 }
 
-pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, colour: Color) {
+/// `name`: the pane's name (`rename-pane`), shown as `%name` under the
+/// number, the way `-t %name` finds it; a pane without one shows its number.
+pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, colour: Color, name: Option<&str>) {
     // The digits are drawn with `█`, so the colour is the foreground.
     let style = Style::colors(colour, Color::Default);
     let text = number.to_string();
-    if !draw_big_text(g, rect, &text, style) && rect.w > 0 && rect.h > 0 {
+    let label = name.map(|n| format!("%{n}"));
+    if draw_big_text(g, rect, &text, style) {
+        let Some(label) = label else { return };
+        // A blank row under the digits, else right under them, else above.
+        let top = rect.y + (rect.h - 5) / 2;
+        let bottom = rect.y + rect.h;
+        let y = [top + 6, top + 5].into_iter().find(|y| *y < bottom).or(top.checked_sub(1).filter(|y| *y >= rect.y));
+        if let Some(y) = y {
+            // Names are letters, digits, `-` and `_`: a column each.
+            let w = (label.len() as u16).min(rect.w);
+            g.put_str(rect.x + (rect.w - w) / 2, y, &label, style, w);
+        }
+    } else if rect.w > 0 && rect.h > 0 {
         // Too small for the block digits: plain text in the corner.
+        let text = label.map_or(text.clone(), |l| format!("{text} {l}"));
         g.put_str(rect.x, rect.y, &text, style, rect.w);
     }
 }
@@ -800,7 +815,7 @@ mod tests {
         // `█` shows its foreground: a black foreground made the digits
         // invisible on a dark background.
         let mut g = Grid::new(20, 7);
-        draw_pane_number(&mut g, Rect { x: 0, y: 0, w: 20, h: 7 }, 1, Color::Idx(1));
+        draw_pane_number(&mut g, Rect { x: 0, y: 0, w: 20, h: 7 }, 1, Color::Idx(1), None);
         let blocks: Vec<&Cell> = (0..7)
             .flat_map(|y| (0..20).map(move |x| (x, y)))
             .map(|(x, y)| g.get(x, y))
@@ -808,6 +823,31 @@ mod tests {
             .collect();
         assert!(!blocks.is_empty(), "the digit is drawn");
         assert!(blocks.iter().all(|c| c.style.fg == Color::Idx(1)), "every block in the colour");
+    }
+
+    /// A pane's name goes under its number, centred, in the same colour; a
+    /// pane too small for block digits gets both as text; no name, no text.
+    #[test]
+    fn a_named_pane_shows_its_name_under_its_number() {
+        let row = |g: &Grid, y: u16, w: u16| (0..w).map(|x| g.get(x, y).text().to_string()).collect::<String>();
+        let mut g = Grid::new(20, 9);
+        draw_pane_number(&mut g, Rect { x: 0, y: 0, w: 20, h: 9 }, 3, Color::Idx(2), Some("builder"));
+        // Digits on rows 2..7 (centred in 9), a blank row, the name on row 8.
+        assert_eq!(row(&g, 8, 20).trim(), "%builder");
+        assert_eq!(row(&g, 7, 20).trim(), "", "a blank row between");
+        assert_eq!(g.get(6, 8).style.fg, Color::Idx(2));
+        // Room for the digits and nothing below: right under them.
+        let mut g = Grid::new(20, 6);
+        draw_pane_number(&mut g, Rect { x: 0, y: 0, w: 20, h: 6 }, 3, Color::Idx(2), Some("b"));
+        assert_eq!(row(&g, 5, 20).trim(), "%b");
+        // Too small for block digits: `3 %builder` in the corner, cut to fit.
+        let mut g = Grid::new(8, 3);
+        draw_pane_number(&mut g, Rect { x: 0, y: 0, w: 8, h: 3 }, 3, Color::Idx(2), Some("builder"));
+        assert_eq!(row(&g, 0, 8), "3 %build");
+        // No name: only the number, as before.
+        let mut g = Grid::new(20, 9);
+        draw_pane_number(&mut g, Rect { x: 0, y: 0, w: 20, h: 9 }, 3, Color::Idx(2), None);
+        assert_eq!(row(&g, 8, 20).trim(), "");
     }
 
     #[test]

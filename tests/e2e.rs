@@ -1892,7 +1892,10 @@ async fn zoomed_pane_still_navigates_by_direction() {
     assert!(!c.text().contains("no such pane"), "{}", c.text());
 
     // display-panes and a number: the same, the zoom follows.
-    // Zoomed, every pane still shows its number, where it would be.
+    // Zoomed, every pane still shows its number, where it would be; a
+    // named pane its name under it.
+    let right = h.cli(&["list-panes", "-t", "z", "-F", "#{pane_id}"]).await.1.lines().nth(1).unwrap().to_string();
+    assert_eq!(h.cli(&["rename-pane", "-t", &right, "tests"]).await.0, 0);
     c.prefix('q').await;
     let blocks = |s: &vt100::Screen, from: u16, to: u16| {
         (0..ROWS - 1)
@@ -1900,7 +1903,10 @@ async fn zoomed_pane_still_navigates_by_direction() {
             .filter(|&(y, x)| s.cell(y, x).is_some_and(|c| c.contents() == "█"))
             .count()
     };
-    c.wait_for("both numbers", |s| blocks(s, 0, 40) > 0 && blocks(s, 41, 80) > 0).await;
+    c.wait_for("both numbers, the name under the right one", |s| {
+        blocks(s, 0, 40) > 0 && blocks(s, 41, 80) > 0 && s.rows(41, 39).any(|r| r.trim() == "%tests")
+    })
+    .await;
     c.key(b'1' as u16, '1', 0).await;
     c.wait_for("the right pane, zoomed", |s| {
         status(s).contains(&format!("0:{SH}*Z")) && !s.contents().contains("hidden-alive")
@@ -3848,6 +3854,102 @@ async fn the_phone_page_runs_in_the_server_and_says_who_is_on_it() {
         assert_eq!(h.cli(&["web-stop"]).await.0, 0);
     }
     assert_eq!(h.cli(&["web-stop"]).await.0, 1);
+    h.cli(&["kill-server"]).await;
+}
+
+/// The phone's fit (`web-fit`, the page's ⤢): the pane fills its window and
+/// the session takes the phone's size; undone, both come back; a fit no phone
+/// shows any more ends by itself; a size set by hand takes over; read-only
+/// fits nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_fitted_to_a_phone_gets_its_size_back() {
+    use tokio::io::AsyncWriteExt;
+    let h = Harness::start("webfit").await;
+    h.cli(&["new", "-d", "-s", "f", "-x", "100", "-y", "30"]).await;
+    h.wait_capture("f:0", "shell prompt", |t| t.contains("keepane>")).await;
+    h.cli(&["split-window", "-h", "-d", "-t", "f:0"]).await;
+    let p = pane_id(&h, "f:0.1").await;
+    let size = async || {
+        h.cli(&[
+            "display",
+            "-p",
+            "-t",
+            &format!("%{p}"),
+            "#{window_width}x#{window_height} #{pane_width}x#{pane_height} #{window_zoomed_flag}",
+        ])
+        .await
+        .1
+        .trim()
+        .to_string()
+    };
+    let before = size().await;
+    assert!(before.starts_with("100x30 ") && before.ends_with(" 0"), "{before}");
+    let (code, _, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+    assert_eq!(code, 0, "{err}");
+    let status = h.cli(&["web-status"]).await.1;
+    let url = keepane::web::status_url(&status).unwrap().to_string();
+    let addr: std::net::SocketAddr = url["http://".len()..].split('/').next().unwrap().parse().unwrap();
+    let key = url.split("#k=").nth(1).unwrap().to_string();
+
+    // Fitted: zoomed, 40 columns, 20 rows for the pane (the status line on top).
+    let (code, body) = http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await;
+    assert!(code == 200 && body.contains("fitted to 40x20"), "{code} {body}");
+    assert_eq!(size().await, "40x21 40x20 1");
+    let (_, said, _) = h.cli(&["show-messages"]).await;
+    assert!(said.contains("web: a phone fitted session f to 40x20"), "{said}");
+    // Undone: the size and the layout it had.
+    let (code, _) = http(addr, "POST", &format!("/api/fit?pane=%25{p}&off=1"), &key, "").await;
+    assert_eq!(code, 200);
+    assert_eq!(size().await, before);
+
+    // Left: fitted while a phone watches it, back once none has for a while.
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    s.write_all(format!("GET /api/watch?pane=%25{p} HTTP/1.1\r\nX-Keepane-Key: {key}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(size().await, "40x21 40x20 1", "watched: it holds");
+    drop(s);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while size().await != before {
+        assert!(Instant::now() < deadline, "not back: {}", size().await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Sized by hand: the fit gives way, and ends no size later.
+    http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await;
+    assert_eq!(h.cli(&["resize-window", "-t", "f", "-x", "90", "-y", "25"]).await.0, 0);
+    assert!(size().await.starts_with("90x25 "), "{}", size().await);
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    assert!(size().await.starts_with("90x25 "), "the hand's size stays: {}", size().await);
+
+    // Bad sizes, and read-only.
+    assert_eq!(http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=0&rows=20"), &key, "").await.0, 400);
+    assert_eq!(http(addr, "GET", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await.0, 405);
+    assert_eq!(h.cli(&["web-stop"]).await.0, 0);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let (code, status, _) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1", "-r"]).await;
+        if code == 0 {
+            break status;
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let url = keepane::web::status_url(&status).unwrap().to_string();
+    let addr: std::net::SocketAddr = url["http://".len()..].split('/').next().unwrap().parse().unwrap();
+    let key = url.split("#k=").nth(1).unwrap().to_string();
+    assert_eq!(http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await.0, 403);
+    // The command's own words.
+    for (argv, why) in [
+        (vec!["web-fit", "-t", "f:0.1"], "-x cols -y rows, or -u"),
+        (vec!["web-fit", "-x", "40", "-y", "20", "-u"], "-x cols -y rows, or -u"),
+        (vec!["web-fit", "-x", "0", "-y", "20"], "takes a size"),
+    ] {
+        let (code, _, err) = h.cli(&argv).await;
+        assert!(code != 0 && err.contains(why), "{argv:?}: {err}");
+    }
     h.cli(&["kill-server"]).await;
 }
 
