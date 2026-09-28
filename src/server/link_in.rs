@@ -169,6 +169,12 @@ impl Server {
         let peer = link::Peer { addr: addr.clone(), ..peer };
         match (req.method.as_str(), req.path.as_str()) {
             ("POST", "/link/send") => self.link_send_in(cid, &req, &nonce, &peer),
+            ("GET", "/link/info") => {
+                let text = self.machine_info();
+                self.link_answer(&nonce, 200, text)
+            }
+            ("POST", "/link/capture") => self.link_capture_in(&req, &nonce, &peer),
+            ("POST", "/link/trace") => self.link_trace_in(cid, &req, &nonce, &peer),
             ("GET", "/link/panes") => {
                 let cmd = Cmd::ListPanes { target: None, all: true, session: false, format: Some(PANES.into()) };
                 match self.exec(cmd, None) {
@@ -251,7 +257,9 @@ impl Server {
                 p.addr = addr.to_string();
                 shell = p.shell;
             }
-            None => l.peers.push(link::Peer { key: from.to_string(), addr: addr.to_string(), shell: false }),
+            None => {
+                l.peers.push(link::Peer { key: from.to_string(), addr: addr.to_string(), shell: false, screen: false })
+            }
         }
         l.seen.insert(from.to_string(), chrono::Local::now());
         if let Err(e) = self.save_peers() {
@@ -267,6 +275,93 @@ impl Server {
         );
         let answer_proof = link::b64(&link::hmac(webkey.as_bytes(), link::pair_answer_text(nonce, &mine).as_bytes()));
         self.link_answer(nonce, 200, format!("{{\"key\":{},\"proof\":{}}}", js(&mine), js(&answer_proof)))
+    }
+
+    /// This machine, for another one (`link-info`): what the status line
+    /// knows of it, and what runs here.
+    fn machine_info(&self) -> String {
+        let sys = crate::sysinfo::system();
+        let panes: usize = self.sessions.iter().flat_map(|s| s.windows.iter()).map(|w| w.panes.len()).sum();
+        let mut rows = vec![
+            ("host", crate::sysinfo::hostname()),
+            ("system", format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)),
+            ("keepane", env!("CARGO_PKG_VERSION").to_string()),
+            ("up", crate::format::human_duration(sys.uptime)),
+            ("cpu", sys.cpu_percentage.clone()),
+            ("memory", format!("{} ({})", sys.ram_percentage, sys.ram_used)),
+        ];
+        if !sys.battery_percentage.is_empty() {
+            let charging = if sys.battery_charging { ", charging" } else { "" };
+            rows.push(("battery", format!("{}{charging}", sys.battery_percentage)));
+        }
+        rows.push(("panes", format!("{panes} in {} sessions", self.sessions.len())));
+        rows.push(("time", chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string()));
+        rows.iter().map(|(k, v)| format!("{k:<8} {v}")).collect::<Vec<_>>().join("\n")
+    }
+
+    /// `POST /link/capture`: what a pane here shows, for a machine allowed
+    /// to read the panes (`link-allow --screen`).
+    fn link_capture_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
+        if !peer.screen {
+            let why = format!(
+                "{} may not read the panes here: on this machine, keepane link allow {} --screen",
+                peer.addr, peer.addr
+            );
+            self.link_refused(&peer.addr, &why);
+            return self.link_answer(nonce, 403, why);
+        }
+        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
+        let Some(to) = v["to"].as_str() else {
+            return self.link_answer(nonce, 400, "to: the pane".into());
+        };
+        let t = Target::parse(to);
+        if t.remote.is_some() {
+            return self.link_answer(nonce, 400, format!("{to}: a pane is named as this machine knows it"));
+        }
+        let pid = match self.resolve(Some(&t), None) {
+            Ok((_, _, p)) => p,
+            Err(e) => return self.link_answer(nonce, 404, e),
+        };
+        let history = v["history"].as_u64().unwrap_or(0).min(2000);
+        let mut argv = vec!["capture-pane".to_string(), "-p".into(), "-t".into(), format!("%{pid}")];
+        if history > 0 {
+            argv.extend(["-S".into(), format!("-{history}")]);
+        }
+        let cmd = match crate::command::parse(&argv) {
+            Ok(c) => c,
+            Err(e) => return self.link_answer(nonce, 500, e),
+        };
+        match self.exec(cmd, None) {
+            Outcome::Text(t) => self.link_answer(nonce, 200, t),
+            Outcome::Error(e) => self.link_answer(nonce, 404, e),
+            _ => self.link_answer(nonce, 200, String::new()),
+        }
+    }
+
+    /// `POST /link/trace`: what became of a message that machine sent here;
+    /// only its own messages (its key made them).
+    fn link_trace_in(&mut self, cid: Option<ClientId>, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
+        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
+        let Some(id) = v["id"].as_u64() else { return self.link_answer(nonce, 400, "id: a message number".into()) };
+        let theirs = self.link.as_ref().and_then(|l| l.origin.get(&id)).is_some_and(|o| o.key == peer.key);
+        if !theirs || self.observe.get(id).is_none() {
+            return self.link_answer(nonce, 404, format!("no message #{id} from {} here", peer.addr));
+        }
+        match (v["wait"].as_u64(), cid) {
+            (Some(secs), Some(cid)) if self.observe.get(id).is_some_and(|r| !r.stage.finished()) => {
+                self.wait_link_trace(cid, secs, id, nonce.to_string());
+                Outcome::Pending
+            }
+            _ => self.link_trace_answer(id, nonce),
+        }
+    }
+
+    /// The trace of a message another machine sent here, as it reads it.
+    pub(super) fn link_trace_answer(&mut self, id: super::actor::MsgId, nonce: &str) -> Outcome {
+        let trace = self.observe.trace(id, self.opts.message_envelope).unwrap_or_default();
+        let finished = self.observe.get(id).is_none_or(|r| r.stage.finished());
+        let body = serde_json::json!({ "finished": finished, "trace": trace }).to_string();
+        self.link_answer(nonce, 200, body)
     }
 
     /// `POST /link/send`: a message for a pane here, from a paired machine.

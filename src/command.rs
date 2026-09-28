@@ -566,12 +566,13 @@ pub enum Cmd {
     LinkAdd {
         url: String,
     },
-    /// `link-trust host:port key [--shell]`: let the machine with that
-    /// public key send messages here, by hand (no web key needed).
+    /// `link-trust host:port key [--shell] [--screen]`: let the machine with
+    /// that public key send messages here, by hand (no web key needed).
     LinkTrust {
         addr: String,
         key: String,
         shell: bool,
+        screen: bool,
     },
     /// `link-list`: the machines paired with this server.
     LinkList,
@@ -579,11 +580,25 @@ pub enum Cmd {
     LinkPanes {
         addr: String,
     },
-    /// `link-allow host:port --shell|--no-shell`: whether that machine's
-    /// messages may run as commands in `shell` panes here.
+    /// `link-info host:port`: that machine: its name, system, keepane,
+    /// uptime, CPU, memory, sessions and panes.
+    LinkInfo {
+        addr: String,
+    },
+    /// `link-capture host:port/pane [-S lines]`: what that pane shows (and
+    /// the last `lines` of its scrollback), as text; the machine must have
+    /// allowed this one to (`link-allow --screen` there).
+    LinkCapture {
+        target: String,
+        history: Option<u32>,
+    },
+    /// `link-allow host:port [--shell|--no-shell] [--screen|--no-screen]`:
+    /// whether that machine's messages may run as commands in `shell` panes
+    /// here, and whether it may read what the panes here show.
     LinkAllow {
         addr: String,
-        shell: bool,
+        shell: Option<bool>,
+        screen: Option<bool>,
     },
     /// `link-remove host:port`: unpair (both sides, when it can be reached).
     LinkRemove {
@@ -1422,17 +1437,35 @@ impl fmt::Display for Cmd {
             }
             Cmd::LinkId => f.write_str("link-id"),
             Cmd::LinkAdd { url } => write!(f, "link-add {}", quote(url)),
-            Cmd::LinkTrust { addr, key, shell } => {
+            Cmd::LinkTrust { addr, key, shell, screen } => {
                 write!(f, "link-trust {} {}", quote(addr), quote(key))?;
                 if *shell {
                     f.write_str(" --shell")?;
+                }
+                if *screen {
+                    f.write_str(" --screen")?;
                 }
                 Ok(())
             }
             Cmd::LinkList => f.write_str("link-list"),
             Cmd::LinkPanes { addr } => write!(f, "link-panes {}", quote(addr)),
-            Cmd::LinkAllow { addr, shell } => {
-                write!(f, "link-allow {} {}", quote(addr), if *shell { "--shell" } else { "--no-shell" })
+            Cmd::LinkInfo { addr } => write!(f, "link-info {}", quote(addr)),
+            Cmd::LinkCapture { target, history } => {
+                write!(f, "link-capture {}", quote(target))?;
+                if let Some(h) = history {
+                    write!(f, " -S {h}")?;
+                }
+                Ok(())
+            }
+            Cmd::LinkAllow { addr, shell, screen } => {
+                write!(f, "link-allow {}", quote(addr))?;
+                if let Some(s) = shell {
+                    f.write_str(if *s { " --shell" } else { " --no-shell" })?;
+                }
+                if let Some(s) = screen {
+                    f.write_str(if *s { " --screen" } else { " --no-screen" })?;
+                }
+                Ok(())
             }
             Cmd::LinkRemove { addr } => write!(f, "link-remove {}", quote(addr)),
             Cmd::LinkRekey => f.write_str("link-rekey"),
@@ -1903,8 +1936,10 @@ pub const COMMANDS: &[&str] = &[
     "last-window",
     "link-add",
     "link-allow",
+    "link-capture",
     "link-id",
     "link-inbound",
+    "link-info",
     "link-list",
     "link-panes",
     "link-rekey",
@@ -2122,14 +2157,16 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("web-status", &[]),
     ("web-stop", &[]),
     ("link-add", &[]),
-    ("link-allow", &["--shell", "--no-shell"]),
+    ("link-allow", &["--shell", "--no-shell", "--screen", "--no-screen"]),
+    ("link-capture", &["-S"]),
     ("link-id", &[]),
     ("link-inbound", &[]),
+    ("link-info", &[]),
     ("link-list", &[]),
     ("link-panes", &[]),
     ("link-rekey", &[]),
     ("link-remove", &[]),
-    ("link-trust", &["--shell"]),
+    ("link-trust", &["--shell", "--screen"]),
 ];
 
 /// The flags of a command, for completion.
@@ -3419,20 +3456,48 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::LinkAdd { url }
         }
-        "link-panes" | "link-remove" => {
+        "link-panes" | "link-remove" | "link-info" => {
             let addr = a.next().ok_or_else(|| format!("{n}: host:port required"))?.to_string();
             a.none_left(n)?;
             if !crate::link::valid_hostport(&addr) {
                 return Err(format!("{n}: '{addr}' is not host:port"));
             }
-            if n == "link-panes" { Cmd::LinkPanes { addr } } else { Cmd::LinkRemove { addr } }
+            match n {
+                "link-panes" => Cmd::LinkPanes { addr },
+                "link-info" => Cmd::LinkInfo { addr },
+                _ => Cmd::LinkRemove { addr },
+            }
+        }
+        "link-capture" => {
+            let mut history = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-S" => {
+                        let v = a.value("-S")?;
+                        history = Some(
+                            v.trim_start_matches('-')
+                                .parse::<u32>()
+                                .map_err(|_| format!("{n}: -S takes a number of lines, not '{v}'"))?,
+                        );
+                    }
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let target = a.next().ok_or_else(|| format!("{n}: host:port/pane required"))?.to_string();
+            a.none_left(n)?;
+            if crate::link::split_remote(&target).is_none() {
+                return Err(format!("{n}: '{target}' is not host:port/pane"));
+            }
+            Cmd::LinkCapture { target, history }
         }
         "link-allow" => {
-            let (mut addr, mut shell) = (None, None);
+            let (mut addr, mut shell, mut screen) = (None, None, None);
             while let Some(w) = a.next() {
                 match w {
                     "--shell" => shell = Some(true),
                     "--no-shell" => shell = Some(false),
+                    "--screen" => screen = Some(true),
+                    "--no-screen" => screen = Some(false),
                     f if f.starts_with('-') => return Err(bad_flag(n, f)),
                     v if addr.is_none() => addr = Some(v.to_string()),
                     v => return Err(format!("{n}: what is '{v}'?")),
@@ -3442,17 +3507,20 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::link::valid_hostport(&addr) {
                 return Err(format!("{n}: '{addr}' is not host:port"));
             }
-            let Some(shell) = shell else { return Err(format!("{n}: --shell or --no-shell required")) };
-            Cmd::LinkAllow { addr, shell }
+            if shell.is_none() && screen.is_none() {
+                return Err(format!("{n}: --shell or --no-shell, --screen or --no-screen"));
+            }
+            Cmd::LinkAllow { addr, shell, screen }
         }
         "link-trust" => {
-            // `--shell` is the one flag: a key is base64url, and one in 64
-            // starts with `-`, so any other word is a word (and is checked
-            // as a key or an address below).
-            let (mut words, mut shell) = (Vec::new(), false);
+            // `--shell` and `--screen` are the flags: a key is base64url, and
+            // one in 64 starts with `-`, so any other word is a word (and is
+            // checked as a key or an address below).
+            let (mut words, mut shell, mut screen) = (Vec::new(), false, false);
             while let Some(w) = a.next() {
                 match w {
                     "--shell" => shell = true,
+                    "--screen" => screen = true,
                     v => words.push(v.to_string()),
                 }
             }
@@ -3464,7 +3532,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::link::valid_public(&key) {
                 return Err(format!("{n}: '{key}' is not a keepane link public key"));
             }
-            Cmd::LinkTrust { addr, key, shell }
+            Cmd::LinkTrust { addr, key, shell, screen }
         }
         "link-inbound" => {
             let peer = a.next().ok_or("link-inbound: peer address required")?.to_string();

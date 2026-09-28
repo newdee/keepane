@@ -100,10 +100,11 @@ pub fn listen_addrs(bind: Option<IpAddr>) -> Vec<IpAddr> {
 /// with the same words (`id`, `add`, `trust`, `list`, `panes`, `allow`,
 /// `remove`, `rekey`).
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
-    const WORDS: &[&str] = &["id", "add", "trust", "list", "panes", "allow", "remove", "rekey"];
+    const WORDS: &[&str] = &["id", "add", "trust", "list", "panes", "info", "capture", "allow", "remove", "rekey"];
     const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
-                         trust <host:port> <key> [--shell] | list | panes <host:port> | \
-                         allow <host:port> --shell|--no-shell | remove <host:port> | rekey";
+                         trust <host:port> <key> [--shell] [--screen] | list | panes <host:port> | \
+                         info <host:port> | capture [-S lines] <host:port/pane> | \
+                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] | remove <host:port> | rekey";
     let Some(what) = args.first().map(String::as_str).filter(|w| WORDS.contains(w)) else {
         bail!("{USAGE}");
     };
@@ -397,11 +398,13 @@ pub struct Peer {
     pub addr: String,
     /// Its messages may run in `shell` panes here.
     pub shell: bool,
+    /// It may read what panes here show (`link capture`).
+    pub screen: bool,
 }
 
 const TABLE_HEAD: &str = "# keepane link: the machines allowed to send messages to this server's panes\n\
-                          # (docs/design/link.md). One a line: public key, address, and `shell` when\n\
-                          # its messages may run as commands.\n";
+                          # (docs/design/link.md). One a line: public key, address, then `shell` when\n\
+                          # its messages may run as commands and `screen` when it may read the panes.\n";
 
 /// The table's lines back; comments, blank and malformed lines skipped.
 pub fn parse_table(text: &str) -> Vec<Peer> {
@@ -416,8 +419,9 @@ pub fn parse_table(text: &str) -> Vec<Peer> {
         if !valid_public(key) || !valid_hostport(addr) || out.iter().any(|p| p.key == key) {
             continue;
         }
-        let shell = f.any(|w| w == "shell");
-        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell });
+        let rest: Vec<&str> = f.collect();
+        let (shell, screen) = (rest.contains(&"shell"), rest.contains(&"screen"));
+        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell, screen });
     }
     out
 }
@@ -425,7 +429,9 @@ pub fn parse_table(text: &str) -> Vec<Peer> {
 pub fn format_table(peers: &[Peer]) -> String {
     let mut s = TABLE_HEAD.to_string();
     for p in peers {
-        s.push_str(&format!("{} {}{}\n", p.key, p.addr, if p.shell { " shell" } else { "" }));
+        let shell = if p.shell { " shell" } else { "" };
+        let screen = if p.screen { " screen" } else { "" };
+        s.push_str(&format!("{} {}{shell}{screen}\n", p.key, p.addr));
     }
     s
 }
@@ -691,7 +697,12 @@ mod tests {
             .find(|k| k.starts_with('-'))
             .expect("one in 64 keys starts with -");
         let parse = |w: &[&str]| crate::command::parse(&w.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        let want = |shell| crate::command::Cmd::LinkTrust { addr: "10.0.0.1:7681".into(), key: key.clone(), shell };
+        let want = |shell| crate::command::Cmd::LinkTrust {
+            addr: "10.0.0.1:7681".into(),
+            key: key.clone(),
+            shell,
+            screen: false,
+        };
         assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key]), Ok(want(false)));
         assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--shell"]), Ok(want(true)));
         assert_eq!(parse(&["link-trust", "--shell", "10.0.0.1:7681", &key]), Ok(want(true)));
@@ -711,13 +722,13 @@ mod tests {
         let k1 = Identity::make(&dir.join("1")).unwrap().public();
         let k2 = Identity::make(&dir.join("2")).unwrap().public();
         let peers = vec![
-            Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), shell: true },
-            Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), shell: false },
+            Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), shell: true, screen: false },
+            Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), shell: false, screen: true },
         ];
         save_table(&dir, &peers).unwrap();
         assert_eq!(load_table(&dir), peers);
-        let hand = format!("# mine\n\n{k1} 1.2.3.4:5 shell\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n");
-        assert_eq!(parse_table(&hand), vec![Peer { key: k1, addr: "1.2.3.4:5".into(), shell: true }]);
+        let hand = format!("# mine\n\n{k1} 1.2.3.4:5 screen shell\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n");
+        assert_eq!(parse_table(&hand), vec![Peer { key: k1, addr: "1.2.3.4:5".into(), shell: true, screen: true }]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

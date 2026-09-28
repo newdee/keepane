@@ -5146,7 +5146,11 @@ impl Server {
             c @ (Cmd::LinkId | Cmd::LinkTrust { .. } | Cmd::LinkList | Cmd::LinkAllow { .. } | Cmd::LinkRekey) => {
                 self.exec_link_local(c, cid)
             }
-            c @ (Cmd::LinkAdd { .. } | Cmd::LinkPanes { .. } | Cmd::LinkRemove { .. }) => self.exec_link_out(c, cid),
+            c @ (Cmd::LinkAdd { .. }
+            | Cmd::LinkPanes { .. }
+            | Cmd::LinkRemove { .. }
+            | Cmd::LinkInfo { .. }
+            | Cmd::LinkCapture { .. }) => self.exec_link_out(c, cid),
             Cmd::LinkInbound { peer, request } => self.link_inbound(cid, &peer, &request),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };

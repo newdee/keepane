@@ -23,7 +23,19 @@ pub(super) enum LinkOp {
     Panes { addr: String, key: String },
     /// `link-remove`: told them; done here whatever they say.
     Remove { addr: String, key: String },
+    /// `link-info`: their machine, as text.
+    Info { addr: String, key: String },
+    /// `link-capture`: what a pane of theirs shows.
+    Capture { addr: String, key: String },
+    /// `trace-message` of a message handed to them: the record here, then
+    /// theirs; `waited`, a `-w` that may run out.
+    Trace { addr: String, key: String, here: String, waited: bool },
 }
+
+/// How a message handed to another machine is known there, for asking
+/// after it (`trace-message`): that machine's key and the message's number
+/// there. Kept as long as the records are.
+pub(super) type SentThere = (String, u64);
 
 /// The answer to a request, or why there is none.
 pub(super) struct LinkAnswer {
@@ -101,6 +113,19 @@ impl Server {
         let r = match cmd {
             Cmd::LinkAdd { url } => self.link_add(cid, &url),
             Cmd::LinkPanes { addr } => self.link_panes(cid, &addr),
+            Cmd::LinkInfo { addr } => self.peer_key(&addr).and_then(|key| {
+                let op = LinkOp::Info { addr: addr.clone(), key: key.clone() };
+                self.link_signed(cid, &addr, &key, "GET", "/link/info", Vec::new(), ANSWER_GRACE, op)
+            }),
+            Cmd::LinkCapture { target, history } => {
+                let (addr, pane) = link::split_remote(&target).expect("the parser checked");
+                let (addr, pane) = (addr.to_string(), pane.to_string());
+                self.peer_key(&addr).and_then(|key| {
+                    let body = serde_json::json!({ "to": pane, "history": history.unwrap_or(0) }).to_string();
+                    let op = LinkOp::Capture { addr: addr.clone(), key: key.clone() };
+                    self.link_signed(cid, &addr, &key, "POST", "/link/capture", body.into_bytes(), ANSWER_GRACE, op)
+                })
+            }
             Cmd::LinkRemove { addr } => return self.link_remove(cid, &addr),
             other => Err(format!("not a link command: {other}")),
         };
@@ -132,6 +157,28 @@ impl Server {
             format!(
                 "{addr} is not paired with this machine: `keepane link add http://{addr}/#k=...` (its `keepane web` address), or `keepane link trust`"
             )
+        })
+    }
+
+    /// `trace-message id [-w]` of a message handed to another machine: what
+    /// became of it there is asked of it, and said after the record here.
+    /// None when it was not handed over (or the way to ask is gone).
+    pub(super) fn trace_there(
+        &mut self,
+        cid: Option<ClientId>,
+        id: MsgId,
+        here: String,
+        wait: Option<u64>,
+    ) -> Option<Outcome> {
+        let (key, there) = self.link.as_ref()?.sent.get(&id)?.clone();
+        let addr = self.link.as_ref()?.peer_by_key(&key)?.addr.clone();
+        let wait = wait.map(|w| w.min(self.opts.message_wait_max));
+        let body = serde_json::json!({ "id": there, "wait": wait }).to_string();
+        let longest = ANSWER_GRACE + Duration::from_secs(wait.unwrap_or(0));
+        let op = LinkOp::Trace { addr: addr.clone(), key: key.clone(), here: here.clone(), waited: wait.is_some() };
+        Some(match self.link_signed(cid, &addr, &key, "POST", "/link/trace", body.into_bytes(), longest, op) {
+            Ok(()) => Outcome::Pending,
+            Err(e) => Outcome::Text(format!("{here}\non {addr}: not asked ({e})")),
         })
     }
 
@@ -254,8 +301,16 @@ impl Server {
                 Ok(ans) if ans.status == 200 => match serde_json::from_slice::<SendAnswer>(&ans.body) {
                     Ok(said) => {
                         let stand = format!("{} on {addr}", said.stand);
-                        // There either way: the record here says so.
+                        // There either way: the record here says so, and
+                        // how to ask after it there.
                         self.observe.forwarded(id, &stand);
+                        if let Ok(l) = self.link() {
+                            l.sent.insert(id, (key.clone(), said.id));
+                            while l.sent.len() > super::link_state::ORIGINS_KEPT {
+                                let oldest = l.sent.keys().min().copied().expect("not empty");
+                                l.sent.remove(&oldest);
+                            }
+                        }
                         if waited && said.stage == "queued" {
                             Outcome::Error(format!("timed out: #{id} forwarded: {stand}"))
                         } else {
@@ -287,6 +342,32 @@ impl Server {
                 Ok(ans) if ans.status == 200 => Outcome::Text(format!("removed {addr}, on both machines")),
                 Ok(ans) => Outcome::Text(format!("removed {addr} here; it said: {}", ans.text())),
                 Err(e) => Outcome::Text(format!("removed {addr} here; it was not told ({e})")),
+            },
+            LinkOp::Info { addr, key } | LinkOp::Capture { addr, key } => {
+                match Self::checked(&addr, &key, &nonce, result) {
+                    // The body as it is: text, which may end in blank rows
+                    // of a screen; only the transport's own end is cut.
+                    Ok(ans) if ans.status == 200 => {
+                        Outcome::Text(String::from_utf8_lossy(&ans.body).trim_end_matches('\n').to_string())
+                    }
+                    Ok(ans) => Outcome::Error(format!("{addr} said: {}", ans.text())),
+                    Err(e) => Outcome::Error(e),
+                }
+            }
+            LinkOp::Trace { addr, key, here, waited } => match Self::checked(&addr, &key, &nonce, result) {
+                Ok(ans) if ans.status == 200 => {
+                    let v: serde_json::Value = serde_json::from_slice(&ans.body).unwrap_or_default();
+                    let there = v["trace"].as_str().unwrap_or_default();
+                    let text = format!("{here}\non {addr}:\n{there}");
+                    if waited && v["finished"] == false {
+                        Outcome::Error(format!("timed out: {text}"))
+                    } else {
+                        Outcome::Text(text)
+                    }
+                }
+                // What is known here is still worth saying.
+                Ok(ans) => Outcome::Text(format!("{here}\non {addr}: {}", ans.text())),
+                Err(e) => Outcome::Text(format!("{here}\non {addr}: not asked ({e})")),
             },
         };
         if let Some(cid) = cid {
@@ -347,7 +428,9 @@ impl Server {
                 p.addr = addr.to_string();
                 shell = p.shell;
             }
-            None => l.peers.push(link::Peer { key: key.to_string(), addr: addr.to_string(), shell: false }),
+            None => {
+                l.peers.push(link::Peer { key: key.to_string(), addr: addr.to_string(), shell: false, screen: false })
+            }
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);

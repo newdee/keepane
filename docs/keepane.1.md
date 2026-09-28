@@ -163,14 +163,22 @@ on every request is signed, and the web key plays no part. `keepane link
 trust <host:port> <key> [--shell]` (`link-trust`) lets a machine in by hand,
 by the key `keepane link id` (`link-id`) prints there. `keepane link list`
 (`link-list`) shows the machines paired; `keepane link panes <host:port>`
-(`link-panes`) their panes; `keepane link remove <host:port>`
-(`link-remove`) unpairs; `keepane link rekey` (`link-rekey`) makes a new key,
-after which every pairing has to be made again.
+(`link-panes`) their panes; `keepane link info <host:port>` (`link-info`)
+the machine: its name, system, keepane version, uptime, CPU, memory, panes;
+`keepane link capture [-S lines] <host:port/pane>` (`link-capture`) what one
+of its panes shows, as text, which that machine must allow (`--screen`,
+below); `trace-message` of a message sent there asks that machine what became
+of it (queued, delivered, done or failed, a shell command's output; `-w`
+waits there). `keepane link remove <host:port>` (`link-remove`) unpairs;
+`keepane link rekey` (`link-rekey`) makes a new key, after which every
+pairing has to be made again.
 
 A paired machine's messages go to `ai` and `normal` panes only. To let them
 run as commands in `shell` panes here: `keepane link allow <host:port>
---shell` (`link-allow`; `--no-shell` takes it back), from a terminal outside
-keepane or the `C-b :` prompt, never from inside a pane. A message for a
+--shell` (`link-allow`; `--no-shell` takes it back); to let it read what the
+panes here show: `--screen` (`--no-screen`). Both are given from a terminal
+outside keepane or the `C-b :` prompt, never from inside a pane
+(`link-trust` takes `--shell` and `--screen` too). A message for a
 `shell` pane from a machine not allowed is refused, and the sender told how
 to allow it. A message from another machine reads `from=host:port/…` in its
 envelope. A machine is known by its key, not its address: when it turns up

@@ -714,8 +714,17 @@ A paired machine's messages reach `ai` and `normal` panes only. To let them
 run as commands in `shell` panes, allow that machine, from a terminal outside
 keepane (never from inside a pane, where an agent could):
 
+What the other machine can be asked, beyond its panes:
+
+```powershell
+keepane link info 100.64.0.3:7681              # its name, system, keepane, uptime, CPU, memory, panes
+keepane trace-message 12 -w 60                 # a message sent there: what became of it there (and a command's output)
+keepane link capture -S 100 100.64.0.3:7681/%worker   # what a pane there shows (it must allow it: --screen)
+```
+
 ```powershell
 keepane link allow 100.64.0.3:7681 --shell     # --no-shell takes it back
+keepane link allow 100.64.0.3:7681 --screen    # it may read the panes here; --no-screen takes it back
 keepane link remove 100.64.0.3:7681            # unpair, on both
 keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
 keepane link rekey                             # a new key: every pairing has to be made again

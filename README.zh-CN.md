@@ -402,8 +402,17 @@ keepane send-message --to 100.64.0.3:7681/%worker "run the tests"
 
 配过对的机器发来的消息只进 `ai` 和 `normal` 模式的 pane。要让它们在 `shell` 模式的 pane 里当命令执行，得在 keepane 之外的终端里给那台机器授权（不能在 pane 里面做，否则 agent 就能自己开权限）：
 
+除了对方的 pane 列表，还能问到：
+
+```powershell
+keepane link info 100.64.0.3:7681              # 对方机器：主机名、系统、keepane 版本、开机多久、CPU、内存、pane 数
+keepane trace-message 12 -w 60                 # 发过去的消息在那边怎么样了（shell 命令还有输出）
+keepane link capture -S 100 100.64.0.3:7681/%worker   # 对方某个 pane 现在显示的内容（要对方授权 --screen）
+```
+
 ```powershell
 keepane link allow 100.64.0.3:7681 --shell     # --no-shell 收回
+keepane link allow 100.64.0.3:7681 --screen    # 允许它读这边 pane 的屏幕；--no-screen 收回
 keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
 keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
 keepane link rekey                             # 换一对新密钥：所有配对都要重做

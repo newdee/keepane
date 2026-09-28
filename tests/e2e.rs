@@ -4138,6 +4138,30 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let (code, out, err) = a.cli(&["send-message", "--to", &sh, "-w", "30", echo]).await;
     assert!(code == 0 && out.contains("delivered to"), "{out} {err}");
     b.wait_capture("wb:1.0", "the command's output", |t| t.contains("linked-ok")).await;
+    // What became of it there, asked from here: done, with what it printed.
+    let ran = msg_id(&out);
+    let ran_there = out.split("forwarded: #").nth(1).and_then(|s| s.split_whitespace().next()).unwrap().to_string();
+    let (code, trace, err) = a.cli(&["trace-message", &ran, "-w", "30"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(trace.starts_with(&format!("#{ran} forwarded")) && trace.contains(&format!("on {addr_b}:\n#")), "{trace}");
+    assert!(trace.contains(" done ") && trace.contains("output:\nlinked-ok"), "{trace}");
+
+    // The machine, as it says it is.
+    let (code, info, err) = a.cli(&["link-info", &addr_b]).await;
+    assert_eq!(code, 0, "{err}");
+    for field in ["host ", "system ", "keepane ", "up ", "cpu ", "memory ", "panes ", "time "] {
+        assert!(info.lines().any(|l| l.starts_with(field)), "{field}: {info}");
+    }
+    assert!(info.contains(&format!("keepane  {}", env!("CARGO_PKG_VERSION"))), "{info}");
+    // A pane's screen: only once that machine allows this one to read them.
+    let (code, _, err) = a.cli(&["link-capture", &sh]).await;
+    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --screen")), "{err}");
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--screen"]).await.0, 0);
+    let (code, screen, err) = a.cli(&["link-capture", "-S", "100", &sh]).await;
+    assert!(code == 0 && screen.contains("linked-ok"), "{screen} {err}");
+    // Another machine's message is not this one's to ask after.
+    let (_, _, err) = b.cli(&["trace-message", "999"]).await;
+    assert!(err.contains("no message #999"), "{err}");
 
     // A stranger, a stale clock, a repeat, a signature for another request:
     // refused, and said on the status line.
@@ -4156,6 +4180,14 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     assert!(status == 401 && body.contains("seen before"), "{status} {body}");
     let (status, body) = link_call(&stranger, "not-their-key", &addr_b, "GET", "/link/panes", now, "n4", "").await;
     assert!(status == 401 && body.contains("not signed"), "{status} {body}");
+    // Paired, but asking after another machine's message: not its to know;
+    // nor its to read the panes (it was not allowed to).
+    let ask = format!("{{\"id\":{ran_there}}}");
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/trace", now, "n7", &ask).await;
+    assert!(status == 404 && body.contains(&format!("no message #{ran_there} from")), "{status} {body}");
+    let (status, body) =
+        link_call(&stranger, &key_b, &addr_b, "POST", "/link/capture", now, "n8", r#"{"to":"%sh"}"#).await;
+    assert!(status == 403 && body.contains("--screen"), "{status} {body}");
     // Malformed: a body that is not a message, a pane there is not, a
     // request without its key, another protocol: each refused with a reason.
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/send", now, "n5", "garbage").await;

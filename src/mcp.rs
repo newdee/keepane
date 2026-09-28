@@ -70,9 +70,23 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "list_links",
-            "The machines paired with this one: host:port, key, whether their messages may run as commands here.",
+            "The machines paired with this one: host:port, key, whether their messages may run as commands here \
+             and whether they may read the panes here.",
             json!({}),
             &[],
+        ),
+        tool(
+            "link_info",
+            "A machine paired with this one: its name, system, keepane version, uptime, CPU, memory, panes.",
+            json!({ "host": s("The machine, host:port, as list_links shows it") }),
+            &["host"],
+        ),
+        tool(
+            "read_screen",
+            "What a pane shows now, as text (with the last `lines` of its scrollback). A pane on another \
+             machine (host:port/%name) needs that machine to have allowed this one (link allow --screen).",
+            json!({ "pane": pane.clone(), "lines": n("Lines of scrollback above the screen, too") }),
+            &["pane"],
         ),
         tool(
             "send_message",
@@ -177,6 +191,25 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
     let mut argv = match name {
         "whoami" => v(&["whoami"]),
         "list_links" => v(&["link-list"]),
+        "link_info" => vec!["link-info".into(), need("host")?],
+        "read_screen" => {
+            let pane = need("pane")?;
+            let lines = num("lines");
+            if crate::link::split_remote(&pane).is_some() {
+                let mut c = v(&["link-capture"]);
+                if let Some(l) = lines {
+                    c.extend(["-S".into(), l]);
+                }
+                c.push(pane);
+                c
+            } else {
+                let mut c = vec!["capture-pane".into(), "-p".into(), "-t".into(), pane];
+                if let Some(l) = lines {
+                    c.extend(["-S".into(), format!("-{l}")]);
+                }
+                c
+            }
+        }
         "list_panes" if str_of("host").is_some() => vec!["link-panes".into(), need("host")?],
         "list_panes" => v(&[
             "list-panes",
@@ -391,7 +424,7 @@ mod tests {
     fn every_tool_turns_into_a_command_keepane_knows() {
         let args = json!({
             "to": "%b", "text": "hi", "pane": "%b", "mode": "ai", "name": "n", "id": 3, "command": "claude",
-            "args": ["-p", "x"], "wait_seconds": 5, "timeout_seconds": 5, "session": "s",
+            "args": ["-p", "x"], "wait_seconds": 5, "timeout_seconds": 5, "session": "s", "host": "10.0.0.1:7681",
         });
         let moving = json!({"id": 3, "to": "top"});
         for t in tools() {
@@ -409,6 +442,17 @@ mod tests {
             ["send-message", "--to", "%b", "--", "-not a flag"]
         );
         assert!(command("send_message", &json!({"to": "%b"})).is_err());
+        // Another machine: its panes, its screen (link.md); this one's screen.
+        assert_eq!(command("list_panes", &json!({"host": "10.0.0.1:7681"})).unwrap(), ["link-panes", "10.0.0.1:7681"]);
+        assert_eq!(
+            command("read_screen", &json!({"pane": "10.0.0.1:7681/%b", "lines": 50})).unwrap(),
+            ["link-capture", "-S", "50", "10.0.0.1:7681/%b"]
+        );
+        assert_eq!(
+            command("read_screen", &json!({"pane": "%b", "lines": 50})).unwrap(),
+            ["capture-pane", "-p", "-t", "%b", "-S", "-50"]
+        );
+        assert!(command("link_info", &json!({})).is_err());
         // Answering a message, carrying a task on: by their numbers.
         assert_eq!(
             command("send_message", &json!({"re": 7, "task": 3, "text": "done"})).unwrap(),

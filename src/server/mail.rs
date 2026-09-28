@@ -26,6 +26,9 @@ enum WaitKind {
     /// Another machine's `-w` on a message it sent here: until it leaves
     /// the inbox, answered as that machine reads it (`link_in`).
     Link { id: MsgId, nonce: String },
+    /// Another machine's `trace-message -w` on a message it sent here:
+    /// until nothing more will happen to it.
+    LinkTrace { id: MsgId, nonce: String },
 }
 
 /// What a message answers and carries on: `-r` (the message the calling
@@ -153,6 +156,13 @@ impl Server {
             Cmd::ListMessages { target, all } => self.list_messages(cid, target.as_ref(), all),
             Cmd::TraceMessage { id, wait } => match self.observe.trace(id, self.opts.message_envelope) {
                 None => Outcome::Error(format!("no message #{id}")),
+                // Handed to another machine: what became of it there, asked.
+                Some(t)
+                    if self.observe.get(id).is_some_and(|r| r.stage == Stage::Forwarded)
+                        && self.link.as_ref().is_some_and(|l| l.sent.contains_key(&id)) =>
+                {
+                    self.trace_there(cid, id, t.clone(), wait).unwrap_or(Outcome::Text(t))
+                }
                 Some(t) => match (wait, cid) {
                     (Some(secs), Some(cid)) if !self.observe.get(id).is_some_and(|r| r.stage.finished()) => {
                         self.wait(cid, secs, WaitKind::Finished(id));
@@ -354,6 +364,11 @@ impl Server {
     /// with the signed JSON that machine reads, not the text a person does.
     pub(super) fn wait_link(&mut self, cid: ClientId, secs: u64, id: MsgId, nonce: String) {
         self.wait(cid, secs, WaitKind::Link { id, nonce });
+    }
+
+    /// The same for another machine's `trace-message -w`.
+    pub(super) fn wait_link_trace(&mut self, cid: ClientId, secs: u64, id: MsgId, nonce: String) {
+        self.wait(cid, secs, WaitKind::LinkTrace { id, nonce });
     }
 
     /// A message for a pane that takes none on its own: its window is
@@ -999,6 +1014,13 @@ impl Server {
                         Some(self.link_send_answer(id, &nonce))
                     }
                 },
+                WaitKind::LinkTrace { id, nonce } => match self.observe.get(*id) {
+                    Some(r) if !r.stage.finished() => None,
+                    _ => {
+                        let (id, nonce) = (*id, nonce.clone());
+                        Some(self.link_trace_answer(id, &nonce))
+                    }
+                },
                 &WaitKind::Delivered(id) => match self.observe.get(id).map(|r| r.stage) {
                     Some(Stage::Queued) => None,
                     Some(Stage::Dropped | Stage::Rejected) => Some(Outcome::Error(self.stand(id))),
@@ -1050,6 +1072,11 @@ impl Server {
                     // not a failure.
                     WaitKind::Link { id, nonce } => {
                         let out = self.link_send_answer(id, &nonce);
+                        self.reply(w.cid, out);
+                        continue;
+                    }
+                    WaitKind::LinkTrace { id, nonce } => {
+                        let out = self.link_trace_answer(id, &nonce);
                         self.reply(w.cid, out);
                         continue;
                     }
