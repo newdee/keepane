@@ -618,9 +618,12 @@ keepane web
 
 prints a QR code in the terminal. Scan it with the phone's camera (same
 network) and the browser opens a page that lists every pane, under its session
-and window: its name large (else the title its program set, else the
-program), then the program under it, its directory, the last line it printed
-and how long it has been quiet, and the window's alert marks from the status
+and window (the directory most of a session's panes are in beside its name):
+its name large (else the title its program set, else the program), then the
+program under it and its directory when it is elsewhere, the last thing it
+printed (not a prompt) and how long it has been quiet; a dot for its state
+(an agent or shell pane free green or busy yellow, exited red), the messages
+waiting in its inbox, and the window's alert marks from the status
 line (`#` printed, `!` bell, `~` silent, with `monitor-activity` and friends
 on), so you can see which job finished without opening it. Tap one to see its
 screen, colours and all; keepane sends it again whenever it changes, so there

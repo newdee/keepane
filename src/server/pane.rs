@@ -1225,19 +1225,31 @@ impl Pane {
     /// scrolls (`scrolled_total() + row`).
     /// The last line with something on it above the cursor: what the pane
     /// printed last, not the line being typed at (a shell at its prompt
-    /// gives its last command's last line); the cursor's own row when
-    /// nothing is above it. `#{pane_last_line}`, at most 200 characters.
+    /// gives its last command's last line). A prompt's line (its shell
+    /// marks it) is not output: a command that printed nothing gives what
+    /// came before it, and a shell that printed only its prompt gives
+    /// nothing. `#{pane_last_line}`, at most 200 characters.
     pub fn last_line(&self) -> String {
         let s = self.screen();
         let (row, _) = s.cursor_position();
+        let top = s.scrolled_total();
         let rows: Vec<String> = s.rows(0, s.size().1).take(usize::from(row) + 1).collect();
-        let pick = |l: &String| !l.trim().is_empty();
-        let line = rows[..rows.len().saturating_sub(1)]
+        // The prompts' lines on the screen (marks run oldest first).
+        let prompts: Vec<u64> = self.marks.iter().rev().map(|m| m.line).take_while(|&l| l >= top).collect();
+        let marked = |i: usize| prompts.contains(&(top + i as u64));
+        // An empty Enter's prompt is left unmarked (its mark moved down to
+        // the next): it reads as the prompt waiting at the cursor now, with
+        // what was typed at that since after a blank.
+        let waiting = rows.last().filter(|_| marked(usize::from(row))).map(|l| l.trim());
+        let empty_enter = |l: &str| {
+            waiting.and_then(|w| w.strip_prefix(l.trim())).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        };
+        let line = rows[..usize::from(row)]
             .iter()
+            .enumerate()
             .rev()
-            .find(|l| pick(l))
-            .or_else(|| rows.last().filter(|l| pick(l)))
-            .map(|l| l.trim_end().replace('\t', " "))
+            .find(|(i, l)| !l.trim().is_empty() && !marked(*i) && !empty_enter(l))
+            .map(|(_, l)| l.trim_end().replace('\t', " "))
             .unwrap_or_default();
         line.chars().take(200).collect()
     }
@@ -1890,18 +1902,42 @@ mod tests {
     }
 
     /// What a pane printed last, for the phone's list: above the line being
-    /// typed at, blank lines passed over; the cursor's own line when there
-    /// is nothing above; nothing on a blank screen.
+    /// typed at, blank lines passed over; nothing on a blank screen or one
+    /// with only the line being typed at.
     #[test]
     fn the_last_line_is_what_was_printed_last() {
         let mut p = quiet_pane(20, 6, 100);
         assert_eq!(p.last_line(), "");
         p.process_output(b"PS> ");
-        assert_eq!(p.last_line(), "PS>", "only the prompt");
+        assert_eq!(p.last_line(), "", "only the prompt");
         p.process_output(b"cargo test\r\ntests: 42 passed\r\n\r\nPS> ");
         assert_eq!(p.last_line(), "tests: 42 passed");
         p.process_output(b"echo a\tb\r\na\tb\r\nPS> x");
         assert_eq!(p.last_line(), "a       b", "a tab as the screen shows it");
+    }
+
+    /// With the shell marking its prompts, a prompt's line is not output:
+    /// a command that printed nothing, an empty Enter, a fresh shell.
+    #[test]
+    fn a_prompt_is_not_what_was_printed_last() {
+        let mut p = quiet_pane(30, 8, 100);
+        p.process_output(format!("PS C:\\> {B}").as_bytes());
+        assert_eq!(p.last_line(), "", "a fresh shell: only its prompt");
+        p.process_output(b"echo hi\r\nhi\r\n");
+        p.process_output(format!("{}PS C:\\> {B}", ran(1, 2, true)).as_bytes());
+        assert_eq!(p.last_line(), "hi");
+        p.process_output(b"cd src\r\n");
+        p.process_output(format!("{}PS C:\\src> {B}", ran(3, 4, true)).as_bytes());
+        assert_eq!(p.last_line(), "hi", "cd printed nothing: its prompt line is passed over");
+        p.process_output(format!("\r\nPS C:\\src> {B}").as_bytes());
+        assert_eq!(p.last_line(), "hi", "an empty Enter's prompt too");
+        p.process_output(b"ab");
+        assert_eq!(p.last_line(), "hi", "typing at the prompt changes nothing");
+        // Output that is only the start of the prompt's first word is still
+        // output (a prompt `user@host:~$`, a command printing `user`).
+        let mut p = quiet_pane(30, 8, 100);
+        p.process_output(format!("user@host:~$ {B}whoami\r\nuser\r\n{}user@host:~$ {B}", ran(1, 2, true)).as_bytes());
+        assert_eq!(p.last_line(), "user");
     }
 
     /// The command's end read off the screen, wherever it was drawn: here a

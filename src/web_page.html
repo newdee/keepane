@@ -56,8 +56,12 @@
   }
   .pane .cmd, .pane .where { overflow-wrap: anywhere; }
   .pane .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
-  .pane.current .dot { background: var(--green); }
-  .pane.dead .dot { background: var(--red); }
+  /* The dot is the pane's state (free, busy, exited; a normal pane has
+     none); the pane the computer shows has a bar down its left edge. */
+  .dot.idle { background: var(--green); }
+  .dot.busy { background: var(--yellow); }
+  .dot.dead { background: var(--red); }
+  .pane.current { box-shadow: inset 3px 0 0 var(--accent); }
   .pane .what { flex: 1; min-width: 0; }
   .pane .cmd { font-weight: 600; }
   /* The window's alerts, the marks the status line shows: # printed, ! bell, ~ silent. */
@@ -71,6 +75,8 @@
   .pane .top { display: flex; align-items: baseline; gap: 8px; }
   .pane .top .cmd { flex: 1; min-width: 0; }
   .pane .quiet { flex: none; color: var(--muted); font-size: 12px; }
+  .pane .inbox { flex: none; color: var(--accent); font-size: 12px; font-weight: 600; }
+  .session .dir { margin-left: 8px; color: var(--muted); font-size: 12px; font-weight: 400; }
   .pane .last {
     margin-top: 3px; font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; color: var(--fg); opacity: .7;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -96,6 +102,13 @@
   .keys button { flex: 1 0 auto; min-width: 32px; padding: 6px 4px; font: 13px ui-monospace, Menlo, Consolas, monospace; }
   .keys button.on { background: var(--accent); color: var(--bar); border-color: var(--accent); }
   #keys2 { padding-top: 0; }
+  /* The usual keys stay one row (⋯ is by the box): a row more would take
+     the screen's room. Each stays wide enough to tap; on a screen too
+     narrow for all of them the row scrolls. */
+  #keys { flex-wrap: nowrap; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+  #keys::-webkit-scrollbar { display: none; }
+  #keys button { flex: 1 0 auto; min-width: 28px; padding: 6px 3px; }
+  #moreBtn.on { background: var(--accent); color: var(--bar); border-color: var(--accent); }
   .typing { display: flex; gap: 6px; }
   .typing textarea {
     flex: 1; resize: none; font: 16px/1.3 ui-monospace, Menlo, Consolas, monospace; color: var(--fg);
@@ -167,6 +180,7 @@
   <div class="keys hidden" id="keys2"></div>
   <div class="typing">
     <button class="icon" id="histBtn" aria-label="History">&#9776;</button>
+    <button class="icon" id="moreBtn" data-k="@more" aria-label="More keys">&#8943;</button>
     <textarea id="text" rows="1" placeholder="Type, then send" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
     <button class="send" id="send">Send</button>
   </div>
@@ -215,7 +229,7 @@ let readOnly = false, panes = [], current = null, lastText = "", timer = null;
 // page's own: Ctrl, Alt, more keys). The usual ones, then the rest.
 const KEYS = [
   ["Ctrl", "@ctrl"], ["Alt", "@alt"], ["Esc", "Escape"], ["Tab", "Tab"], ["↑", "Up"], ["↓", "Down"],
-  ["←", "Left"], ["→", "Right"], ["⏎", "Enter"], ["^C", "C-c"], ["⋯", "@more"],
+  ["←", "Left"], ["→", "Right"], ["⏎", "Enter"], ["^C", "C-c"],
 ];
 const MORE_KEYS = [
   ["⇧Tab", "BTab"], ["^D", "C-d"], ["^Z", "C-z"], ["^L", "C-l"], ["⌫", "BSpace"], ["Home", "Home"], ["End", "End"],
@@ -257,17 +271,26 @@ function renderList() {
   // How much each session and window holds, for a folded one's line.
   const count = new Map();
   for (const p of panes) {
-    const s = count.get(sKey(p)) || { windows: new Set(), panes: 0 };
+    const s = count.get(sKey(p)) || { windows: new Set(), panes: 0, paths: new Map() };
     s.windows.add(p.window); s.panes++; count.set(sKey(p), s);
+    if (p.path) s.paths.set(p.path, (s.paths.get(p.path) || 0) + 1);
     count.set(wKey(p), (count.get(wKey(p)) || 0) + 1);
   }
+  // The directory most of a session's panes are in, said once on its line;
+  // a pane elsewhere says its own.
+  const home = (p) => {
+    let best = "", most = 0;
+    for (const [path, n] of count.get(sKey(p)).paths) if (n > most) { best = path; most = n; }
+    return best;
+  };
   const chev = (k) => `<span class="chev">${folded.has(k) ? "&#9656;" : "&#9662;"}</span>`;
   let html = "", lastSession = null, lastWindow = null;
   for (const p of panes) {
     if (p.session !== lastSession) {
       const c = count.get(sKey(p));
       const sum = folded.has(sKey(p)) ? `<span class="count">${t(`${c.windows.size} windows · ${c.panes} panes`, `${c.windows.size} 个窗口 · ${c.panes} 个 pane`)}</span>` : "";
-      html += `<div class="group session" data-fold="${esc(sKey(p))}">${chev(sKey(p))}<span class="name">${esc(p.session)}</span>${sum}${pen("session", p, p.session)}</div>`;
+      const dir = home(p) ? `<span class="dir">${esc(home(p))}</span>` : "";
+      html += `<div class="group session" data-fold="${esc(sKey(p))}">${chev(sKey(p))}<span class="name">${esc(p.session)}${dir}</span>${sum}${pen("session", p, p.session)}</div>`;
       lastSession = p.session; lastWindow = null;
     }
     if (folded.has(sKey(p))) continue;
@@ -282,12 +305,15 @@ function renderList() {
       (p.bell ? `<span class="mark bell" title="${t("bell", "响铃")}">!</span>` : "") +
       (p.silence ? `<span class="mark silence" title="${t("silent", "没动静")}">~</span>` : "");
     const cls = ["pane", p.active && p.windowActive ? "current" : "", p.dead ? "dead" : "", marks ? "alert" : ""].join(" ");
-    // The pane's heading and how long it has been quiet; then what the
-    // heading left out, its mode and directory; the last line it printed.
-    const where = [...under(p), p.mode && p.mode !== "normal" ? p.mode : "", p.path || ""]
+    // Its state as a dot; the pane's heading, what waits in its inbox and
+    // how long it has been quiet; then what the heading left out, its mode
+    // and its directory when not the session's; the last line it printed.
+    const where = [...under(p), p.mode && p.mode !== "normal" ? p.mode : "", p.path !== home(p) ? p.path : ""]
       .filter(Boolean).map(esc).join(" · ");
-    html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot"></span><span class="what">` +
-      `<div class="top"><span class="cmd">${esc(headOf(p))}</span><span class="quiet">${quietFor(p.quiet)}</span></div>` +
+    const st = stateOf(p);
+    const inbox = p.inbox > 0 ? `<span class="inbox">${esc(t(`${p.inbox} queued`, `排队 ${p.inbox} 条`))}</span>` : "";
+    html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot ${st.cls}" title="${esc(st.label)}"></span><span class="what">` +
+      `<div class="top"><span class="cmd">${esc(headOf(p))}</span>${inbox}<span class="quiet">${quietFor(p.quiet)}</span></div>` +
       (where ? `<div class="where">${where}</div>` : "") +
       (p.last ? `<div class="last">${esc(p.last)}</div>` : "") + `</span>` +
       (marks ? `<span class="marks">${marks}</span>` : "") + `</button>`;
@@ -359,6 +385,15 @@ function titleOf(p) {
   const title = (p.title || "").trim();
   const base = title.split(/[\\/]/).pop().replace(/\.exe$/i, "").toLowerCase();
   return !title || base === (p.command || "").toLowerCase() ? "" : title;
+}
+
+// A pane's state, as the dashboard gives it: an agent or shell pane is free
+// for its next message or busy; a normal pane is neither, as keepane cannot
+// tell; a pane whose program ended has exited.
+function stateOf(p) {
+  if (p.dead) return { cls: "dead", label: t("exited", "已退出") };
+  if (!p.mode || p.mode === "normal") return { cls: "", label: "" };
+  return p.idle ? { cls: "idle", label: t("free", "空闲") } : { cls: "busy", label: t("busy", "忙") };
 }
 
 // A pane's heading: the name it was given, else the title its program set,
@@ -747,7 +782,7 @@ let moreKeys = (() => { try { return localStorage.getItem("keepane-more-keys") =
 let held = null; // "C" or "M": Ctrl or Alt, down for the next character
 function showKeys() {
   $("keys2").classList.toggle("hidden", !moreKeys);
-  for (const b of document.querySelectorAll("#keys button, #keys2 button")) {
+  for (const b of document.querySelectorAll("#keys button, #keys2 button, #moreBtn")) {
     const k = b.dataset.k;
     b.classList.toggle("on", (k === "@ctrl" && held === "C") || (k === "@alt" && held === "M") || (k === "@more" && moreKeys));
   }
@@ -771,6 +806,7 @@ function onKey(e) {
 }
 $("keys").addEventListener("click", onKey);
 $("keys2").addEventListener("click", onKey);
+$("moreBtn").addEventListener("click", onKey);
 showKeys();
 
 // Send sends what is in the box, no Enter after it: a second Send (the box
@@ -904,9 +940,14 @@ if (window.visualViewport) {
 }
 
 (async () => {
-  $("text").placeholder = t("Type; Send sends it, Send again is Enter", "输入内容；点发送只发文字，再点一次是回车");
+  // Short enough for one line on a phone; how Send works is on the button
+  // (its label turns to Enter once the box is sent) and in its hint.
+  $("text").placeholder = t("Type a command…", "输入命令…");
+  $("send").title = t("Send sends the text, with no Enter; Send again (the box empty) is the Enter",
+    "点发送只发文字，不带回车；输入框空着时再点一次就是回车");
   sendLabel();
   $("histBtn").title = t("Sent before", "发过的命令");
+  $("moreBtn").title = t("More keys", "更多按键");
   $("detail").title = t("When each command ran", "每条命令的时间");
   const labels = { "split-h": t("Split left | right", "左右分屏"), "split-v": t("Split top / bottom", "上下分屏"),
     "new-window": t("New window", "新窗口"), "kill-pane": t("Close this pane", "关闭这个 pane"), "": t("Cancel", "取消"),
