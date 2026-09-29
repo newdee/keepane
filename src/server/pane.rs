@@ -75,8 +75,8 @@ pub struct Finished {
 }
 
 /// What was typed at a prompt: the line from column `col` on, a cell a
-/// column (a wide character takes two), blanks trimmed; the whole line when
-/// the prompt took all of it.
+/// column (a wide character takes two), blanks trimmed; nothing when the
+/// line ends before that column (the prompt and nothing after it).
 pub fn command_of(line: &str, col: u16) -> String {
     let mut width = 0;
     for (i, c) in line.char_indices() {
@@ -85,7 +85,7 @@ pub fn command_of(line: &str, col: u16) -> String {
         }
         width += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
     }
-    line.trim().to_string()
+    String::new()
 }
 
 /// One command a shell ran, pinned to the line it was typed on.
@@ -96,6 +96,11 @@ pub struct Mark {
     pub line: u64,
     /// The column its command starts in: where the prompt ends.
     pub col: u16,
+    /// When Enter first went into the pane at this prompt: the command's
+    /// start for a shell that does not say it (bash before 4.4, macOS's
+    /// own, has no `PS0`). For `done-events` only; the stamps want the
+    /// shell's word.
+    pub entered: Option<chrono::DateTime<chrono::Local>>,
     pub start: Option<chrono::DateTime<chrono::Local>>,
     pub end: Option<chrono::DateTime<chrono::Local>>,
     /// The exit code, when the shell said; PowerShell says only whether it
@@ -966,10 +971,11 @@ impl Pane {
                     // than piling up.
                     let mut mark = match self.marks.back() {
                         Some(m) if m.start.is_none() && m.end.is_none() => self.marks.pop_back().unwrap(),
-                        _ => Mark { line, col, start: None, end: None, exit: None, text: String::new() },
+                        _ => Mark { line, col, entered: None, start: None, end: None, exit: None, text: String::new() },
                     };
                     mark.line = line;
                     mark.col = col;
+                    mark.entered = None;
                     // A mark at or below a new prompt's line was cleared or
                     // written over (`cls`): lines only move on otherwise.
                     self.marks.retain(|m| m.line < line);
@@ -987,6 +993,18 @@ impl Pane {
                     // at the prompt: nothing ran.
                     if self.marks.back().is_some_and(|m| m.start.is_some() && m.end.is_none()) {
                         self.finish_mark(None, t, code, true);
+                    } else if let Some(m) = self.marks.back_mut().filter(|m| m.start.is_none() && m.end.is_none())
+                        && let Some(entered) = m.entered.take()
+                    {
+                        // No word of its start from the shell: what ran
+                        // since Enter, told if anything was typed.
+                        let (line, col) = (m.line, m.col);
+                        let command = self.text_at(line).map(|text| command_of(&text, col)).unwrap_or_default();
+                        if !command.is_empty() {
+                            let secs = (t - entered).num_milliseconds().max(0) as u64 / 1000;
+                            let failed = code.is_some_and(|c| c != 0);
+                            self.finished.push(Finished { command, secs, failed, exit: code });
+                        }
                     }
                 }
                 MarkEvent::Ran { start, end, ok } => {
@@ -1370,6 +1388,13 @@ impl Pane {
     pub fn write_input(&mut self, bytes: &[u8]) {
         if self.exit_code.is_some() {
             return;
+        }
+        // Enter at a prompt: when its command started, should the shell not
+        // say so itself.
+        if bytes.contains(&b'\r')
+            && let Some(m) = self.marks.back_mut().filter(|m| m.start.is_none() && m.end.is_none())
+        {
+            m.entered.get_or_insert_with(chrono::Local::now);
         }
         if let Err(e) = self.writer.write_all(bytes) {
             log::warn!("pane {} write failed: {e}", self.id);
@@ -1960,13 +1985,13 @@ mod tests {
     }
 
     /// What was typed: the line after the prompt's column, wide characters
-    /// two columns each; the whole line when the column is past its end.
+    /// two columns each; nothing when the line ends before the column.
     #[test]
     fn the_command_is_what_follows_the_prompt() {
         assert_eq!(command_of("PS C:\\src> cargo test", 11), "cargo test");
         assert_eq!(command_of("中文> ls -l ", 5), "ls -l", "two wide characters, then '> '");
         assert_eq!(command_of("$ make", 0), "$ make", "no column known: the whole line");
-        assert_eq!(command_of("short", 40), "short");
+        assert_eq!(command_of("$", 2), "", "the prompt and nothing typed after it");
         // Marked by a real prompt: the column comes with it.
         let mut p = quiet_pane(40, 6, 100);
         p.process_output(format!("PS C:\\> {B}echo hi\r\nhi\r\n{}PS C:\\> {B}", ran(1_000, 3_500, true)).as_bytes());
@@ -1977,6 +2002,31 @@ mod tests {
         let mut q = quiet_pane(40, 6, 100);
         q.process_output(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\false\x1b]133;C\x1b\\\r\n\x1b]133;D;3\x1b\\");
         assert_eq!((q.finished[0].failed, q.finished[0].exit), (true, Some(3)));
+    }
+
+    /// bash before 4.4 (macOS's own) has no `PS0`, so no word of a
+    /// command's start: Enter at its prompt stands in, for `done-events`
+    /// only. An empty Enter is nothing; the stamps stay the shell's.
+    #[test]
+    fn enter_stands_in_for_a_start_the_shell_does_not_give() {
+        let (a, b) = ("\x1b]133;A\x07", "\x1b]133;B\x07");
+        let d = |code: u8| format!("\x1b]133;D;{code}\x1b\\");
+        let mut p = quiet_pane(40, 8, 100);
+        p.process_output(format!("{a}$ {b}").as_bytes());
+        p.write_input(b"\r");
+        p.process_output(format!("\r\n{}{a}$ {b}", d(0)).as_bytes());
+        assert!(p.finished.is_empty(), "an empty Enter ran nothing");
+        p.write_input(b"make\r");
+        p.write_input(b"\r"); // typed ahead: the first Enter is the start
+        p.process_output(format!("make\r\nbuilt\r\n{}{a}$ {b}", d(2)).as_bytes());
+        assert_eq!(p.finished, [Finished { command: "make".into(), secs: 0, failed: true, exit: Some(2) }]);
+        assert!(p.marks.iter().all(|m| m.end.is_none()), "no stamp without the shell's word of a start");
+        // A shell that does say (bash 4.4+, zsh): its word, as before.
+        p.finished.clear();
+        p.write_input(b"ls\r");
+        p.process_output(format!("ls\x1b]133;C\x1b\\\r\nx\r\n{}{a}$ {b}", d(0)).as_bytes());
+        assert_eq!(p.finished.len(), 1);
+        assert!(p.marks.iter().any(|m| m.end.is_some()), "stamped as before");
     }
 
     /// With the shell marking its prompts, a prompt's line is not output:
