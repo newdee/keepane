@@ -6,7 +6,7 @@
     <title>keepane · panes that keep running and pass messages</title>
     <meta
       name="description"
-      content="keepane is a terminal multiplexer. The programs in its panes keep running after the terminal connection closes, and panes can pass messages to each other through inboxes. The usual tmux keys, commands and config file keep working."
+      content="keepane is a terminal multiplexer. The programs in its panes keep running after the terminal connection closes, and panes can pass messages to each other through inboxes, on one computer or across two you have paired. The usual tmux keys, commands and config file keep working."
     />
     <meta property="og:title" content="keepane" />
     <meta property="og:description" content="A terminal multiplexer: the programs in its panes keep running after the terminal closes, and panes pass messages to each other through inboxes." />
@@ -43,7 +43,7 @@
         <h1 data-i18n="hero.title">Panes that keep running, and talk to each other.</h1>
         <p class="lede" data-i18n="hero.lede">
           keepane is a terminal multiplexer. The programs in its panes keep running after the terminal
-          connection closes, and panes can pass messages to each other through inboxes. The usual tmux keys, commands
+          connection closes, and panes can pass messages to each other through inboxes, on one computer or across two you have paired. The usual tmux keys, commands
           and config file keep working, <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> included, and PowerShell, cmd and WSL
           run inside panes with every keystroke intact.
         </p>
@@ -92,7 +92,7 @@
         </div>
         <ul class="points">
           <li data-i18n="cm.p1">Every message says where it came from in one line of JSON. A chain of messages is one task, with how long each step waited and took; one that goes round more than eight times is refused.</li>
-          <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup</code> sets up the hook and the registration for Claude Code, Codex, Gemini CLI, Cursor CLI or opencode.</li>
+          <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup</code> sets up the hook and the registration for Claude Code, Codex, Gemini CLI, Cursor CLI or opencode, so the agent is handed its next message when a turn ends; a message for an agent that never says it is free tells you which setup it lacks.</li>
           <li data-i18n="cm.p3">A pane's work mode is changed in that pane, so nothing running in one pane turns another into a shell that runs what it is sent. What happens is kept in an event log for 30 days.</li>
         </ul>
       </section>
@@ -100,6 +100,31 @@
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">02</span>
+          <h2 data-i18n="cl.title">Panes on another computer</h2>
+          <p data-i18n="cl.sub">
+            Two computers on one network, or both on Tailscale, pair once, the way <code>ssh-copy-id</code> works.
+            From then on a pane on one sends messages and commands to a pane on the other, and the answer comes back
+            to the pane that asked.
+          </p>
+        </header>
+<pre class="code"><code><span class="c"># on the laptop: pair with the desktop, whose keepane web printed this address</span>
+keepane link add http://192.168.1.20:7681/#k=...
+<span class="c"># a message for the agent pane there</span>
+keepane send-message --to 192.168.1.20:7681/%agent "review the diff"
+<span class="c"># what that machine runs, and a look at its pane (if it allows it)</span>
+keepane link info 192.168.1.20:7681
+keepane link capture 192.168.1.20:7681/%agent</code></pre>
+        <ul class="points">
+          <li data-i18n="cl.p1">A pane is addressed as <code>host:port/%name</code> or <code>host:port/$1:@3.%7</code>. The answer to a message goes back by pane id, so it still arrives after the pane that asked has been moved.</li>
+          <li data-i18n="cl.p2">Each machine has its own key pair. Pairing uses the other side's phone code once; after that every request and every answer is signed, with the time and a one-off number, so an old one cannot be sent again. A machine is known by its key, not its address.</li>
+          <li data-i18n="cl.p3">What comes from another machine goes to agent and normal panes only. Letting it run as shell commands, or read a pane's screen, is allowed per machine with <code>keepane link allow</code>, and only from outside keepane: an agent in a pane cannot grant it to itself.</li>
+          <li data-i18n="cl.p4">Agents get it through MCP too: <code>list_links</code>, <code>link_info</code>, <code>read_screen</code>, and <code>send_message</code> to an address on another machine.</li>
+        </ul>
+      </section>
+
+      <section class="chapter">
+        <header class="chapter-head">
+          <span class="num">03</span>
           <h2 data-i18n="c3.title">Close the terminal, the programs keep running</h2>
           <p data-i18n="c3.sub">
             <kbd>C-b d</kbd> detaches and the programs keep running in the background. <code>keepane attach</code>
@@ -119,7 +144,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">03</span>
+          <span class="num">04</span>
           <h2 data-i18n="ch.title">What ran, when, and how long</h2>
           <p data-i18n="ch.sub">
             <kbd>C-b C-t</kbd> writes each command's start time, duration and result at the end of its line.
@@ -146,7 +171,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">04</span>
+          <span class="num">05</span>
           <h2 data-i18n="c35.title">The job that finished while you were elsewhere</h2>
           <p data-i18n="c35.sub">
             <code>monitor-activity</code> marks a window you are not looking at with <b>#</b> when it prints,
@@ -170,7 +195,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">05</span>
+          <span class="num">06</span>
           <h2 data-i18n="c1.title">Panes, the way you already know</h2>
           <p data-i18n="c1.sub">
             <kbd>C-b %</kbd> splits left and right, <kbd>C-b "</kbd> top and bottom. Move with the vim keys or
@@ -190,7 +215,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">06</span>
+          <span class="num">07</span>
           <h2 data-i18n="c2.title">Full screen, a list, or a menu</h2>
           <p data-i18n="c2.sub">
             <kbd>C-b z</kbd> blows the current pane up to the whole window and back. <kbd>C-b w</kbd> opens the
@@ -218,7 +243,7 @@
 
       <section class="chapter phone">
         <header class="chapter-head">
-          <span class="num">07</span>
+          <span class="num">08</span>
           <h2 data-i18n="cw.title">Your panes, on your phone</h2>
           <p data-i18n="cw.sub">
             Start <code>keepane web</code> before you walk away from a long build. It prints a QR code; scan it on
@@ -232,6 +257,7 @@
         <ul class="points">
           <li data-i18n="cw.p1">keepane sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it.</li>
           <li data-i18n="cw.p2">A row under the screen has the keys a phone keyboard lacks: Esc, Tab, Shift+Tab, the arrows, Ctrl+C, y, n, 1, 2 and 3. Longer input goes in the text box. The <kbd>+</kbd> menu splits the pane, opens a window or closes the pane.</li>
+          <li data-i18n="cw.p5">Each pane shows under its name: a dot for free or busy, how many messages wait in its inbox, and the last thing it printed. The ⤢ button sizes a pane to the phone for a full-screen program, and gives it back when you leave.</li>
           <li data-i18n="cw.p3">Commands run on the computer. The phone can read panes, type into them and use that menu, nothing more; <code>--read-only</code> leaves out the typing.</li>
           <li data-i18n="cw.p4">It is off until you start it; the keepane server then serves it in the background until <code>keepane web stop</code>, and <code>keepane web status</code> shows who is connected. The QR code carries a new 128-bit key each start. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
         </ul>
@@ -239,7 +265,7 @@
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">08</span>
+          <span class="num">09</span>
           <h2 data-i18n="c4.title">Your .tmux.conf, imported once</h2>
           <p data-i18n="c4.sub">
             The same command names on the command line, in the <kbd>:</kbd> prompt and in the config file.
@@ -267,7 +293,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
 
       <section class="chapter">
         <header class="chapter-head">
-          <span class="num">09</span>
+          <span class="num">10</span>
           <h2 data-i18n="c6.title">Git branch, CPU and memory on the status line</h2>
           <p data-i18n="c6.sub">
             The default status line shows your git branch, the pane's directory, CPU and memory use, and the
@@ -286,7 +312,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
 
       <section class="chapter install">
         <header class="chapter-head">
-          <span class="num">10</span>
+          <span class="num">11</span>
           <h2 data-i18n="c5.title">Install</h2>
         </header>
         <div class="cards">

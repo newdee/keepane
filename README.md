@@ -7,8 +7,8 @@
 
 keepane is a terminal multiplexer. The programs in its panes
 keep running after the terminal connection closes, and panes can pass
-messages to each other through inboxes. The usual tmux keys, commands and
-config file keep working.
+messages to each other through inboxes, on one computer or across two you
+have paired. The usual tmux keys, commands and config file keep working.
 
 <p align="center">
   <img src="docs/img/keepane-tour.gif" width="900"
@@ -25,9 +25,16 @@ config file keep working.
   the recipient and the task. The event log keeps 30 days; `C-b v` shows
   the panes, messages and tasks.
 - People, scripts and AI agents use the same messages; an agent can also
-  work through the built-in MCP server.
+  work through the built-in MCP server, and `keepane setup` hooks up Claude
+  Code, Codex, Gemini CLI, Cursor CLI or opencode so that it is handed its
+  next message when a turn ends.
+- Two computers on one network or on Tailscale pair once, the way
+  `ssh-copy-id` works, and from then on panes on one send messages and
+  commands to panes on the other (`keepane link`). What comes from another
+  machine reaches agents only, unless you allow shells on this one.
 - On your phone, over Wi-Fi or Tailscale, `keepane web` shows every window
-  and pane; what you type there runs on the computer.
+  and pane, whether each is busy or free and what waits in its inbox; what
+  you type there runs on the computer.
 - tmux's `C-b` prefix, splits, copy mode, command line, config syntax
   (`keepane import-config` brings a `.tmux.conf` over), format strings,
   hooks and plugins are there.

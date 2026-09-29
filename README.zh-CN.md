@@ -5,7 +5,7 @@
 
 [English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)**
 
-keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息。常用的 tmux 按键、命令和配置文件可以继续使用。
+keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息，同一台电脑上可以，配过对的两台电脑之间也可以。常用的 tmux 按键、命令和配置文件可以继续使用。
 
 <p align="center">
   <img src="docs/img/keepane-tour.gif" width="900"
@@ -15,8 +15,9 @@ keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程�
 - 脱离后，pane 里的程序继续运行。重启电脑后用 `keepane resume` 恢复布局；误关的 pane 可在 10 秒内按 `C-b u` 找回。
 - 给 pane 命名后，就能向它发消息。消息先进入收件箱，等 pane 准备好再投递：shell 回到提示符时执行命令，其他程序主动读取。
 - 每条消息都有固定格式的信封，记录发送方、接收方和任务。事件日志保留 30 天；按 `C-b v` 可查看 pane、消息和任务。
-- 人、脚本和 AI agent 使用同一套消息机制；agent 也可通过内置的 MCP 服务端操作。
-- 在手机上，通过 Wi-Fi 或 Tailscale，`keepane web` 可以查看所有窗口和 pane；在手机上输入的命令在电脑上执行。
+- 人、脚本和 AI agent 使用同一套消息机制；agent 也可通过内置的 MCP 服务端操作。`keepane setup` 可以给 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode 配好 hook，每轮结束时把下一条消息交给它。
+- 同一个局域网或 Tailscale 里的两台电脑，像 `ssh-copy-id` 那样配对一次，之后一台上的 pane 就能给另一台上的 pane 发消息、派命令（`keepane link`）。别的机器发来的消息默认只交给 agent，要在 shell 里执行需要在本机授权。
+- 在手机上，通过 Wi-Fi 或 Tailscale，`keepane web` 可以查看所有窗口和 pane，每个是忙是闲、收件箱里排着什么；在手机上输入的命令在电脑上执行。
 - 支持 tmux 风格的 `C-b` 前缀、分屏、copy mode、命令行、配置写法（`keepane import-config` 可以导入现成的 `.tmux.conf`）、格式串、hook 和插件。
 
 支持 Windows（ConPTY），pane 里可运行 PowerShell、WSL 和 cmd；也支持 Linux 和 macOS，pane 里可运行 bash 和 zsh。

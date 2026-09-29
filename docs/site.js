@@ -6,7 +6,7 @@ const ZH = {
   "hero.eyebrow": "开源",
   "hero.title": "<span class=\"nw\">pane 一直在跑，</span><span class=\"nw\">还能互相传消息。</span>",
   "hero.lede":
-    "keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息。常用的 tmux 按键、命令和配置文件可以继续使用，h j k l 也在；PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
+    "keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息，同一台电脑上可以，配过对的两台电脑之间也可以。常用的 tmux 按键、命令和配置文件可以继续使用，h j k l 也在；PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
   "hero.download": "下载",
   "hero.source": "看源码",
   "hero.meta": "MIT 许可 · Windows、Linux、macOS · 单个可执行文件 · 原名 wmux",
@@ -29,6 +29,8 @@ const ZH = {
     "屏幕一有变化，keepane 就把新内容推过来，颜色保留，也能往上翻看已经滚过去的输出。列表上带着每个窗口的提醒标记（<b>#</b> 有输出，<b>!</b> 响铃，<b>~</b> 没动静），任务跑完了不用点进去也看得到。",
   "cw.p2":
     "屏幕下方有一排手机键盘上没有的键：Esc、Tab、Shift+Tab、方向键、Ctrl+C，以及 y、n、1、2、3。长一点的内容在输入框里打。<kbd>+</kbd> 菜单可以分屏、开新窗口或关掉当前 pane。",
+  "cw.p5":
+    "每个 pane 的名字下面：一个表示空闲或忙的小圆点、收件箱里排着几条消息、它最后输出的一行。⤢ 按钮把 pane 调成手机屏幕的大小，方便看全屏程序，离开时自动恢复。",
   "cw.p3": "命令在电脑上执行。手机只能看 pane、往里输入、用那个菜单，别的做不了；加 <code>--read-only</code> 就只能看。",
   "cw.p4":
     "不启动就不开；启动后由 keepane 的 server 在后台提供服务，直到 <code>keepane web stop</code>，<code>keepane web status</code> 可以看谁连着。二维码里的 128 位密钥每次启动都重新生成。用的是普通 HTTP，在家里的网络没问题；在外面用，中间接一层 Tailscale 之类的私有网络。",
@@ -80,6 +82,18 @@ const ZH = {
     "从 pane 顶上滚出去的内容写进这个 pane 当天的文件，留 30 天，每条命令前面有一行它的时间。查看器里 <kbd>[</kbd> <kbd>]</kbd> 在命令之间跳，<kbd>/</kbd> 搜索。",
   "ch.p3": "关错了 pane 或窗口？它会保留 10 秒，程序还在跑，按 <kbd>C-b u</kbd> 放回原处。",
 
+  "cl.title": "另一台电脑上的 pane",
+  "cl.sub":
+    "同一个局域网、或者都连着 Tailscale 的两台电脑，像 <code>ssh-copy-id</code> 那样配对一次。之后一台上的 pane 就能给另一台上的 pane 发消息、派命令，回信会回到发消息的那个 pane。",
+  "cl.p1":
+    "pane 的地址写成 <code>主机:端口/%名字</code> 或 <code>主机:端口/$1:@3.%7</code>。回信按 pane 编号送回，发消息的 pane 被挪了位置也照样收得到。",
+  "cl.p2":
+    "每台机器有自己的密钥对。配对时用一次对方手机页的二维码密钥；之后每个请求和每个答复都带签名、时间和一次性的随机数，旧请求重放不了。认机器认的是密钥，不是地址。",
+  "cl.p3":
+    "别的机器发来的消息只进 agent 和 normal 模式的 pane。要让它在 shell 里执行、或者看某个 pane 的屏幕，得用 <code>keepane link allow</code> 按机器授权，而且只能在 keepane 外面做：pane 里的 agent 给不了自己这个权限。",
+  "cl.p4":
+    "agent 也能通过 MCP 用：<code>list_links</code>、<code>link_info</code>、<code>read_screen</code>，以及用 <code>send_message</code> 发到另一台机器上的地址。",
+
   "cm.title": "在 pane 之间派活",
   "cm.sub":
     "给 pane 起个名字、设个工作模式，就能给它发消息：shell 在提示符下执行，agent 在空闲时收到。<kbd>C-b v</kbd> 看所有 pane 和它们的收件箱。",
@@ -88,7 +102,7 @@ const ZH = {
   "cm.p1":
     "每条消息都用一行 JSON 写明来源。一串消息是一个任务，每一步等了多久、做了多久都有记录；来回超过八手的会被拒收。",
   "cm.p2":
-    "Claude Code 这样的 agent 通过 MCP 使用它：发消息和回信、在一轮之内等回信、自己开 pane 干活。<code>keepane setup</code> 为 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode 配好 hook 和注册。",
+    "Claude Code 这样的 agent 通过 MCP 使用它：发消息和回信、在一轮之内等回信、自己开 pane 干活。<code>keepane setup</code> 为 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode 配好 hook 和注册，agent 每轮结束时就会收到下一条消息；如果某个 agent 从没报告过空闲，发给它的消息会告诉你缺的是哪一项配置。",
   "cm.p3":
     "pane 的工作模式只能在那个 pane 里切换，所以任何 pane 里运行的程序都不能把别的 pane 变成收到什么就执行什么的 shell。发生过的一切记在事件日志里，保留 30 天。",
 
