@@ -2,6 +2,7 @@
 // data-i18n; the English text lives in the HTML, the Chinese here.
 const ZH = {
   "nav.tour": "功能",
+  "nav.faq": "常见问题",
   "nav.download": "下载",
   "hero.eyebrow": "开源",
   "hero.title": "<span class=\"nw\">pane 一直在跑，</span><span class=\"nw\">还能互相传消息。</span>",
@@ -152,6 +153,9 @@ const EN = new Map(nodes.map((n) => [n, n.innerHTML]));
 // Pictures of a page that has words of its own come in both languages.
 const pictures = Array.from(document.querySelectorAll("img[data-src-zh]"));
 const EN_SRC = new Map(pictures.map((i) => [i, i.getAttribute("src")]));
+// Links to a page that comes in both languages, the same way.
+const links = Array.from(document.querySelectorAll("a[data-href-zh]"));
+const EN_HREF = new Map(links.map((a) => [a, a.getAttribute("href")]));
 
 function apply(lang) {
   for (const n of nodes) {
@@ -160,6 +164,7 @@ function apply(lang) {
     else n.innerHTML = EN.get(n);
   }
   for (const i of pictures) i.setAttribute("src", lang === "zh" ? i.dataset.srcZh : EN_SRC.get(i));
+  for (const a of links) a.setAttribute("href", lang === "zh" ? a.dataset.hrefZh : EN_HREF.get(a));
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   document.getElementById("lang").textContent = lang === "zh" ? "EN" : "中文";
   try {

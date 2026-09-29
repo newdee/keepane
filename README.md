@@ -3,7 +3,7 @@
 [![CI](https://github.com/newdee/keepane/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/keepane/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/newdee/keepane)](https://github.com/newdee/keepane/releases)
 
-[中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)**
+[中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)** · [FAQ](docs/FAQ.md)
 
 keepane is a terminal multiplexer. The programs in its panes
 keep running after the terminal connection closes, and panes can pass
