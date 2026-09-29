@@ -3041,3 +3041,12 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 9 | 两平台全量 | fmt/clippy 两边通过；Windows 281/10/95，Linux 258/95 | 干净（1/3） |
 | 10 | 边界与退化输入（`done-edge.ps1`，先重建） | 9/9：连不上时有提示、引号反斜杠 JSON 正确且 `ok:true`、`exit:null`、PowerShell 失败写 "failed after 0s" 且 `ok:false`、`list-done` 参数、保留条数 | 干净（2/3） |
 | 11 | 机制通路存活（11 条变异）+ 可复现性 | 11/11 被抓（新增"编造 PowerShell 退出码"在单测断言上被抓）；`done-edge.ps1` 再跑 9/9；库测试 281 | 干净（3/3），验收通过 |
+
+v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-done` 一直是空的），Release 随之失败，没有产出任何文件，Homebrew、winget 未动。之后的轮次：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| — | 真机三平台（CI run 36552967136，tag v0.23.0） | windows、ubuntu 通过；**macos 失败**：测试用的 `bash` 在 macOS 上是 3.2，没有 `PS0`（4.4 才有），shell 从不报告命令开始（133;C），keepane 算不出时长，命令完成从不通知——用自带 bash 的 macOS 用户会一直收不到。zsh（macOS 默认）有 `preexec`，不受影响 | **有问题**（真缺陷）：`Mark` 加 `entered`，提示符下第一次回车（`write_input` 里见到 `\r`）当作开始，只用于 `done-events`，行尾时间戳仍只认 shell 的话；修时单测又抓到一处：提示符后什么都没输入时 `command_of` 返回整行（`$`），空回车会被当成一条命令——改为返回空，空的不通知（不计数） |
+| 12 | 两平台全量 | fmt/clippy 通过；Windows 282/10/95，Linux 259/95 | 干净（1/3） |
+| 13 | 真机三平台（CI run 36553833785，提交 50dae1e） | macos、windows、ubuntu 的 fmt、clippy、全量都通过（macOS 上两个新 e2e 此次通过） | 干净（2/3） |
+| 14 | 机制通路存活（修复的 3 条变异） | 去掉回车兜底→在 bash 3.2 单测的 `make` 断言失败；空行当命令→在"空回车不算"断言失败；回车直接写成开始时间（会给空回车也打时间戳）→同一断言失败：3/3 | 干净（3/3），验收通过；发 0.23.1（v0.23.0 的 tag 留着，没有对应的发布） |
