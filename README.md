@@ -713,6 +713,52 @@ machine's network address and on its Tailscale addresses (`web status` lists
 them). Windows asks once whether keepane may use the network; allow it for
 private networks.
 
+## Told when a pane is done
+
+keepane knows when a pane is done: a command that ran a while ended (its
+shell reports its commands, as for the command times), an agent finished
+its turn (its hook ran `keepane pane-ready`), a message's task ended, or a
+program exited. It tells you where you are:
+
+- **The phone's page**, while it is open: a banner across the top (tap it
+  to go to the pane), a short sound, a buzz on Android, and the count in the
+  tab's title. What was done while the page was hidden is told when it is
+  shown again. A page cannot raise a notification over plain HTTP, and a
+  phone stops a page it is not showing, so for a locked phone use the hook
+  or the webhook.
+- **The desktop**, with `set -g notify on`.
+- **A webhook**: `set -g done-webhook <address>` and keepane posts each one
+  there, through `curl`, in the shape `done-webhook-format` names: `json`
+  (keepane's own), `text` (the line alone: ntfy, Bark), `feishu`, `wecom`,
+  `dingtalk`, `slack` or `discord` (a chat's incoming webhook). A chat's
+  message starts with `keepane`, which a Feishu or DingTalk bot's keyword
+  check can be set to; a chat that refuses shows in `show-messages`.
+- **The `pane-done` hook**, for anything else. What it is about is in its
+  environment: `KEEPANE_DONE_KIND` (`command`, `agent`, `task`, `exit`),
+  `KEEPANE_DONE_TEXT` (the line), `KEEPANE_DONE_PANE`, `KEEPANE_DONE_NAME`,
+  `KEEPANE_DONE_OK` (1 or 0, when known), `KEEPANE_DONE_EXIT` (the exit code,
+  when the shell gave it: PowerShell says only whether a command failed),
+  `KEEPANE_DONE_SECONDS`, and `KEEPANE_DONE_JSON`.
+
+```sh
+set -g done-webhook https://open.feishu.cn/open-apis/bot/v2/hook/<token>
+set -g done-webhook-format feishu
+# ntfy (an app on iOS and Android), from the hook: sh on Linux and macOS
+set-hook -g pane-done run-shell 'curl -s -d "$KEEPANE_DONE_TEXT" ntfy.sh/<your-topic>'
+# ... and PowerShell on Windows
+set-hook -g pane-done run-shell 'curl.exe -s -d $env:KEEPANE_DONE_TEXT ntfy.sh/<your-topic>'
+```
+
+What counts, and for which panes:
+
+```sh
+set -g done-events command agent  # any of command agent task exit; all; none
+set -g done-after 30              # seconds a command must run to count
+set -g done-panes named           # panes with a name or in ai/shell mode; all for every pane
+```
+
+A pane is told of once in three seconds: an agent's turn and the task it
+finished are one telling. `keepane list-done` lists the last hundred.
 ## Across machines
 
 Panes on two computers can message each other the same way panes on one do,
@@ -825,6 +871,7 @@ set -g monitor-activity on        # flag a background window that prints (`#` on
 set -g monitor-bell on            # and one that rings the bell (`!`); on by default
 set -g monitor-silence 60         # flag one that has said nothing for 60s (`~`); 0 disables
 set -g visual-bell on             # say it on the status line instead of ringing
+set -g done-after 60              # tell of a command only when it ran a minute (see "Told when a pane is done")
 
 set -g pane-timestamps on         # each command's time at the end of its line (prefix C-t flips it)
 set -g log-history on             # keep what panes print, a file per pane per day (prefix / to read)
@@ -971,7 +1018,8 @@ Inside a plugin file you have everything the config has, plus:
 - `set-hook -g <hook> <command>` runs a command when something happens:
   `after-new-session`, `after-new-window`, `after-split-window`,
   `after-select-window`, `after-select-pane`, `after-kill-pane`,
-  `client-attached`, `client-detached`, `pane-exited`. `set-hook -gu <hook>`
+  `client-attached`, `client-detached`, `pane-exited`, `pane-done` (see "Told when a
+  pane is done"). `set-hook -gu <hook>`
   removes it; `show-hooks` lists them.
 - `set -g @anything value` stores a user option; `show-options -gqv @anything`
   reads it back (from a script: `keepane -L $env:KEEPANE show-options -gqv @anything`).

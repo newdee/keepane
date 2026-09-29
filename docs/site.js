@@ -32,6 +32,8 @@ const ZH = {
     "屏幕下方有一排手机键盘上没有的键：Esc、Tab、Shift+Tab、方向键、Ctrl+C，以及 y、n、1、2、3。长一点的内容在输入框里打。<kbd>+</kbd> 菜单可以分屏、开新窗口或关掉当前 pane。",
   "cw.p5":
     "每个 pane 的名字下面：一个表示空闲或忙的小圆点、收件箱里排着几条消息、它最后输出的一行。⤢ 按钮把 pane 调成手机屏幕的大小，方便看全屏程序，离开时自动恢复。",
+  "cw.p6":
+    "pane 完成时（长命令跑完、agent 这一轮结束）页面会提醒你：顶部横幅（点一下跳过去）、响一声、震动。手机锁屏也要收到的话，keepane 可以推到 ntfy、飞书、企业微信、钉钉、Slack、Discord（<code>done-webhook</code>），或者运行你自己的 hook。",
   "cw.p3": "命令在电脑上执行。手机只能看 pane、往里输入、用那个菜单，别的做不了；加 <code>--read-only</code> 就只能看。",
   "cw.p4":
     "不启动就不开；启动后由 keepane 的 server 在后台提供服务，直到 <code>keepane web stop</code>，<code>keepane web status</code> 可以看谁连着。二维码里的 128 位密钥每次启动都重新生成。用的是普通 HTTP，在家里的网络没问题；在外面用，中间接一层 Tailscale 之类的私有网络。",

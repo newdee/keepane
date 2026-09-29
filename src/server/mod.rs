@@ -2,6 +2,7 @@
 //! named pipe; renders frames.
 
 pub mod actor;
+mod done;
 pub mod import;
 pub mod input;
 pub mod layout;
@@ -104,6 +105,8 @@ enum Event {
     WebStopped(ClientId),
     /// Another machine answered a request of ours, or could not (`link_out`).
     LinkAnswer(Box<link_out::LinkAnswer>),
+    /// `done-webhook` could not be told (`done`): why.
+    DoneWebhookFailed(String),
 }
 
 /// How long after keepane's prompt marker a pane's command is taken as
@@ -131,6 +134,7 @@ pub const HOOKS: &[&str] = &[
     "client-attached",
     "client-detached",
     "pane-exited",
+    "pane-done",
 ];
 
 enum PromptKind {
@@ -726,6 +730,11 @@ pub struct Server {
     /// Errors from the config file, pending display on the first attach.
     config_errors: Option<Vec<String>>,
     hooks: HashMap<String, Cmd>,
+    /// What `pane-done`'s hook is about, in the environment of a
+    /// `run-shell` it runs (set only while it fires).
+    hook_env: Vec<(String, String)>,
+    /// When panes were done, for the phone, the hook and the webhook.
+    done: done::DoneLog,
     /// Re-entrancy guard: a hook must not fire hooks.
     in_hook: bool,
     /// Output of status-line `#(command)` pieces and what is being run.
@@ -1099,6 +1108,8 @@ impl Server {
             sourcing: Vec::new(),
             config_errors: None,
             hooks: HashMap::new(),
+            hook_env: Vec::new(),
+            done: done::DoneLog::default(),
             in_hook: false,
             shell_cache: crate::format::ShellCache::default(),
             shell_running: HashSet::new(),
@@ -1656,6 +1667,7 @@ impl Server {
         if pane.is_none() {
             env.retain(|(k, _)| k != "KEEPANE_PANE");
         }
+        env.extend(self.hook_env.iter().cloned());
         let spawned = std::thread::Builder::new().name("run-shell".into()).spawn({
             let events = events.clone();
             let command = command.clone();
@@ -1736,6 +1748,9 @@ impl Server {
                     p.record_write(&bytes);
                     p.process_output(&bytes);
                     let prompted = std::mem::take(&mut p.prompted);
+                    // Commands that ended; not those a resumed pane prints back.
+                    let finished = std::mem::take(&mut p.finished);
+                    let replaying = p.is_pending();
                     // A resumed pane: its saved output has all been printed
                     // (the printer's marker arrived); its program starts now,
                     // in the same console, while the printer still holds it.
@@ -1754,6 +1769,11 @@ impl Server {
                     self.note_output(id);
                     if self.opts.log_history {
                         self.log_output(id);
+                    }
+                    let after = self.opts.done_after;
+                    for f in finished.into_iter().filter(|f| !replaying && f.secs >= after) {
+                        let text = done::command_text(&f.command, f.secs, f.failed, f.exit);
+                        self.pane_done(id, done::Kind::Command, text, Some(!f.failed), f.exit, Some(f.secs));
                     }
                     if prompted {
                         self.pane_prompt_seen(id);
@@ -1822,6 +1842,15 @@ impl Server {
                     c.last_grid = None;
                     return;
                 }
+                let name = Some(done::program_name(&command)).filter(|n| !n.is_empty()).unwrap_or("its program".into());
+                self.pane_done(
+                    id,
+                    done::Kind::Exit,
+                    format!("{name} exited with {code}"),
+                    Some(code == 0),
+                    Some(code as i32),
+                    None,
+                );
                 if self.opts.remain_on_exit {
                     // Keep the pane and what it printed; say why it stopped.
                     // `respawn-pane` starts it again, `kill-pane` closes it.
@@ -1940,6 +1969,10 @@ impl Server {
             Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
             Event::LinkAnswer(a) => self.link_answered(*a),
+            Event::DoneWebhookFailed(why) => {
+                log::warn!("done-webhook: {why}");
+                self.note_message(&format!("done-webhook: {why}"));
+            }
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -5298,6 +5331,7 @@ impl Server {
                 }
                 Outcome::Ok
             }
+            Cmd::ListDone { after, json } => Outcome::Text(self.list_done(after, json)),
             Cmd::ListMarks { target } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,

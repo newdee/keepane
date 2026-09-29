@@ -131,12 +131,56 @@ pub struct Options {
     pub agent_pane_limit: u32,
     /// The programs a pane may start in a pane it creates.
     pub agent_commands: String,
+    /// What counts as a pane being done, for the phone, `notify`, the
+    /// `pane-done` hook and the webhook: any of `command` (a command that ran
+    /// `done_after` seconds or more ended), `agent` (an agent's turn ended),
+    /// `task` (a message's task ended), `exit` (the pane's program exited).
+    pub done_events: String,
+    /// The seconds a command must run to count as done.
+    pub done_after: u64,
+    /// Which panes: `named` (a name, or work mode `ai` or `shell`) or `all`.
+    pub done_panes: String,
+    /// An HTTP(S) address told each time, and how its body is written.
+    pub done_webhook: String,
+    pub done_webhook_format: String,
     /// Keep what happens to messages and panes in a JSON Lines file a day.
     pub event_log: bool,
     /// Days the event log keeps.
     pub event_log_days: u32,
     /// The most bytes one day's event log holds.
     pub event_log_max: u64,
+}
+
+/// What a pane can be done with (`done-events`).
+pub const DONE_EVENTS: &[&str] = &["command", "agent", "task", "exit"];
+
+/// The bodies `done-webhook` can be sent: keepane's JSON, plain text (ntfy,
+/// Bark), or the shape a chat's incoming webhook takes.
+pub const DONE_WEBHOOK_FORMATS: &[&str] = &["json", "text", "feishu", "wecom", "dingtalk", "slack", "discord"];
+
+/// `done-events`: some of `DONE_EVENTS`, by spaces or commas, `all`, or
+/// `none`; kept in `DONE_EVENTS`' order.
+fn parse_done_events(value: &str) -> Result<String, String> {
+    let words: Vec<&str> = value.split([' ', ',']).filter(|w| !w.is_empty()).collect();
+    match words.as_slice() {
+        ["all"] => return Ok(DONE_EVENTS.join(" ")),
+        ["none"] | [] => return Ok("none".into()),
+        _ => {}
+    }
+    if let Some(bad) = words.iter().find(|w| !DONE_EVENTS.contains(w)) {
+        return Err(format!("bad done-events word '{bad}' (any of {}, or all, or none)", DONE_EVENTS.join(" ")));
+    }
+    Ok(DONE_EVENTS.iter().filter(|e| words.contains(e)).copied().collect::<Vec<_>>().join(" "))
+}
+
+/// A value that must be one of a few words.
+fn one_of(name: &str, value: &str, words: &[&str]) -> Result<String, String> {
+    let v = value.trim();
+    if words.contains(&v) {
+        Ok(v.to_string())
+    } else {
+        Err(format!("bad {name} '{value}' (one of {})", words.join(", ")))
+    }
 }
 
 /// A number option within its bounds; out of them it is an error, never
@@ -238,6 +282,11 @@ pub const SHOWABLE: &[&str] = &[
     "message-wait-max",
     "agent-pane-limit",
     "agent-commands",
+    "done-events",
+    "done-after",
+    "done-panes",
+    "done-webhook",
+    "done-webhook-format",
     "event-log",
     "event-log-days",
     "event-log-max",
@@ -317,6 +366,11 @@ impl Default for Options {
             message_wait_max: 600,
             agent_pane_limit: 8,
             agent_commands: crate::platform::shell::DEFAULT_AGENT_COMMANDS.into(),
+            done_events: "command agent".into(),
+            done_after: 30,
+            done_panes: "named".into(),
+            done_webhook: String::new(),
+            done_webhook_format: "json".into(),
             event_log: true,
             event_log_days: 30,
             event_log_max: 20 * 1024 * 1024,
@@ -417,6 +471,11 @@ pub const KNOWN: &[&str] = &[
     "display-panes-active-colour",
     "display-panes-colour",
     "display-time",
+    "done-after",
+    "done-events",
+    "done-panes",
+    "done-webhook",
+    "done-webhook-format",
     "event-log",
     "event-log-days",
     "event-log-max",
@@ -573,6 +632,9 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "pane-border-status" => &["bottom", "off", "top"],
         "status-justify" => &["absolute-centre", "centre", "left", "right"],
         "window-size" => &["largest", "latest", "manual", "smallest"],
+        "done-panes" => &["all", "named"],
+        "done-webhook-format" => DONE_WEBHOOK_FORMATS,
+        "done-events" => &["all", "none", "command agent"],
         _ => &[],
     }
 }
@@ -714,6 +776,26 @@ impl Options {
             "message-wait-max" => self.message_wait_max = ranged(name, value, 1, 86_400, "seconds")?,
             "agent-pane-limit" => self.agent_pane_limit = ranged(name, value, 0, 256, "panes")?,
             "agent-commands" => self.agent_commands = value.trim().to_string(),
+            "done-events" => self.done_events = parse_done_events(value)?,
+            "done-after" => self.done_after = ranged(name, value, 0, 86_400, "seconds")?,
+            "done-panes" => {
+                self.done_panes = one_of(name, value, &["named", "all"])?;
+            }
+            "done-webhook" => {
+                let v = value.trim();
+                let ok = v.is_empty()
+                    || ((v.starts_with("http://") || v.starts_with("https://"))
+                        && !v.contains(|c: char| c.is_whitespace() || c == '"' || c == '\\'));
+                if !ok {
+                    return Err(format!(
+                        "bad done-webhook '{value}' (an http:// or https:// address, or empty for none)"
+                    ));
+                }
+                self.done_webhook = v.to_string();
+            }
+            "done-webhook-format" => {
+                self.done_webhook_format = one_of(name, value, DONE_WEBHOOK_FORMATS)?;
+            }
             "event-log" => self.event_log = parse_bool(value)?,
             "event-log-days" => self.event_log_days = ranged(name, value, 1, 3650, "days")?,
             "event-log-max" => self.event_log_max = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024)?,
@@ -831,6 +913,11 @@ impl Options {
             "message-wait-max" => self.message_wait_max.to_string(),
             "agent-pane-limit" => self.agent_pane_limit.to_string(),
             "agent-commands" => self.agent_commands.clone(),
+            "done-events" => self.done_events.clone(),
+            "done-after" => self.done_after.to_string(),
+            "done-panes" => self.done_panes.clone(),
+            "done-webhook" => self.done_webhook.clone(),
+            "done-webhook-format" => self.done_webhook_format.clone(),
             "event-log" => onoff(self.event_log),
             "event-log-days" => self.event_log_days.to_string(),
             "event-log-max" => size_name(self.event_log_max),
@@ -927,6 +1014,29 @@ mod tests {
         for c in [Color::Default, Color::Idx(3), Color::Idx(15), Color::Idx(200), Color::Rgb(0, 0x1a, 0xff)] {
             assert_eq!(parse_color(&color_name(c)).unwrap(), c, "{}", color_name(c));
         }
+    }
+
+    /// `done-events` keeps its words in one order, takes `all` and `none`,
+    /// and refuses a word it does not know; the webhook takes http(s) only.
+    #[test]
+    fn done_options_take_what_they_can_use() {
+        let mut o = Options::default();
+        assert_eq!(o.get("done-events").unwrap(), "command agent");
+        o.set("done-events", "exit, command").unwrap();
+        assert_eq!(o.get("done-events").unwrap(), "command exit");
+        o.set("done-events", "all").unwrap();
+        assert_eq!(o.get("done-events").unwrap(), "command agent task exit");
+        o.set("done-events", "none").unwrap();
+        assert_eq!(o.get("done-events").unwrap(), "none");
+        assert!(o.set("done-events", "command beep").unwrap_err().contains("'beep'"));
+        o.set("done-webhook", "https://open.feishu.cn/open-apis/bot/v2/hook/abc").unwrap();
+        o.set("done-webhook", "").unwrap();
+        assert_eq!(o.get("done-webhook").unwrap(), "");
+        for bad in ["ftp://x", "https://x y", "https://x\"y", "x"] {
+            assert!(o.set("done-webhook", bad).is_err(), "{bad}");
+        }
+        assert!(o.set("done-after", "86401").is_err());
+        assert!(o.set("done-panes", "some").is_err());
     }
 
     /// What a Tab offers after `set`: the same names `resolve_name` picks

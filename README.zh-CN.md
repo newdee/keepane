@@ -400,6 +400,33 @@ keepane web --port 8080 --bind 192.168.1.23   # 换端口，或者指定网卡
 
 用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络：`keepane web` 会同时监听本机的局域网地址和 Tailscale 地址（`web status` 会列出来）。第一次运行时 Windows 会问是否允许 keepane 联网，选“专用网络”允许即可。
 
+## pane 完成时通知你
+
+keepane 知道 pane 什么时候"完成"了：一条跑了一段时间的命令结束（靠 shell 报告的命令记录，和命令时间是同一个来源）、agent 这一轮结束（它的 hook 运行了 `keepane pane-ready`）、一条消息的任务结束，或者程序退出。它会通过这几种方式告诉你：
+
+- **手机页**（页面开着的时候）：顶部弹出一条横幅（点一下就跳到那个 pane），响一声，安卓手机会震动，标签页标题上显示未读数。页面在后台时完成的，切回页面时会补告诉你。普通 HTTP 的页面没法弹系统通知，手机锁屏或切走后浏览器也会暂停页面，所以锁屏也要收到的话，用 hook 或 webhook。
+- **电脑桌面**：`set -g notify on`。
+- **webhook**：`set -g done-webhook <地址>`，keepane 每次都用 `curl` 往这个地址发一条，格式由 `done-webhook-format` 决定：`json`（keepane 自己的格式）、`text`（只有那一行文字：ntfy、Bark）、`feishu`（飞书）、`wecom`（企业微信）、`dingtalk`（钉钉）、`slack`、`discord`（聊天工具的群机器人 webhook）。发到聊天工具的消息以 `keepane` 开头，飞书、钉钉机器人的"关键词"安全设置可以填它；对方拒收的话，`show-messages` 里能看到原因。
+- **`pane-done` hook**：想接别的服务就用它。这次完成的信息在环境变量里：`KEEPANE_DONE_KIND`（`command`、`agent`、`task`、`exit`）、`KEEPANE_DONE_TEXT`（那一行文字）、`KEEPANE_DONE_PANE`、`KEEPANE_DONE_NAME`、`KEEPANE_DONE_OK`（成功 1、失败 0，知道时才有）、`KEEPANE_DONE_EXIT`（退出码，shell 报告了才有：PowerShell 只说成功还是失败）、`KEEPANE_DONE_SECONDS`，以及 `KEEPANE_DONE_JSON`。
+
+```sh
+set -g done-webhook https://open.feishu.cn/open-apis/bot/v2/hook/<token>
+set -g done-webhook-format feishu
+# ntfy（iOS、安卓都有 App），用 hook：Linux、macOS 上是 sh
+set-hook -g pane-done run-shell 'curl -s -d "$KEEPANE_DONE_TEXT" ntfy.sh/<你的频道>'
+# Windows 上是 PowerShell
+set-hook -g pane-done run-shell 'curl.exe -s -d $env:KEEPANE_DONE_TEXT ntfy.sh/<你的频道>'
+```
+
+哪些算"完成"、对哪些 pane：
+
+```sh
+set -g done-events command agent  # command agent task exit 任选；all 全部；none 都不要
+set -g done-after 30              # 命令至少跑多少秒才算
+set -g done-panes named           # 有名字或 ai/shell 模式的 pane；all 是所有 pane
+```
+
+同一个 pane 三秒内只通知一次：agent 这一轮结束和它完成的任务算一次。`keepane list-done` 列出最近 100 条。
 ## 跨电脑
 
 两台电脑上的 pane 也能像同一台上那样互发消息，走的是 `keepane web` 监听的那个端口，前提是两边的 keepane server 配过对。做法和 SSH 的公钥一样：每个 server 有自己的一对密钥，还有一张“允许哪些机器进来”的表；配对就是把双方的公钥各写进对方的表里，只做一次。在要配对的那台机器上运行 `keepane web`，拿到它打出的地址（就是手机扫的那个，带密钥）；然后在这台上：
@@ -470,6 +497,7 @@ set -g monitor-activity on        # 后台窗口有输出就在状态栏标 `#`
 set -g monitor-bell on            # 响铃标 `!`；默认就是开的
 set -g monitor-silence 60         # 60 秒没动静标 `~`；0 是关掉
 set -g visual-bell on             # 用状态栏提示代替真的响铃
+set -g done-after 60              # 命令跑满一分钟才通知（见"pane 完成时通知你"）
 
 set -g pane-timestamps on         # 每条命令的时间显示在行尾（prefix C-t 切换）
 set -g log-history on             # 输出存盘，每个 pane 每天一个文件（prefix / 翻看）
@@ -554,7 +582,7 @@ set -g @plugin C:\src\my-plugin           # 也可以直接给路径（目录或
 插件文件里能用配置文件的全部命令，再加上：
 
 - `run-shell [-b] [-t target] 命令`：通过 pwsh 跑一条命令，带着 keepane 的环境变量，跑完把输出显示出来（`-b` 就不管输出了）。
-- `set-hook -g <钩子> <命令>`：某件事发生时执行一条命令。钩子有 `after-new-session`、`after-new-window`、`after-split-window`、`after-select-window`、`after-select-pane`、`after-kill-pane`、`client-attached`、`client-detached`、`pane-exited`。`set-hook -gu <钩子>` 取消，`show-hooks` 查看。
+- `set-hook -g <钩子> <命令>`：某件事发生时执行一条命令。钩子有 `after-new-session`、`after-new-window`、`after-split-window`、`after-select-window`、`after-select-pane`、`after-kill-pane`、`client-attached`、`client-detached`、`pane-exited`、`pane-done`（见"pane 完成时通知你"）。`set-hook -gu <钩子>` 取消，`show-hooks` 查看。
 - `set -g @随便什么 值` 存一个插件自己用的选项，`show-options -gqv @随便什么` 读回来（脚本里：`keepane -L $env:KEEPANE show-options -gqv @随便什么`）。
 - 状态栏里的 `#(命令)`，见上面。
 - 运行时 `load-plugin 名字或路径`、`list-plugins`。

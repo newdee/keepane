@@ -749,6 +749,16 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
         }
+        (true, "/api/done") => {
+            // Panes done since number `after` (`done-events`), for the page
+            // to tell whoever holds it.
+            let after = req.param("after").and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
+            match q(vec!["list-done".into(), "-a".into(), after.to_string(), "-J".into()]).await {
+                Ok((0, out, _)) => Response::json(out.trim().to_string()),
+                Ok((_, _, err)) => Response::text(500, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
         (true, "/api/screen") => {
             let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
                 return Response::text(400, "pane: %N");

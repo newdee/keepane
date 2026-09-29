@@ -85,6 +85,8 @@ seconds comes back).
 `jobs` and `choose-jobs` (every pane: running or exited, for how long),
 `find-text` (search what every pane printed), `choose-history` and `view`
 (what panes printed, a file a day), `list-marks` (the commands a pane ran),
+`list-done` (when panes were done: `done-events`, told to the phone, `notify`,
+the `pane-done` hook and `done-webhook`),
 `show-messages`, `clock-mode`, `dashboard` (panes, inboxes, tasks and the
 chosen pane's screen, to act on).
 

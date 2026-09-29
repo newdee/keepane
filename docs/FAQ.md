@@ -11,6 +11,8 @@ Each answer says what you see, why, and what to do.
 - [I swapped two panes: where do messages go now?](#i-swapped-two-panes-where-do-messages-go-now)
 - [A message from another machine is refused by a shell pane](#a-message-from-another-machine-is-refused-by-a-shell-pane)
 - [The phone can't open the page](#the-phone-cant-open-the-page)
+- [Tell me on my phone when a job finishes, even when it is locked](#tell-me-on-my-phone-when-a-job-finishes-even-when-it-is-locked)
+- [The Feishu or DingTalk bot refuses keepane's messages](#the-feishu-or-dingtalk-bot-refuses-keepanes-messages)
 - [Windows: a hook with a quoted keepane path fails](#windows-a-hook-with-a-quoted-keepane-path-fails)
 - [macOS: "Operation not permitted" in some folders](#macos-operation-not-permitted-in-some-folders)
 
@@ -135,6 +137,47 @@ keepane link allow 192.168.1.20:7681 --shell
 - It is plain HTTP, fine at home; from outside, go through Tailscale or a
   similar private network, not a port opened to the internet.
 
+## Tell me on my phone when a job finishes, even when it is locked
+
+The phone's page tells you (a banner, a sound, a buzz on Android) while it
+is open. A locked phone stops its pages, and a page on plain HTTP cannot
+raise a system notification, so for a locked phone let keepane post to a
+service that has an app:
+
+- **ntfy** (free, open source, iOS and Android; or your own server):
+  install the app, subscribe to a topic of your own (anyone who knows a
+  topic's name on ntfy.sh can read it: pick one hard to guess, or run your
+  own server), and
+  ```sh
+  set -g done-webhook https://ntfy.sh/<your-topic>
+  set -g done-webhook-format text
+  ```
+- **A chat you already use**: Feishu, WeCom, DingTalk, Slack or Discord. Add
+  an incoming-webhook bot to a group, then
+  ```sh
+  set -g done-webhook <the bot's address>
+  set -g done-webhook-format feishu    # or wecom, dingtalk, slack, discord
+  ```
+- **Anything else**: the `pane-done` hook runs a command of yours with the
+  details in `KEEPANE_DONE_*` variables (see the README).
+
+What counts is `done-events` (`command agent` by default: a command that ran
+`done-after` seconds, 30 by default, and an agent's turn), for panes with a
+name or in `ai`/`shell` mode (`done-panes all` for every pane). Put the
+lines in your config file to keep them.
+
+## The Feishu or DingTalk bot refuses keepane's messages
+
+`show-messages` says `done-webhook: refused (...)` with what the chat
+answered. A bot's security setting decides:
+
+- **Keywords**: every message keepane sends a chat starts with `keepane`;
+  add `keepane` as the bot's keyword.
+- **Signature** (Feishu's "signature verification", DingTalk's "sign"):
+  keepane does not sign; turn it off, or use keywords or an IP allow list
+  instead.
+- **IP allow list**: the address the computer reaches the internet from
+  must be on it.
 ## Windows: a hook with a quoted keepane path fails
 
 An agent on Windows may run its hooks in PowerShell, where a quoted path

@@ -57,6 +57,15 @@ pub fn shell_command(command: &str) -> (std::process::Command, &'static str) {
     (c, exe)
 }
 
+/// A program the server runs for itself (`curl` for `done-webhook`), with
+/// no window of its own.
+pub fn quiet_command(program: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = std::process::Command::new(program);
+    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the server has no console
+    c
+}
+
 /// The command a `pipe-pane` runs, reading the pane's output and/or
 /// typing into it, with no window: pwsh, else Windows PowerShell, else cmd.
 /// Returns the command and the program's name.

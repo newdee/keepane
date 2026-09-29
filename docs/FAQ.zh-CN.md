@@ -11,6 +11,8 @@
 - [交换了两个 pane 的位置，消息会发到哪？](#交换了两个-pane-的位置消息会发到哪)
 - [别的机器发来的消息被 shell 模式的 pane 拒收](#别的机器发来的消息被-shell-模式的-pane-拒收)
 - [手机打不开页面](#手机打不开页面)
+- [任务跑完时通知我的手机，锁屏也要收到](#任务跑完时通知我的手机锁屏也要收到)
+- [飞书或钉钉机器人拒收 keepane 的消息](#飞书或钉钉机器人拒收-keepane-的消息)
 - [Windows：hook 里的 keepane 路径加了引号就报错](#windowshook-里的-keepane-路径加了引号就报错)
 - [macOS：有些目录提示 "Operation not permitted"](#macos有些目录提示-operation-not-permitted)
 
@@ -91,6 +93,31 @@ keepane link allow 192.168.1.20:7681 --shell
 - 每次启动 `keepane web`，二维码都会换新（除非加了 `--keep-key`）：要扫新的。
 - 用的是普通 HTTP，在家里的网络没问题；在外面用，中间接一层 Tailscale 之类的私有网络，不要直接把端口开到公网上。
 
+## 任务跑完时通知我的手机，锁屏也要收到
+
+手机页开着的时候会直接提醒你（横幅、响一声、安卓震动）。手机锁屏后浏览器会暂停页面，普通 HTTP 的页面也弹不了系统通知，所以锁屏也要收到的话，让 keepane 发到一个有 App 的服务上：
+
+- **ntfy**（免费、开源，iOS 和安卓都有 App，也可以自己搭）：装好 App，订阅一个你自己起名的频道（ntfy.sh 上知道频道名的人都能看到内容：名字起得难猜一点，或者自己搭服务器），然后
+  ```sh
+  set -g done-webhook https://ntfy.sh/<你的频道>
+  set -g done-webhook-format text
+  ```
+- **你已经在用的聊天工具**：飞书、企业微信、钉钉、Slack、Discord。在群里加一个"自定义机器人"（webhook），然后
+  ```sh
+  set -g done-webhook <机器人的地址>
+  set -g done-webhook-format feishu    # 或 wecom、dingtalk、slack、discord
+  ```
+- **其他服务**：`pane-done` hook 会运行你指定的命令，这次完成的信息在 `KEEPANE_DONE_*` 环境变量里（见说明文档）。
+
+哪些算"完成"由 `done-events` 决定（默认 `command agent`：跑满 `done-after` 秒（默认 30）的命令，以及 agent 这一轮结束），只对有名字或 `ai`/`shell` 模式的 pane 生效（`done-panes all` 是所有 pane）。想长期生效，把这几行写进配置文件。
+
+## 飞书或钉钉机器人拒收 keepane 的消息
+
+`show-messages` 里会看到 `done-webhook: refused (...)`，后面是对方的回复。取决于机器人的安全设置：
+
+- **自定义关键词**：keepane 发到聊天工具的每条消息都以 `keepane` 开头，把 `keepane` 加为机器人的关键词即可。
+- **签名校验**（飞书的"签名校验"、钉钉的"加签"）：keepane 不做签名，请关掉，改用关键词或 IP 白名单。
+- **IP 白名单**：电脑访问外网用的那个地址要在白名单里。
 ## Windows：hook 里的 keepane 路径加了引号就报错
 
 Windows 上 agent 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。程序名不要加引号（`keepane pane-ready -q`，keepane 在 PATH 上），或者用调用运算符：`& "C:\路径\keepane.exe" pane-ready -q`。`keepane setup` 写的就是不带引号的写法。

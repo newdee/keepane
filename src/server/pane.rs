@@ -51,8 +51,9 @@ pub struct Callbacks {
 /// hook's own report, whose times come from the shell's history.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MarkEvent {
-    /// A prompt is on the line `line` (`scrolled_total() + row`).
-    Prompt(u64),
+    /// A prompt is on the line `line` (`scrolled_total() + row`), what is
+    /// typed at it starting in column `col`.
+    Prompt(u64, u16),
     /// The command typed at it started.
     Start(chrono::DateTime<chrono::Local>),
     /// It finished, with this exit code when the shell gave one.
@@ -62,12 +63,39 @@ pub enum MarkEvent {
     Ran { start: chrono::DateTime<chrono::Local>, end: chrono::DateTime<chrono::Local>, ok: bool },
 }
 
+/// A command that ended: what was typed (the prompt left out), how long it
+/// ran, whether it failed, and its exit code when the shell gave the code
+/// itself (PowerShell says only whether it failed).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Finished {
+    pub command: String,
+    pub secs: u64,
+    pub failed: bool,
+    pub exit: Option<i32>,
+}
+
+/// What was typed at a prompt: the line from column `col` on, a cell a
+/// column (a wide character takes two), blanks trimmed; the whole line when
+/// the prompt took all of it.
+pub fn command_of(line: &str, col: u16) -> String {
+    let mut width = 0;
+    for (i, c) in line.char_indices() {
+        if width >= usize::from(col) {
+            return line[i..].trim().to_string();
+        }
+        width += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+    }
+    line.trim().to_string()
+}
+
 /// One command a shell ran, pinned to the line it was typed on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
     /// The prompt's line, as `scrolled_total() + row`: it keeps naming the
     /// same line however far it scrolls.
     pub line: u64,
+    /// The column its command starts in: where the prompt ends.
+    pub col: u16,
     pub start: Option<chrono::DateTime<chrono::Local>>,
     pub end: Option<chrono::DateTime<chrono::Local>>,
     /// The exit code, when the shell said; PowerShell says only whether it
@@ -273,8 +301,8 @@ impl vt100::Callbacks for Callbacks {
             [b"133" | b"633", kind, rest @ ..] if shell => {
                 match *kind {
                     b"A" | b"B" => {
-                        let (row, _) = screen.cursor_position();
-                        self.marks.push(MarkEvent::Prompt(screen.scrolled_total() + u64::from(row)));
+                        let (row, col) = screen.cursor_position();
+                        self.marks.push(MarkEvent::Prompt(screen.scrolled_total() + u64::from(row), col));
                     }
                     b"C" => self.marks.push(MarkEvent::Start(now())),
                     b"D" => {
@@ -364,6 +392,8 @@ pub struct Pane {
     /// The commands its shell ran, oldest first (`pane-timestamps`,
     /// `list-marks`); empty for a shell that does not report them.
     pub marks: std::collections::VecDeque<Mark>,
+    /// Commands that ended since the server last looked, for `done-events`.
+    pub finished: Vec<Finished>,
     /// `log-history`: the file this pane writes to now (set by the server,
     /// which knows where the pane is), and so where what is left on its
     /// screen goes when it closes. None while logging is off.
@@ -667,6 +697,7 @@ impl Pane {
             last_output: std::time::Instant::now(),
             output_count: 0,
             marks: std::collections::VecDeque::new(),
+            finished: Vec::new(),
             log_to: None,
             logged: 0,
             log_hold: std::collections::VecDeque::new(),
@@ -929,15 +960,16 @@ impl Pane {
     pub fn apply_marks(&mut self, events: Vec<MarkEvent>) {
         for e in events {
             match e {
-                MarkEvent::Prompt(line) => {
+                MarkEvent::Prompt(line, col) => {
                     // A prompt with nothing run at it yet is the same prompt
                     // again (133;A then B, an empty Enter): it moves rather
                     // than piling up.
                     let mut mark = match self.marks.back() {
                         Some(m) if m.start.is_none() && m.end.is_none() => self.marks.pop_back().unwrap(),
-                        _ => Mark { line, start: None, end: None, exit: None, text: String::new() },
+                        _ => Mark { line, col, start: None, end: None, exit: None, text: String::new() },
                     };
                     mark.line = line;
+                    mark.col = col;
                     // A mark at or below a new prompt's line was cleared or
                     // written over (`cls`): lines only move on otherwise.
                     self.marks.retain(|m| m.line < line);
@@ -954,12 +986,13 @@ impl Pane {
                     // A D with no C before it is an empty Enter or a Ctrl+C
                     // at the prompt: nothing ran.
                     if self.marks.back().is_some_and(|m| m.start.is_some() && m.end.is_none()) {
-                        self.finish_mark(None, t, code);
+                        self.finish_mark(None, t, code, true);
                     }
                 }
                 MarkEvent::Ran { start, end, ok } => {
                     if self.marks.back().is_some_and(|m| m.end.is_none()) {
-                        self.finish_mark(Some(start), end, Some(if ok { 0 } else { 1 }));
+                        // Only whether it failed: 1 stands for any failure.
+                        self.finish_mark(Some(start), end, Some(if ok { 0 } else { 1 }), false);
                     }
                 }
             }
@@ -973,11 +1006,14 @@ impl Pane {
     }
 
     /// Close the newest mark: its times, and its line as it reads now.
+    /// `exact`: `exit` is the command's own code, not just 0 or 1 for
+    /// success or failure (PowerShell's word).
     fn finish_mark(
         &mut self,
         start: Option<chrono::DateTime<chrono::Local>>,
         end: chrono::DateTime<chrono::Local>,
         exit: Option<i32>,
+        exact: bool,
     ) {
         let Some(line) = self.marks.back().map(|m| m.line) else { return };
         match self.text_at(line) {
@@ -989,6 +1025,13 @@ impl Pane {
                 m.end = Some(end);
                 m.exit = exit;
                 m.text = text;
+                // A command with its start known, told once.
+                if let Some(start) = m.start {
+                    let secs = (end - start).num_milliseconds().max(0) as u64 / 1000;
+                    let command = command_of(&m.text, m.col);
+                    let failed = exit.is_some_and(|c| c != 0);
+                    self.finished.push(Finished { command, secs, failed, exit: exit.filter(|_| exact) });
+                }
             }
             // Gone already (scrolled past the history, or cleared): the
             // command cannot be shown against its line.
@@ -1914,6 +1957,26 @@ mod tests {
         assert_eq!(p.last_line(), "tests: 42 passed");
         p.process_output(b"echo a\tb\r\na\tb\r\nPS> x");
         assert_eq!(p.last_line(), "a       b", "a tab as the screen shows it");
+    }
+
+    /// What was typed: the line after the prompt's column, wide characters
+    /// two columns each; the whole line when the column is past its end.
+    #[test]
+    fn the_command_is_what_follows_the_prompt() {
+        assert_eq!(command_of("PS C:\\src> cargo test", 11), "cargo test");
+        assert_eq!(command_of("中文> ls -l ", 5), "ls -l", "two wide characters, then '> '");
+        assert_eq!(command_of("$ make", 0), "$ make", "no column known: the whole line");
+        assert_eq!(command_of("short", 40), "short");
+        // Marked by a real prompt: the column comes with it.
+        let mut p = quiet_pane(40, 6, 100);
+        p.process_output(format!("PS C:\\> {B}echo hi\r\nhi\r\n{}PS C:\\> {B}", ran(1_000, 3_500, true)).as_bytes());
+        assert_eq!(p.finished, [Finished { command: "echo hi".into(), secs: 2, failed: false, exit: None }]);
+        // PowerShell's failure is a failure with no code; FTCS gives the code.
+        p.process_output(format!("bad\r\n{}PS C:\\> {B}", ran(4_000, 5_000, false)).as_bytes());
+        assert_eq!(p.finished[1], Finished { command: "bad".into(), secs: 1, failed: true, exit: None });
+        let mut q = quiet_pane(40, 6, 100);
+        q.process_output(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\false\x1b]133;C\x1b\\\r\n\x1b]133;D;3\x1b\\");
+        assert_eq!((q.finished[0].failed, q.finished[0].exit), (true, Some(3)));
     }
 
     /// With the shell marking its prompts, a prompt's line is not output:

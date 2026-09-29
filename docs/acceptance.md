@@ -3018,3 +3018,26 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 8 | 两平台全量 | fmt/clippy 两边通过；Windows 275/10/93，Linux 252/93 | 干净（1/3） |
 | 9 | 真实二进制 + 运行中的服务端 | 重建后 `setup-edge.ps1` 15/15；对从没报告过空闲的 ai pane 发消息，回复第二行是说明与 `keepane setup`；`/api/panes` 的 `unheard` 为 true，页面的 `stateOf` 给"没报告过空闲"、有排队的那个显示提示、没排队的不显示；dashboard 格式第 20 列为 1（浏览器扩展这次未连上，页面逻辑用 node 跑页面里的函数核对） | 干净（2/3） |
 | 10 | 机制通路存活（6 条变异）+ 可复现性 | 只认 `/`、不去 `.exe`、Gemini 分两次编辑、备份可覆盖、不认 `CLAUDE_CONFIG_DIR`、Cursor 不写 `version`：6/6 被抓，都在为它写的断言上；`setup codex` 连跑两次输出逐字节相同（888 字符），状态表、`man --roff` 同；`setup-edge.ps1` 再跑 15/15；库测试 275 | 干净（3/3），验收通过 |
+
+## 83. pane 完成时通知（手机页、桌面、`pane-done` hook、webhook：飞书、企业微信、钉钉、Slack、Discord、ntfy）
+
+用户问：窗格任务完成时能不能通知到手机或网页。先讲清限制：手机页是局域网 HTTP，浏览器的系统通知（Notification API）和 Web Push 只能在 HTTPS 下用，Web Push 还要走厂商推送服务、iOS 要先加到主屏幕，所以不做；页面开着时在页内提醒，锁屏靠 webhook/hook 推到有 App 的服务。用户同意"按推荐来"，并要求 hook 也能配飞书或任意 webhook。
+
+- "完成"四种（`done-events`，默认 `command agent`）：跑满 `done-after`（默认 30 秒）的命令结束（shell 报告的命令记录，提示符结束的列另记，通知里只写命令本身）；agent 这一轮结束（`pane-ready` 且之前听到过、之前不是空闲，所以会话开始那一次不算）；消息任务结束（`task`）；程序退出（`exit`）。范围 `done-panes`：默认有名字或 ai/shell 模式的 pane，`all` 为全部。同一 pane 3 秒内只通知一次（agent 这一轮和它完成的任务是一件事）。
+- 通知方式：手机页每 3 秒问 `/api/done`（`list-done -J`，带 `last` 以便发现 server 重启），新的就顶部横幅（点了跳到 pane）、短提示音（第一次触摸后才能响）、安卓震动、标题前加未读数，页面隐藏时完成的，回来后补告；`notify on` 时桌面通知；`pane-done` hook，信息在 `KEEPANE_DONE_*` 环境变量里（`run-shell` 不展开 `#{}`，用环境变量免去引号问题）；`done-webhook` + `done-webhook-format`（json、text、feishu、wecom、dingtalk、slack、discord），经系统 `curl` 发送，地址和正文从标准输入给 curl（`-K -`），不出现在进程列表里，独立线程发送；聊天工具回 200 但 JSON 里 `code`/`errcode`/`StatusCode` 非 0 也算拒收，写进 `show-messages`。
+- 新命令 `list-done [-a 编号] [-J]`，最近 100 条。平台层加 `quiet_command`（Windows 上启动 curl 不弹窗口）。
+- 文档：README 中英新节"Told when a pane is done / pane 完成时通知你"、配置示例、hook 列表；手册；FAQ 中英两条（锁屏也要收到：ntfy/聊天机器人；飞书钉钉拒收：关键词、签名、IP 白名单）；网站手机章节一条。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 代码正确性：通读 diff | ① 按 pane 记"上次通知时间"的表只增不减（每个开过的 pane 都留一条）；② 程序退出的通知直接用 pane 的启动命令行，Windows 上是带空格的完整路径加参数 | **有问题**：每次先清掉 3 秒以前的；新增 `program_name`，`/` 和 `\` 都当分隔符、去 `.exe`（单测覆盖带引号、不带引号带空格、大写 `.EXE`、Unix 路径）（不计数） |
+| 2 | 两平台全量 + 文档对照 | Windows 281/10/95、Linux 258/95（含新的两个 e2e：webhook 走 curl、hook 走 sh）；README 里 3 秒、100 条、环境变量名、7 种格式、`keepane` 开头与代码一致 | 干净（但下一轮有发现，连续计数中断） |
+| 3 | 机制通路存活（9 条变异） | 8/9 被抓；**去掉 3 秒去重没被抓**：没有测试覆盖"agent 完成消息时 agent 与 task 同时触发" | **有问题**：e2e 加这一步（不带提示符 hook 的 shell 扮 agent，发一条消息、交付、pane-ready），断言只出一条且是 agent 那条、文字含消息编号；该变异随即在"one telling, not two"断言上被抓（不计数） |
+| 4 | 两平台全量 | Windows 281/10/95，Linux 258/95 | 干净（但下一轮有发现，连续计数中断） |
+| 5 | 页面逻辑对真实服务端（浏览器扩展未连上，把页面里 `pollDone`/`tellDone` 取出来用 node 跑） | 横幅文字、跳转的 pane、标题未读数都对，但震动显示未调用：原因是 Node 22 自带只读的全局 `navigator`，测试桩没生效 | **有问题**（验证脚本自身，按惯例不计数） |
+| 6 | 同上，修好测试桩 | 基线不告旧的；命令结束后横幅"build (work:0.0): echo second-one finished in 0s"、pane `%2`、标题 `(1) keepane`、震动 `[120,60,120]`；再问一次无新的，标题不变 | 干净（但下一轮之后有发现，连续计数中断） |
+| 7 | 机制通路存活（10 条变异） | 10/10 被抓，都在为它写的断言上 | 干净（同上） |
+| 8 | 边界与退化输入（真实二进制） | 8 项全过（webhook 端口没人听：`curl: (7)` 进 `show-messages`；命令带引号和反斜杠，JSON 正文逐字正确；`list-done` 坏参数、超大编号、坏 flag），但发现：PowerShell 里 `cmd /c exit 3` 的通知写成 "failed (exit 1)"——PowerShell 的 hook 只报成功/失败，内部用 1 代表失败，被当成了退出码 | **有问题**：`Finished` 分开记"失败"和"真实退出码"（只有 FTCS 给的码才算）；PowerShell 下写"failed after …"；JSON 加 `ok`，环境变量加 `KEEPANE_DONE_OK`；单测覆盖 PowerShell 失败无码、FTCS 给码 3（不计数） |
+| 9 | 两平台全量 | fmt/clippy 两边通过；Windows 281/10/95，Linux 258/95 | 干净（1/3） |
+| 10 | 边界与退化输入（`done-edge.ps1`，先重建） | 9/9：连不上时有提示、引号反斜杠 JSON 正确且 `ok:true`、`exit:null`、PowerShell 失败写 "failed after 0s" 且 `ok:false`、`list-done` 参数、保留条数 | 干净（2/3） |
+| 11 | 机制通路存活（11 条变异）+ 可复现性 | 11/11 被抓（新增"编造 PowerShell 退出码"在单测断言上被抓）；`done-edge.ps1` 再跑 9/9；库测试 281 | 干净（3/3），验收通过 |

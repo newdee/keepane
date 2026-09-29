@@ -87,6 +87,12 @@ pub fn shell_command(command: &str) -> (std::process::Command, &'static str) {
     (c, "/bin/sh")
 }
 
+/// A program the server runs for itself (`curl` for `done-webhook`): no
+/// window to keep away here.
+pub fn quiet_command(program: &str) -> std::process::Command {
+    std::process::Command::new(program)
+}
+
 /// The command a `pipe-pane` runs: the same, through `/bin/sh -c`.
 pub fn pipe_command(command: &str) -> (std::process::Command, &'static str) {
     shell_command(command)

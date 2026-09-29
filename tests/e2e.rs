@@ -6011,6 +6011,208 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `list-done` until a line has `needle`, or the test fails with what it had.
+async fn wait_done(h: &Harness, needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, out, _) = h.cli(&["list-done"]).await;
+        if let Some(l) = out.lines().find(|l| l.contains(needle)) {
+            return l.to_string();
+        }
+        assert!(Instant::now() < deadline, "no done with {needle:?}; list-done:\n{out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// One HTTP request taken on `listener`, answered 200 with `answer`: its
+/// body.
+async fn take_request(listener: &tokio::net::TcpListener, answer: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut s, _) =
+        tokio::time::timeout(Duration::from_secs(20), listener.accept()).await.expect("no request").unwrap();
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let body_at = loop {
+        let n = s.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "the connection closed early: {}", String::from_utf8_lossy(&buf));
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..body_at]).to_lowercase();
+    let len: usize =
+        head.lines().find_map(|l| l.strip_prefix("content-length:")).map(|v| v.trim().parse().unwrap()).unwrap_or(0);
+    while buf.len() < body_at + len {
+        let n = s.read(&mut chunk).await.unwrap();
+        assert!(n > 0);
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    let reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len());
+    s.write_all(reply.as_bytes()).await.unwrap();
+    String::from_utf8_lossy(&buf[body_at..body_at + len]).into_owned()
+}
+
+/// A command that ran long enough in a named pane is told: kept for the
+/// phone (`list-done`), its words and kind in the `pane-done` hook's
+/// environment, and sent to the webhook in the chat's shape; a chat that
+/// says no is heard. An agent's turn is told too, but not its first word.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_done_is_told_to_the_page_the_hook_and_a_webhook() {
+    let h = Harness::start("done").await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hook_url = format!("http://127.0.0.1:{}/hook", listener.local_addr().unwrap().port());
+    let said = std::env::temp_dir().join(format!("keepane-done-hook-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&said);
+    let write = if cfg!(windows) {
+        format!(
+            "Set-Content -LiteralPath '{}' -Value ($env:KEEPANE_DONE_KIND + '|' + $env:KEEPANE_DONE_TEXT)",
+            said.display()
+        )
+    } else {
+        format!("printf '%s|%s' \"$KEEPANE_DONE_KIND\" \"$KEEPANE_DONE_TEXT\" > '{}'", said.display())
+    };
+    for (k, v) in [("done-after", "0"), ("done-webhook", hook_url.as_str()), ("done-webhook-format", "feishu")] {
+        let (code, _, err) = h.cli(&["set", "-g", k, v]).await;
+        assert_eq!(code, 0, "{k}: {err}");
+    }
+    assert_eq!(h.cli(&["set-hook", "-g", "pane-done", "run-shell", &write]).await.0, 0);
+    h.cli(&[&["new", "-d", "-s", "dn"], HOOKED_SHELL].concat()).await;
+    let p = pane_id(&h, "dn:0.0").await;
+    h.cli(&["rename-pane", "-t", &format!("%{p}"), "build"]).await;
+    h.cli(&["set-work-mode", "-t", &format!("%{p}"), "shell"]).await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    h.cli(&["send-keys", "-t", &format!("%{p}"), "echo done-here", "Enter"]).await;
+    let line = wait_done(&h, " command ").await;
+    assert!(line.contains("build (dn:0.0): echo done-here finished in 0s"), "{line}");
+    // The chat's shape, the words starting with keepane (a keyword check).
+    let body: serde_json::Value =
+        serde_json::from_str(&take_request(&listener, "{\"code\":0,\"msg\":\"success\"}").await).unwrap();
+    assert_eq!(body["msg_type"], "text", "{body}");
+    let text = body["content"]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("keepane · ") && text.ends_with("build (dn:0.0): echo done-here finished in 0s"),
+        "{text}"
+    );
+    // The hook, told in its environment.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let hooked = loop {
+        if let Ok(t) = std::fs::read_to_string(&said)
+            && !t.is_empty()
+        {
+            break t;
+        }
+        assert!(Instant::now() < deadline, "the hook never wrote {}", said.display());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(hooked.trim(), "command|build (dn:0.0): echo done-here finished in 0s");
+    // JSON for the phone: the newest number, and each with its pane.
+    let (_, json, _) = h.cli(&["list-done", "-J"]).await;
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["done"][0]["pane"], format!("%{p}"), "{v}");
+    assert_eq!(v["last"], v["done"][0]["id"]);
+    let (_, none, _) = h.cli(&["list-done", "-a", &v["last"].to_string(), "-J"]).await;
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&none).unwrap()["done"], serde_json::json!([]));
+    // An agent: its first word is its session starting, not a turn; the
+    // next, after it was busy, is. A chat that answers 200 and says no is
+    // heard in the messages.
+    h.cli(&["new-window", "-d", "-t", "dn"]).await;
+    let a = pane_id(&h, "dn:1.0").await;
+    h.cli(&["rename-pane", "-t", &format!("%{a}"), "agent"]).await;
+    h.cli(&["set-work-mode", "-t", &format!("%{a}"), "ai"]).await;
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (_, list, _) = h.cli(&["list-done"]).await;
+    assert!(!list.contains(" agent "), "a session starting is not a turn ending: {list}");
+    h.cli(&["send-keys", "-t", &format!("%{a}"), "x"]).await;
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    let line = wait_done(&h, " agent ").await;
+    assert!(line.ends_with("agent (dn:1.0): the agent finished its turn"), "{line}");
+    take_request(&listener, "{\"code\":19021,\"msg\":\"sign match fail\"}").await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, msgs, _) = h.cli(&["show-messages"]).await;
+        if msgs.contains("done-webhook: refused (19021): sign match fail") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the refusal was not heard: {msgs}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = std::fs::remove_file(&said);
+    h.cli(&["kill-server"]).await;
+}
+
+/// What counts: a pane with no name in `normal` mode only with `done-panes
+/// all`; a command shorter than `done-after` not at all; a program exiting
+/// only when `done-events` has `exit`; nothing with `none`.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_counts_as_done_is_up_to_the_options() {
+    let h = Harness::start("done-opts").await;
+    h.cli(&[&["new", "-d", "-s", "do"], HOOKED_SHELL].concat()).await;
+    let p = pane_id(&h, "do:0.0").await;
+    let t = format!("%{p}");
+    // Wait for the shell's first prompt, then back to normal.
+    h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    h.cli(&["set-work-mode", "-t", &t, "normal"]).await;
+    h.cli(&["set", "-g", "done-after", "0"]).await;
+    h.cli(&["send-keys", "-t", &t, "echo one", "Enter"]).await;
+    h.wait_capture("do:0.0", "one's output", |s| s.lines().any(|l| l.trim() == "one")).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(h.cli(&["list-done"]).await.1.trim(), "", "a pane with no name, in normal mode");
+    h.cli(&["set", "-g", "done-panes", "all"]).await;
+    h.cli(&["send-keys", "-t", &t, "echo two", "Enter"]).await;
+    let line = wait_done(&h, "echo two").await;
+    assert!(line.contains(" command do:0.0: echo two finished in 0s"), "{line}");
+    // Too short for done-after.
+    h.cli(&["set", "-g", "done-after", "60"]).await;
+    tokio::time::sleep(Duration::from_secs(3)).await; // past the per-pane gate
+    h.cli(&["send-keys", "-t", &t, "echo three", "Enter"]).await;
+    h.wait_capture("do:0.0", "three's output", |s| s.lines().any(|l| l.trim() == "three")).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!h.cli(&["list-done"]).await.1.contains("echo three"), "shorter than done-after");
+    // A program exiting, with exit in done-events; bad values refused.
+    assert_ne!(h.cli(&["set", "-g", "done-events", "command bogus"]).await.0, 0);
+    assert_ne!(h.cli(&["set", "-g", "done-panes", "some"]).await.0, 0);
+    assert_ne!(h.cli(&["set", "-g", "done-webhook", "ftp://x"]).await.0, 0);
+    assert_ne!(h.cli(&["set", "-g", "done-webhook-format", "xml"]).await.0, 0);
+    h.cli(&["set", "-g", "done-events", "all"]).await;
+    assert_eq!(h.cli(&["show", "-gv", "done-events"]).await.1.trim(), "command agent task exit");
+    h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
+    h.cli(&["send-keys", "-t", &t, "exit", "Enter"]).await;
+    let line = wait_done(&h, " exit ").await;
+    assert!(line.contains("exited with 0"), "{line}");
+    // An agent that finishes the message it was given: its turn and the
+    // task end together, and are told once, as the turn. (A shell with no
+    // prompt hook plays the agent: its prompt would read as the agent gone.)
+    h.cli(&["set", "-g", "done-events", "agent task"]).await;
+    h.cli(&["new-window", "-d", "-t", "do"]).await;
+    let a = pane_id(&h, "do:1.0").await;
+    h.cli(&["rename-pane", "-t", &format!("%{a}"), "agent2"]).await;
+    h.cli(&["set-work-mode", "-t", &format!("%{a}"), "ai"]).await;
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    let (_, sent, _) = h.cli(&["send-message", "-t", &format!("%{a}"), "task one"]).await;
+    let id = msg_id(&sent);
+    let (_, trace, _) = h.cli(&["trace-message", &id]).await;
+    assert!(trace.starts_with(&format!("#{id} delivered")), "{trace}");
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    let line = wait_done(&h, "agent2").await;
+    assert!(line.contains(&format!(" agent   agent2 (do:1.0): the agent finished #{id}: task one")), "{line}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (_, list, _) = h.cli(&["list-done"]).await;
+    assert_eq!(list.lines().filter(|l| l.contains("agent2")).count(), 1, "one telling, not two: {list}");
+    h.cli(&["kill-window", "-t", "do:1"]).await;
+    // None: nothing more.
+    h.cli(&["set", "-g", "done-events", "none"]).await;
+    let before = h.cli(&["list-done"]).await.1;
+    h.cli(&["new-window", "-d", "-t", "do"]).await;
+    let q = pane_id(&h, "do:1.0").await;
+    h.cli(&["send-keys", "-t", &format!("%{q}"), "exit", "Enter"]).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(h.cli(&["list-done"]).await.1, before, "done-events none");
+    h.cli(&["kill-server"]).await;
+}
+
 /// An agent that never says it is free (no turn-end hook) would leave its
 /// messages waiting for ever, silently: the sender is told why, and how
 /// to set the hook up, until the agent's first `pane-ready`.

@@ -161,6 +161,12 @@
     position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); background: var(--card);
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; font-size: 14px;
   }
+  /* A pane is done: across the top, to tap. */
+  #done {
+    position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 56px); z-index: 20;
+    background: var(--card); border: 1px solid var(--green); border-left-width: 4px; border-radius: 10px;
+    padding: 10px 14px; font-size: 14px; cursor: pointer; box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+  }
 </style>
 </head>
 <body>
@@ -207,6 +213,7 @@
 <div id="switch" class="overlay hidden"><div class="sheet" id="switchList"></div></div>
 <div id="hist" class="overlay hidden"><div class="sheet" id="histList"></div></div>
 <div id="toast" class="hidden"></div>
+<div id="done" class="hidden" role="status"></div>
 <script>
 "use strict";
 // The key: from the address the QR code gave (then taken out of it, so it
@@ -926,6 +933,58 @@ function ansiToHtml(text) {
   return out;
 }
 
+// ---- Told when a pane is done (`done-events` on the computer): a banner
+// to tap, a short sound and a buzz, and the count in the tab's title until
+// the page is touched. Asked every three seconds while the page is shown;
+// what was done while it was hidden is told when it is shown again ----
+let doneSeen = null; // the newest number told of; null before the first look
+let doneTimer = null, unseen = 0, baseTitle = "keepane", audio = null;
+// A phone plays sound only after a tap: the first one makes it possible.
+document.addEventListener("pointerdown", () => {
+  unseen = 0; document.title = baseTitle;
+  if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+}, { passive: true });
+function chime() {
+  if (!audio) return;
+  try {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = 880; g.gain.value = 0.06;
+    o.connect(g); g.connect(audio.destination);
+    o.start(); o.stop(audio.currentTime + 0.15);
+  } catch (e) {}
+}
+async function pollDone() {
+  clearTimeout(doneTimer);
+  if (document.visibilityState !== "visible") return;
+  try {
+    const r = await (await api(`/api/done?after=${doneSeen || 0}`)).json();
+    // The first look, or a server started again: what is there is not news.
+    if (doneSeen === null || r.last < doneSeen) doneSeen = r.last;
+    else if (r.done.length) { doneSeen = r.last; tellDone(r.done); }
+  } catch (e) {}
+  doneTimer = setTimeout(pollDone, 3000);
+}
+function tellDone(list) {
+  const last = list[list.length - 1];
+  const more = list.length > 1 ? t(` (and ${list.length - 1} more)`, `（还有 ${list.length - 1} 条）`) : "";
+  const b = $("done");
+  b.textContent = last.text + more;
+  b.dataset.pane = last.pane;
+  b.classList.remove("hidden");
+  clearTimeout(tellDone.t); tellDone.t = setTimeout(() => b.classList.add("hidden"), 8000);
+  chime();
+  if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+  unseen += list.length; document.title = `(${unseen}) ${baseTitle}`;
+}
+// Tapped: to that pane.
+$("done").addEventListener("click", () => {
+  const b = $("done"), p = b.dataset.pane;
+  b.classList.add("hidden");
+  if (!p || !paneInfo(p)) return;
+  if (current) switchTo(p); else open(p, true);
+});
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pollDone(); });
+
 // ---- Refresh: a pane is pushed (or polled where it cannot be); the list is
 // asked for every two seconds; nothing while the page is hidden ----
 async function tick() {
@@ -965,12 +1024,14 @@ if (window.visualViewport) {
   try {
     const info = await (await api("/api/info")).json();
     readOnly = info.readOnly;
-    document.title = `keepane · ${info.host}`;
+    baseTitle = `keepane · ${info.host}`;
+    document.title = baseTitle;
   } catch (e) {
     $("list").innerHTML = `<p class="error">${esc(e.message)}</p>`;
     return;
   }
   history.replaceState({}, "");
+  pollDone();
   if (startPane) {
     try { panes = await (await api("/api/panes")).json(); } catch (e) {}
     open(startPane, true);

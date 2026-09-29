@@ -166,6 +166,12 @@ pub enum Cmd {
     ListMarks {
         target: Option<Target>,
     },
+    /// `list-done [-a after] [-J]`: when panes were done (`done-events`),
+    /// those after number `after`; `-J` as JSON, for the phone's page.
+    ListDone {
+        after: u64,
+        json: bool,
+    },
     /// `send-message [-t|--to pane] [-r | --re id] [--task id] [-w seconds]
     /// text`: into a pane's inbox (docs/design/mailbox.md). `-r` answers the
     /// sender of the message the calling pane is working on; `--re` answers
@@ -873,6 +879,16 @@ impl fmt::Display for Cmd {
             Cmd::ListMarks { target } => {
                 f.write_str("list-marks")?;
                 fmt_target(f, target)
+            }
+            Cmd::ListDone { after, json } => {
+                f.write_str("list-done")?;
+                if *after > 0 {
+                    write!(f, " -a {after}")?;
+                }
+                if *json {
+                    f.write_str(" -J")?;
+                }
+                Ok(())
             }
             Cmd::SendMessage { target, reply, re, task, wait, text } => {
                 f.write_str("send-message")?;
@@ -1950,6 +1966,7 @@ pub const COMMANDS: &[&str] = &[
     "list-commands",
     "list-keys",
     "list-marks",
+    "list-done",
     "send-message",
     "read-message",
     "list-messages",
@@ -2077,6 +2094,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-commands", &[]),
     ("list-keys", &[]),
     ("list-marks", &["-t"]),
+    ("list-done", &["-a", "-J"]),
     ("send-message", &["-t", "-r", "-w", "--to", "--re", "--task"]),
     ("read-message", &["-t", "-w"]),
     ("list-messages", &["-t", "-a"]),
@@ -2477,6 +2495,21 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ListMarks { target }
+        }
+        "list-done" => {
+            let (mut after, mut json) = (0, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-a" => {
+                        let v = a.value("-a")?;
+                        after = v.parse().map_err(|_| format!("list-done: -a takes a number, not '{v}'"))?;
+                    }
+                    "-J" => json = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ListDone { after, json }
         }
         "send-message" => {
             let (mut target, mut reply, mut wait, mut re, mut task) = (None, false, None, None, None);

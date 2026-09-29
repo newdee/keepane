@@ -71,7 +71,7 @@ impl Server {
         self.sessions.iter().flat_map(|s| s.windows.iter()).find_map(|w| w.pane(id))
     }
 
-    fn place_of(&self, id: PaneId) -> Option<(SessionId, usize)> {
+    pub(super) fn place_of(&self, id: PaneId) -> Option<(SessionId, usize)> {
         self.sessions.iter().find_map(|s| s.windows.iter().position(|w| w.pane(id).is_some()).map(|widx| (s.id, widx)))
     }
 
@@ -494,7 +494,18 @@ impl Server {
             output = Some((body, cut));
         }
         self.observe.ended(m.id, end, ok, output);
+        self.task_done(pid, &m, end, ok);
         self.deliver(pid);
+    }
+
+    /// A message's task ended in pane `pid` (`done-events` `task`).
+    fn task_done(&mut self, pid: PaneId, m: &Message, end: End, ok: Option<bool>) {
+        let text = match (end, ok) {
+            (End::Abandoned, _) => format!("#{} ended unfinished: {}", m.id, super::done::gist(&m.text)),
+            (_, Some(false)) => format!("#{} failed: {}", m.id, super::done::gist(&m.text)),
+            _ => format!("#{} done: {}", m.id, super::done::gist(&m.text)),
+        };
+        self.pane_done(pid, super::done::Kind::Task, text, ok, None, None);
     }
 
     fn pane_ready(&mut self, cid: Option<ClientId>, quiet: bool, target: Option<&Target>) -> Outcome {
@@ -520,14 +531,25 @@ impl Server {
             };
         };
         let Some(p) = self.find_pane_mut(me) else { return Outcome::Ok };
+        // A turn that ended: the agent was heard from before (its first word
+        // is its session starting) and was not already free.
+        let turn = !p.actor.unheard() && !p.actor.idle();
         let (taken, done) = p.actor.ready();
         if !taken {
             // Only an agent's word counts; a hook set up for every agent
             // also runs in panes that are not `ai`, quietly.
             return Outcome::Ok;
         }
+        if turn {
+            let text = match &done {
+                Some((m, _)) => format!("the agent finished #{}: {}", m.id, super::done::gist(&m.text)),
+                None => "the agent finished its turn".to_string(),
+            };
+            self.pane_done(me, super::done::Kind::Agent, text, None, None, None);
+        }
         if let Some((m, end)) = done {
             self.observe.ended(m.id, end, None, None);
+            self.task_done(me, &m, end, None);
         }
         let addr = self.address_of(me);
         self.observe.pane(&addr, "idle", "");
