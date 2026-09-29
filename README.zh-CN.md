@@ -337,7 +337,19 @@ PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
 
 pane 里的 agent 收发的是和别人一样的消息。要让它顺畅，需要两样东西：一个在 agent 每轮结束时运行 `keepane pane-ready -q` 的 hook（这样 `ai` 模式的 pane 才算准备好了），以及 `keepane mcp`，一个把上面那些命令作为工具提供的 MCP 服务端（stdio）。它从 `KEEPANE_PANE` 知道自己服务的是哪个 pane，所以 agent 发出的消息，发送方就是这个 pane。
 
-`keepane setup claude` 打印 Claude Code 需要的配置；加 `--install` 就替你装上：在 `~/.claude/settings.json` 里加两个 hook（先备份），session 开始和每轮结束时运行 `keepane pane-ready -q`；再注册 keepane 的 MCP 服务端（`claude mcp add --scope user keepane -- keepane mcp`）。这个 hook 在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 Claude Code 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。别的 agent 只要能在每轮结束时运行一条命令、能用 stdio 上的 MCP 服务端，也一样能接；启动它之前在它的 pane 里运行 `keepane set-work-mode ai`。
+`keepane setup` 列出它认识的每个 agent：本机装没装、hook 和 keepane 的 MCP 服务端配好没有。`keepane setup <agent>` 打印这个 agent 需要的配置；加 `--install` 就替你装上，每个文件改之前先备份，只加 keepane 自己的条目：
+
+| agent | `setup` 后面写 | hook（session 开始、每轮结束） | MCP 服务端 |
+|---|---|---|---|
+| Claude Code | `claude` | `~/.claude/settings.json` 里的 `SessionStart`、`Stop` | `claude mcp add --scope user` |
+| Codex | `codex` | `~/.codex/hooks.json` 里的 `SessionStart`、`Stop` | `codex mcp add` |
+| Gemini CLI | `gemini` | `~/.gemini/settings.json` 里的 `SessionStart`、`AfterAgent` | 同一个文件的 `mcpServers` |
+| Cursor CLI | `cursor` | `~/.cursor/hooks.json` 里的 `sessionStart`、`stop` | `~/.cursor/mcp.json` |
+| opencode | `opencode` | 一个插件 `~/.config/opencode/plugins/keepane.js`，启动时和 `session.idle` 时运行 | `opencode.json` 的 `mcp` |
+
+hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。Codex 的 `notify` 只能填一个程序，keepane 不碰它；Codex 的新 hook 要你在 Codex 里用 `/hooks` 确认信任一次才会运行。不是纯 JSON 的文件（比如带注释）不会被改，`setup` 会告诉你手工加什么。这些都按各家的文档写，端到端实测过的只有 Claude Code。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 agent 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。别的 agent 只要能在每轮结束时运行一条命令、能用 stdio 上的 MCP 服务端，也一样能接；启动它之前在它的 pane 里运行 `keepane set-work-mode ai`。
+
+发给 `ai` 模式 pane 的消息，如果这个 pane 的 agent 启动以来从没报告过空闲，消息就会一直排队。所以 `send-message` 会直接说明，并给出补上 hook 的 `setup` 命令；dashboard 和手机页上也会提示（`#{pane_unheard}`）。
 
 20 个工具：
 
@@ -350,7 +362,7 @@ pane 里的 agent 收发的是和别人一样的消息。要让它顺畅，需�
 | `set_status`、`set_work_mode` | 报告自己在做什么（dashboard 上显示）；改自己 pane 的模式 |
 | `list_tasks`、`show_task`、`query_events` | 消息链（任务）和事件日志 |
 
-通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini` 的是 `ai` 模式，跑 `pwsh`、`powershell`、`bash`、`zsh` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（Windows 上是 `pwsh powershell claude codex`，其他系统是 `bash zsh sh claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。Claude Code 调用你没放行过的 MCP 工具前会先问你。
+通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini`、`cursor-agent`、`opencode` 的是 `ai` 模式，跑 `pwsh`、`powershell`、`bash`、`zsh` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（Windows 上是 `pwsh powershell claude codex`，其他系统是 `bash zsh sh claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。Claude Code 调用你没放行过的 MCP 工具前会先问你。
 
 ## 在手机上用
 

@@ -54,7 +54,7 @@ pub fn needs_yes(argv: &[String]) -> bool {
 }
 
 /// `list-panes -F` for the board: one pane a line, tab-separated.
-pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}";
+pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}";
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct PaneRow {
@@ -77,6 +77,8 @@ pub struct PaneRow {
     pub activity: i64,
     pub size: String,
     pub exit: String,
+    /// An agent's pane whose agent has not said it is free since it started.
+    pub unheard: bool,
 }
 
 impl PaneRow {
@@ -104,6 +106,7 @@ impl PaneRow {
             activity: f[15].parse().unwrap_or(0),
             size: format!("{}x{}", f[16], f[17]),
             exit: f[18].into(),
+            unheard: f.get(19) == Some(&"1"),
         })
     }
 
@@ -131,9 +134,12 @@ impl PaneRow {
     }
 
     /// What it is doing: what it said, else the message it works on, else
-    /// its program.
+    /// its program. Before all that, messages waiting on an agent that has
+    /// never said it is free: the hook it lacks.
     fn doing(&self) -> String {
-        if !self.status.is_empty() {
+        if self.unheard && self.inbox > 0 {
+            "never said it is free: keepane setup".into()
+        } else if !self.status.is_empty() {
             format!("\"{}\"", self.status)
         } else if !self.message.is_empty() {
             format!("working on #{}", self.message)
@@ -1613,6 +1619,14 @@ mod tests {
             (r.path.as_str(), r.pid.as_str(), r.started, r.activity, r.size.as_str()),
             ("/src", "99", 100, 150, "80x24")
         );
+        assert!(!r.unheard, "a line from an older server has no such field");
+        // Messages waiting on an agent never heard from: the hook it lacks,
+        // before what it said; with none waiting, as before.
+        let unheard = format!("{line}\t1");
+        let r = PaneRow::parse(&unheard).unwrap();
+        assert_eq!(r.doing(), "never said it is free: keepane setup");
+        let r = PaneRow::parse(&unheard.replace("\t1\t2\t", "\t1\t0\t")).unwrap();
+        assert_eq!(r.doing(), "\"running 3/10\"");
         assert_eq!(PaneRow::parse("too\tshort"), None);
         let q = Queued::parse("  #6  from %lead  waiting 3s  second  with  gaps").unwrap();
         assert_eq!(

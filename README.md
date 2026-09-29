@@ -577,17 +577,35 @@ agent finishes a turn (so the pane counts as ready in `ai` mode), and
 It takes the pane it serves from `KEEPANE_PANE`, so what the agent sends
 goes out with that pane as the sender.
 
-`keepane setup claude` prints what Claude Code needs; `--install` does it:
-two hooks in `~/.claude/settings.json` (backed up first) that run `keepane
-pane-ready -q` when a session starts and when a turn ends, and keepane's MCP
-server (`claude mcp add --scope user keepane -- keepane mcp`). The hook is
-quiet outside keepane and ignored in panes not in `ai` mode. Writing the hook
-yourself, leave the program path unquoted (or write `& "C:\path\keepane.exe"
-pane-ready -q`): Claude Code on Windows may run hooks in PowerShell, where a
-quoted path followed by arguments is a syntax error. Another agent works the
-same way if it can run a command at the end of each turn and use an MCP
-server over stdio; run `keepane set-work-mode ai` in its pane before
-starting it.
+`keepane setup` shows, for each agent it knows, whether it is on this
+machine and whether its hook and keepane's MCP server are set up.
+`keepane setup <agent>` prints what that agent needs; `--install` does it,
+each file backed up first and only keepane's entries added:
+
+| Agent | `setup` word | Hook (session start, turn end) | MCP server |
+|---|---|---|---|
+| Claude Code | `claude` | `SessionStart`, `Stop` in `~/.claude/settings.json` | `claude mcp add --scope user` |
+| Codex | `codex` | `SessionStart`, `Stop` in `~/.codex/hooks.json` | `codex mcp add` |
+| Gemini CLI | `gemini` | `SessionStart`, `AfterAgent` in `~/.gemini/settings.json` | `mcpServers` there |
+| Cursor CLI | `cursor` | `sessionStart`, `stop` in `~/.cursor/hooks.json` | `~/.cursor/mcp.json` |
+| opencode | `opencode` | a plugin, `~/.config/opencode/plugins/keepane.js`, on start and `session.idle` | `mcp` in `opencode.json` |
+
+Each runs `keepane pane-ready -q`, which is quiet outside keepane and
+ignored in panes not in `ai` mode. Codex's `notify` holds one program only
+and is left alone; Codex runs a new hook once you trust it (`/hooks` in
+Codex). A file that is not plain JSON (comments, say) is left alone, and
+`setup` says what to add by hand. These follow each agent's documentation;
+Claude Code is the one checked end to end. Writing the hook yourself, leave
+the program path unquoted (or write `& "C:\path\keepane.exe" pane-ready
+-q`): an agent on Windows may run hooks in PowerShell, where a quoted path
+followed by arguments is a syntax error. Any other agent works the same way
+if it can run a command at the end of each turn and use an MCP server over
+stdio; run `keepane set-work-mode ai` in its pane before starting it.
+
+A message for an `ai` pane whose agent has never said it is free (since it
+started) would wait for ever, so `send-message` says so, with the `setup`
+that adds the hook; the dashboard and the phone page say it too
+(`#{pane_unheard}`).
 
 The 20 tools:
 
@@ -600,8 +618,8 @@ The 20 tools:
 | `set_status`, `set_work_mode` | say what it is doing (the dashboard shows it); change its own pane's mode |
 | `list_tasks`, `show_task`, `query_events` | chains of messages, and the event log |
 
-A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`
-or `gemini`, in `shell` mode when it runs `pwsh`, `powershell`, `bash` or
+A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`,
+`gemini`, `cursor-agent` or `opencode`, in `shell` mode when it runs `pwsh`, `powershell`, `bash` or
 `zsh`, and in `normal` mode otherwise, unless a mode is given. What an
 agent may start is limited to `agent-commands` (`pwsh powershell claude
 codex` on Windows, `bash zsh sh claude codex` elsewhere), and how many

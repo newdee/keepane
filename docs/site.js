@@ -88,7 +88,7 @@ const ZH = {
   "cm.p1":
     "每条消息都用一行 JSON 写明来源。一串消息是一个任务，每一步等了多久、做了多久都有记录；来回超过八手的会被拒收。",
   "cm.p2":
-    "Claude Code 这样的 agent 通过 MCP 使用它：发消息和回信、在一轮之内等回信、自己开 pane 干活。<code>keepane setup claude</code> 打印需要的两个 hook 和注册命令。",
+    "Claude Code 这样的 agent 通过 MCP 使用它：发消息和回信、在一轮之内等回信、自己开 pane 干活。<code>keepane setup</code> 为 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode 配好 hook 和注册。",
   "cm.p3":
     "pane 的工作模式只能在那个 pane 里切换，所以任何 pane 里运行的程序都不能把别的 pane 变成收到什么就执行什么的 shell。发生过的一切记在事件日志里，保留 30 天。",
 

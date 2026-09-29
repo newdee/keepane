@@ -2996,3 +2996,25 @@ PowerShell 补全脚本用 `TabExpansion2` 实测（pwsh 7.6 与 5.1）：`set s
 | 2 | 代码正确性 + 全量 | fmt 0、clippy 0；Windows 全量 268/10/92；复查下标（光标行总在屏幕内，`rows` 有 `row+1` 行）、标记按行号升序（`apply_marks` 先删不小于新行的再追加）、目录为空的 pane 不写目录 | 干净（1/3） |
 | 3 | 机制通路存活（4 条变异） | 去掉跳过提示符行→在"cd 不输出"一句失败；前缀判断放宽→在 `user` 一例失败；去掉空回车判断→在"空回车"一句失败；`idle` 读错字段→在 `/api/panes` 的 JSON 断言失败：4/4 被抓，都在为它写的断言上 | 干净（2/3） |
 | 4 | 可复现性 + 另一平台 | Linux fmt/clippy 通过、全量 245/92；改动相关单测连跑 3 次，3 次都过 | 干净（3/3），验收通过 |
+
+## 82. 常见 agent 的"轮次结束"hook（`keepane setup <agent>`），以及 agent 从没报告过空闲时的提示
+
+用户反馈：ai 模式下 agent "总是忘记查收件箱"，Codex、Cursor CLI 等"估计也不知道"。查实：ai 模式本来靠 agent 每轮结束时运行 `keepane pane-ready`，keepane 再把消息打进去，agent 不需要自己去查；这台机器的 `~/.claude/settings.json` 里没有这个 hook，所以消息只会一直排队，看起来像"忘了"。Codex 的 `notify` 已被 Codex 桌面版占用（只能填一个程序）。
+
+- `keepane setup` 不带参数：列出五个 agent（Claude Code、Codex、Gemini CLI、Cursor CLI、opencode）本机装没装、hook 和 MCP 配没配，缺什么就给出命令。`keepane setup <agent> [--install]` 按各家文档（2026-09）写：Claude `Stop`/`SessionStart`（`settings.json`，认 `CLAUDE_CONFIG_DIR`）；Codex 同名两个事件写进 `~/.codex/hooks.json`（认 `CODEX_HOME`，不碰 `notify`，提示要在 Codex 里 `/hooks` 信任一次）；Gemini `AfterAgent`/`SessionStart`（hook 和 MCP 在同一个文件，一次编辑、一次备份）；Cursor `stop`/`sessionStart`（`version: 1`）与 `~/.cursor/mcp.json`；opencode 没有 hook，写一个插件在启动和 `session.idle` 时运行命令，MCP 写进 `opencode.json`（只有 `opencode.jsonc` 时认它，带注释就不改、告诉用户手工加）。每个文件先备份，只加 keepane 的条目，重复运行不重复加；备份永不覆盖旧备份。
+- agent 从没报告过空闲（`Actor.heard`：`pane-ready` 置位；ai 模式下看到 shell 提示符、重启、换模式时清掉）：`send-message` 的回复（和 `-w` 超时）多一行说明与 `setup` 命令（认得出是哪个 agent 就写 `keepane setup codex --install`，否则写 `keepane setup`）；新格式变量 `#{pane_unheard}`；dashboard 的"在做什么"一栏、手机页卡片上都有提示。
+- MCP 开 pane 时，`cursor-agent`、`opencode` 也自动设为 ai 模式。补全、help、手册、README 中英、设计稿、网站同步。
+- 限制：Gemini、Cursor、opencode、Codex 按文档实现，本机没有这些 agent，未做端到端实测（用户说按接口文档来即可）；Claude Code 的这条路径是原有的、实测过的。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 代码正确性：通读 diff | ① 只有 `opencode.jsonc` 时会另建一个 `opencode.json`，出现两份配置；② 没认 Claude Code 的 `CLAUDE_CONFIG_DIR`（查证：设置后 `settings.json` 与 `.claude.json` 都在该目录） | **有问题**：两处都改，加单测（不计数） |
+| 2 | 静态一致性 + 全量 | Windows 全量 275/10/93 通过；README 中英与设计稿里"MCP 开 pane 自动 ai"的程序清单没加 `cursor-agent`、`opencode`；dashboard 的新提示没有测试 | **有问题**：三处文档补上，加 dashboard 单测（不计数） |
+| 3 | 机制通路存活（8 条变异） | `ready` 不置位、提示符不清、换模式不清、回复不带说明、MCP 覆盖用户已有条目、不认 jsonc、`/api/panes` 读错字段、dashboard 不提示：8/8 被抓，都在为它写的断言上 | 干净（但下一轮有发现，连续计数中断） |
+| 4 | 真实二进制（临时 home 里跑 `--install`） | **真缺陷**：Gemini 的 hook 与 MCP 在同一文件，先后编辑两次、同一秒备份两次，第二次备份（改到一半的内容）覆盖了用户原文件的备份 | **有问题**：同一文件一次编辑一次备份；备份同名时加序号、永不覆盖；单测断言备份内容就是用户原文件（不计数） |
+| 5 | 边界与退化输入（真实二进制） | 第一次跑的是旧二进制（命令被拦下，`cargo build` 没执行，`cargo test` 不更新 exe），结果无效；重建后 12 项全过，但 Gemini 的输出里"已注册 MCP"排在"已加 hook"之前 | **有问题**（验证脚本自身一次 + 输出顺序）：顺序改正（不计数） |
+| 6 | 边界与退化输入（`setup-edge.ps1`，15 项） | 用户原文件只备份一次且内容就是原文件、第二次运行不改不备份、损坏的 Cursor JSON 报错且不动、带注释的 jsonc 不动且不另建、Codex 的 `config.toml`（含 `notify`）不动、`hooks.json` 正确、提示 `/hooks`、状态表连跑两次相同、未知 agent 报用法：15/15 | 干净（但下一轮有发现，连续计数中断） |
+| 7 | 另一平台全量 | Windows 275/10/93；**Linux 2 个单测失败**：`Agent::of_program` 用 `Path::file_stem`，Linux 不把 `\` 当分隔符，`C:\bin\gemini.exe` 认不出 | **有问题**：两种分隔符都认、去 `.exe`，与平台无关（不计数） |
+| 8 | 两平台全量 | fmt/clippy 两边通过；Windows 275/10/93，Linux 252/93 | 干净（1/3） |
+| 9 | 真实二进制 + 运行中的服务端 | 重建后 `setup-edge.ps1` 15/15；对从没报告过空闲的 ai pane 发消息，回复第二行是说明与 `keepane setup`；`/api/panes` 的 `unheard` 为 true，页面的 `stateOf` 给"没报告过空闲"、有排队的那个显示提示、没排队的不显示；dashboard 格式第 20 列为 1（浏览器扩展这次未连上，页面逻辑用 node 跑页面里的函数核对） | 干净（2/3） |
+| 10 | 机制通路存活（6 条变异）+ 可复现性 | 只认 `/`、不去 `.exe`、Gemini 分两次编辑、备份可覆盖、不认 `CLAUDE_CONFIG_DIR`、Cursor 不写 `version`：6/6 被抓，都在为它写的断言上；`setup codex` 连跑两次输出逐字节相同（888 字符），状态表、`man --roff` 同；`setup-edge.ps1` 再跑 15/15；库测试 275 | 干净（3/3），验收通过 |

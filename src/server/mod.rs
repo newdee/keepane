@@ -5540,6 +5540,7 @@ impl Server {
             ctx.pane_address = format!("${}:@{}.%{pid}", sess.id, w.id);
             ctx.pane_work_mode = p.actor.mode.as_str().to_string();
             ctx.pane_idle = p.actor.idle();
+            ctx.pane_unheard = p.actor.unheard();
             ctx.pane_inbox = p.actor.inbox.len();
             ctx.pane_status = p.actor.status.as_ref().map(|(s, _)| s.clone()).unwrap_or_default();
             ctx.pane_message = p.actor.current.as_ref().map(|m| m.id.to_string()).unwrap_or_default();

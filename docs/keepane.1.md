@@ -95,7 +95,9 @@ chosen pane's screen, to act on).
 `--task`), `read-message`, `list-messages`, `trace-message`, `drop-message`,
 `move-message`, `pane-ready`, `pane-status`, `list-tasks`, `show-task`,
 `list-events`, `create-pane`, `mcp` (MCP for an agent in a pane), `setup`
-(`setup claude` connects Claude Code).
+(`setup` alone lists the agents and what each lacks; `setup claude`, `codex`,
+`gemini`, `cursor` or `opencode` with `--install` adds the hook that says when
+the agent is free, and keepane's MCP server).
 
 ### Resuming after a reboot
 

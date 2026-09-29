@@ -68,6 +68,9 @@ pub struct Context {
     pub pane_address: String,
     pub pane_work_mode: String,
     pub pane_idle: bool,
+    /// An `ai` pane whose agent has not said it is free since it started
+    /// (no turn-end hook, most likely).
+    pub pane_unheard: bool,
     pub pane_inbox: usize,
     pub pane_status: String,
     /// The id of the message the pane is working on, empty when none.
@@ -247,6 +250,7 @@ impl Context {
             "pane_address" => self.pane_address.clone(),
             "pane_work_mode" => self.pane_work_mode.clone(),
             "pane_idle" => flag(self.pane_idle),
+            "pane_unheard" => flag(self.pane_unheard),
             "pane_inbox" => self.pane_inbox.to_string(),
             "pane_status" => self.pane_status.clone(),
             "pane_message" => self.pane_message.clone(),

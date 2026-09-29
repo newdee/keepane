@@ -742,7 +742,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                                   #{pane_height}\t#{pane_dead}\t#{session_attached}\t\
                                   #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}\t\
                                   #{pane_name}\t#{pane_work_mode}\t#{pane_current_path_short}\t\
-                                  #{pane_activity}\t#{pane_last_line}\t#{pane_idle}\t#{pane_inbox}\t#{pane_title}";
+                                  #{pane_activity}\t#{pane_last_line}\t#{pane_idle}\t#{pane_inbox}\t#{pane_unheard}\t#{pane_title}";
             match q(vec!["list-panes".into(), "-a".into(), "-F".into(), FIELDS.into()]).await {
                 Ok((0, out, _)) => Response::json(panes_json(&out)),
                 Ok((_, _, err)) => Response::text(500, err.trim()),
@@ -929,12 +929,12 @@ fn panes_json_at(out: &str, now: u64) -> String {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() < 23 {
+            if f.len() < 24 {
                 return None;
             }
             // The title the program set (last: one with a tab in it is still
             // whole, the tab a space).
-            let title = f[22..].join(" ");
+            let title = f[23..].join(" ");
             let num = |s: &str| s.parse::<u64>().unwrap_or(0);
             // The window's alerts, as the status line marks them: it printed
             // (#), rang (!), or went quiet (~) while nobody looked.
@@ -942,7 +942,7 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
                  \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
                  \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{},\"path\":{},\"quiet\":{},\"last\":{},\
-                 \"idle\":{},\"inbox\":{},\"title\":{}}}",
+                 \"idle\":{},\"inbox\":{},\"unheard\":{},\"title\":{}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -969,6 +969,8 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 // normal one is never), and how many wait in its inbox.
                 f[20] == "1",
                 num(f[21]),
+                // An agent's pane never heard from: the hook it lacks.
+                f[22] == "1",
                 json_str(&title)
             ))
         })
@@ -1159,13 +1161,13 @@ mod tests {
         let qr = qr_text("http://192.168.1.23:7681/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert!(qr.lines().count() > 10 && qr.contains('█'), "{qr}");
         let json = panes_json_at(
-            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t✳ fix\tthe login\n\
-             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t0\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t1\t0\t\nshort line\n",
+            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t✳ fix\tthe login\n\
+             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t0\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\nshort line\n",
             1060,
         );
         assert_eq!(
             json,
-            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":true,"inbox":0,"title":""}]"#
+            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"unheard":false,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"inbox":3,"unheard":true,"title":""}]"#
         );
         assert_eq!(panes_json(""), "[]");
         // The keys the page sends: named ones, Ctrl with a letter, Alt with

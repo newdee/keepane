@@ -159,11 +159,11 @@ list-tasks [-t 会话]
 show-task 编号
 dashboard                              # 别名 dash；默认绑定 prefix v
 create-pane [-k session|window|split] [-t 目标] [-s 会话名] [-h] [-c 目录] [-n 名字] [-m 模式] [-M 首条消息] [-- 程序]
-setup claude [--install]               # 默认只打印要加的配置
+setup [claude|codex|gemini|cursor|opencode] [--install]   # 不带 agent 列出各家状态；默认只打印要加的配置
 mcp                                    # stdio MCP 服务端
 ```
 
-新增格式变量：`#{pane_name}`、`#{pane_address}`（完整 ID）、`#{pane_work_mode}`、`#{pane_idle}`、`#{pane_inbox}`、`#{pane_status}`、`#{pane_message}`（正在处理的消息编号）。
+新增格式变量：`#{pane_name}`、`#{pane_address}`（完整 ID）、`#{pane_work_mode}`、`#{pane_idle}`、`#{pane_unheard}`（ai 模式的 pane，agent 启动以来没说过空闲）、`#{pane_inbox}`、`#{pane_status}`、`#{pane_message}`（正在处理的消息编号）。
 
 `prefix B` 的 `choose-jobs` 保持不变（操作：跳转、关闭、重启）；dashboard 是另一个入口，只观察，唯一例外是管理模式下管理排队的消息。
 
@@ -190,7 +190,7 @@ keepane 的这些规则防的是失误，不是恶意：同一 Windows 用户的
 | 销毁 | `kill_pane`（即 `kill-pane`，可 `undo-kill`） |
 
 - 创建工具可带 `message`：创建时即放入新窗格收件箱，就绪后投递，没有"发早了"的时序问题。
-- 默认模式：启动 agent 程序（`claude`、`codex`、`gemini`）为 `ai`，启动 `pwsh`/`powershell`/`bash`/`zsh` 为 `shell`，其他为 `normal`；可用 `mode` 参数覆盖。
+- 默认模式：启动 agent 程序（`claude`、`codex`、`gemini`、`cursor-agent`、`opencode`）为 `ai`，启动 `pwsh`/`powershell`/`bash`/`zsh` 为 `shell`，其他为 `normal`；可用 `mode` 参数覆盖。
 - Claude Code 接入：SessionStart 与 Stop 两处 hook 调 `keepane pane-ready -q`，并注册 MCP。实测：Windows 上 Claude Code 用 PowerShell 执行 hook，`"C:/x/keepane.exe" pane-ready -q`（带引号的路径加参数）是语法错误，所以写入的命令不带引号。`keepane setup claude` 打印这些配置；`--install` 才写入 `~/.claude/settings.json`，写前备份。
 
 PowerShell 钩子：在现有提示符钩子末尾加 `OSC 7777;keepane-prompt`，每次显示提示符都发（不依赖是否有新历史）。bash 与 zsh 的钩子发 `OSC 7777;keepane-prompt;sh`（`;sh` 说明按 POSIX 写法投递），放在 PS1 末尾（bash 用 BEL 结尾：提示符解码会吃掉 ST 里的反斜杠）。

@@ -6011,6 +6011,40 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     h.cli(&["kill-server"]).await;
 }
 
+/// An agent that never says it is free (no turn-end hook) would leave its
+/// messages waiting for ever, silently: the sender is told why, and how
+/// to set the hook up, until the agent's first `pane-ready`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_for_an_agent_never_heard_from_says_what_it_lacks() {
+    let h = Harness::start("mail-unheard").await;
+    h.cli(&[&["new", "-d", "-s", "uh"], HOOKED_SHELL].concat()).await;
+    let p = pane_id(&h, "uh:0.0").await;
+    let pp = format!("%{p}");
+    // The shell at its prompt first: a late first prompt would read as the
+    // agent gone.
+    h.cli(&["set-work-mode", "-t", &pp, "shell"]).await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    h.cli(&["set-work-mode", "-t", &pp, "ai"]).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_unheard}").await, "1");
+    let (code, out, err) = h.cli(&["send-message", "-t", &pp, "first"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("(ai, busy, 0 ahead)"), "{out}");
+    assert!(out.contains(&format!("{pp} has not said it is free")) && out.contains("keepane setup"), "{out}");
+    // Its agent's word, with nothing to deliver: heard from now on.
+    h.cli(&["drop-message", &msg_id(&out)]).await;
+    assert_eq!(h.cli_in(Some(p), &["pane-ready"]).await.0, 0);
+    assert_eq!(ask_pane(&h, p, "#{pane_unheard}").await, "0");
+    // Busy again (someone typing), but heard from: no advice.
+    h.cli(&["send-keys", "-t", &pp, "x"]).await;
+    let (_, out, _) = h.cli(&["send-message", "-t", &pp, "second"]).await;
+    assert!(out.contains("(ai, busy, 0 ahead)") && !out.contains("has not said"), "{out}");
+    // Into ai anew: not heard from until it says so again.
+    h.cli(&["set-work-mode", "-t", &pp, "normal"]).await;
+    h.cli(&["set-work-mode", "-t", &pp, "ai"]).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_unheard}").await, "1");
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_pane_takes_work_when_it_says_so_and_answers_along_the_chain() {
     let h = Harness::start("mail-ai").await;

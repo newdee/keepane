@@ -229,7 +229,7 @@ times and flags (`session_activity` `session_last_attached` `window_activity` `w
 `pane_pid_command` (tmux users get these from plugins such as tmux-cpu
 and tmux-battery), and `pane_output_count` (how many times the pane has
 printed, which `keepane web` watches), and for pane messages `pane_name` `pane_address` `pane_work_mode`
-`pane_idle` `pane_inbox` `pane_status` `pane_message`. Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
+`pane_idle` `pane_unheard` `pane_inbox` `pane_status` `pane_message`. Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
 `s/a/b/:`, nestable. Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`,
 `#{?name!=value,…}`; comparisons `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}`
 `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and

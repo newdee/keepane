@@ -331,6 +331,10 @@ pub struct Actor {
     /// The agent said it is ready, and nothing was typed (and no shell
     /// prompt came back) since.
     ready: bool,
+    /// The agent here has said it is ready at least once since it started
+    /// (or since the pane went into `ai`): one that never has most likely
+    /// has no hook to say it, and its messages would wait for ever.
+    heard: bool,
     /// Someone typed while the command keepane gave the pane was running:
     /// answering it, or typing ahead, which the shell shows at its next
     /// prompt. That prompt does not make the pane free, so no message is
@@ -344,6 +348,21 @@ pub struct Actor {
 }
 
 impl Actor {
+    /// An agent's pane whose agent has not said it is ready once since it
+    /// started: the messages queued for it wait on a hook it may not have.
+    pub fn unheard(&self) -> bool {
+        self.mode == WorkMode::Ai && !self.heard
+    }
+
+    /// The pane's mode changed: an agent already running says nothing new
+    /// by that, so it is heard from again only at its next `pane-ready`.
+    pub fn set_mode(&mut self, mode: WorkMode) {
+        if mode != self.mode {
+            self.heard = false;
+        }
+        self.mode = mode;
+    }
+
     /// Free to take the next message, by the one signal this mode trusts.
     pub fn idle(&self) -> bool {
         match self.mode {
@@ -369,6 +388,11 @@ impl Actor {
         }
         self.at_prompt = !self.line_left;
         self.ready = false;
+        // In an agent's pane a shell prompt means the agent is gone: the
+        // next one started there has yet to be heard from.
+        if self.mode == WorkMode::Ai {
+            self.heard = false;
+        }
     }
 
     /// The second half, once what the command printed is on the screen:
@@ -389,6 +413,7 @@ impl Actor {
             return (false, None);
         }
         self.ready = true;
+        self.heard = true;
         (true, self.current.take().map(|m| (m, End::Done)))
     }
 
@@ -411,6 +436,7 @@ impl Actor {
     pub fn restarted(&mut self) -> Option<Message> {
         self.at_prompt = false;
         self.ready = false;
+        self.heard = false;
         self.typed_while_working = false;
         self.line_left = false;
         self.current.take()
@@ -888,6 +914,38 @@ mod tests {
         assert!(!a.idle());
         a.force_idle();
         assert!(a.idle());
+    }
+
+    /// Heard from: once its agent says it is ready, until the agent is gone
+    /// (a shell prompt), started again, or the pane leaves and re-enters
+    /// `ai`. A person unsticking it proves no hook, and typing ends nothing.
+    #[test]
+    fn an_agent_is_heard_from_once_it_says_it_is_ready() {
+        let mut a = actor(WorkMode::Ai);
+        assert!(a.unheard());
+        a.force_idle();
+        assert!(a.unheard(), "a person's word is not the agent's");
+        a.ready();
+        assert!(!a.unheard());
+        a.input();
+        assert!(!a.unheard(), "typing is not the agent leaving");
+        a.prompt_seen();
+        assert!(a.unheard(), "a shell prompt: the agent is gone");
+        a.ready();
+        a.restarted();
+        assert!(a.unheard(), "started again");
+        a.ready();
+        a.set_mode(WorkMode::Ai);
+        assert!(!a.unheard(), "the same mode again changes nothing");
+        a.set_mode(WorkMode::Normal);
+        assert!(!a.unheard(), "only an ai pane is waited on");
+        a.set_mode(WorkMode::Ai);
+        assert!(a.unheard());
+        // A normal pane's pane-ready is not taken, so not heard either.
+        let mut n = actor(WorkMode::Normal);
+        n.ready();
+        n.set_mode(WorkMode::Ai);
+        assert!(n.unheard());
     }
 
     #[test]

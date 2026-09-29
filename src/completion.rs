@@ -32,6 +32,7 @@ const LOCAL_FLAGS: &[(&str, &[&str])] = &[
     ("import-config", &["-n", "-o"]),
     ("link", &["--no-screen", "--no-shell", "--screen", "--shell"]),
     ("man", &["--roff"]),
+    ("setup", &["--install"]),
     ("update", &["--check"]),
     ("web", &["--bind", "--keep-key", "--port", "--read-only"]),
 ];
@@ -84,6 +85,8 @@ pub fn complete(
             owned(&["status", "stop"])
         } else if canon == "link" && rest.len() == 1 && !current.starts_with('-') {
             owned(&["add", "allow", "capture", "id", "info", "list", "panes", "rekey", "remove", "trust"])
+        } else if canon == "setup" && rest.len() == 1 && !current.starts_with('-') {
+            owned(&crate::setup::AGENTS.map(crate::setup::Agent::word))
         } else if (canon == "set-option" || canon == "show-options") && prev != "-t" && !current.starts_with('-') {
             // The option's name, then its value when it is one of a few;
             // flags are skipped, and so is the word after -t.
@@ -318,6 +321,8 @@ Register-ArgumentCompleter -Native -CommandName keepane,tmux -ScriptBlock {{
     $out = @('status', 'stop')
   }} elseif ($canon -eq 'link' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('add', 'allow', 'capture', 'id', 'info', 'list', 'panes', 'rekey', 'remove', 'trust')
+  }} elseif ($canon -eq 'setup' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
+    $out = @('claude', 'codex', 'cursor', 'gemini', 'opencode')
   }} elseif ($canon -in @('set-option','show-options') -and $prev -ne '-t' -and $wordToComplete -notlike '-*') {{
     # After set / show: the option's name, then its value when it is one
     # of a few. Flags are skipped, and so is the word after -t.
@@ -435,6 +440,8 @@ mod tests {
         assert!(offer(&["web", "status"], "").is_empty());
         assert_eq!(offer(&["web"], "--r"), ["--read-only"]);
         assert_eq!(offer(&["link"], "a"), ["add", "allow"]);
+        assert_eq!(offer(&["setup"], "c"), ["claude", "codex", "cursor"]);
+        assert_eq!(offer(&["setup", "codex"], "--"), ["--install"]);
         assert_eq!(offer(&["link", "allow", "10.0.0.1:7681"], "--s"), ["--screen", "--shell"]);
         // -s names a source, except new-session's, which names the new one.
         assert_eq!(offer(&["join-pane", "-s"], "w"), ["work:1"]);

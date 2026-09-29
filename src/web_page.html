@@ -76,6 +76,7 @@
   .pane .top .cmd { flex: 1; min-width: 0; }
   .pane .quiet { flex: none; color: var(--muted); font-size: 12px; }
   .pane .inbox { flex: none; color: var(--accent); font-size: 12px; font-weight: 600; }
+  .pane .hint { margin-top: 3px; color: var(--yellow); font-size: 12px; }
   .session .dir { margin-left: 8px; color: var(--muted); font-size: 12px; font-weight: 400; }
   .pane .last {
     margin-top: 3px; font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; color: var(--fg); opacity: .7;
@@ -315,6 +316,10 @@ function renderList() {
     html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot ${st.cls}" title="${esc(st.label)}"></span><span class="what">` +
       `<div class="top"><span class="cmd">${esc(headOf(p))}</span>${inbox}<span class="quiet">${quietFor(p.quiet)}</span></div>` +
       (where ? `<div class="where">${where}</div>` : "") +
+      // Messages waiting on an agent that has never said it is free: the
+      // hook it lacks, and where to add it.
+      (p.unheard && p.inbox > 0 ? `<div class="hint">${esc(t("Its agent never said it is free, so these wait: run keepane setup on the computer",
+        "agent 从没报告过空闲，消息会一直排队：在电脑上运行 keepane setup"))}</div>` : "") +
       (p.last ? `<div class="last">${esc(p.last)}</div>` : "") + `</span>` +
       (marks ? `<span class="marks">${marks}</span>` : "") + `</button>`;
   }
@@ -393,6 +398,7 @@ function titleOf(p) {
 function stateOf(p) {
   if (p.dead) return { cls: "dead", label: t("exited", "已退出") };
   if (!p.mode || p.mode === "normal") return { cls: "", label: "" };
+  if (p.unheard) return { cls: "busy", label: t("never said it is free", "没报告过空闲") };
   return p.idle ? { cls: "idle", label: t("free", "空闲") } : { cls: "busy", label: t("busy", "忙") };
 }
 

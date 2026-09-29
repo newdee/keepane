@@ -52,7 +52,7 @@ Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   trace-message id [-w secs]   drop-message id | -u   move-message id up|down|top   pane-status [text]
   list-tasks [-t session]   show-task id   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
   create-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
-  dashboard (prefix v: panes, inboxes, tasks and the chosen pane's screen; act on them; ? keys)   setup claude [--install]
+  dashboard (prefix v: panes, inboxes, tasks and the chosen pane's screen; act on them; ? keys)   setup [claude|codex|gemini|cursor|opencode] [--install]
 Panes on other machines (both run `keepane web`; docs/design/link.md):
   link add <its keepane web address>   (pair, like SSH keys, once, both ways)   link list   link panes host:port
   send-message --to host:port/%name text   trace-message id (asks there too)   link info host:port

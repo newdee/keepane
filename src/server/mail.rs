@@ -48,6 +48,24 @@ pub(super) struct Dropped {
     msg: Message,
 }
 
+/// What `send-message` adds when its message waits for an agent that has
+/// never said it is free (`program`: what the pane runs, when known): the
+/// hook it lacks, and the `setup` that adds it.
+pub(super) fn unheard_advice(pid: PaneId, program: Option<&str>) -> String {
+    let agent = program.and_then(crate::setup::Agent::of_program);
+    let fix = match agent {
+        Some(crate::setup::Agent::Codex) => {
+            "keepane setup codex --install, then trust it in Codex (/hooks)".to_string()
+        }
+        Some(a) => format!("keepane setup {} --install", a.word()),
+        None => "keepane setup (it shows which agents lack it)".to_string(),
+    };
+    format!(
+        "%{pid} has not said it is free since its agent started: an agent says so with a hook at the end of \
+         each turn (keepane pane-ready), and without one its messages wait for ever; to add it: {fix}"
+    )
+}
+
 impl Server {
     pub(super) fn pane_ref(&self, id: PaneId) -> Option<&super::pane::Pane> {
         self.sessions.iter().flat_map(|s| s.windows.iter()).find_map(|w| w.pane(id))
@@ -144,6 +162,24 @@ impl Server {
             Stage::Read => format!("#{id} read by {to}"),
             s => format!("#{id} {} ({})", s.as_str(), r.why.as_deref().unwrap_or(to)),
         }
+    }
+
+    /// `stand`, and when the message waits for an agent that has never said
+    /// it is free, why it may wait for ever and what sets that up.
+    pub(super) fn stand_noted(&self, id: MsgId) -> String {
+        let stand = self.stand(id);
+        match self.unheard_note(id) {
+            Some(note) => format!("{stand}\n{note}"),
+            None => stand,
+        }
+    }
+
+    fn unheard_note(&self, id: MsgId) -> Option<String> {
+        let r = self.observe.get(id).filter(|r| r.stage == Stage::Queued)?;
+        let pid = r.msg.to.rsplit_once('%').and_then(|(_, n)| n.parse::<PaneId>().ok())?;
+        let p = self.pane_ref(pid).filter(|p| p.actor.unheard())?;
+        let program = p.pid.map(crate::sysinfo::program_of);
+        Some(unheard_advice(pid, program.as_deref()))
     }
 
     /// Run a pane-message command.
@@ -319,7 +355,7 @@ impl Server {
                 self.wait(cid, secs, WaitKind::Delivered(id));
                 Outcome::Pending
             }
-            _ => Outcome::Text(self.stand(id)),
+            _ => Outcome::Text(self.stand_noted(id)),
         }
     }
 
@@ -683,7 +719,7 @@ impl Server {
         let by = self.by(cid);
         let addr = self.address_of(pid);
         if let Some(p) = self.find_pane_mut(pid) {
-            p.actor.mode = mode;
+            p.actor.set_mode(mode);
         }
         self.observe.pane(
             &addr,
@@ -790,7 +826,7 @@ impl Server {
             Some(m) => WorkMode::parse(m).unwrap_or_default(),
             // An agent takes prompts; a shell made for an agent takes commands.
             None => match stem.as_str() {
-                "claude" | "codex" | "gemini" => WorkMode::Ai,
+                s if crate::setup::Agent::of_program(s).is_some() => WorkMode::Ai,
                 s if crate::platform::shell::takes_commands(s) => WorkMode::Shell,
                 _ => WorkMode::Normal,
             },
@@ -825,7 +861,7 @@ impl Server {
         if let Some(p) = self.find_pane_mut(new) {
             p.actor.creator = me;
             p.actor.name = name;
-            p.actor.mode = mode;
+            p.actor.set_mode(mode);
         }
         let (addr, by) = (self.address_of(new), self.by(cid));
         let js = |s: &str| serde_json::to_string(s).unwrap();
@@ -1063,7 +1099,7 @@ impl Server {
             if self.msg_waits[i].until <= now {
                 let w = self.msg_waits.remove(i);
                 let what = match w.kind {
-                    WaitKind::Delivered(id) => self.stand(id),
+                    WaitKind::Delivered(id) => self.stand_noted(id),
                     WaitKind::Finished(id) => {
                         self.observe.get(id).map_or(format!("#{id}"), |r| format!("#{id} {}", r.stage.as_str()))
                     }
@@ -1123,5 +1159,23 @@ impl Server {
     /// A client went away: its waits go with it.
     pub(super) fn mail_client_gone(&mut self, cid: ClientId) {
         self.msg_waits.retain(|w| w.cid != cid);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unheard_advice;
+
+    /// The advice names the agent the pane runs, when it is one `setup`
+    /// knows (Codex needs its hook trusted too), else points at the list.
+    #[test]
+    fn the_advice_names_the_agent_it_can() {
+        let codex = unheard_advice(7, Some("codex"));
+        assert!(codex.starts_with("%7 has not said it is free"), "{codex}");
+        assert!(codex.ends_with("keepane setup codex --install, then trust it in Codex (/hooks)"), "{codex}");
+        assert!(unheard_advice(7, Some("C:\\bin\\gemini.exe")).ends_with("keepane setup gemini --install"));
+        assert!(unheard_advice(7, Some("cursor-agent")).ends_with("keepane setup cursor --install"));
+        assert!(unheard_advice(7, Some("node")).ends_with("keepane setup (it shows which agents lack it)"));
+        assert!(unheard_advice(7, None).ends_with("keepane setup (it shows which agents lack it)"));
     }
 }
