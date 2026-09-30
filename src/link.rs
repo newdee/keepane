@@ -81,11 +81,11 @@ pub fn tailscale(ip: IpAddr) -> bool {
     }
 }
 
-/// The addresses `keepane web` listens on: the one given, else the one
-/// this machine reaches the network through and its Tailscale addresses.
-pub fn listen_addrs(bind: Option<IpAddr>) -> Vec<IpAddr> {
-    if let Some(b) = bind {
-        return vec![b];
+/// The addresses `keepane web` listens on: those given (`-b`), else the
+/// one this machine reaches the network through and its Tailscale addresses.
+pub fn listen_addrs(bind: &[IpAddr]) -> Vec<IpAddr> {
+    if !bind.is_empty() {
+        return bind.to_vec();
     }
     let mut out = vec![crate::web::lan_ip()];
     for ip in crate::platform::netif::addresses() {
@@ -100,11 +100,15 @@ pub fn listen_addrs(bind: Option<IpAddr>) -> Vec<IpAddr> {
 /// with the same words (`id`, `add`, `trust`, `list`, `panes`, `allow`,
 /// `remove`, `rekey`).
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
-    const WORDS: &[&str] = &["id", "add", "trust", "list", "panes", "info", "capture", "allow", "remove", "rekey"];
+    const WORDS: &[&str] =
+        &["id", "add", "trust", "list", "panes", "info", "capture", "start", "kill", "allow", "remove", "rekey"];
     const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
-                         trust <host:port> <key> [--shell] [--screen] | list | panes <host:port> | \
+                         trust <host:port> <key> [--shell] [--screen] [--panes] | list | panes <host:port> | \
                          info <host:port> | capture [-S lines] <host:port/pane> | \
-                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] | remove <host:port> | rekey";
+                         start <host:port> [-s session] [-n name] [-m mode] [-c dir] [-- program args] | \
+                         kill <host:port/pane> | \
+                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] | \
+                         remove <host:port> | rekey";
     let Some(what) = args.first().map(String::as_str).filter(|w| WORDS.contains(w)) else {
         bail!("{USAGE}");
     };
@@ -400,11 +404,14 @@ pub struct Peer {
     pub shell: bool,
     /// It may read what panes here show (`link capture`).
     pub screen: bool,
+    /// It may start panes here (`link start`), and close those it started.
+    pub panes: bool,
 }
 
 const TABLE_HEAD: &str = "# keepane link: the machines allowed to send messages to this server's panes\n\
                           # (docs/design/link.md). One a line: public key, address, then `shell` when\n\
-                          # its messages may run as commands and `screen` when it may read the panes.\n";
+                          # its messages may run as commands, `screen` when it may read the panes,\n\
+                          # `panes` when it may start panes here.\n";
 
 /// The table's lines back; comments, blank and malformed lines skipped.
 pub fn parse_table(text: &str) -> Vec<Peer> {
@@ -420,8 +427,8 @@ pub fn parse_table(text: &str) -> Vec<Peer> {
             continue;
         }
         let rest: Vec<&str> = f.collect();
-        let (shell, screen) = (rest.contains(&"shell"), rest.contains(&"screen"));
-        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell, screen });
+        let (shell, screen, panes) = (rest.contains(&"shell"), rest.contains(&"screen"), rest.contains(&"panes"));
+        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell, screen, panes });
     }
     out
 }
@@ -431,7 +438,8 @@ pub fn format_table(peers: &[Peer]) -> String {
     for p in peers {
         let shell = if p.shell { " shell" } else { "" };
         let screen = if p.screen { " screen" } else { "" };
-        s.push_str(&format!("{} {}{shell}{screen}\n", p.key, p.addr));
+        let panes = if p.panes { " panes" } else { "" };
+        s.push_str(&format!("{} {}{shell}{screen}{panes}\n", p.key, p.addr));
     }
     s
 }
@@ -596,8 +604,10 @@ mod tests {
         for no in ["100.63.255.255", "100.128.0.0", "10.0.0.1", "fd7b:115c:a1e0::1", "fd7a:115c:a1e1::1"] {
             assert!(!tailscale(ip(no)), "{no}");
         }
-        assert_eq!(listen_addrs(Some(ip("192.168.1.5"))), vec![ip("192.168.1.5")], "--bind: that one alone");
-        let all = listen_addrs(None);
+        assert_eq!(listen_addrs(&[ip("192.168.1.5")]), vec![ip("192.168.1.5")], "--bind: that one alone");
+        let two = [ip("192.168.1.5"), ip("10.0.0.7")];
+        assert_eq!(listen_addrs(&two), two.to_vec(), "--bind twice: both, in order");
+        let all = listen_addrs(&[]);
         assert_eq!(all[0], crate::web::lan_ip());
         assert!(all[1..].iter().all(|a| tailscale(*a)), "{all:?}");
         assert_eq!(hostport(ip("fd7a:115c:a1e0::1"), 7681), "[fd7a:115c:a1e0::1]:7681");
@@ -702,6 +712,7 @@ mod tests {
             key: key.clone(),
             shell,
             screen: false,
+            panes: false,
         };
         assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key]), Ok(want(false)));
         assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--shell"]), Ok(want(true)));
@@ -722,13 +733,16 @@ mod tests {
         let k1 = Identity::make(&dir.join("1")).unwrap().public();
         let k2 = Identity::make(&dir.join("2")).unwrap().public();
         let peers = vec![
-            Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), shell: true, screen: false },
-            Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), shell: false, screen: true },
+            Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), shell: true, screen: false, panes: false },
+            Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), shell: false, screen: true, panes: true },
         ];
         save_table(&dir, &peers).unwrap();
         assert_eq!(load_table(&dir), peers);
-        let hand = format!("# mine\n\n{k1} 1.2.3.4:5 screen shell\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n");
-        assert_eq!(parse_table(&hand), vec![Peer { key: k1, addr: "1.2.3.4:5".into(), shell: true, screen: true }]);
+        let hand = format!("# mine\n\n{k1} 1.2.3.4:5 screen panes shell\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n");
+        assert_eq!(
+            parse_table(&hand),
+            vec![Peer { key: k1, addr: "1.2.3.4:5".into(), shell: true, screen: true, panes: true }]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

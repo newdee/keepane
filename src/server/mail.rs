@@ -189,7 +189,7 @@ impl Server {
                 self.send_message(cid, target.as_ref(), Answer { reply, re, task }, wait, text)
             }
             Cmd::ReadMessage { target, wait } => self.read_message(cid, target.as_ref(), wait),
-            Cmd::ListMessages { target, all } => self.list_messages(cid, target.as_ref(), all),
+            Cmd::ListMessages { target, all, json } => self.list_messages(cid, target.as_ref(), all, json),
             Cmd::TraceMessage { id, wait } => match self.observe.trace(id, self.opts.message_envelope) {
                 None => Outcome::Error(format!("no message #{id}")),
                 // Handed to another machine: what became of it there, asked.
@@ -583,7 +583,7 @@ impl Server {
         Some(format!("{}\n{}", m.header(style), m.text))
     }
 
-    fn list_messages(&mut self, cid: Option<ClientId>, target: Option<&Target>, all: bool) -> Outcome {
+    fn list_messages(&mut self, cid: Option<ClientId>, target: Option<&Target>, all: bool, json: bool) -> Outcome {
         let panes: Vec<PaneId> = if all {
             self.sessions.iter().flat_map(|s| s.windows.iter()).flat_map(|w| w.panes.iter()).map(|p| p.id).collect()
         } else {
@@ -593,6 +593,9 @@ impl Server {
             }
         };
         let now = chrono::Local::now();
+        if json {
+            return Outcome::Text(self.inbox_json(&panes, all, now));
+        }
         let mut out = Vec::new();
         for pid in panes {
             let Some(p) = self.pane_ref(pid) else { continue };
@@ -635,6 +638,60 @@ impl Server {
             }
         }
         Outcome::Text(out.join("\n"))
+    }
+
+    /// `list-messages -J`: each pane's inbox for the phone's page, every
+    /// message whole: what it works on, what waits (in order, and for how
+    /// many seconds), and the last few it finished.
+    fn inbox_json(&self, panes: &[PaneId], all: bool, now: chrono::DateTime<chrono::Local>) -> String {
+        use serde_json::json;
+        let from = |s: &Sender| match s {
+            Sender::User => "user".to_string(),
+            s => s.name().map(|n| format!("%{n}")).unwrap_or_else(|| s.from_field()),
+        };
+        let mut out = Vec::new();
+        for &pid in panes {
+            let Some(p) = self.pane_ref(pid) else { continue };
+            let a = &p.actor;
+            if all && a.inbox.is_empty() && a.current.is_none() {
+                continue;
+            }
+            let own = format!(".%{pid}");
+            let recent: Vec<serde_json::Value> = self
+                .observe
+                .records()
+                .rev()
+                .filter(|r| r.stage.finished() && r.msg.to.ends_with(&own))
+                .take(5)
+                .map(|r| {
+                    json!({
+                        "id": r.msg.id,
+                        "stage": r.stage.as_str(),
+                        "ok": r.ok,
+                        "from": from(&r.msg.from),
+                        "text": r.msg.text,
+                    })
+                })
+                .collect();
+            out.push(json!({
+                "pane": format!("%{pid}"),
+                "address": self.address_of(pid),
+                "name": a.name,
+                "mode": a.mode.as_str(),
+                "idle": a.idle(),
+                "current": a.current.as_ref().map(|m| json!({ "id": m.id, "from": from(&m.from), "text": m.text })),
+                "queued": a.inbox.iter().map(|m| json!({
+                    "id": m.id,
+                    "from": from(&m.from),
+                    "waited": (now - m.at).num_seconds().max(0),
+                    "text": m.text,
+                    // Sent while the pane was in another mode: waits for that one.
+                    "for": (m.via != a.mode).then(|| m.via.as_str()),
+                })).collect::<Vec<_>>(),
+                "recent": recent,
+            }));
+        }
+        serde_json::Value::Array(out).to_string()
     }
 
     /// Which pane holds a queued message.
@@ -785,7 +842,7 @@ impl Server {
         format!("{}  {place}  {name}  {}", self.address(sid, widx, pid), self.mode_word(pid))
     }
 
-    fn all_panes(&self) -> std::collections::HashSet<PaneId> {
+    pub(super) fn all_panes(&self) -> std::collections::HashSet<PaneId> {
         self.sessions.iter().flat_map(|s| s.windows.iter()).flat_map(|w| w.panes.iter()).map(|p| p.id).collect()
     }
 
@@ -805,7 +862,7 @@ impl Server {
     /// its name, work mode and first message. From inside a pane it is that
     /// pane's creation: only `agent-commands` programs, within
     /// `agent-pane-limit` for the whole line of creators.
-    fn create_pane(&mut self, cid: Option<ClientId>, c: crate::command::CreatePane) -> Outcome {
+    pub(super) fn create_pane(&mut self, cid: Option<ClientId>, c: crate::command::CreatePane) -> Outcome {
         let crate::command::CreatePane { kind, target, session_name, horizontal, cwd, name, mode, message, argv } = c;
         // An agent's creation: its own, within its budget and list. A person's
         // is nobody's.

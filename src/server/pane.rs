@@ -1291,6 +1291,14 @@ impl Pane {
     /// came before it, and a shell that printed only its prompt gives
     /// nothing. `#{pane_last_line}`, at most 200 characters.
     pub fn last_line(&self) -> String {
+        self.last_lines(1, false).pop().unwrap_or_default()
+    }
+
+    /// The last `n` lines with something on them above the cursor, oldest
+    /// first, prompts passed over as in `last_line`, each at most 200
+    /// characters. `own`: only what the last command printed, stopping at
+    /// its prompt's line (what `done-events` shows with a command).
+    pub fn last_lines(&self, n: usize, own: bool) -> Vec<String> {
         let s = self.screen();
         let (row, _) = s.cursor_position();
         let top = s.scrolled_total();
@@ -1305,14 +1313,17 @@ impl Pane {
         let empty_enter = |l: &str| {
             waiting.and_then(|w| w.strip_prefix(l.trim())).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
         };
-        let line = rows[..usize::from(row)]
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(i, l)| !l.trim().is_empty() && !marked(*i) && !empty_enter(l))
-            .map(|(_, l)| l.trim_end().replace('\t', " "))
-            .unwrap_or_default();
-        line.chars().take(200).collect()
+        let mut out = Vec::new();
+        for (i, l) in rows[..usize::from(row)].iter().enumerate().rev() {
+            if out.len() >= n || (own && marked(i)) {
+                break;
+            }
+            if !l.trim().is_empty() && !marked(i) && !empty_enter(l) {
+                out.push(l.trim_end().replace('\t', " ").chars().take(200).collect());
+            }
+        }
+        out.reverse();
+        out
     }
 
     /// The row a command typed from row `from` ended on, found on the screen
@@ -2002,6 +2013,21 @@ mod tests {
         let mut q = quiet_pane(40, 6, 100);
         q.process_output(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\false\x1b]133;C\x1b\\\r\n\x1b]133;D;3\x1b\\");
         assert_eq!((q.finished[0].failed, q.finished[0].exit), (true, Some(3)));
+    }
+
+    /// The last lines: `own` stops at the last command's prompt, so what
+    /// an earlier command printed is not taken for this one's.
+    #[test]
+    fn the_last_lines_are_the_last_commands_own() {
+        let mut p = quiet_pane(40, 10, 100);
+        p.process_output(format!("PS> {B}first\r\nold output\r\n{}PS> {B}", ran(1, 2, true)).as_bytes());
+        p.process_output(format!("second\r\none\r\n\r\ntwo\r\nthree\r\n{}PS> {B}", ran(3, 4, true)).as_bytes());
+        assert_eq!(p.last_lines(2, true), ["two", "three"]);
+        assert_eq!(p.last_lines(9, true), ["one", "two", "three"], "not the first command's output");
+        assert_eq!(p.last_lines(9, false), ["old output", "one", "two", "three"]);
+        p.process_output(format!("cd x\r\n{}PS> {B}", ran(5, 6, true)).as_bytes());
+        assert!(p.last_lines(5, true).is_empty(), "a command that printed nothing");
+        assert_eq!(p.last_line(), "three");
     }
 
     /// bash before 4.4 (macOS's own) has no `PS0`, so no word of a

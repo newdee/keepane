@@ -61,6 +61,27 @@ pub struct Done {
     /// The exit code itself, when it is known.
     pub exit: Option<i32>,
     pub secs: Option<u64>,
+    /// What it printed last (`done-lines`), oldest first; for an agent, what
+    /// it last said it is doing (`pane-status`).
+    pub output: Vec<String>,
+}
+
+/// The most of a pane's last lines a telling carries, in characters.
+const OUTPUT_MAX: usize = 1500;
+
+/// A pane's last lines, as many as fit in `OUTPUT_MAX`, keeping the last.
+pub fn trim_output(mut lines: Vec<String>) -> Vec<String> {
+    let mut total = 0;
+    let mut keep = lines.len();
+    for (i, l) in lines.iter().enumerate().rev() {
+        total += l.chars().count() + 1;
+        if total > OUTPUT_MAX {
+            break;
+        }
+        keep = i;
+    }
+    lines.drain(..keep);
+    lines
 }
 
 impl Done {
@@ -72,6 +93,11 @@ impl Done {
     /// One line that says it all.
     pub fn line(&self) -> String {
         format!("{}: {}", self.who(), self.text)
+    }
+
+    /// The line, and what the pane printed last under it.
+    pub fn full(&self) -> String {
+        if self.output.is_empty() { self.line() } else { format!("{}\n{}", self.line(), self.output.join("\n")) }
     }
 
     pub fn json(&self, host: &str) -> Value {
@@ -87,6 +113,7 @@ impl Done {
             "ok": self.ok,
             "exit": self.exit,
             "seconds": self.secs,
+            "output": self.output,
         })
     }
 }
@@ -156,9 +183,9 @@ pub fn gist(text: &str) -> String {
 /// A chat's message starts `keepane`, which a Feishu or DingTalk bot's
 /// keyword check can be set to.
 pub fn webhook_body(format: &str, d: &Done, host: &str) -> (&'static str, String) {
-    let text = format!("keepane · {host}\n{}", d.line());
+    let text = format!("keepane · {host}\n{}", d.full());
     let body = match format {
-        "text" => return ("text/plain; charset=utf-8", d.line()),
+        "text" => return ("text/plain; charset=utf-8", d.full()),
         "feishu" => json!({ "msg_type": "text", "content": { "text": text } }),
         "wecom" | "dingtalk" => json!({ "msgtype": "text", "text": { "content": text } }),
         "slack" => json!({ "text": text }),
@@ -256,6 +283,16 @@ impl Server {
         }
         let Some(p) = self.pane_ref(pane) else { return };
         let name = p.actor.name.clone().unwrap_or_default();
+        // What it printed last: a command's own lines, what a program left
+        // at its end, what an agent last said it is doing.
+        let n = self.opts.done_lines;
+        let output = match kind {
+            _ if n == 0 => Vec::new(),
+            Kind::Agent => p.actor.status.as_ref().map(|(s, _)| vec![s.clone()]).unwrap_or_default(),
+            Kind::Exit => p.last_lines(n, false),
+            Kind::Command | Kind::Task => p.last_lines(n, true),
+        };
+        let output = trim_output(output);
         if self.opts.done_panes != "all" && name.is_empty() && p.actor.mode == WorkMode::Normal {
             return;
         }
@@ -278,6 +315,7 @@ impl Server {
             ok,
             exit,
             secs,
+            output,
         };
         self.done.list.push_back(d.clone());
         while self.done.list.len() > KEPT {
@@ -290,6 +328,7 @@ impl Server {
         self.hook_env = vec![
             ("KEEPANE_DONE_KIND".into(), kind.as_str().into()),
             ("KEEPANE_DONE_TEXT".into(), d.line()),
+            ("KEEPANE_DONE_OUTPUT".into(), d.output.join("\n")),
             ("KEEPANE_DONE_PANE".into(), format!("%{pane}")),
             ("KEEPANE_DONE_NAME".into(), d.name.clone()),
             ("KEEPANE_DONE_OK".into(), d.ok.map(|o| if o { "1" } else { "0" }).unwrap_or_default().into()),
@@ -301,7 +340,10 @@ impl Server {
         self.hook_env.clear();
         if self.opts.notify {
             let go = crate::notify::go_to_pane_url(&self.socket, pane);
-            crate::notify::notify_with(&format!("keepane: {}", d.who()), &d.text, Some(&go));
+            // The line, and the last two the pane printed: what a notification shows.
+            let tail = d.output.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join("\n");
+            let body = if tail.is_empty() { d.text.clone() } else { format!("{}\n{tail}", d.text) };
+            crate::notify::notify_with(&format!("keepane: {}", d.who()), &body, Some(&go));
         }
         if !self.opts.done_webhook.is_empty() {
             let (content_type, body) = webhook_body(&self.opts.done_webhook_format, &d, &host);
@@ -351,7 +393,30 @@ mod tests {
             ok: Some(true),
             exit: Some(0),
             secs: Some(312),
+            output: Vec::new(),
         }
+    }
+
+    /// What the pane printed last goes under the line, in every channel
+    /// that shows text, and as a list in keepane's JSON; the last lines are
+    /// the ones kept when there is too much.
+    #[test]
+    fn the_last_lines_go_with_the_telling() {
+        let mut d = done(Kind::Command, "build", "cargo test failed after 40s");
+        assert_eq!(d.full(), d.line(), "no lines: the line alone");
+        d.output = vec!["test a ... FAILED".into(), "error: 1 failed".into()];
+        assert_eq!(d.full(), "build (work:0.1): cargo test failed after 40s\ntest a ... FAILED\nerror: 1 failed");
+        assert_eq!(webhook_body("text", &d, "desk").1, d.full());
+        let feishu: Value = serde_json::from_str(&webhook_body("feishu", &d, "desk").1).unwrap();
+        assert!(feishu["content"]["text"].as_str().unwrap().ends_with("error: 1 failed"));
+        let j: Value = serde_json::from_str(&webhook_body("json", &d, "desk").1).unwrap();
+        assert_eq!(j["output"], json!(["test a ... FAILED", "error: 1 failed"]));
+        assert_eq!(j["text"], d.line(), "the line stays one line");
+        let long: Vec<String> = (0..40).map(|i| format!("{i:02} {}", "x".repeat(97))).collect();
+        let kept = trim_output(long);
+        assert!(kept.iter().map(|l| l.chars().count() + 1).sum::<usize>() <= OUTPUT_MAX);
+        assert_eq!(kept.last().map(|l| &l[..2]), Some("39"), "the last lines are kept");
+        assert_eq!(trim_output(vec!["a".into()]), ["a"]);
     }
 
     #[test]

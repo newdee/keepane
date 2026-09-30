@@ -134,6 +134,21 @@
   .overlay .item .small { flex: none; width: 36px; padding: 0; color: var(--muted); }
   .overlay .item .small.on { color: var(--yellow); }
   .overlay .sub { color: var(--muted); font-size: 12px; margin: 10px 2px 2px; }
+  /* A pane's inbox: each message whole, and what to do with the waiting ones. */
+  .msg { border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 8px 10px; margin: 6px 0; }
+  .msg .meta { color: var(--muted); font-size: 12px; }
+  .msg .body {
+    margin-top: 4px; font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap;
+    overflow-wrap: anywhere; max-height: 8.4em; overflow: auto;
+  }
+  .msg .acts { display: flex; gap: 6px; margin-top: 8px; }
+  .msg .acts button { flex: 1; min-height: 32px; padding: 4px 6px; font-size: 13px; }
+  .msg .acts .danger, .undo .danger { color: var(--red); }
+  .none { color: var(--muted); font-size: 13px; margin: 4px 2px; }
+  .undo { display: flex; align-items: center; gap: 8px; margin: 6px 2px; color: var(--muted); font-size: 13px; }
+  .undo span { flex: 1; }
+  .recent { font-size: 13px; margin: 4px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pane .working { flex: none; color: var(--green); font-size: 12px; font-weight: 600; }
 
   /* The + menu */
   #menu { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; }
@@ -167,6 +182,10 @@
     background: var(--card); border: 1px solid var(--green); border-left-width: 4px; border-radius: 10px;
     padding: 10px 14px; font-size: 14px; cursor: pointer; box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
   }
+  #done .out {
+    margin: 6px 0 0; font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; color: var(--muted);
+    white-space: pre-wrap; overflow-wrap: anywhere; max-height: 5.4em; overflow: hidden;
+  }
 </style>
 </head>
 <body>
@@ -194,6 +213,7 @@
 </footer>
 <div id="menu" class="hidden">
   <div class="sheet">
+    <button data-do="inbox">Inbox</button>
     <button data-do="split-h">Split left | right</button>
     <button data-do="split-v">Split top / bottom</button>
     <button data-do="new-window">New window</button>
@@ -212,6 +232,7 @@
 </div>
 <div id="switch" class="overlay hidden"><div class="sheet" id="switchList"></div></div>
 <div id="hist" class="overlay hidden"><div class="sheet" id="histList"></div></div>
+<div id="inbox" class="overlay hidden"><div class="sheet" id="inboxList"></div></div>
 <div id="toast" class="hidden"></div>
 <div id="done" class="hidden" role="status"></div>
 <script>
@@ -319,7 +340,9 @@ function renderList() {
     const where = [...under(p), p.mode && p.mode !== "normal" ? p.mode : "", p.path !== home(p) ? p.path : ""]
       .filter(Boolean).map(esc).join(" · ");
     const st = stateOf(p);
-    const inbox = p.inbox > 0 ? `<span class="inbox">${esc(t(`${p.inbox} queued`, `排队 ${p.inbox} 条`))}</span>` : "";
+    // What it works on and what waits: a tap on either opens its inbox.
+    const inbox = (p.working > 0 ? `<span class="working" data-inbox="${esc(p.id)}">${esc(t(`on #${p.working}`, `处理中 #${p.working}`))}</span>` : "") +
+      (p.inbox > 0 ? `<span class="inbox" data-inbox="${esc(p.id)}">${esc(t(`${p.inbox} queued`, `排队 ${p.inbox} 条`))}</span>` : "");
     html += `<button class="${cls}" data-id="${esc(p.id)}"><span class="dot ${st.cls}" title="${esc(st.label)}"></span><span class="what">` +
       `<div class="top"><span class="cmd">${esc(headOf(p))}</span>${inbox}<span class="quiet">${quietFor(p.quiet)}</span></div>` +
       (where ? `<div class="where">${where}</div>` : "") +
@@ -345,6 +368,8 @@ function toggleFold(k) {
 }
 
 $("list").addEventListener("click", (e) => {
+  const ib = e.target.closest("[data-inbox]");
+  if (ib) { if (!bounced("inbox")) openInbox(ib.dataset.inbox); return; }
   const r = e.target.closest("button.rename");
   if (r) { rename(r.dataset.kind, r.dataset.id, r.dataset.name); return; }
   const g = e.target.closest(".group[data-fold]");
@@ -863,6 +888,7 @@ $("menu").addEventListener("click", async (e) => {
   $("menu").classList.add("hidden");
   const what = b ? b.dataset.do : "";
   if (!what || !current || acting) return;
+  if (what === "inbox") { openInbox(current); return; }
   if (what.startsWith("rename-")) {
     const p = paneInfo(current) || {};
     const kind = what.slice("rename-".length);
@@ -933,6 +959,68 @@ function ansiToHtml(text) {
   return out;
 }
 
+// ---- A pane's inbox: what it works on, what waits (to the top, up, down,
+// or deleted, and the last deleted brought back), what it finished lately.
+// Asked again every three seconds while it is open ----
+let inboxPane = null, inboxTimer = null, dropped = null;
+async function openInbox(id) {
+  inboxPane = id; dropped = null;
+  $("inbox").classList.remove("hidden");
+  $("inboxList").innerHTML = `<p class="none">…</p>`;
+  await loadInbox();
+}
+function closeInbox() {
+  inboxPane = null; clearTimeout(inboxTimer);
+  $("inbox").classList.add("hidden");
+}
+async function loadInbox() {
+  clearTimeout(inboxTimer);
+  if (!inboxPane) return;
+  let d;
+  try { d = await (await api(`/api/inbox?pane=${encodeURIComponent(inboxPane)}`)).json(); }
+  catch (e) { $("inboxList").innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  if (!inboxPane) return; // closed meanwhile
+  const p = paneInfo(inboxPane), who = p ? headOf(p) : inboxPane;
+  const card = (m, meta, acts) =>
+    `<div class="msg"><div class="meta">#${m.id} · ${esc(m.from)}${meta}</div><div class="body">${esc(m.text)}</div>${acts}</div>`;
+  let html = `<div class="head">${esc(t(`${who}: inbox`, `${who} 的收件箱`))}</div>`;
+  if (dropped && !readOnly) {
+    html += `<div class="undo"><span>${esc(t(`Deleted #${dropped}`, `已删除 #${dropped}`))}</span><button data-act="undo">${t("Undo", "撤销")}</button></div>`;
+  }
+  html += `<div class="sub">${t("Working on", "正在处理")}</div>`;
+  html += d && d.current ? card(d.current, "", "") : `<p class="none">${t("Nothing", "没有")}</p>`;
+  const q = (d && d.queued) || [];
+  html += `<div class="sub">${t(`Waiting (${q.length})`, `排队（${q.length} 条）`)}</div>`;
+  if (!q.length) html += `<p class="none">${t("Nothing waits", "没有排队的消息")}</p>`;
+  q.forEach((m, i) => {
+    const meta = ` · ${t("waiting", "等了")} ${quietFor(m.waited)}` + (m.for ? ` · ${esc(t(`sent for ${m.for}`, `发给 ${m.for} 模式的`))}` : "");
+    const b = (act, label, off, cls) => `<button data-act="${act}" data-id="${m.id}"${off ? " disabled" : ""}${cls ? ` class="${cls}"` : ""}>${label}</button>`;
+    const acts = readOnly ? "" : `<div class="acts">${b("top", t("Top", "置顶"), i === 0)}${b("up", "↑", i === 0)}${b("down", "↓", i === q.length - 1)}${b("drop", t("Delete", "删除"), false, "danger")}</div>`;
+    html += card(m, meta, acts);
+  });
+  const r = (d && d.recent) || [];
+  if (r.length) {
+    html += `<div class="sub">${t("Finished lately", "最近完成")}</div>`;
+    for (const m of r) {
+      const bad = m.ok === false || m.stage !== "done";
+      html += `<div class="recent">${bad ? "✗" : "✓"} #${m.id} ${esc(m.stage)} · ${esc((m.text || "").split("\n")[0])}</div>`;
+    }
+  }
+  $("inboxList").innerHTML = html;
+  if (document.visibilityState === "visible") inboxTimer = setTimeout(loadInbox, 3000);
+}
+$("inbox").addEventListener("click", async (e) => {
+  if (e.target === $("inbox")) { closeInbox(); return; }
+  const b = e.target.closest("button[data-act]");
+  if (!b || b.disabled || bounced("msg " + b.dataset.act + (b.dataset.id || ""))) return;
+  const act = b.dataset.act, id = b.dataset.id || "";
+  try {
+    await api(`/api/message?do=${act}${id ? `&id=${id}` : ""}`, { method: "POST" });
+    dropped = act === "drop" ? id : null;
+  } catch (err) { toast(err.message); }
+  await loadInbox();
+});
+
 // ---- Told when a pane is done (`done-events` on the computer): a banner
 // to tap, a short sound and a buzz, and the count in the tab's title until
 // the page is touched. Asked every three seconds while the page is shown;
@@ -968,7 +1056,9 @@ function tellDone(list) {
   const last = list[list.length - 1];
   const more = list.length > 1 ? t(` (and ${list.length - 1} more)`, `（还有 ${list.length - 1} 条）`) : "";
   const b = $("done");
-  b.textContent = last.text + more;
+  // The line, and the last few lines the pane printed under it.
+  const out = (last.output || []).slice(-3).join("\n");
+  b.innerHTML = esc(last.text + more) + (out ? `<pre class="out">${esc(out)}</pre>` : "");
   b.dataset.pane = last.pane;
   b.classList.remove("hidden");
   clearTimeout(tellDone.t); tellDone.t = setTimeout(() => b.classList.add("hidden"), 8000);
@@ -1014,7 +1104,7 @@ if (window.visualViewport) {
   $("histBtn").title = t("Sent before", "发过的命令");
   $("moreBtn").title = t("More keys", "更多按键");
   $("detail").title = t("When each command ran", "每条命令的时间");
-  const labels = { "split-h": t("Split left | right", "左右分屏"), "split-v": t("Split top / bottom", "上下分屏"),
+  const labels = { "inbox": t("Inbox", "收件箱"), "split-h": t("Split left | right", "左右分屏"), "split-v": t("Split top / bottom", "上下分屏"),
     "new-window": t("New window", "新窗口"), "kill-pane": t("Close this pane", "关闭这个 pane"), "": t("Cancel", "取消"),
     "rename-window": t("Rename this window", "重命名这个窗口"),
     "rename-session": t("Rename this session", "重命名这个 session") };

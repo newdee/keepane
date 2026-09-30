@@ -56,6 +56,15 @@ fn sender_fields_ok(body: &SendBody) -> Result<(), String> {
 const PANES: &str =
     "#{pane_address}\t#{pane_name}\t#{pane_work_mode}\t#{?pane_idle,idle,busy}\t#{pane_inbox}\t#{pane_current_command}";
 
+/// The session another machine's panes go in, from its host name: what
+/// keepane takes in a name (letters, digits, `-`, `_`; others become `-`),
+/// `remote` when nothing of it is left.
+pub(super) fn session_for(host: &str) -> String {
+    let s: String =
+        host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    let s = s.trim_matches('-');
+    if s.is_empty() { "remote".into() } else { s.to_string() }
+}
 impl Server {
     /// The JSON answer: signed by this server for the request's nonce.
     fn link_answer(&mut self, nonce: &str, status: u16, body: String) -> Outcome {
@@ -174,6 +183,8 @@ impl Server {
                 self.link_answer(&nonce, 200, text)
             }
             ("POST", "/link/capture") => self.link_capture_in(&req, &nonce, &peer),
+            ("POST", "/link/pane") => self.link_pane_in(&req, &nonce, &peer),
+            ("POST", "/link/kill") => self.link_kill_in(&req, &nonce, &peer),
             ("POST", "/link/trace") => self.link_trace_in(cid, &req, &nonce, &peer),
             ("GET", "/link/panes") => {
                 let cmd = Cmd::ListPanes { target: None, all: true, session: false, format: Some(PANES.into()) };
@@ -257,9 +268,13 @@ impl Server {
                 p.addr = addr.to_string();
                 shell = p.shell;
             }
-            None => {
-                l.peers.push(link::Peer { key: from.to_string(), addr: addr.to_string(), shell: false, screen: false })
-            }
+            None => l.peers.push(link::Peer {
+                key: from.to_string(),
+                addr: addr.to_string(),
+                shell: false,
+                screen: false,
+                panes: false,
+            }),
         }
         l.seen.insert(from.to_string(), chrono::Local::now());
         if let Err(e) = self.save_peers() {
@@ -335,6 +350,144 @@ impl Server {
             Outcome::Text(t) => self.link_answer(nonce, 200, t),
             Outcome::Error(e) => self.link_answer(nonce, 404, e),
             _ => self.link_answer(nonce, 200, String::new()),
+        }
+    }
+
+    /// Why a machine not allowed to start panes here is refused (the helper
+    /// `session_for`, below, names where its panes go).
+    fn no_panes(&mut self, nonce: &str, peer: &link::Peer) -> Outcome {
+        let why = format!(
+            "{} may not start panes here: on this machine, keepane link allow {} --panes",
+            peer.addr, peer.addr
+        );
+        self.link_refused(&peer.addr, &why);
+        self.link_answer(nonce, 403, why)
+    }
+
+    /// `POST /link/pane`: a pane started here for a machine allowed to
+    /// (`link-allow --panes`): one of this machine's `agent-commands`,
+    /// within its `agent-pane-limit` (counted for that machine alone), in
+    /// the session it asks for or one named after it. Its address back.
+    fn link_pane_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
+        if !peer.panes {
+            return self.no_panes(nonce, peer);
+        }
+        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
+        let text = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).map(String::from);
+        let argv: Vec<String> = v["argv"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|w| w.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        // The program: the one asked for, else what a new pane runs here.
+        let program = argv.first().cloned().unwrap_or_else(|| {
+            self.opts.default_command.first().cloned().unwrap_or_else(|| self.opts.default_shell.clone())
+        });
+        let stem = super::done::program_name(&program).to_ascii_lowercase();
+        let allowed: Vec<String> = self.opts.agent_commands.split_whitespace().map(str::to_ascii_lowercase).collect();
+        if !allowed.contains(&stem) {
+            let why = format!("'{stem}' is not in agent-commands here ({})", self.opts.agent_commands);
+            return self.link_answer(nonce, 403, why);
+        }
+        if let Some(m) = text("mode")
+            && super::actor::WorkMode::parse(&m).is_none()
+        {
+            return self.link_answer(nonce, 400, format!("mode: normal, shell or ai, not '{m}'"));
+        }
+        // Its budget: the panes it started that are still here.
+        let limit = self.opts.agent_pane_limit as usize;
+        let alive: Vec<super::PaneId> = self.all_panes().into_iter().collect();
+        let made = match self.link() {
+            Ok(l) => {
+                l.made.retain(|p, _| alive.contains(p));
+                l.made.values().filter(|k| **k == peer.key).count()
+            }
+            Err(e) => return self.link_answer(nonce, 500, e),
+        };
+        if made >= limit {
+            let why = format!("agent-pane-limit {limit} reached here ({} started {made})", peer.addr);
+            return self.link_answer(nonce, 403, why);
+        }
+        // Where: the session it asks for, else one named after it (a name
+        // keepane takes: letters, digits, `-` and `_`).
+        let session = text("session").unwrap_or_else(|| session_for(v["host"].as_str().unwrap_or_default()));
+        let exists = self.sessions.iter().any(|s| s.name == session);
+        let c = crate::command::CreatePane {
+            kind: if exists { "window" } else { "session" }.into(),
+            target: exists.then(|| Target::parse(&session)),
+            session_name: (!exists).then(|| session.clone()),
+            horizontal: false,
+            cwd: text("cwd"),
+            name: text("name"),
+            mode: text("mode"),
+            message: None,
+            argv,
+        };
+        let made_text = match self.create_pane(None, c) {
+            Outcome::Text(t) => t,
+            Outcome::Error(e) => return self.link_answer(nonce, 400, e),
+            _ => return self.link_answer(nonce, 500, "no pane".into()),
+        };
+        // `$1:@3.%7  laptop:0.0  name  mode`: the pane is the `%` number.
+        let first = made_text.lines().next().unwrap_or_default().to_string();
+        let pid = first
+            .split_whitespace()
+            .next()
+            .and_then(|a| a.rsplit_once('%'))
+            .and_then(|(_, n)| n.parse::<super::PaneId>().ok());
+        let Some(pid) = pid else { return self.link_answer(nonce, 500, format!("no pane in '{first}'")) };
+        if let Ok(l) = self.link() {
+            l.made.insert(pid, peer.key.clone());
+        }
+        let address = self.address_of(pid);
+        self.link_note(
+            &format!("link: {} started {address} ({stem}) here", peer.addr),
+            "pane",
+            &format!(",\"addr\":{},\"pane\":{},\"program\":{}", js(&peer.addr), js(&address), js(&stem)),
+        );
+        self.link_answer(nonce, 200, first)
+    }
+
+    /// `POST /link/kill`: a pane that machine started here, closed; no
+    /// other pane.
+    fn link_kill_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
+        if !peer.panes {
+            return self.no_panes(nonce, peer);
+        }
+        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
+        let Some(to) = v["to"].as_str() else {
+            return self.link_answer(nonce, 400, "to: the pane".into());
+        };
+        let t = Target::parse(to);
+        if t.remote.is_some() {
+            return self.link_answer(nonce, 400, format!("{to}: a pane is named as this machine knows it"));
+        }
+        let pid = match self.resolve(Some(&t), None) {
+            Ok((_, _, p)) => p,
+            Err(e) => return self.link_answer(nonce, 404, e),
+        };
+        let theirs = self.link.as_ref().is_some_and(|l| l.made.get(&pid) == Some(&peer.key));
+        if !theirs {
+            let why = format!("%{pid} was not started by {}: it may close only the panes it started here", peer.addr);
+            return self.link_answer(nonce, 403, why);
+        }
+        let address = self.address_of(pid);
+        let cmd = match crate::command::parse(&["kill-pane".to_string(), "-t".into(), format!("%{pid}")]) {
+            Ok(c) => c,
+            Err(e) => return self.link_answer(nonce, 500, e),
+        };
+        match self.exec(cmd, None) {
+            Outcome::Error(e) => self.link_answer(nonce, 500, e),
+            _ => {
+                if let Ok(l) = self.link() {
+                    l.made.remove(&pid);
+                }
+                self.link_note(
+                    &format!("link: {} closed {address} here", peer.addr),
+                    "pane-closed",
+                    &format!(",\"addr\":{},\"pane\":{}", js(&peer.addr), js(&address)),
+                );
+                self.link_answer(nonce, 200, format!("closed {address}"))
+            }
         }
     }
 

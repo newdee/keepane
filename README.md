@@ -614,7 +614,7 @@ started) would wait for ever, so `send-message` says so, with the `setup`
 that adds the hook; the dashboard and the phone page say it too
 (`#{pane_unheard}`).
 
-The 20 tools:
+The 24 tools:
 
 | Tools | For |
 |---|---|
@@ -624,6 +624,7 @@ The 20 tools:
 | `create_session`, `create_window`, `split_pane`, `rename_pane`, `kill_pane` | make panes (each with a name, a mode and a first message), name any pane, close any pane |
 | `set_status`, `set_work_mode` | say what it is doing (the dashboard shows it); change its own pane's mode |
 | `list_tasks`, `show_task`, `query_events` | chains of messages, and the event log |
+| `list_links`, `link_info`, `read_screen`, `create_remote_pane` | the machines paired with this one, what one of them is, what a pane (here or there) shows, and a pane started there (`kill_pane` closes it) |
 
 A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`,
 `gemini`, `cursor-agent` or `opencode`, in `shell` mode when it runs `pwsh`, `powershell`, `bash` or
@@ -658,7 +659,10 @@ it; Send again (the box empty) is the Enter. The ☰ beside the box brings back
 what you sent before (☆ keeps one at the top). The keys the phone keyboard
 lacks are in a row above it (Esc, Tab, arrows, Enter, Ctrl+C, more under ⋯);
 Ctrl or Alt, then a letter typed, sends Ctrl or Alt with it. The
-+ menu splits the pane, opens a window or closes the pane; the ⏱ button adds
++ menu splits the pane, opens a window, closes the pane or shows its inbox
+(also a tap on a card's "queued" or "on #N" mark): the message it works on,
+each waiting one whole, to put first, up, down or delete (and undo), and the
+last few it finished; the ⏱ button adds
 a column with the time each command started (tap one for its date, how long
 it took and its exit code; see "Command times and history"). A tap on a session or
 window folds it (the phone remembers), and the ✎ beside it renames it. A pane wider than the
@@ -704,6 +708,7 @@ connecting, or a request with a wrong key, is said on the status line.
 keepane web --read-only     # look, but not type
 keepane web --keep-key      # the same code next time, so a bookmark keeps working
 keepane web --port 8080 --bind 192.168.1.23   # another port, or another network card
+keepane web --bind 192.168.1.23,10.0.0.5     # more than one card: each address (or -b again); the code is for the first
 ```
 
 It is plain HTTP, meant for your own network: on a shared one, someone
@@ -735,7 +740,8 @@ program exited. It tells you where you are:
   check can be set to; a chat that refuses shows in `show-messages`.
 - **The `pane-done` hook**, for anything else. What it is about is in its
   environment: `KEEPANE_DONE_KIND` (`command`, `agent`, `task`, `exit`),
-  `KEEPANE_DONE_TEXT` (the line), `KEEPANE_DONE_PANE`, `KEEPANE_DONE_NAME`,
+  `KEEPANE_DONE_TEXT` (the line), `KEEPANE_DONE_OUTPUT` (what the pane printed
+  last, a line each), `KEEPANE_DONE_PANE`, `KEEPANE_DONE_NAME`,
   `KEEPANE_DONE_OK` (1 or 0, when known), `KEEPANE_DONE_EXIT` (the exit code,
   when the shell gave it: PowerShell says only whether a command failed),
   `KEEPANE_DONE_SECONDS`, and `KEEPANE_DONE_JSON`.
@@ -755,7 +761,12 @@ What counts, and for which panes:
 set -g done-events command agent  # any of command agent task exit; all; none
 set -g done-after 30              # seconds a command must run to count
 set -g done-panes named           # panes with a name or in ai/shell mode; all for every pane
+set -g done-lines 5               # the last lines the pane printed go with it (0: none)
 ```
+
+Each telling carries what the pane printed last (a command's own lines; an
+agent's last `pane-status`), under the line in a chat or a notification, and
+as `output` in keepane's JSON.
 
 A pane is told of once in three seconds: an agent's turn and the task it
 finished are one telling. `keepane list-done` lists the last hundred.
@@ -789,6 +800,15 @@ A paired machine's messages reach `ai` and `normal` panes only. To let them
 run as commands in `shell` panes, allow that machine, from a terminal outside
 keepane (never from inside a pane, where an agent could):
 
+```powershell
+keepane link allow 100.64.0.3:7681 --shell     # --no-shell takes it back
+keepane link allow 100.64.0.3:7681 --screen    # it may read the panes here; --no-screen takes it back
+keepane link allow 100.64.0.3:7681 --panes     # it may start panes here; --no-panes takes it back
+keepane link remove 100.64.0.3:7681            # unpair, on both
+keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
+keepane link rekey                             # a new key: every pairing has to be made again
+```
+
 What the other machine can be asked, beyond its panes:
 
 ```powershell
@@ -797,13 +817,25 @@ keepane trace-message 12 -w 60                 # a message sent there: what beca
 keepane link capture -S 100 100.64.0.3:7681/%worker   # what a pane there shows (it must allow it: --screen)
 ```
 
+A machine that allowed this one to (`--panes`) runs panes for it:
+
 ```powershell
-keepane link allow 100.64.0.3:7681 --shell     # --no-shell takes it back
-keepane link allow 100.64.0.3:7681 --screen    # it may read the panes here; --no-screen takes it back
-keepane link remove 100.64.0.3:7681            # unpair, on both
-keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
-keepane link rekey                             # a new key: every pairing has to be made again
+keepane link start 100.64.0.3:7681 -n helper -- claude   # its address there comes back
+keepane send-message --to 100.64.0.3:7681/%helper "look at the failing test"
+keepane link kill 100.64.0.3:7681/%helper               # only a pane this machine started there
 ```
+
+The program must be one of that machine's `agent-commands`, with any
+arguments: a shell on that list (`pwsh`, `bash`, ...) runs whatever it is
+given, so there `--panes` allows as much as `--shell`, and
+`set -g agent-commands "claude codex"` allows agents only (`link allow
+--panes` says what the list holds). A pane counts toward that machine's
+`agent-pane-limit`, for this machine alone. The pane goes in a
+session named after this machine (`-s` names another), with its work mode
+from its program as for a pane an agent makes (`-m` gives one); a message to
+a `shell` pane there still needs `--shell` as well. That machine keeps which
+panes this one started only while its server runs. Agents do the same
+through MCP: `create_remote_pane`, and `kill_pane` with the address.
 
 A message for a `shell` pane from a machine not allowed is refused, and the
 sender told how to allow it. `keepane web --read-only` takes nothing from
@@ -1187,7 +1219,8 @@ Compared with tmux, these differ for now:
 Pane messages: `shell` work mode needs keepane's prompt hook (PowerShell,
 bash, zsh), so cmd, sh, fish and the shells under WSL do not take messages
 on their own yet (they can `read-message`); a pane started before keepane
-0.15 has the older hook and must be restarted for it. The dashboard is not on the phone page yet.
+0.15 has the older hook and must be restarted for it. The phone page shows each
+pane's inbox; the dashboard's tasks and events are not on it yet.
 
 `docs/tmux-parity.md` has the command-by-command and key-by-key list.
 

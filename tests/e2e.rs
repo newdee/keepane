@@ -3472,6 +3472,92 @@ async fn http(addr: std::net::SocketAddr, method: &str, path: &str, key: &str, b
     (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
 }
 
+/// More than one network card: `-b` with each address serves on every
+/// one, the same key and port; an address this machine does not have is
+/// an error, not left out quietly.
+#[tokio::test(flavor = "multi_thread")]
+async fn web_serves_on_every_address_it_is_given() {
+    let h = Harness::start("web-many").await;
+    h.cli(&["new", "-d", "-s", "m"]).await;
+    // 192.0.2.1 is a documentation address: no machine has it.
+    let (code, _, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1,192.0.2.1"]).await;
+    assert!(code != 0 && err.contains("192.0.2.1") && err.contains("an address of this machine"), "{err}");
+    let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1", "-b", "::1"]).await;
+    assert_eq!(code, 0, "{err}");
+    let url = keepane::web::status_url(&status).expect(&status).to_string();
+    let port: u16 = url["http://127.0.0.1:".len()..].split('/').next().unwrap().parse().unwrap();
+    let key = url.split("#k=").nth(1).unwrap();
+    assert!(status.contains(&format!("also http://[::1]:{port}/#k={key}")), "{status}");
+    for ip in ["127.0.0.1", "::1"] {
+        let addr = std::net::SocketAddr::new(ip.parse().unwrap(), port);
+        let (code, body) = http(addr, "GET", "/api/info", key, "").await;
+        assert_eq!(code, 200, "{ip}: {body}");
+    }
+    h.cli(&["kill-server"]).await;
+}
+
+/// The phone's inbox: each waiting message whole, in order; to the top,
+/// deleted and brought back; what the pane works on and what it finished.
+/// Only POST changes anything, and not on a read-only page.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_phone_page_shows_and_orders_an_inbox() {
+    let h = Harness::start("web-inbox").await;
+    h.cli(&["new", "-d", "-s", "ib"]).await;
+    let p = pane_id(&h, "ib:0.0").await;
+    let t = format!("%{p}");
+    h.cli(&["rename-pane", "-t", &t, "agent"]).await;
+    h.cli(&["set-work-mode", "-t", &t, "ai"]).await;
+    for text in ["one", "two\nsecond line", "three"] {
+        h.cli(&["send-message", "-t", &t, text]).await;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = std::sync::Arc::new(keepane::web::State::new(&h.socket, "k3y", false));
+    tokio::spawn(keepane::web::serve(listener, state));
+    let q = format!("/api/inbox?pane=%25{p}");
+    let inbox = async || -> serde_json::Value {
+        let (code, body) = http(addr, "GET", &q, "k3y", "").await;
+        assert_eq!(code, 200, "{body}");
+        serde_json::from_str(&body).unwrap()
+    };
+    let ids = |v: &serde_json::Value| -> Vec<u64> {
+        v["queued"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect()
+    };
+    let v = inbox().await;
+    assert_eq!(ids(&v), [1, 2, 3]);
+    assert_eq!(v["queued"][1]["text"], "two\nsecond line", "whole, not its first line");
+    assert_eq!((v["name"].as_str(), v["current"].is_null()), (Some("agent"), true));
+    // To the top; deleted; brought back.
+    assert_eq!(http(addr, "POST", "/api/message?do=top&id=3", "k3y", "").await.0, 200);
+    assert_eq!(ids(&inbox().await), [3, 1, 2]);
+    assert_eq!(http(addr, "POST", "/api/message?do=drop&id=1", "k3y", "").await.0, 200);
+    assert_eq!(ids(&inbox().await), [3, 2]);
+    assert_eq!(http(addr, "POST", "/api/message?do=undo", "k3y", "").await.0, 200);
+    assert_eq!(ids(&inbox().await), [3, 1, 2]);
+    // What is not an action, or not by POST, or no such message.
+    assert_eq!(http(addr, "POST", "/api/message?do=kill&id=1", "k3y", "").await.0, 400);
+    assert_eq!(http(addr, "POST", "/api/message?do=top", "k3y", "").await.0, 400, "no id");
+    assert_eq!(http(addr, "GET", "/api/message?do=drop&id=1", "k3y", "").await.0, 405);
+    assert_eq!(http(addr, "POST", "/api/message?do=drop&id=99", "k3y", "").await.0, 404);
+    // Its agent takes the first: working on it; then done, and finished.
+    h.cli_in(Some(p), &["pane-ready"]).await;
+    let v = inbox().await;
+    assert_eq!((v["current"]["id"].as_u64(), ids(&v)), (Some(3), vec![1, 2]));
+    let (_, list) = http(addr, "GET", "/api/panes", "k3y", "").await;
+    assert!(list.contains("\"working\":3"), "{list}");
+    h.cli(&["send-keys", "-t", &t, "x"]).await;
+    h.cli_in(Some(p), &["pane-ready"]).await;
+    let v = inbox().await;
+    assert_eq!((v["recent"][0]["id"].as_u64(), v["recent"][0]["stage"].as_str()), (Some(3), Some("done")), "{v}");
+    // Read-only: looking, yes; ordering, no.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ro = listener.local_addr().unwrap();
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, "k3y", true))));
+    assert_eq!(http(ro, "GET", &q, "k3y", "").await.0, 200);
+    assert_eq!(http(ro, "POST", "/api/message?do=top&id=2", "k3y", "").await.0, 403);
+    h.cli(&["kill-server"]).await;
+}
+
 /// `keepane web` end to end over real HTTP: the key is asked for, the list
 /// names the panes, text typed on the phone runs in the pane (`-` first
 /// included), the screen comes back with it, and the + menu splits.
@@ -4010,6 +4096,70 @@ async fn link_call(
 /// stale or repeated request is refused, a new web key changes nothing,
 /// unpairing works on both, a read-only web takes nothing in, and a machine
 /// that is off is an error at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_allowed_to_starts_panes_on_another_and_closes_only_those() {
+    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
+    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
+    let a = Harness::start("lpa").await;
+    let b = Harness::start("lpb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    b.wait_capture("wb:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let own = pane_id(&b, "wb:0.0").await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    let (code, _, err) = a.cli(&["link-add", &ub]).await;
+    assert_eq!(code, 0, "{err}");
+    // Not allowed yet: said how to allow it.
+    let (code, _, err) = a.cli(&["link-start", &addr_b]).await;
+    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --panes")), "{err}");
+    // Only from outside every pane.
+    let (code, _, err) = b.cli_in(Some(own), &["link-allow", &addr_a, "--panes"]).await;
+    assert!(code != 0 && err.contains("pane"), "{err}");
+    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--panes"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("may start panes here"), "{out}");
+    // Started there, in a session named after this machine; its address back.
+    // A program on its agent-commands (its default shell here is cmd, which is not).
+    let (code, out, err) =
+        a.cli(&[&["link-start", &addr_b, "-n", "helper", "-m", "ai", "--"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let address = out.split_whitespace().next().unwrap().to_string();
+    assert!(address.starts_with(&format!("{addr_b}/$")) && out.contains("helper"), "{out}");
+    let pid: u32 = address.rsplit_once('%').unwrap().1.parse().unwrap();
+    let (_, sessions, _) = b.cli(&["list-sessions"]).await;
+    let host = keepane::sysinfo::hostname();
+    assert!(sessions.lines().count() == 2, "{sessions}");
+    let (_, session, _) = b.cli(&["display", "-p", "-t", &format!("%{pid}"), "#{session_name}"]).await;
+    assert!(!session.trim().is_empty() && session.trim() != "wb", "a session of its own for {host}: {session}");
+    // It takes messages at that address (in ai mode: a shell pane would
+    // need --shell as well, a permission of its own).
+    let (code, _, err) = a.cli(&["send-message", "--to", &address, "hello"]).await;
+    assert_eq!(code, 0, "{err}");
+    // Only this machine's agent-commands, and within agent-pane-limit.
+    let (code, _, err) = a.cli(&["link-start", &addr_b, "--", "notepad-not-allowed"]).await;
+    assert!(code != 0 && err.contains("not in agent-commands"), "{err}");
+    b.cli(&["set", "-g", "agent-pane-limit", "1"]).await;
+    let (code, _, err) = a.cli(&[&["link-start", &addr_b, "--"], HOOKED_SHELL].concat()).await;
+    assert!(code != 0 && err.contains("agent-pane-limit 1 reached"), "{err}");
+    // It closes the pane it started, and no other.
+    let (code, _, err) = a.cli(&["link-kill", &format!("{addr_b}/%{own}")]).await;
+    assert!(code != 0 && err.contains("may close only the panes it started"), "{err}");
+    let (code, out, err) = a.cli(&["link-kill", &address]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("closed "), "{out}");
+    assert!(b.cli(&["display", "-p", "-t", &format!("%{pid}"), "#{pane_id}"]).await.0 != 0, "gone there");
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn panes_on_two_machines_pass_messages_once_paired() {
     let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
@@ -6090,8 +6240,9 @@ async fn a_pane_done_is_told_to_the_page_the_hook_and_a_webhook() {
         serde_json::from_str(&take_request(&listener, "{\"code\":0,\"msg\":\"success\"}").await).unwrap();
     assert_eq!(body["msg_type"], "text", "{body}");
     let text = body["content"]["text"].as_str().unwrap();
+    // What the command printed comes under the line.
     assert!(
-        text.starts_with("keepane · ") && text.ends_with("build (dn:0.0): echo done-here finished in 0s"),
+        text.starts_with("keepane · ") && text.ends_with("build (dn:0.0): echo done-here finished in 0s\ndone-here"),
         "{text}"
     );
     // The hook, told in its environment.

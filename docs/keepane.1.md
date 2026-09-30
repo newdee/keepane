@@ -131,9 +131,13 @@ profile).
 
 ### The panes on a phone
 
-`keepane web [--port N] [--bind IP] [--read-only] [--keep-key]` has the
-server serve a page for a phone on the local network, in the background, and
-prints a QR code carrying its address and a key. `keepane web status` (the
+`keepane web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]` has
+the server serve a page for a phone on the local network, in the background,
+and prints a QR code carrying its address and a key. Without `--bind` it
+listens on the address this machine reaches the network through and on its
+Tailscale addresses; with it, on each address given (more than one card:
+commas, or `--bind` again), and an address this machine does not have is an
+error. The code is for the first; `web status` lists the others. `keepane web status` (the
 server command `web-status`) says how it serves and who is connected;
 `keepane web stop` (`web-stop`) ends it, cutting off the phones on it. The
 server command `web-start` takes the same flags as `-p`, `-b`, `-r`, `-k`
@@ -180,9 +184,18 @@ pairing has to be made again.
 A paired machine's messages go to `ai` and `normal` panes only. To let them
 run as commands in `shell` panes here: `keepane link allow <host:port>
 --shell` (`link-allow`; `--no-shell` takes it back); to let it read what the
-panes here show: `--screen` (`--no-screen`). Both are given from a terminal
-outside keepane or the `C-b :` prompt, never from inside a pane
-(`link-trust` takes `--shell` and `--screen` too). A message for a
+panes here show: `--screen` (`--no-screen`); to let it start panes here:
+`--panes` (`--no-panes`). All are given from a terminal outside keepane or
+the `C-b :` prompt, never from inside a pane (`link-trust` takes `--shell`,
+`--screen` and `--panes` too). `keepane link start <host:port> [-s session]
+[-n name] [-m mode] [-c dir] [-- program args]` (`link-start`) starts a pane
+on a machine that allowed this one to: one of its `agent-commands` (with any
+arguments, so a shell on that list makes `--panes` as much as `--shell`), within
+its `agent-pane-limit` counted for this machine alone, in a session named
+after this machine unless `-s` names one; its address there comes back.
+`keepane link kill <host:port/pane>` (`link-kill`) closes a pane this
+machine started there, and no other (that machine knows which only while
+its server runs). A message for a
 `shell` pane from a machine not allowed is refused, and the sender told how
 to allow it. A message from another machine reads `from=host:port/…` in its
 envelope. A machine is known by its key, not its address: when it turns up

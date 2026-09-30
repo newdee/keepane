@@ -118,7 +118,7 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
         <ul class="points">
           <li data-i18n="cl.p1">A pane is addressed as <code>host:port/%name</code> or <code>host:port/$1:@3.%7</code>. The answer to a message goes back by pane id, so it still arrives after the pane that asked has been moved.</li>
           <li data-i18n="cl.p2">Each machine has its own key pair. Pairing uses the other side's phone code once; after that every request and every answer is signed, with the time and a one-off number, so an old one cannot be sent again. A machine is known by its key, not its address.</li>
-          <li data-i18n="cl.p3">What comes from another machine goes to agent and normal panes only. Letting it run as shell commands, or read a pane's screen, is allowed per machine with <code>keepane link allow</code>, and only from outside keepane: an agent in a pane cannot grant it to itself.</li>
+          <li data-i18n="cl.p3">What comes from another machine goes to agent and normal panes only. Letting it run as shell commands, read a pane's screen, or start panes here (<code>keepane link start</code>, one of this machine's <code>agent-commands</code>) is allowed per machine with <code>keepane link allow</code>, and only from outside keepane: an agent in a pane cannot grant it to itself.</li>
           <li data-i18n="cl.p4">Agents get it through MCP too: <code>list_links</code>, <code>link_info</code>, <code>read_screen</code>, and <code>send_message</code> to an address on another machine.</li>
         </ul>
       </section>

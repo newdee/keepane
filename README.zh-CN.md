@@ -352,7 +352,7 @@ hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做
 
 发给 `ai` 模式 pane 的消息，如果这个 pane 的 agent 启动以来从没报告过空闲，消息就会一直排队。所以 `send-message` 会直接说明，并给出补上 hook 的 `setup` 命令；dashboard 和手机页上也会提示（`#{pane_unheard}`）。
 
-20 个工具：
+24 个工具：
 
 | 工具 | 用途 |
 |---|---|
@@ -362,6 +362,7 @@ hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做
 | `create_session`、`create_window`、`split_pane`、`rename_pane`、`kill_pane` | 开 pane（可以带名字、模式和第一条消息），给任意 pane 改名、关掉任意 pane |
 | `set_status`、`set_work_mode` | 报告自己在做什么（dashboard 上显示）；改自己 pane 的模式 |
 | `list_tasks`、`show_task`、`query_events` | 消息链（任务）和事件日志 |
+| `list_links`、`link_info`、`read_screen`、`create_remote_pane` | 配过对的机器、某台机器的信息、某个 pane（本机或另一台）的屏幕，以及在另一台机器上开 pane（用 `kill_pane` 关） |
 
 通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini`、`cursor-agent`、`opencode` 的是 `ai` 模式，跑 `pwsh`、`powershell`、`bash`、`zsh` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（Windows 上是 `pwsh powershell claude codex`，其他系统是 `bash zsh sh claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。Claude Code 调用你没放行过的 MCP 工具前会先问你。
 
@@ -373,7 +374,7 @@ hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做
 keepane web
 ```
 
-终端里会打出一个二维码。手机连同一个网络，用相机扫一下，浏览器就打开一个页面：按 session、窗口分组列出所有 pane（session 名字旁边是它多数 pane 所在的目录）：每个 pane 的名字（大字显示；没起名字就显示程序自己设的标题，再没有就显示程序名），下面一行是在跑的程序，目录和 session 的不同时也写出来；最后输出的一行（不算提示符）、多久没有新输出；一个表示状态的小圆点（ai、shell 模式的 pane 空闲绿、忙黄，已退出红）、收件箱里排队的消息数，以及状态栏上那几个提醒标记（开了 `monitor-activity` 这类选项时：`#` 有输出，`!` 响铃，`~` 太久没动静），不用点进去就知道哪个任务跑完了。点进一个，就能看到它的屏幕，颜色都在；屏幕一有变化 keepane 就把新内容推过来，不用等刷新。在屏幕上左右滑动可以切到上一个、下一个 pane，点标题可以直接选一个。点"发送"只发输入框里的文字，不带回车；输入框空着时再点一次"发送"就是回车。输入框左边的 ☰ 可以调出发过的命令（☆ 设为常用，固定在最上面）。上面一排是手机键盘上没有的键（Esc、Tab、方向键、回车、Ctrl+C，更多的在 ⋯ 里）；先点 Ctrl 或 Alt，再输入一个字母，就是 Ctrl 或 Alt 加这个字母。右上角的 + 菜单可以分屏、开新窗口、关掉当前 pane；⏱ 按钮在左边加一栏，显示每条命令开始的时间（点一下看日期、耗时和退出码，见“命令时间和历史”一节）。点 session 或窗口可以折叠、展开（手机会记住），旁边的 ✎ 可以重命名。比手机屏幕宽的 pane，长行会在手机屏幕边缘自动换行（↩ 按钮可以关掉，适合全屏程序）。⤢ 按钮把 pane 适配到手机：它占满所在窗口，整个会话变成手机的行列数，vim、htop、agent 这类全屏程序就按手机的大小重画。适配期间，电脑和其他连着的手机看这个会话也是手机的大小（一个会话只有一个大小，页面和状态栏都会提示）；离开这个 pane、回到列表或者锁屏，就恢复原来的大小，没有手机看它 10 秒后 keepane 也会自动恢复。命令都在电脑上执行，手机只负责看和输入。“添加到主屏幕”之后，它打开起来就像一个 App。
+终端里会打出一个二维码。手机连同一个网络，用相机扫一下，浏览器就打开一个页面：按 session、窗口分组列出所有 pane（session 名字旁边是它多数 pane 所在的目录）：每个 pane 的名字（大字显示；没起名字就显示程序自己设的标题，再没有就显示程序名），下面一行是在跑的程序，目录和 session 的不同时也写出来；最后输出的一行（不算提示符）、多久没有新输出；一个表示状态的小圆点（ai、shell 模式的 pane 空闲绿、忙黄，已退出红）、收件箱里排队的消息数，以及状态栏上那几个提醒标记（开了 `monitor-activity` 这类选项时：`#` 有输出，`!` 响铃，`~` 太久没动静），不用点进去就知道哪个任务跑完了。点进一个，就能看到它的屏幕，颜色都在；屏幕一有变化 keepane 就把新内容推过来，不用等刷新。在屏幕上左右滑动可以切到上一个、下一个 pane，点标题可以直接选一个。点"发送"只发输入框里的文字，不带回车；输入框空着时再点一次"发送"就是回车。输入框左边的 ☰ 可以调出发过的命令（☆ 设为常用，固定在最上面）。上面一排是手机键盘上没有的键（Esc、Tab、方向键、回车、Ctrl+C，更多的在 ⋯ 里）；先点 Ctrl 或 Alt，再输入一个字母，就是 Ctrl 或 Alt 加这个字母。右上角的 + 菜单可以分屏、开新窗口、关掉当前 pane、打开它的收件箱（点卡片上的"排队 N 条"或"处理中 #N"也能打开）：正在处理的消息、排队中每条消息的全文（可以置顶、上移、下移、删除，删了能撤销），以及最近完成的几条；⏱ 按钮在左边加一栏，显示每条命令开始的时间（点一下看日期、耗时和退出码，见“命令时间和历史”一节）。点 session 或窗口可以折叠、展开（手机会记住），旁边的 ✎ 可以重命名。比手机屏幕宽的 pane，长行会在手机屏幕边缘自动换行（↩ 按钮可以关掉，适合全屏程序）。⤢ 按钮把 pane 适配到手机：它占满所在窗口，整个会话变成手机的行列数，vim、htop、agent 这类全屏程序就按手机的大小重画。适配期间，电脑和其他连着的手机看这个会话也是手机的大小（一个会话只有一个大小，页面和状态栏都会提示）；离开这个 pane、回到列表或者锁屏，就恢复原来的大小，没有手机看它 10 秒后 keepane 也会自动恢复。命令都在电脑上执行，手机只负责看和输入。“添加到主屏幕”之后，它打开起来就像一个 App。
 
 <p align="center">
   <img src="docs/img/phone-zh.png" width="620"
@@ -396,6 +397,7 @@ keepane web          # 开着的时候再运行一次：重新打出同一个二
 keepane web --read-only     # 只能看，不能输入
 keepane web --keep-key      # 下次还用同一个二维码，收藏的网页一直能用
 keepane web --port 8080 --bind 192.168.1.23   # 换端口，或者指定网卡
+keepane web --bind 192.168.1.23,10.0.0.5     # 多张网卡：每个地址都监听（也可以写多个 -b）；二维码用第一个
 ```
 
 用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络：`keepane web` 会同时监听本机的局域网地址和 Tailscale 地址（`web status` 会列出来）。第一次运行时 Windows 会问是否允许 keepane 联网，选“专用网络”允许即可。
@@ -407,7 +409,7 @@ keepane 知道 pane 什么时候"完成"了：一条跑了一段时间的命令�
 - **手机页**（页面开着的时候）：顶部弹出一条横幅（点一下就跳到那个 pane），响一声，安卓手机会震动，标签页标题上显示未读数。页面在后台时完成的，切回页面时会补告诉你。普通 HTTP 的页面没法弹系统通知，手机锁屏或切走后浏览器也会暂停页面，所以锁屏也要收到的话，用 hook 或 webhook。
 - **电脑桌面**：`set -g notify on`。
 - **webhook**：`set -g done-webhook <地址>`，keepane 每次都用 `curl` 往这个地址发一条，格式由 `done-webhook-format` 决定：`json`（keepane 自己的格式）、`text`（只有那一行文字：ntfy、Bark）、`feishu`（飞书）、`wecom`（企业微信）、`dingtalk`（钉钉）、`slack`、`discord`（聊天工具的群机器人 webhook）。发到聊天工具的消息以 `keepane` 开头，飞书、钉钉机器人的"关键词"安全设置可以填它；对方拒收的话，`show-messages` 里能看到原因。
-- **`pane-done` hook**：想接别的服务就用它。这次完成的信息在环境变量里：`KEEPANE_DONE_KIND`（`command`、`agent`、`task`、`exit`）、`KEEPANE_DONE_TEXT`（那一行文字）、`KEEPANE_DONE_PANE`、`KEEPANE_DONE_NAME`、`KEEPANE_DONE_OK`（成功 1、失败 0，知道时才有）、`KEEPANE_DONE_EXIT`（退出码，shell 报告了才有：PowerShell 只说成功还是失败）、`KEEPANE_DONE_SECONDS`，以及 `KEEPANE_DONE_JSON`。
+- **`pane-done` hook**：想接别的服务就用它。这次完成的信息在环境变量里：`KEEPANE_DONE_KIND`（`command`、`agent`、`task`、`exit`）、`KEEPANE_DONE_TEXT`（那一行文字）、`KEEPANE_DONE_OUTPUT`（pane 最后输出的几行）、`KEEPANE_DONE_PANE`、`KEEPANE_DONE_NAME`、`KEEPANE_DONE_OK`（成功 1、失败 0，知道时才有）、`KEEPANE_DONE_EXIT`（退出码，shell 报告了才有：PowerShell 只说成功还是失败）、`KEEPANE_DONE_SECONDS`，以及 `KEEPANE_DONE_JSON`。
 
 ```sh
 set -g done-webhook https://open.feishu.cn/open-apis/bot/v2/hook/<token>
@@ -424,7 +426,10 @@ set-hook -g pane-done run-shell 'curl.exe -s -d $env:KEEPANE_DONE_TEXT ntfy.sh/<
 set -g done-events command agent  # command agent task exit 任选；all 全部；none 都不要
 set -g done-after 30              # 命令至少跑多少秒才算
 set -g done-panes named           # 有名字或 ai/shell 模式的 pane；all 是所有 pane
+set -g done-lines 5               # 一起带上 pane 最后输出的几行（0 不带）
 ```
+
+每条通知都带上 pane 最后输出的几行（命令自己的输出；agent 则是它最后一次 `pane-status` 说的话），聊天工具和桌面通知里写在那一行下面，keepane 的 JSON 里是 `output`。
 
 同一个 pane 三秒内只通知一次：agent 这一轮结束和它完成的任务算一次。`keepane list-done` 列出最近 100 条。
 ## 跨电脑
@@ -442,6 +447,15 @@ keepane send-message --to 100.64.0.3:7681/%worker "run the tests"
 
 配过对的机器发来的消息只进 `ai` 和 `normal` 模式的 pane。要让它们在 `shell` 模式的 pane 里当命令执行，得在 keepane 之外的终端里给那台机器授权（不能在 pane 里面做，否则 agent 就能自己开权限）：
 
+```powershell
+keepane link allow 100.64.0.3:7681 --shell     # --no-shell 收回
+keepane link allow 100.64.0.3:7681 --screen    # 允许它读这边 pane 的屏幕；--no-screen 收回
+keepane link allow 100.64.0.3:7681 --panes     # 允许它在这边开 pane；--no-panes 收回
+keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
+keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
+keepane link rekey                             # 换一对新密钥：所有配对都要重做
+```
+
 除了对方的 pane 列表，还能问到：
 
 ```powershell
@@ -450,13 +464,15 @@ keepane trace-message 12 -w 60                 # 发过去的消息在那边怎�
 keepane link capture -S 100 100.64.0.3:7681/%worker   # 对方某个 pane 现在显示的内容（要对方授权 --screen）
 ```
 
+对方授权了 `--panes` 的话，还能在对方那台电脑上开 pane：
+
 ```powershell
-keepane link allow 100.64.0.3:7681 --shell     # --no-shell 收回
-keepane link allow 100.64.0.3:7681 --screen    # 允许它读这边 pane 的屏幕；--no-screen 收回
-keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
-keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
-keepane link rekey                             # 换一对新密钥：所有配对都要重做
+keepane link start 100.64.0.3:7681 -n helper -- claude   # 返回它在那边的地址
+keepane send-message --to 100.64.0.3:7681/%helper "look at the failing test"
+keepane link kill 100.64.0.3:7681/%helper               # 只能关这台机器在那边开的 pane
 ```
+
+程序必须在对方的 `agent-commands` 白名单里，参数不限：白名单里要是有 shell（`pwsh`、`bash` 等），它收到什么就执行什么，这时 `--panes` 等于同时给了执行命令的权限；只想让对方开 agent 的话，在那台电脑上 `set -g agent-commands "claude codex"`（`link allow --panes` 的回复会列出当前白名单）。数量受对方的 `agent-pane-limit` 限制（按这台机器单独计数）。开出来的 pane 放在以这台机器命名的 session 里（`-s` 可以指定别的），工作模式和 agent 开的 pane 一样按程序自动定（`-m` 可以指定）；往那边 `shell` 模式的 pane 发命令仍然需要 `--shell` 授权。对方只在它的 server 运行期间记得哪些 pane 是这台机器开的。agent 也能通过 MCP 做同样的事：`create_remote_pane`，以及用地址调用 `kill_pane`。
 
 没授权的机器发给 `shell` pane 的消息会被拒收，发送方会看到怎么授权。`keepane web --read-only` 的机器也不收别的机器的消息。对方连不上时立刻报错，不会在本机排队等以后再发；加 `-w` 时由对方等到投递为止，时间到了还在排队就算超时（和发给本机 pane 一样，退出码非 0）。配对和解除配对会在状态栏提示并记进事件日志；被拒的请求也一样，但同一个地址一分钟只记一次，有人大量乱发时不会刷屏，也不会把事件日志写满。设计和每条决定见 [docs/design/link.md](docs/design/link.md)。
 
@@ -651,7 +667,7 @@ Linux 和 macOS 上暂时没有 `keepane startup`（登录时启动 server）、
 - hook 仅支持前文列出的事件；`choose-tree` 按子串过滤，不支持 tmux 格式串过滤。
 - `display-popup` 中，前缀键仍归 keepane 处理；连按两次可将前缀键发送给弹窗中的程序。
 
-pane 消息：`shell` 工作模式依赖 keepane 的提示符钩子（PowerShell、bash、zsh），所以 cmd、sh、fish 和 WSL 里的 shell 暂时不会自己接收消息（可以用 `read-message` 取）；keepane 0.15 之前启动的 pane 用的是旧钩子，要重开才行。dashboard 还没有上手机页面。
+pane 消息：`shell` 工作模式依赖 keepane 的提示符钩子（PowerShell、bash、zsh），所以 cmd、sh、fish 和 WSL 里的 shell 暂时不会自己接收消息（可以用 `read-message` 取）；keepane 0.15 之前启动的 pane 用的是旧钩子，要重开才行。手机页面能看每个 pane 的收件箱，dashboard 里的任务和事件还没有上手机页面。
 
 命令和按键逐条对照见 `docs/tmux-parity.md`。
 

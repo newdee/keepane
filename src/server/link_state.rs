@@ -29,6 +29,10 @@ pub(super) struct LinkHost {
     pub(super) refused: HashMap<String, std::time::Instant>,
     /// Messages handed to another machine, and how they are known there.
     pub(super) sent: HashMap<MsgId, super::link_out::SentThere>,
+    /// The panes another machine started here (`link-start`), by the key of
+    /// that machine: the ones it may close, and what counts toward its
+    /// `agent-pane-limit`. Not kept past this server.
+    pub(super) made: HashMap<super::PaneId, String>,
 }
 
 /// Origins remembered at most (as many as message records, `observe`).
@@ -101,6 +105,7 @@ impl Server {
                 origin: HashMap::new(),
                 refused: HashMap::new(),
                 sent: HashMap::new(),
+                made: HashMap::new(),
             });
         }
         Ok(self.link.as_mut().expect("just made"))
@@ -144,8 +149,10 @@ impl Server {
                 Err(e) => Outcome::Error(e),
             },
             Cmd::LinkList => self.link_list(),
-            Cmd::LinkTrust { addr, key, shell, screen } => self.link_trust(cid, addr, key, shell, screen),
-            Cmd::LinkAllow { addr, shell, screen } => self.link_allow(cid, &addr, shell, screen),
+            Cmd::LinkTrust { addr, key, shell, screen, panes } => {
+                self.link_trust(cid, addr, key, [shell, screen, panes])
+            }
+            Cmd::LinkAllow { addr, shell, screen, panes } => self.link_allow(cid, &addr, [shell, screen, panes]),
             Cmd::LinkRekey => self.link_rekey(),
             other => Outcome::Error(format!("not a link command: {other}")),
         }
@@ -159,7 +166,7 @@ impl Server {
         if l.peers.is_empty() {
             return Outcome::Text("no machines paired: `keepane link add <its keepane web address>`".into());
         }
-        let mut rows = vec![["MACHINE", "KEY", "SHELL", "SCREEN", "LAST SEEN"].map(String::from).to_vec()];
+        let mut rows = vec![["MACHINE", "KEY", "SHELL", "SCREEN", "PANES", "LAST SEEN"].map(String::from).to_vec()];
         let yes = |b: bool| if b { "yes" } else { "no" }.to_string();
         for p in &l.peers {
             rows.push(vec![
@@ -167,6 +174,7 @@ impl Server {
                 link::fingerprint(&p.key),
                 yes(p.shell),
                 yes(p.screen),
+                yes(p.panes),
                 l.seen.get(&p.key).map_or("never".into(), |t| t.format("%H:%M:%S").to_string()),
             ]);
         }
@@ -175,9 +183,22 @@ impl Server {
 
     /// A machine let in by hand, by its key (what `keepane link id` prints
     /// there): the same table `link-add` fills through the web key.
-    fn link_trust(&mut self, cid: Option<ClientId>, addr: String, key: String, shell: bool, screen: bool) -> Outcome {
-        if (shell || screen) && self.caller_pane(cid).is_some() {
-            return Outcome::Error(not_from_a_pane(if shell { "link-trust --shell" } else { "link-trust --screen" }));
+    fn link_trust(
+        &mut self,
+        cid: Option<ClientId>,
+        addr: String,
+        key: String,
+        [shell, screen, panes]: [bool; 3],
+    ) -> Outcome {
+        if (shell || screen || panes) && self.caller_pane(cid).is_some() {
+            let flag = if shell {
+                "--shell"
+            } else if screen {
+                "--screen"
+            } else {
+                "--panes"
+            };
+            return Outcome::Error(not_from_a_pane(&format!("link-trust {flag}")));
         }
         let by = self.by(cid);
         let l = match self.link() {
@@ -192,8 +213,9 @@ impl Server {
                 p.addr = addr.clone();
                 p.shell = shell;
                 p.screen = screen;
+                p.panes = panes;
             }
-            None => l.peers.push(Peer { key: key.clone(), addr: addr.clone(), shell, screen }),
+            None => l.peers.push(Peer { key: key.clone(), addr: addr.clone(), shell, screen, panes }),
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
@@ -203,7 +225,7 @@ impl Server {
             &format!("link: {addr} ({fp}) trusted by {by}"),
             "trusted",
             &format!(
-                ",\"addr\":{},\"key\":{},\"shell\":{shell},\"screen\":{screen},\"by\":{}",
+                ",\"addr\":{},\"key\":{},\"shell\":{shell},\"screen\":{screen},\"panes\":{panes},\"by\":{}",
                 js(&addr),
                 js(&key),
                 js(&by)
@@ -213,10 +235,11 @@ impl Server {
     }
 
     /// Whether a machine's messages may run as commands in `shell` panes
-    /// here, and whether it may read what the panes show. Only a person
-    /// outside every pane decides: otherwise a program in a pane could let
-    /// another machine run commands on this one, or read its screens.
-    fn link_allow(&mut self, cid: Option<ClientId>, addr: &str, shell: Option<bool>, screen: Option<bool>) -> Outcome {
+    /// here, whether it may read what the panes show, and whether it may
+    /// start panes here. Only a person outside every pane decides: otherwise
+    /// a program in a pane could let another machine run commands on this
+    /// one, or read its screens.
+    fn link_allow(&mut self, cid: Option<ClientId>, addr: &str, [shell, screen, panes]: [Option<bool>; 3]) -> Outcome {
         if self.caller_pane(cid).is_some() {
             return Outcome::Error(not_from_a_pane("link-allow"));
         }
@@ -234,7 +257,10 @@ impl Server {
         if let Some(s) = screen {
             p.screen = s;
         }
-        let (key, now_shell, now_screen) = (p.key.clone(), p.shell, p.screen);
+        if let Some(s) = panes {
+            p.panes = s;
+        }
+        let (key, now_shell, now_screen, now_panes) = (p.key.clone(), p.shell, p.screen, p.panes);
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
         }
@@ -246,12 +272,34 @@ impl Server {
         if screen.is_some() {
             said.push(format!("{addr} {} read what the panes here show", may(now_screen)));
         }
+        if panes.is_some() {
+            said.push(format!("{addr} {} start panes here", may(now_panes)));
+        }
+        let agent_commands = self.opts.agent_commands.clone();
+        if panes == Some(true) {
+            // What it may start, with any arguments: a shell on the list runs
+            // whatever it is given.
+            // Any system's shells, whichever this one is: the list is the
+            // user's to write.
+            const SHELLS: &[&str] = &["pwsh", "powershell", "cmd", "bash", "zsh", "sh", "fish", "dash", "ksh", "nu"];
+            let shells: Vec<&str> = agent_commands
+                .split_whitespace()
+                .filter(|p| SHELLS.contains(&super::done::program_name(p).to_ascii_lowercase().as_str()))
+                .collect();
+            said.push(format!("it may start: {agent_commands} (agent-commands)"));
+            if !shells.is_empty() {
+                said.push(format!(
+                    "{} on that list run any command they are given: set -g agent-commands without them to allow agents only",
+                    shells.join(" ")
+                ));
+            }
+        }
         let text = said.join("; ");
         self.link_note(
             &format!("link: {text} (by {by})"),
             "allowed",
             &format!(
-                ",\"addr\":{},\"key\":{},\"shell\":{now_shell},\"screen\":{now_screen},\"by\":{}",
+                ",\"addr\":{},\"key\":{},\"shell\":{now_shell},\"screen\":{now_screen},\"panes\":{now_panes},\"by\":{}",
                 js(addr),
                 js(&key),
                 js(&by)
@@ -319,13 +367,15 @@ mod tests {
         assert_eq!(text(server("link-state-a").exec_link_local(Cmd::LinkId, None)), key_a, "kept");
 
         assert!(text(b.exec_link_local(Cmd::LinkList, None)).starts_with("no machines paired"));
-        let trust = Cmd::LinkTrust { addr: "10.0.0.1:7681".into(), key: ka.into(), shell: false, screen: false };
+        let trust =
+            Cmd::LinkTrust { addr: "10.0.0.1:7681".into(), key: ka.into(), shell: false, screen: false, panes: false };
         assert_eq!(text(b.exec_link_local(trust, None)), format!("trusted 10.0.0.1:7681  {fp}"));
         let own = Cmd::LinkTrust {
             addr: "10.0.0.2:7681".into(),
             key: key_b.split("  ").next().unwrap().into(),
             shell: false,
             screen: false,
+            panes: false,
         };
         assert!(text(b.exec_link_local(own, None)).contains("own key"));
         let list = text(b.exec_link_local(Cmd::LinkList, None));
@@ -334,7 +384,7 @@ mod tests {
             "{list}"
         );
 
-        let allow = |addr: &str, shell, screen| Cmd::LinkAllow { addr: addr.into(), shell, screen };
+        let allow = |addr: &str, shell, screen| Cmd::LinkAllow { addr: addr.into(), shell, screen, panes: None };
         assert!(text(b.exec_link_local(allow("10.0.0.9:1", Some(true), None), None)).contains("not paired"));
         assert_eq!(
             text(b.exec_link_local(allow("10.0.0.1:7681", Some(true), None), None)),
@@ -345,13 +395,22 @@ mod tests {
             text(b.exec_link_local(allow("10.0.0.1:7681", None, Some(true)), None)),
             "10.0.0.1:7681 may read what the panes here show"
         );
+        // Starting panes here, on its own too: what it may start said, and
+        // that a shell on the list runs anything.
+        let panes = Cmd::LinkAllow { addr: "10.0.0.1:7681".into(), shell: None, screen: None, panes: Some(true) };
+        b.opts.agent_commands = "claude C:\\bin\\bash.exe codex".into();
+        let said = text(b.exec_link_local(panes.clone(), None));
+        assert!(said.starts_with("10.0.0.1:7681 may start panes here; it may start: claude"), "{said}");
+        assert!(said.contains("C:\\bin\\bash.exe on that list run any command"), "any system's shell: {said}");
+        b.opts.agent_commands = "claude codex".into();
+        assert!(!text(b.exec_link_local(panes, None)).contains("run any command"), "agents only");
         let list = text(b.exec_link_local(Cmd::LinkList, None));
-        assert!(list.lines().next().unwrap().contains("SCREEN") && list.contains("yes    yes"), "{list}");
+        assert!(list.lines().next().unwrap().contains("PANES") && list.contains("yes    yes     yes"), "{list}");
         let again = server("link-state-b");
         let mut again = again;
         let peers = &again.link().unwrap().peers;
         assert_eq!(peers.len(), 1);
-        assert!(peers[0].shell && peers[0].screen && peers[0].key == ka, "read back from the file");
+        assert!(peers[0].shell && peers[0].screen && peers[0].panes && peers[0].key == ka, "read back from the file");
 
         let rekey = text(b.exec_link_local(Cmd::LinkRekey, None));
         assert!(rekey.contains("pair again"), "{rekey}");

@@ -138,6 +138,8 @@ pub struct Options {
     pub done_events: String,
     /// The seconds a command must run to count as done.
     pub done_after: u64,
+    /// How many of the last lines a pane printed go with the telling.
+    pub done_lines: usize,
     /// Which panes: `named` (a name, or work mode `ai` or `shell`) or `all`.
     pub done_panes: String,
     /// An HTTP(S) address told each time, and how its body is written.
@@ -284,6 +286,7 @@ pub const SHOWABLE: &[&str] = &[
     "agent-commands",
     "done-events",
     "done-after",
+    "done-lines",
     "done-panes",
     "done-webhook",
     "done-webhook-format",
@@ -368,6 +371,7 @@ impl Default for Options {
             agent_commands: crate::platform::shell::DEFAULT_AGENT_COMMANDS.into(),
             done_events: "command agent".into(),
             done_after: 30,
+            done_lines: 5,
             done_panes: "named".into(),
             done_webhook: String::new(),
             done_webhook_format: "json".into(),
@@ -473,6 +477,7 @@ pub const KNOWN: &[&str] = &[
     "display-time",
     "done-after",
     "done-events",
+    "done-lines",
     "done-panes",
     "done-webhook",
     "done-webhook-format",
@@ -778,6 +783,7 @@ impl Options {
             "agent-commands" => self.agent_commands = value.trim().to_string(),
             "done-events" => self.done_events = parse_done_events(value)?,
             "done-after" => self.done_after = ranged(name, value, 0, 86_400, "seconds")?,
+            "done-lines" => self.done_lines = ranged(name, value, 0, 50, "lines")?,
             "done-panes" => {
                 self.done_panes = one_of(name, value, &["named", "all"])?;
             }
@@ -915,6 +921,7 @@ impl Options {
             "agent-commands" => self.agent_commands.clone(),
             "done-events" => self.done_events.clone(),
             "done-after" => self.done_after.to_string(),
+            "done-lines" => self.done_lines.to_string(),
             "done-panes" => self.done_panes.clone(),
             "done-webhook" => self.done_webhook.clone(),
             "done-webhook-format" => self.done_webhook_format.clone(),

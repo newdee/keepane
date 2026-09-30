@@ -5183,7 +5183,9 @@ impl Server {
             | Cmd::LinkPanes { .. }
             | Cmd::LinkRemove { .. }
             | Cmd::LinkInfo { .. }
-            | Cmd::LinkCapture { .. }) => self.exec_link_out(c, cid),
+            | Cmd::LinkCapture { .. }
+            | Cmd::LinkPane(_)
+            | Cmd::LinkKill { .. }) => self.exec_link_out(c, cid),
             Cmd::LinkInbound { peer, request } => self.link_inbound(cid, &peer, &request),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };

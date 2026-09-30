@@ -41,7 +41,7 @@ Resume after a reboot (sessions autosave to the data directory's sessions folder
   windows-terminal install|remove|status   (Windows: a keepane profile in the Windows Terminal dropdown)
 Upgrading:  version (this keepane and the server's)   update [--check]   restart-server (sessions move to this version)
   migrate   (from wmux, keepane's old name: sessions, saved data, logon start, Windows Terminal profile)
-On a phone:  web [--port N] [--bind IP] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
+On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
 History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
   list-marks [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines)
   undo-kill   (prefix u: the pane or window killed in the last 10 seconds comes back; undo-kill-time)
@@ -56,8 +56,9 @@ Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
 Panes on other machines (both run `keepane web`; docs/design/link.md):
   link add <its keepane web address>   (pair, like SSH keys, once, both ways)   link list   link panes host:port
   send-message --to host:port/%name text   trace-message id (asks there too)   link info host:port
-  link capture [-S lines] host:port/%name   link allow host:port [--shell|--no-shell] [--screen|--no-screen]
-  link id   link trust host:port key [--shell] [--screen]   link remove host:port   link rekey
+  link capture [-S lines] host:port/%name   link allow host:port [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes]
+  link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane
+  link id   link trust host:port key [--shell] [--screen] [--panes]   link remove host:port   link rekey
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins

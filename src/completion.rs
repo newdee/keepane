@@ -30,7 +30,7 @@ pub(crate) const LOCAL: &[&str] = &[
 /// The flags of the commands the client handles itself.
 const LOCAL_FLAGS: &[(&str, &[&str])] = &[
     ("import-config", &["-n", "-o"]),
-    ("link", &["--no-screen", "--no-shell", "--screen", "--shell"]),
+    ("link", &["--no-panes", "--no-screen", "--no-shell", "--panes", "--screen", "--shell"]),
     ("man", &["--roff"]),
     ("setup", &["--install"]),
     ("update", &["--check"]),
@@ -84,7 +84,9 @@ pub fn complete(
         } else if canon == "web" && rest.len() == 1 && !current.starts_with('-') {
             owned(&["status", "stop"])
         } else if canon == "link" && rest.len() == 1 && !current.starts_with('-') {
-            owned(&["add", "allow", "capture", "id", "info", "list", "panes", "rekey", "remove", "trust"])
+            owned(&[
+                "add", "allow", "capture", "id", "info", "kill", "list", "panes", "start", "rekey", "remove", "trust",
+            ])
         } else if canon == "setup" && rest.len() == 1 && !current.starts_with('-') {
             owned(&crate::setup::AGENTS.map(crate::setup::Agent::word))
         } else if (canon == "set-option" || canon == "show-options") && prev != "-t" && !current.starts_with('-') {
@@ -320,7 +322,7 @@ Register-ArgumentCompleter -Native -CommandName keepane,tmux -ScriptBlock {{
   }} elseif ($canon -eq 'web' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('status', 'stop')
   }} elseif ($canon -eq 'link' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
-    $out = @('add', 'allow', 'capture', 'id', 'info', 'list', 'panes', 'rekey', 'remove', 'trust')
+    $out = @('add', 'allow', 'capture', 'id', 'info', 'kill', 'list', 'panes', 'start', 'rekey', 'remove', 'trust')
   }} elseif ($canon -eq 'setup' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('claude', 'codex', 'cursor', 'gemini', 'opencode')
   }} elseif ($canon -in @('set-option','show-options') -and $prev -ne '-t' -and $wordToComplete -notlike '-*') {{

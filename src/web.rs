@@ -55,14 +55,28 @@ const ACTIONS: &[&str] = &["new-window", "split-h", "split-v", "kill-pane", "ren
 pub struct Options {
     /// None: `DEFAULT_PORT`; 0, any free one.
     pub port: Option<u16>,
-    /// None: the address this machine reaches the network through.
-    pub bind: Option<IpAddr>,
+    /// Empty: the address this machine reaches the network through, and
+    /// its Tailscale ones. Given: those, every one (a machine with more
+    /// than one network card).
+    pub bind: Vec<IpAddr>,
     pub read_only: bool,
     pub keep_key: bool,
 }
 
+/// Addresses from `-b`'s value (commas between them), each once.
+pub fn add_binds(to: &mut Vec<IpAddr>, value: &str) -> Result<(), String> {
+    for v in value.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        let ip: IpAddr = v.parse().map_err(|_| format!("not an IP address: {v}"))?;
+        if !to.contains(&ip) {
+            to.push(ip);
+        }
+    }
+    Ok(())
+}
+
 impl Options {
-    /// The flags, long or short, one value after each of `-p` and `-b`.
+    /// The flags, long or short, one value after each of `-p` and `-b`;
+    /// `-b` again, or with commas, for more addresses.
     pub fn parse(args: &[&str]) -> Result<Options, String> {
         let mut o = Options::default();
         let mut it = args.iter();
@@ -74,7 +88,7 @@ impl Options {
                 }
                 "-b" | "--bind" => {
                     let v = it.next().ok_or("--bind: an address of this machine")?;
-                    o.bind = Some(v.parse().map_err(|_| format!("--bind: not an IP address: {v}"))?);
+                    add_binds(&mut o.bind, v).map_err(|e| format!("--bind: {e}"))?;
                 }
                 "-r" | "--read-only" => o.read_only = true,
                 "-k" | "--keep-key" => o.keep_key = true,
@@ -94,8 +108,9 @@ impl Options {
         if let Some(p) = self.port {
             f.extend(["-p".to_string(), p.to_string()]);
         }
-        if let Some(b) = self.bind {
-            f.extend(["-b".to_string(), b.to_string()]);
+        if !self.bind.is_empty() {
+            let all: Vec<String> = self.bind.iter().map(IpAddr::to_string).collect();
+            f.extend(["-b".to_string(), all.join(",")]);
         }
         if self.read_only {
             f.push("-r".into());
@@ -192,7 +207,7 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     println!("Scan with the phone's camera, or open: {url}");
     // Only when this machine's address was looked for and not found: one
     // bound on purpose (`--bind 127.0.0.1`) needs no word.
-    if o.bind.is_none() && (url.starts_with("http://127.") || url.starts_with("http://[::1]")) {
+    if o.bind.is_empty() && (url.starts_with("http://127.") || url.starts_with("http://[::1]")) {
         println!("(No network address found: this works on this machine only; --bind picks one.)");
     }
     println!(
@@ -719,7 +734,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
     if let Some(refused) = check_key(req, peer, state) {
         return refused;
     }
-    if get && matches!(req.path.as_str(), "/api/send" | "/api/action" | "/api/fit") {
+    if get && matches!(req.path.as_str(), "/api/send" | "/api/action" | "/api/fit" | "/api/message") {
         return Response::text(405, "POST");
     }
     let q = |argv: Vec<String>| async move {
@@ -742,7 +757,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                                   #{pane_height}\t#{pane_dead}\t#{session_attached}\t\
                                   #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}\t\
                                   #{pane_name}\t#{pane_work_mode}\t#{pane_current_path_short}\t\
-                                  #{pane_activity}\t#{pane_last_line}\t#{pane_idle}\t#{pane_inbox}\t#{pane_unheard}\t#{pane_title}";
+                                  #{pane_activity}\t#{pane_last_line}\t#{pane_idle}\t#{pane_inbox}\t#{pane_unheard}\t#{pane_message}\t#{pane_title}";
             match q(vec!["list-panes".into(), "-a".into(), "-F".into(), FIELDS.into()]).await {
                 Ok((0, out, _)) => Response::json(panes_json(&out)),
                 Ok((_, _, err)) => Response::text(500, err.trim()),
@@ -759,6 +774,24 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
         }
+        (true, "/api/inbox") => {
+            // A pane's inbox, every message whole: what it works on, what
+            // waits, what it finished lately.
+            let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
+                return Response::text(400, "pane: %N");
+            };
+            match q(vec!["list-messages".into(), "-t".into(), pane.into(), "-J".into()]).await {
+                Ok((0, out, _)) => {
+                    let one = serde_json::from_str::<serde_json::Value>(out.trim())
+                        .ok()
+                        .and_then(|v| v.get(0).cloned())
+                        .unwrap_or(serde_json::Value::Null);
+                    Response::json(one.to_string())
+                }
+                Ok((_, _, err)) => Response::text(404, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
         (true, "/api/screen") => {
             let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
                 return Response::text(400, "pane: %N");
@@ -769,7 +802,9 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 Err((status, msg)) => Response::text(status, &msg),
             }
         }
-        (false, "/api/send") | (false, "/api/action") | (false, "/api/fit") if state.read_only => {
+        (false, "/api/send") | (false, "/api/action") | (false, "/api/fit") | (false, "/api/message")
+            if state.read_only =>
+        {
             Response::text(403, "read-only")
         }
         // The pane sized to the phone (`cols`, `rows`: what fits on its
@@ -788,6 +823,22 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 };
                 argv.extend(["-x".into(), cols.to_string(), "-y".into(), rows.to_string()]);
             }
+            match q(argv).await {
+                Ok((0, out, _)) => Response::text(200, out.trim()),
+                Ok((_, _, err)) => Response::text(404, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
+        // A queued message: to the top, up, down, deleted, or the last one
+        // deleted brought back.
+        (false, "/api/message") => {
+            let id = req.param("id").filter(|i| !i.is_empty() && i.bytes().all(|b| b.is_ascii_digit()));
+            let argv: Vec<String> = match (req.param("do").unwrap_or(""), id) {
+                ("undo", _) => vec!["drop-message".into(), "-u".into()],
+                ("drop", Some(id)) => vec!["drop-message".into(), id.into()],
+                (to @ ("top" | "up" | "down"), Some(id)) => vec!["move-message".into(), id.into(), to.into()],
+                _ => return Response::text(400, "do: top, up, down or drop, with id; or undo"),
+            };
             match q(argv).await {
                 Ok((0, out, _)) => Response::text(200, out.trim()),
                 Ok((_, _, err)) => Response::text(404, err.trim()),
@@ -939,12 +990,12 @@ fn panes_json_at(out: &str, now: u64) -> String {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() < 24 {
+            if f.len() < 25 {
                 return None;
             }
             // The title the program set (last: one with a tab in it is still
             // whole, the tab a space).
-            let title = f[23..].join(" ");
+            let title = f[24..].join(" ");
             let num = |s: &str| s.parse::<u64>().unwrap_or(0);
             // The window's alerts, as the status line marks them: it printed
             // (#), rang (!), or went quiet (~) while nobody looked.
@@ -952,7 +1003,7 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
                  \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
                  \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{},\"path\":{},\"quiet\":{},\"last\":{},\
-                 \"idle\":{},\"inbox\":{},\"unheard\":{},\"title\":{}}}",
+                 \"idle\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"title\":{}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -981,6 +1032,8 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 num(f[21]),
                 // An agent's pane never heard from: the hook it lacks.
                 f[22] == "1",
+                // The message it works on (0: none).
+                num(f[23]),
                 json_str(&title)
             ))
         })
@@ -1059,7 +1112,7 @@ mod tests {
     fn the_flags_pass_through_and_the_address_comes_back() {
         let o = Options::parse(&["--port", "8080", "-b", "192.168.1.23", "--read-only", "-k"]).unwrap();
         let want =
-            Options { port: Some(8080), bind: Some("192.168.1.23".parse().unwrap()), read_only: true, keep_key: true };
+            Options { port: Some(8080), bind: vec!["192.168.1.23".parse().unwrap()], read_only: true, keep_key: true };
         assert_eq!(o, want);
         let flags = o.flags();
         assert_eq!(Options::parse(&flags.iter().map(String::as_str).collect::<Vec<_>>()).unwrap(), want);
@@ -1067,7 +1120,19 @@ mod tests {
         assert_eq!(crate::command::parse(&argv), Ok(crate::command::Cmd::WebStart(want.clone())));
         assert_eq!(crate::command::Cmd::WebStart(want).to_string(), "web-start -p 8080 -b 192.168.1.23 -r -k");
         assert_eq!(Options::parse(&[]).unwrap(), Options::default());
-        for bad in [&["--port"][..], &["-p", "x"], &["-p", "70000"], &["-b", "somewhere"], &["--nope"]] {
+        // More than one card: -b again, or commas; each once, in order, and
+        // through web-start and back the same.
+        let many =
+            Options::parse(&["-b", "192.168.1.23,10.0.0.7", "--bind", "fd7a:115c:a1e0::1", "-b", "10.0.0.7"]).unwrap();
+        let ips: Vec<IpAddr> =
+            ["192.168.1.23", "10.0.0.7", "fd7a:115c:a1e0::1"].iter().map(|s| s.parse().unwrap()).collect();
+        assert_eq!(many.bind, ips);
+        let argv: Vec<String> = [vec!["web-start".to_string()], many.flags()].concat();
+        assert_eq!(crate::command::parse(&argv), Ok(crate::command::Cmd::WebStart(many.clone())));
+        assert_eq!(many.flags(), ["-b", "192.168.1.23,10.0.0.7,fd7a:115c:a1e0::1"]);
+        for bad in
+            [&["--port"][..], &["-p", "x"], &["-p", "70000"], &["-b", "somewhere"], &["-b", "10.0.0.7,x"], &["--nope"]]
+        {
             assert!(Options::parse(bad).is_err(), "{bad:?}");
         }
         let status = "serving http://10.0.0.2:7681/#k=abc · kept key · since 09:00 · 1 connected\n  10.0.0.3 ...";
@@ -1171,13 +1236,13 @@ mod tests {
         let qr = qr_text("http://192.168.1.23:7681/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert!(qr.lines().count() > 10 && qr.contains('█'), "{qr}");
         let json = panes_json_at(
-            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t✳ fix\tthe login\n\
-             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t0\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\nshort line\n",
+            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t7\t✳ fix\tthe login\n\
+             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t0\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\t\nshort line\n",
             1060,
         );
         assert_eq!(
             json,
-            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"unheard":false,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"inbox":3,"unheard":true,"title":""}]"#
+            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"unheard":false,"working":7,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"inbox":3,"unheard":true,"working":0,"title":""}]"#
         );
         assert_eq!(panes_json(""), "[]");
         // The keys the page sends: named ones, Ctrl with a letter, Alt with

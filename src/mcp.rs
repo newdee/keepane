@@ -165,7 +165,30 @@ fn tools() -> Vec<Value> {
             json!({ "pane": pane.clone(), "name": s("Letters, digits, - and _") }),
             &["pane", "name"],
         ),
-        tool("kill_pane", "Close a pane (kept 10 s for the user to undo).", json!({ "pane": pane }), &["pane"]),
+        tool(
+            "create_remote_pane",
+            "Start a pane on another machine paired with this one, which must have allowed this one to \
+             (link allow --panes there): one of that machine's agent-commands, in a session named after \
+             this machine unless one is given. Returns its address there, host:port/$1:@3.%7, to send it \
+             messages; kill_pane with that address closes it.",
+            json!({
+                "host": s("The machine, host:port, as list_links shows it"),
+                "command": s("Program to run (must be in that machine's agent-commands), e.g. claude"),
+                "args": { "type": "array", "items": { "type": "string" }, "description": "Its arguments" },
+                "name": s("Name for the new pane, so %name finds it there"),
+                "mode": mode.clone(),
+                "session": s("Its session there (default: one named after this machine)"),
+                "cwd": s("Working directory there"),
+            }),
+            &["host"],
+        ),
+        tool(
+            "kill_pane",
+            "Close a pane (kept 10 s for the user to undo). One on another machine (host:port/...) only if \
+             this machine started it there (create_remote_pane).",
+            json!({ "pane": pane }),
+            &["pane"],
+        ),
         tool(
             "list_tasks",
             "Chains of messages: status, where, how long.",
@@ -293,7 +316,30 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
         }
         "set_work_mode" => vec!["set-work-mode".into(), need("mode")?],
         "rename_pane" => vec!["rename-pane".into(), "-t".into(), need("pane")?, need("name")?],
-        "kill_pane" => vec!["kill-pane".into(), "-t".into(), need("pane")?],
+        "kill_pane" => {
+            let pane = need("pane")?;
+            if crate::link::split_remote(&pane).is_some() {
+                vec!["link-kill".into(), pane]
+            } else {
+                vec!["kill-pane".into(), "-t".into(), pane]
+            }
+        }
+        "create_remote_pane" => {
+            let mut c = vec!["link-start".into(), need("host")?];
+            for (key, flag) in [("session", "-s"), ("name", "-n"), ("mode", "-m"), ("cwd", "-c")] {
+                if let Some(x) = str_of(key) {
+                    c.extend([flag.into(), x]);
+                }
+            }
+            if let Some(cmd) = str_of("command") {
+                c.push("--".into());
+                c.push(cmd);
+                if let Some(args) = a["args"].as_array() {
+                    c.extend(args.iter().filter_map(|x| x.as_str().map(String::from)));
+                }
+            }
+            c
+        }
         "list_tasks" => {
             let mut c = v(&["list-tasks"]);
             if let Some(s) = str_of("session") {
@@ -453,6 +499,21 @@ mod tests {
             ["capture-pane", "-p", "-t", "%b", "-S", "-50"]
         );
         assert!(command("link_info", &json!({})).is_err());
+        // A pane started on another machine, and closed there by its address.
+        assert_eq!(
+            command(
+                "create_remote_pane",
+                &json!({"host": "10.0.0.1:7681", "name": "w", "mode": "ai", "command": "claude", "args": ["-c"]})
+            )
+            .unwrap(),
+            ["link-start", "10.0.0.1:7681", "-n", "w", "-m", "ai", "--", "claude", "-c"]
+        );
+        assert!(command("create_remote_pane", &json!({})).is_err(), "host required");
+        assert_eq!(
+            command("kill_pane", &json!({"pane": "10.0.0.1:7681/%7"})).unwrap(),
+            ["link-kill", "10.0.0.1:7681/%7"]
+        );
+        assert_eq!(command("kill_pane", &json!({"pane": "%7"})).unwrap(), ["kill-pane", "-t", "%7"]);
         // Answering a message, carrying a task on: by their numbers.
         assert_eq!(
             command("send_message", &json!({"re": 7, "task": 3, "text": "done"})).unwrap(),

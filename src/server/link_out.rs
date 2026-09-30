@@ -27,6 +27,10 @@ pub(super) enum LinkOp {
     Info { addr: String, key: String },
     /// `link-capture`: what a pane of theirs shows.
     Capture { addr: String, key: String },
+    /// `link-start`: a pane started there; its address comes back.
+    Pane { addr: String, key: String },
+    /// `link-kill`: a pane this machine started there, closed.
+    Kill { addr: String, key: String },
     /// `trace-message` of a message handed to them: the record here, then
     /// theirs; `waited`, a `-w` that may run out.
     Trace { addr: String, key: String, here: String, waited: bool },
@@ -124,6 +128,33 @@ impl Server {
                     let body = serde_json::json!({ "to": pane, "history": history.unwrap_or(0) }).to_string();
                     let op = LinkOp::Capture { addr: addr.clone(), key: key.clone() };
                     self.link_signed(cid, &addr, &key, "POST", "/link/capture", body.into_bytes(), ANSWER_GRACE, op)
+                })
+            }
+            Cmd::LinkPane(p) => {
+                let addr = p.addr.clone();
+                self.peer_key(&addr).and_then(|key| {
+                    // This machine's name, for the session the pane goes in
+                    // there when none is asked for.
+                    let body = serde_json::json!({
+                        "host": crate::sysinfo::hostname(),
+                        "session": p.session,
+                        "name": p.name,
+                        "mode": p.mode,
+                        "cwd": p.cwd,
+                        "argv": p.argv,
+                    })
+                    .to_string();
+                    let op = LinkOp::Pane { addr: addr.clone(), key: key.clone() };
+                    self.link_signed(cid, &addr, &key, "POST", "/link/pane", body.into_bytes(), ANSWER_GRACE, op)
+                })
+            }
+            Cmd::LinkKill { target } => {
+                let (addr, pane) = link::split_remote(&target).expect("the parser checked");
+                let (addr, pane) = (addr.to_string(), pane.to_string());
+                self.peer_key(&addr).and_then(|key| {
+                    let body = serde_json::json!({ "to": pane }).to_string();
+                    let op = LinkOp::Kill { addr: addr.clone(), key: key.clone() };
+                    self.link_signed(cid, &addr, &key, "POST", "/link/kill", body.into_bytes(), ANSWER_GRACE, op)
                 })
             }
             Cmd::LinkRemove { addr } => return self.link_remove(cid, &addr),
@@ -354,6 +385,20 @@ impl Server {
                     Err(e) => Outcome::Error(e),
                 }
             }
+            // Its address there, to send it messages: the machine in front.
+            LinkOp::Pane { addr, key } => match Self::checked(&addr, &key, &nonce, result) {
+                Ok(ans) if ans.status == 200 => {
+                    let text = String::from_utf8_lossy(&ans.body).trim().to_string();
+                    Outcome::Text(format!("{addr}/{text}"))
+                }
+                Ok(ans) => Outcome::Error(format!("{addr} said: {}", ans.text())),
+                Err(e) => Outcome::Error(e),
+            },
+            LinkOp::Kill { addr, key } => match Self::checked(&addr, &key, &nonce, result) {
+                Ok(ans) if ans.status == 200 => Outcome::Text(ans.text()),
+                Ok(ans) => Outcome::Error(format!("{addr} said: {}", ans.text())),
+                Err(e) => Outcome::Error(e),
+            },
             LinkOp::Trace { addr, key, here, waited } => match Self::checked(&addr, &key, &nonce, result) {
                 Ok(ans) if ans.status == 200 => {
                     let v: serde_json::Value = serde_json::from_slice(&ans.body).unwrap_or_default();
@@ -428,9 +473,13 @@ impl Server {
                 p.addr = addr.to_string();
                 shell = p.shell;
             }
-            None => {
-                l.peers.push(link::Peer { key: key.to_string(), addr: addr.to_string(), shell: false, screen: false })
-            }
+            None => l.peers.push(link::Peer {
+                key: key.to_string(),
+                addr: addr.to_string(),
+                shell: false,
+                screen: false,
+                panes: false,
+            }),
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);

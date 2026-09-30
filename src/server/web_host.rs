@@ -148,7 +148,7 @@ impl Server {
         }
         // The address this machine reaches the network through and its
         // Tailscale addresses (or the one asked for), one port for all.
-        let addrs = crate::link::listen_addrs(o.bind);
+        let addrs = crate::link::listen_addrs(&o.bind);
         let ip = addrs[0];
         let port = o.port.unwrap_or(crate::web::DEFAULT_PORT);
         let key = match if o.keep_key { crate::web::kept_key() } else { crate::web::new_key() } {
@@ -174,6 +174,11 @@ impl Server {
                 Ok(l) => {
                     listeners.push(l);
                     also.push(*other);
+                }
+                // One asked for (`-b`) is not left out quietly: an address
+                // this machine does not have, say.
+                Err(e) if !o.bind.is_empty() => {
+                    return Outcome::Error(format!("web: listen on {other}:{port}: {e} (an address of this machine?)"));
                 }
                 Err(e) => log::warn!("web: not on {other}:{port}: {e}"),
             }
@@ -334,7 +339,7 @@ mod tests {
     }
 
     fn here() -> Options {
-        Options { port: Some(0), bind: Some(IpAddr::from([127, 0, 0, 1])), ..Options::default() }
+        Options { port: Some(0), bind: vec![IpAddr::from([127, 0, 0, 1])], ..Options::default() }
     }
 
     fn text(o: Outcome) -> String {
