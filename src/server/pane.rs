@@ -996,14 +996,15 @@ impl Pane {
                     } else if let Some(m) = self.marks.back_mut().filter(|m| m.start.is_none() && m.end.is_none())
                         && let Some(entered) = m.entered.take()
                     {
-                        // No word of its start from the shell: what ran
-                        // since Enter, told if anything was typed.
+                        // No word of its start from the shell: a command was
+                        // typed, so it ran from Enter. Closed as one that ran:
+                        // left open, the next prompt would take the mark for
+                        // itself (the same prompt again), and the command's
+                        // line would lose it.
                         let (line, col) = (m.line, m.col);
                         let command = self.text_at(line).map(|text| command_of(&text, col)).unwrap_or_default();
                         if !command.is_empty() {
-                            let secs = (t - entered).num_milliseconds().max(0) as u64 / 1000;
-                            let failed = code.is_some_and(|c| c != 0);
-                            self.finished.push(Finished { command, secs, failed, exit: code });
+                            self.finish_mark(Some(entered), t, code, true);
                         }
                     }
                 }
@@ -2046,7 +2047,11 @@ mod tests {
         p.write_input(b"\r"); // typed ahead: the first Enter is the start
         p.process_output(format!("make\r\nbuilt\r\n{}{a}$ {b}", d(2)).as_bytes());
         assert_eq!(p.finished, [Finished { command: "make".into(), secs: 0, failed: true, exit: Some(2) }]);
-        assert!(p.marks.iter().all(|m| m.end.is_none()), "no stamp without the shell's word of a start");
+        // The command's line keeps its mark (stamped, from Enter): the next
+        // prompt does not take it, and a command's own lines end there.
+        let ran: Vec<&Mark> = p.marks.iter().filter(|m| m.end.is_some()).collect();
+        assert_eq!(ran.len(), 1, "one stamp, the command's, not the empty Enter's: {:?}", p.marks);
+        assert_eq!(p.last_lines(5, true), ["built"], "its own output, not what came before its prompt");
         // A shell that does say (bash 4.4+, zsh): its word, as before.
         p.finished.clear();
         p.write_input(b"ls\r");
