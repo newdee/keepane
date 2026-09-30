@@ -230,7 +230,7 @@ copy mode 的常用操作：
        alt="每条命令行尾显示时间，其中一条失败；历史面板按 pane 位置和日期列出；在查看器里打开某一天；手滑关掉的 pane 按 C-b u 找回">
 </p>
 
-PowerShell、bash、zsh 的 pane 会通过 keepane 启动时装上的提示符钩子报告每条命令的运行情况（钩子在你自己的 `~/.bashrc` 或 `.zshrc` 之后加载，不改你的提示符）。bash 要 4.4 或更新：macOS 自带的 `/bin/bash`（3.2）不报告命令何时开始，所以它的 pane 没有命令时间，在它里面执行的消息也不会标出成功还是失败。按 `prefix C-t`（或 `set -g pane-timestamps on`），命令所在那一行的右端就会显示它什么时候开始、跑了多久、有没有失败：
+PowerShell、bash、zsh 的 pane 会通过 keepane 启动时装上的提示符钩子报告每条命令的运行情况（钩子在你自己的 `~/.bashrc` 或 `.zshrc` 之后加载，不改你的提示符）。macOS 自带的 `/bin/bash`（3.2）不报告命令何时开始（`PS0` 是 4.4 才有的），keepane 就用回车进入 pane 的那一刻代替，所以那里的时间从按键算起，而不是从 shell 开始执行算起。按 `prefix C-t`（或 `set -g pane-timestamps on`），命令所在那一行的右端就会显示它什么时候开始、跑了多久、有没有失败：
 
 ```text
 PS C:\src> cargo build                                     14:03:22 41s ✓

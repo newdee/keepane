@@ -3727,13 +3727,9 @@ async fn the_phone_gets_joined_lines_with_their_command_times() {
         let (_, screen, _) = h.cli(&["capture-pane", "-p", "-J", "-t", &format!("%{p}")]).await;
         screen.lines().any(|l| l.trim_end() == output)
     };
-    // bash reports a command's start from 4.4 on (PS0); macOS's own is 3.2,
-    // and has no command times to place (README: "Command times").
-    let timed = cfg!(windows)
-        || std::process::Command::new(HOOKED_SHELL[0])
-            .args(["-c", "(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) ))"])
-            .status()
-            .is_ok_and(|s| s.success());
+    // Every shell's command is timed: bash before 4.4 (macOS's own) from
+    // Enter at its prompt.
+    let timed = true;
     while !(printed().await && (!timed || done(&h.cli(&["list-marks", "-t", &format!("%{p}")]).await.1))) {
         assert!(Instant::now() < deadline, "the command was never marked");
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -5906,18 +5902,6 @@ async fn panes_are_told_the_terminal_they_draw_on() {
     h.cli(&["kill-server"]).await;
 }
 
-/// Whether this machine's bash says when a command starts (`PS0`, bash 4.4
-/// and newer), which is what tells keepane a command failed.
-#[cfg(unix)]
-fn bash_reports_commands() -> bool {
-    std::process::Command::new("bash")
-        .args(["-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
-        .is_some_and(|v| v >= 404)
-}
-
 /// The same in bash: POSIX syntax for the envelope and for several lines.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
@@ -5928,9 +5912,9 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     let t = format!("%{p}");
     let (code, _, err) = h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
     assert_eq!(code, 0, "{err}");
-    // bash before 4.4 (macOS's own) does not say when a command starts, so
-    // a failure is not known there: such a message is just done (README).
-    let failed = if bash_reports_commands() { "failed" } else { "done" };
+    // bash before 4.4 (macOS's own) does not say when a command starts:
+    // Enter at the prompt stands in, so a failure is known there too.
+    let failed = "failed";
     wait_format(&h, p, "#{pane_idle}", "1").await;
     let (code, out, err) = h.cli(&["send-message", "-t", &t, "-w", "30", "printf '%s%s\\n' ab cd"]).await;
     assert_eq!(code, 0, "{err}");

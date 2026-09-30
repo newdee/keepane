@@ -370,10 +370,10 @@ clipboard into the pane, as the terminal itself would.
 
 A PowerShell, bash or zsh pane reports each command it runs through the
 prompt hook keepane starts it with (after your own `~/.bashrc` or
-`.zshrc`, whose prompt it leaves as it is). bash needs 4.4 or newer for
-this: macOS's own `/bin/bash` (3.2) does not say when a command starts,
-so its panes get no times, and a message run there is not marked as failed
-or not.
+`.zshrc`, whose prompt it leaves as it is). macOS's own `/bin/bash` (3.2)
+does not say when a command starts (`PS0` came in 4.4); keepane takes the
+moment Enter went into the pane instead, so a time there counts from the
+key rather than from the shell.
 `C-b C-t` (or `set -g pane-timestamps on`) shows, at the right end of the
 line the command was typed on, when it started, how long it took and
 whether it failed:
