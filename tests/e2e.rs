@@ -3482,6 +3482,9 @@ async fn web_serves_on_every_address_it_is_given() {
     // 192.0.2.1 is a documentation address: no machine has it.
     let (code, _, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1,192.0.2.1"]).await;
     assert!(code != 0 && err.contains("192.0.2.1") && err.contains("an address of this machine"), "{err}");
+    // First or not, the same word: the address, not the port.
+    let (code, _, err) = h.cli(&["web-start", "-p", "0", "-b", "192.0.2.1"]).await;
+    assert!(code != 0 && err.contains("an address of this machine") && !err.contains("--port"), "{err}");
     let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1", "-b", "::1"]).await;
     assert_eq!(code, 0, "{err}");
     let url = keepane::web::status_url(&status).expect(&status).to_string();

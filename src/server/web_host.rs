@@ -162,6 +162,10 @@ impl Server {
         };
         let listener = match bind(ip, port) {
             Ok(l) => l,
+            // What to look at: the address, or the port.
+            Err(e) if e.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                return Outcome::Error(format!("web: listen on {ip}:{port}: {e} (an address of this machine?)"));
+            }
             Err(e) => return Outcome::Error(format!("web: listen on {ip}:{port}: {e} (in use? --port picks another)")),
         };
         // `-p 0`: whichever port the system gave; the other addresses take
