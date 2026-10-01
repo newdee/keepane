@@ -318,7 +318,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `C-t` | show when each command ran, how long it took and how it ended, at the end of its line (`pane-timestamps`) |
 | `/` | browse what panes printed, by pane and day (`choose-history`) |
 | `{` / `}` | swap pane with previous / next |
-| `q` | show the pane numbers (with the name and work mode, `%name · ai`, under them); press one to go there (past 9, both digits: `1` `2` is pane 12; a `1` that could still become 10 or 11 is picked by `Enter`, or when the numbers go: at least a second after it) |
+| `q` | show the pane numbers (with the name and work mode, `%name · ai`, under them); press one to go there at once (past 9, a second digit straight after goes on from there: `1` `2` is pane 12) |
 | `Space` / `M-1`…`M-5` / `E` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) / even out the panes next to this one |
 | `C-o` / `M-o` | rotate the panes through the layout |
 | `!` | break the pane out into its own window |

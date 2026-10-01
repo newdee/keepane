@@ -1711,45 +1711,62 @@ async fn display_panes_takes_numbers_past_nine() {
     assert_eq!(h.cli(&["list-panes", "-t", "g"]).await.1.lines().count(), 12);
     let active = |n: usize| move |out: &str| out.lines().nth(n).is_some_and(|l| l.contains("(active)"));
     // Each case: show the numbers, type, then the pane that should be active.
-    for (keys, enter, pane) in [
-        ("10", false, 10), // at once: there is no pane 100 to wait for
-        ("1", true, 1),    // Enter picks 1 although 10 and 11 were still possible
-        ("11", false, 11),
-        ("2", false, 2), // at once: there is no pane 20
-    ] {
+    for (keys, pane) in [("10", 10), ("11", 11), ("2", 2)] {
         c.prefix('q').await;
         c.wait_for("numbers", |s| s.contents().contains("███")).await;
         c.type_str(keys).await;
-        if enter {
-            c.enter().await;
-        }
         h.wait_list("g", &format!("{keys}: pane {pane}"), active(pane)).await;
         c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
     }
-    // 1 then Escape: nothing picked (pane 2 stays), the numbers go.
-    c.prefix('q').await;
-    c.wait_for("numbers", |s| s.contents().contains("███")).await;
-    c.type_str("1").await;
-    c.key(0x1B, '\x1b', 0).await;
-    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-    assert!(active(2)(&h.cli(&["list-panes", "-t", "g"]).await.1), "Escape still picked a pane");
-    // 1 and nothing more: pane 1 once the numbers go, without another key.
+    // A digit goes there at once, even when 10 and 11 are still possible;
+    // the numbers stay up a moment for a second digit, then go by themselves.
     c.prefix('q').await;
     c.wait_for("numbers", |s| s.contents().contains("███")).await;
     c.type_str("1").await;
     let t = Instant::now();
-    h.wait_list("g", "pane 1 after the pause", active(1)).await;
+    h.wait_list("g", "pane 1 at once", active(1)).await;
     let took = t.elapsed();
-    assert!(took >= Duration::from_millis(900), "picked before the pause: {took:?}");
-    // On time, not at some later tick.
-    assert!(took < Duration::from_millis(1800), "picked late: {took:?}");
-    // pane-base-index 5: the panes are 5..16, so 1 is no pane, yet 1 3 is 13.
+    assert!(took < Duration::from_millis(700), "waited before going: {took:?}");
+    assert!(c.text().contains("███"), "the numbers went before a second digit could come");
+    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    // A first digit late in the numbers' time still leaves time for the
+    // second: they stay up a second from the digit, not only display-time
+    // (1.5s) from prefix q.
+    c.prefix('q').await;
+    c.wait_for("numbers", |s| s.contents().contains("███")).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    c.type_str("1").await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    c.type_str("0").await;
+    h.wait_list("g", "late 1 0: pane 10", active(10)).await;
+    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    // From pane 2, 1 1 passes pane 1 on its way to 11: `last-pane` goes
+    // back to 2, where it began.
+    c.prefix('q').await;
+    c.wait_for("numbers", |s| s.contents().contains("███")).await;
+    c.type_str("2").await;
+    h.wait_list("g", "pane 2", active(2)).await;
+    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    c.prefix('q').await;
+    c.wait_for("numbers", |s| s.contents().contains("███")).await;
+    c.type_str("11").await;
+    h.wait_list("g", "pane 11", active(11)).await;
+    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    c.prefix(';').await;
+    h.wait_list("g", "back to pane 2", active(2)).await;
+    // pane-base-index 5: the panes are 5..16, so 1 is no pane, yet 1 3 is 13;
+    // 1 alone goes nowhere.
     h.cli(&["set", "-g", "pane-base-index", "5"]).await;
     c.prefix('q').await;
     c.wait_for("numbers", |s| s.contents().contains("███")).await;
     c.type_str("13").await;
     h.wait_list("g", "pane 13 (base 5)", active(13 - 5)).await;
+    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    c.prefix('q').await;
+    c.wait_for("numbers", |s| s.contents().contains("███")).await;
+    c.type_str("1").await;
+    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    assert!(active(13 - 5)(&h.cli(&["list-panes", "-t", "g"]).await.1), "1 went somewhere");
     h.cli(&["kill-server"]).await;
 }
 

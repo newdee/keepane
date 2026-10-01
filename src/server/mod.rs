@@ -96,9 +96,6 @@ enum Event {
     /// keepane's prompt came back in a pane a moment ago, and what the
     /// command printed has been drawn by now (see `PROMPT_SETTLE`).
     PromptSettled(PaneId),
-    /// The `display-panes` numbers of this client have run out: a number
-    /// left waiting for another digit is picked now (`panes_settle`).
-    PanesSettle(ClientId),
     /// The daily look for a newer keepane came back (`newer`).
     NewerChecked(Option<String>),
     /// The address the internet sees this machine at came back (`public_ip`).
@@ -216,6 +213,14 @@ impl ChooserKind {
     fn live(&self) -> bool {
         matches!(self, ChooserKind::Tree { .. } | ChooserKind::Buffers | ChooserKind::Clients | ChooserKind::Jobs)
     }
+}
+
+/// The digits typed while the `display-panes` numbers are up.
+#[derive(Clone, Copy)]
+struct PanesTyped {
+    typed: digits::Typed,
+    /// The active and last pane before the first digit.
+    before: (PaneId, Option<PaneId>),
 }
 
 struct Chooser {
@@ -369,9 +374,8 @@ struct Client {
     /// `display-panes` is showing the pane numbers until this instant.
     panes_until: Option<Instant>,
     /// The pane number typed while they show, when another digit could
-    /// still make a bigger one (`1` with pane 10 up): picked when the numbers
-    /// go, or at Enter.
-    panes_typed: Option<digits::Typed>,
+    /// still make a bigger one (`1` with pane 10 up).
+    panes_typed: Option<PanesTyped>,
     prompt: Option<Prompt>,
     message: Option<(String, Instant)>,
     /// Multi-line command output shown over the window until a key is pressed
@@ -1985,7 +1989,6 @@ impl Server {
                 log::warn!("done-webhook: {why}");
                 self.note_message(&format!("done-webhook: {why}"));
             }
-            Event::PanesSettle(cid) => self.panes_settle(cid),
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -5615,19 +5618,6 @@ impl Server {
 
     // ------------------------------------------------------------------ keys
 
-    /// A pane number left waiting for another digit is picked once the
-    /// `display-panes` numbers have gone.
-    fn panes_settle(&mut self, cid: ClientId) {
-        let Some(c) = self.clients.get_mut(&cid) else { return };
-        if c.panes_until.is_some_and(|t| Instant::now() < t) {
-            return;
-        }
-        let Some(t) = c.panes_typed.take() else { return };
-        c.panes_until = None;
-        let out = self.exec(Cmd::SelectPane { sel: PaneSel::Index(t.n) }, Some(cid));
-        self.reply(cid, out);
-    }
-
     fn handle_key(&mut self, cid: ClientId, rec: KeyRecord) {
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(sid) = c.session else { return };
@@ -5639,9 +5629,6 @@ impl Server {
             && self.session(sid).is_some_and(|s| (s.cols, s.rows) != (ccols, crows))
         {
             self.fit_session(sid, Some(cid));
-        }
-        if rec.down {
-            self.panes_settle(cid);
         }
         let Some(c) = self.clients.get_mut(&cid) else { return };
         c.last_activity = Instant::now();
@@ -5667,53 +5654,50 @@ impl Server {
             }
             return;
         }
-        // While `display-panes` numbers are up, a digit picks that pane and
-        // anything else just puts them away (tmux does the same). Past nine
-        // a number takes more than one digit: one that could still grow
-        // waits for the next, and Enter (or the numbers going) picks it.
+        // While `display-panes` numbers are up, a digit goes to that pane at
+        // once and anything else just puts them away (tmux does the same).
+        // Past nine a number takes more than one digit: while one could
+        // still grow, the numbers stay up a moment longer and the next digit
+        // goes on from there (1 goes to pane 1, then 2 to pane 12).
         if c.panes_until.is_some_and(|t| Instant::now() < t)
             && let Some(k) = key
         {
             c.swallow_up.insert(rec.vk);
             let typed = c.panes_typed.take();
-            let pick = match k.code {
-                KeyCode::Char(d @ '0'..='9') => {
-                    let d = d as usize - '0' as usize;
-                    let base = self.opts.pane_base_index;
-                    let count = self.session(sid).and_then(|s| s.window()).map_or(0, |w| w.panes.len());
-                    let (lo, hi) = (base, (base + count).saturating_sub(1));
-                    let now = Instant::now();
-                    match digits::push(typed, d, now, lo, hi).filter(|_| count > 0) {
-                        // More digits could still make a pane's number (with
-                        // a high base, `1` can be no pane yet start 10).
-                        Some(t) if digits::longer(t.n, lo, hi) => {
-                            let c = self.clients.get_mut(&cid).unwrap();
-                            c.panes_typed = Some(t);
-                            let until = c.panes_until.max(Some(now + digits::GAP)).unwrap_or(now);
-                            c.panes_until = Some(until);
-                            // Picked when the numbers go, to the moment
-                            // (an earlier wake finds them still up and waits).
-                            let tx = self.events.clone();
-                            tokio::spawn(async move {
-                                let left = until.saturating_duration_since(Instant::now());
-                                tokio::time::sleep(left + Duration::from_millis(5)).await;
-                                let _ = tx.send(Event::PanesSettle(cid));
-                            });
-                            return;
-                        }
-                        Some(t) => Some(t.n),
-                        None => Some(d), // no such pane: select-pane says so
-                    }
-                }
-                KeyCode::Enter => typed.map(|t| t.n),
-                _ => None,
+            let until = c.panes_until.take();
+            let KeyCode::Char(d @ '0'..='9') = k.code else { return };
+            let d = d as usize - '0' as usize;
+            let Some((count, active, last)) =
+                self.session(sid).and_then(|s| s.window()).map(|w| (w.panes.len(), w.active, w.last_pane))
+            else {
+                return;
             };
-            if let Some(c) = self.clients.get_mut(&cid) {
-                c.panes_until = None;
-            }
-            if let Some(idx) = pick {
-                let out = self.exec(Cmd::SelectPane { sel: PaneSel::Index(idx) }, Some(cid));
+            let base = self.opts.pane_base_index;
+            let (lo, hi) = (base, (base + count).saturating_sub(1));
+            let now = Instant::now();
+            let Some(t) = digits::push(typed.map(|p| p.typed), d, now, lo, hi) else {
+                // No such pane: select-pane says so.
+                let out = self.exec(Cmd::SelectPane { sel: PaneSel::Index(d) }, Some(cid));
                 self.reply(cid, out);
+                return;
+            };
+            let before = typed.map_or((active, last), |p| p.before);
+            // (With a high base, `1` can be no pane yet start 10: nothing to
+            // go to until the next digit.)
+            if (lo..=hi).contains(&t.n) {
+                let out = self.exec(Cmd::SelectPane { sel: PaneSel::Index(t.n) }, Some(cid));
+                self.reply(cid, out);
+                // The digits of one display-panes are one move: `last-pane`
+                // goes back to where it began, not to a pane passed through.
+                if let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) {
+                    w.last_pane = if w.active == before.0 { before.1 } else { Some(before.0) };
+                }
+            }
+            if digits::longer(t.n, lo, hi)
+                && let Some(c) = self.clients.get_mut(&cid)
+            {
+                c.panes_typed = Some(PanesTyped { typed: t, before });
+                c.panes_until = until.max(Some(now + digits::GAP));
             }
             return;
         }

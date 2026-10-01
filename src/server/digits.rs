@@ -35,7 +35,8 @@ pub fn leads_to(n: usize, lo: usize, hi: usize) -> bool {
 }
 
 /// Whether some number in `lo..=hi` is `n` with more digits after it: then
-/// a picker that acts on the number waits for them. (`0` starts nothing.)
+/// `display-panes` keeps its numbers up a moment for them. (`0` starts
+/// nothing.)
 pub fn longer(n: usize, lo: usize, hi: usize) -> bool {
     if n == 0 {
         return false;
@@ -131,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn it_waits_only_while_a_longer_number_exists() {
+    fn longer_only_while_a_longer_number_exists() {
         assert!(!longer(1, 0, 9));
         assert!(longer(1, 0, 10));
         assert!(longer(1, 0, 19));
