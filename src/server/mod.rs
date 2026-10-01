@@ -7433,8 +7433,10 @@ impl Server {
                 } else {
                     self.opts.display_panes_colour
                 };
-                let name = w.pane(*id).and_then(|p| p.actor.name.as_deref());
-                render::draw_pane_number(&mut grid, *rect, n, colour, name);
+                let p = w.pane(*id);
+                let name = p.and_then(|p| p.actor.name.as_deref());
+                let mode = p.map_or("", |p| p.actor.mode.as_str());
+                render::draw_pane_number(&mut grid, *rect, n, colour, name, mode);
             }
             cursor = None;
         }

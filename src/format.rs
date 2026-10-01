@@ -619,6 +619,21 @@ mod tests {
         assert_eq!(c.var("pane_activity").as_deref(), Some("1700000042"));
     }
 
+    /// The default status line says the current pane's work mode: `ai` and
+    /// `shell` marked out (a background of their own), `normal` dim.
+    #[test]
+    fn the_default_status_line_says_the_panes_mode() {
+        let right = crate::config::Options::default().status_right;
+        let mut cache = ShellCache::default();
+        for (mode, marked) in [("ai", true), ("shell", true), ("normal", false)] {
+            let mut c = ctx();
+            c.pane_work_mode = mode.into();
+            let segs = expand(&right, &c, &mut cache, Style::default(), now());
+            let seg = segs.iter().find(|s| s.text.trim() == mode).unwrap_or_else(|| panic!("{mode}: {}", plain(&segs)));
+            assert_eq!(seg.style.bg != Style::default().bg, marked, "{mode}: {:?}", seg.style);
+        }
+    }
+
     fn ctx() -> Context {
         Context {
             session: "main".into(),

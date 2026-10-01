@@ -1892,8 +1892,8 @@ async fn zoomed_pane_still_navigates_by_direction() {
     assert!(!c.text().contains("no such pane"), "{}", c.text());
 
     // display-panes and a number: the same, the zoom follows.
-    // Zoomed, every pane still shows its number, where it would be; a
-    // named pane its name under it.
+    // Zoomed, every pane still shows its number, where it would be; under
+    // it a named pane's name and mode, a pane with no name its mode.
     let right = h.cli(&["list-panes", "-t", "z", "-F", "#{pane_id}"]).await.1.lines().nth(1).unwrap().to_string();
     assert_eq!(h.cli(&["rename-pane", "-t", &right, "tests"]).await.0, 0);
     c.prefix('q').await;
@@ -1904,7 +1904,10 @@ async fn zoomed_pane_still_navigates_by_direction() {
             .count()
     };
     c.wait_for("both numbers, the name under the right one", |s| {
-        blocks(s, 0, 40) > 0 && blocks(s, 41, 80) > 0 && s.rows(41, 39).any(|r| r.trim() == "%tests")
+        blocks(s, 0, 40) > 0
+            && blocks(s, 41, 80) > 0
+            && s.rows(41, 39).any(|r| r.trim() == "%tests · normal")
+            && s.rows(0, 40).any(|r| r.trim() == "normal")
     })
     .await;
     c.key(b'1' as u16, '1', 0).await;

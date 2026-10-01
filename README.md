@@ -73,6 +73,10 @@ A pane handles messages according to its work mode:
 | `shell` | keepane's prompt hook sees the shell back at its prompt | typed in and run |
 | `ai` | the agent's end-of-turn hook runs `pane-ready` | typed in as a prompt |
 
+The status line shows the current pane's mode (`ai` and `shell` marked out,
+`normal` dim), and `C-b q` writes each pane's name and mode under its
+number. A `status-right` of your own shows it with `#{pane_work_mode}`.
+
 After someone types into a pane, keepane treats it as busy until the next
 ready signal, so a message never lands in the middle of what is being
 typed. If someone presses keys while a command keepane delivered is
