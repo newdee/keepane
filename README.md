@@ -303,7 +303,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 
 | Key | Action |
 | --- | --- |
-| `c` / `n` / `p` / `Tab` / `0-9` | new window / next / previous / last / select by index |
+| `c` / `n` / `p` / `Tab` / `0-9` | new window / next / previous / last / select by index (`'` asks for an index, for windows past 9) |
 | `,` / `&` | rename / kill window |
 | `%` / `"` | split left-right / top-bottom |
 | `h` `j` `k` `l` or arrows / `o` / `;` | move between panes (vim keys) / next pane / last pane |
@@ -318,7 +318,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `C-t` | show when each command ran, how long it took and how it ended, at the end of its line (`pane-timestamps`) |
 | `/` | browse what panes printed, by pane and day (`choose-history`) |
 | `{` / `}` | swap pane with previous / next |
-| `q` | show the pane numbers (and names, `%name`, under them); press one to go there |
+| `q` | show the pane numbers (with the name and work mode, `%name · ai`, under them); press one to go there (past 9, both digits: `1` `2` is pane 12; a `1` that could still become 10 or 11 is picked by `Enter`, or when the numbers go: at least a second after it) |
 | `Space` / `M-1`…`M-5` / `E` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) / even out the panes next to this one |
 | `C-o` / `M-o` | rotate the panes through the layout |
 | `!` | break the pane out into its own window |
@@ -331,7 +331,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names) |
 | `d` | detach |
 | `?` | list key bindings |
-| `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, `0-9` jump, `Enter` selects, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `-`/`+` or Left/Right fold and unfold a session) |
+| `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` selects, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `-`/`+` or Left/Right fold and unfold a session) |
 | `(` / `)` | switch the client to the previous / next session |
 | `D` | pick a client from a list and detach it |
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
@@ -1012,7 +1012,7 @@ set -ag status-right " #{local_ip} #{public_ip}"
 The default `status-right` uses the machine's (see
 `themes/tokyo-night.conf`, which is the default look written out, and
 `themes/plain.conf` for tmux's); `set -g status-right ...` replaces it, and
-`set -g status off` hides the line.
+`set -g status off` hides the line (prompts and messages then show over the bottom row).
 
 Comparisons, as in tmux: `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}`
 `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and `#{m:pattern,text}` (a

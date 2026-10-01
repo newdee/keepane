@@ -2,6 +2,7 @@
 //! named pipe; renders frames.
 
 pub mod actor;
+mod digits;
 mod done;
 pub mod import;
 pub mod input;
@@ -95,6 +96,9 @@ enum Event {
     /// keepane's prompt came back in a pane a moment ago, and what the
     /// command printed has been drawn by now (see `PROMPT_SETTLE`).
     PromptSettled(PaneId),
+    /// The `display-panes` numbers of this client have run out: a number
+    /// left waiting for another digit is picked now (`panes_settle`).
+    PanesSettle(ClientId),
     /// The daily look for a newer keepane came back (`newer`).
     NewerChecked(Option<String>),
     /// The address the internet sees this machine at came back (`public_ip`).
@@ -228,6 +232,8 @@ struct Chooser {
     /// Sessions folded with `-` (or Left) in the tree: their windows are
     /// not listed until `+` (or Right) opens them again.
     collapsed: HashSet<SessionId>,
+    /// The line number being typed (`1` `2` is line 12); any other key ends it.
+    typed: Option<digits::Typed>,
 }
 
 impl Chooser {
@@ -241,6 +247,7 @@ impl Chooser {
             filter: String::new(),
             tagged: Vec::new(),
             collapsed: HashSet::new(),
+            typed: None,
         }
     }
 
@@ -361,6 +368,10 @@ struct Client {
     repeat_until: Option<Instant>,
     /// `display-panes` is showing the pane numbers until this instant.
     panes_until: Option<Instant>,
+    /// The pane number typed while they show, when another digit could
+    /// still make a bigger one (`1` with pane 10 up): picked when the numbers
+    /// go, or at Enter.
+    panes_typed: Option<digits::Typed>,
     prompt: Option<Prompt>,
     message: Option<(String, Instant)>,
     /// Multi-line command output shown over the window until a key is pressed
@@ -1884,6 +1895,7 @@ impl Server {
                         prefix: false,
                         repeat_until: None,
                         panes_until: None,
+                        panes_typed: None,
                         prompt: None,
                         message: None,
                         overlay: None,
@@ -1973,6 +1985,7 @@ impl Server {
                 log::warn!("done-webhook: {why}");
                 self.note_message(&format!("done-webhook: {why}"));
             }
+            Event::PanesSettle(cid) => self.panes_settle(cid),
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -4430,9 +4443,7 @@ impl Server {
                         let lines: Vec<String> = hits
                             .iter()
                             .enumerate()
-                            .map(|(i, (_, _, label))| {
-                                format!("{}{label}", if i < 10 { format!("({i}) ") } else { "    ".into() })
-                            })
+                            .map(|(i, (_, _, label))| format!("{} {label}", digits::label(Some(i), hits.len())))
                             .collect();
                         if let Some(c) = self.clients.get_mut(&cid) {
                             c.prompt = None;
@@ -5604,6 +5615,19 @@ impl Server {
 
     // ------------------------------------------------------------------ keys
 
+    /// A pane number left waiting for another digit is picked once the
+    /// `display-panes` numbers have gone.
+    fn panes_settle(&mut self, cid: ClientId) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        if c.panes_until.is_some_and(|t| Instant::now() < t) {
+            return;
+        }
+        let Some(t) = c.panes_typed.take() else { return };
+        c.panes_until = None;
+        let out = self.exec(Cmd::SelectPane { sel: PaneSel::Index(t.n) }, Some(cid));
+        self.reply(cid, out);
+    }
+
     fn handle_key(&mut self, cid: ClientId, rec: KeyRecord) {
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(sid) = c.session else { return };
@@ -5615,6 +5639,9 @@ impl Server {
             && self.session(sid).is_some_and(|s| (s.cols, s.rows) != (ccols, crows))
         {
             self.fit_session(sid, Some(cid));
+        }
+        if rec.down {
+            self.panes_settle(cid);
         }
         let Some(c) = self.clients.get_mut(&cid) else { return };
         c.last_activity = Instant::now();
@@ -5641,14 +5668,50 @@ impl Server {
             return;
         }
         // While `display-panes` numbers are up, a digit picks that pane and
-        // anything else just puts them away (tmux does the same).
+        // anything else just puts them away (tmux does the same). Past nine
+        // a number takes more than one digit: one that could still grow
+        // waits for the next, and Enter (or the numbers going) picks it.
         if c.panes_until.is_some_and(|t| Instant::now() < t)
             && let Some(k) = key
         {
-            c.panes_until = None;
             c.swallow_up.insert(rec.vk);
-            if let KeyCode::Char(d @ '0'..='9') = k.code {
-                let idx = d as usize - '0' as usize;
+            let typed = c.panes_typed.take();
+            let pick = match k.code {
+                KeyCode::Char(d @ '0'..='9') => {
+                    let d = d as usize - '0' as usize;
+                    let base = self.opts.pane_base_index;
+                    let count = self.session(sid).and_then(|s| s.window()).map_or(0, |w| w.panes.len());
+                    let (lo, hi) = (base, (base + count).saturating_sub(1));
+                    let now = Instant::now();
+                    match digits::push(typed, d, now, lo, hi).filter(|_| count > 0) {
+                        // More digits could still make a pane's number (with
+                        // a high base, `1` can be no pane yet start 10).
+                        Some(t) if digits::longer(t.n, lo, hi) => {
+                            let c = self.clients.get_mut(&cid).unwrap();
+                            c.panes_typed = Some(t);
+                            let until = c.panes_until.max(Some(now + digits::GAP)).unwrap_or(now);
+                            c.panes_until = Some(until);
+                            // Picked when the numbers go, to the moment
+                            // (an earlier wake finds them still up and waits).
+                            let tx = self.events.clone();
+                            tokio::spawn(async move {
+                                let left = until.saturating_duration_since(Instant::now());
+                                tokio::time::sleep(left + Duration::from_millis(5)).await;
+                                let _ = tx.send(Event::PanesSettle(cid));
+                            });
+                            return;
+                        }
+                        Some(t) => Some(t.n),
+                        None => Some(d), // no such pane: select-pane says so
+                    }
+                }
+                KeyCode::Enter => typed.map(|t| t.n),
+                _ => None,
+            };
+            if let Some(c) = self.clients.get_mut(&cid) {
+                c.panes_until = None;
+            }
+            if let Some(idx) = pick {
                 let out = self.exec(Cmd::SelectPane { sel: PaneSel::Index(idx) }, Some(cid));
                 self.reply(cid, out);
             }
@@ -6276,11 +6339,12 @@ impl Server {
     fn chooser_view(&self, ch: &Chooser) -> Option<(Vec<ChooserItem>, Vec<String>)> {
         let (items, lines) = self.chooser_lines(&ch.kind, &ch.collapsed)?;
         let keep = chooser_filter(&items, &lines, &ch.filter);
+        let rows = keep.iter().filter(|k| **k).count();
         let mut out_items = Vec::new();
         let mut out_lines = Vec::new();
         for (item, line) in items.into_iter().zip(lines).zip(keep).filter(|(_, k)| *k).map(|(p, _)| p) {
             let n = out_items.len();
-            let number = if n < 10 && item != ChooserItem::Separator { format!("({n})") } else { "   ".to_string() };
+            let number = digits::label((item != ChooserItem::Separator).then_some(n), rows);
             let mark = if ch.is_tagged(&item) { '*' } else { ' ' };
             out_lines.push(format!("{number}{mark}{line}"));
             out_items.push(item);
@@ -6308,6 +6372,9 @@ impl Server {
             return;
         }
         let Some(ch) = c.chooser.as_mut() else { return };
+        if !matches!((k.code, k.ctrl, k.alt), (KeyCode::Char('0'..='9'), false, false)) {
+            ch.typed = None;
+        }
         match (k.code, k.ctrl, k.alt) {
             (KeyCode::Escape, _, _) | (KeyCode::Char('q'), false, false) | (KeyCode::Char('c'), true, _) => {
                 c.chooser = None;
@@ -6451,10 +6518,16 @@ impl Server {
                     }
                 }
             }
+            // Past nine a line number takes more than one digit (`1` `2`).
             (KeyCode::Char(d @ '0'..='9'), false, false) => {
-                let i = d as usize - '0' as usize;
-                if i < ch.items.len() && !matches!(ch.items[i], ChooserItem::Separator) {
-                    ch.sel = i;
+                let d = d as usize - '0' as usize;
+                ch.typed =
+                    ch.items.len().checked_sub(1).and_then(|hi| digits::push(ch.typed, d, Instant::now(), 0, hi));
+                // A line that is a title (the board's header) is no pick.
+                if let Some(t) = ch.typed
+                    && ch.items.get(t.n).is_some_and(|it| *it != ChooserItem::Separator)
+                {
+                    ch.sel = t.n;
                 }
             }
             (KeyCode::Enter, _, _) => {
@@ -6837,8 +6910,10 @@ impl Server {
             let area = self.window_area(cols, rows);
             let ch = self.clients.get_mut(&cid).unwrap().chooser.as_mut().unwrap();
             if m.flags & MOUSE_WHEELED != 0 {
+                ch.typed = None;
                 ch.step(if (m.buttons >> 16) as i16 > 0 { -1 } else { 1 });
             } else if buttons & 1 != 0 && prev & 1 == 0 && y >= area.y && y + 1 < area.y + area.h {
+                ch.typed = None;
                 let i = ch.top + (y - area.y) as usize;
                 if i < ch.items.len() {
                     ch.sel = i;
@@ -7213,6 +7288,9 @@ impl Server {
         // (The alerts of the window being drawn were cleared by the sweep at
         // the top of render_all.)
         let mut bell = self.clients.get_mut(&cid).is_some_and(|c| std::mem::take(&mut c.pending_bell));
+        // With `status off` there is no line for them: drawn over the bottom
+        // row at the end instead (as tmux does).
+        let notice = (!opts_status).then(|| (prompt.clone(), message.clone()));
         let status_line = if opts_status {
             let base = render::Style::colors(self.opts.status_fg, self.opts.status_bg);
             let now = chrono::Local::now();
@@ -7518,6 +7596,12 @@ impl Server {
             }
             render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top, actions, &status.join(" "));
             cursor = None;
+        }
+        if let Some((prompt, message)) = &notice
+            && rows > 0
+            && let Some(at) = render::draw_notice(&mut grid, rows - 1, prompt.as_ref(), message.as_deref())
+        {
+            cursor = Some(at);
         }
         // An overlay (a hook's message, a `run-shell` result) draws over the
         // picker, because the next key goes to the overlay, not the picker.
@@ -8237,6 +8321,7 @@ mod tests {
             prefix: false,
             repeat_until: None,
             panes_until: None,
+            panes_typed: None,
             prompt: None,
             message: None,
             overlay: None,

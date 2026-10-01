@@ -1159,20 +1159,38 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
     // 1 session + 30 windows = 31 items, 23 body rows (24 rows, no status line).
     c.prefix('w').await;
     c.wait_for("picker", |s| s.contents().contains("[2/31] j/k move")).await;
-    assert!(c.row(0).starts_with("(0) - many: 30 windows (attached)"), "{:?}", c.row(0));
-    assert!(c.row(1).starts_with(&format!("(1)   - 1: {SH}*")), "base-index 1: {:?}", c.row(1));
+    // Every line has its number, past nine too, padded so the text lines up.
+    assert!(c.row(0).starts_with("(0)  - many: 30 windows (attached)"), "{:?}", c.row(0));
+    assert!(c.row(1).starts_with(&format!("(1)    - 1: {SH}*")), "base-index 1: {:?}", c.row(1));
     // Nothing scrolled yet; the last body row is item 22.
-    assert!(c.row(22).starts_with("      - 22:"), "{:?}", c.row(22));
+    assert!(c.row(22).starts_with("(22)   - 22:"), "{:?}", c.row(22));
     // G: the last item is visible on the last body row, the list scrolled.
     c.key(b'G' as u16, 'G', SHIFT_PRESSED).await;
     c.wait_for("bottom", |s| s.contents().contains("[31/31]")).await;
     // Item 8 is now the top line; its "(8)" jump tag travels with it.
-    assert!(c.row(0).starts_with("(8)   - 8:"), "scrolled: {:?}", c.row(0));
-    assert!(c.row(22).starts_with("      - 30:"), "{:?}", c.row(22));
+    assert!(c.row(0).starts_with("(8)    - 8:"), "scrolled: {:?}", c.row(0));
+    assert!(c.row(22).starts_with("(30)   - 30:"), "{:?}", c.row(22));
     // g: back to the top, scrolled back.
     c.type_str("g").await;
     c.wait_for("top", |s| s.contents().contains("[1/31]")).await;
-    assert!(c.row(0).starts_with("(0) - many: 30 windows"), "{:?}", c.row(0));
+    assert!(c.row(0).starts_with("(0)  - many: 30 windows"), "{:?}", c.row(0));
+    // Two digits are one number: 1 2 is line 12.
+    c.type_str("12").await;
+    c.wait_for("line 12", |s| s.contents().contains("[13/31]")).await;
+    // Another key ends the number: 1, j, 2 is line 2, not 12.
+    c.type_str("1j2").await;
+    c.wait_for("line 2", |s| s.contents().contains("[3/31]")).await;
+    // So does a pause: 1, a pause, 3 is line 3, not 13.
+    c.type_str("g1").await;
+    c.wait_for("line 1", |s| s.contents().contains("[2/31]")).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    c.type_str("3").await;
+    c.wait_for("line 3", |s| s.contents().contains("[4/31]")).await;
+    // A number past the end starts over at its last digit: 3 9 is line 9.
+    c.type_str("39").await;
+    c.wait_for("line 9", |s| s.contents().contains("[10/31]")).await;
+    c.type_str("g").await;
+    c.wait_for("top again", |s| s.contents().contains("[1/31]")).await;
 
     // The tree is live under the cursor: kill a window and the count drops
     // while the selection stays on the session line.
@@ -1186,6 +1204,45 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
     c.wait_for("selected", |s| !s.contents().contains("j/k move")).await;
     let (_, out, _) = h.cli(&["list-windows", "-t", "many"]).await;
     assert!(out.lines().nth(22).unwrap().starts_with(&format!("23: {SH}*")), "{out}");
+    // prefix 0-9 is one key, as in tmux; past 9, prefix ' asks for the index.
+    // The status line is off here: the prompt shows over the bottom row.
+    c.prefix('\'').await;
+    c.wait_for("index prompt", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with("(index)")).await;
+    c.type_str("12").await;
+    c.enter().await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, out, _) = h.cli(&["list-windows", "-t", "many"]).await;
+        if out.lines().nth(11).is_some_and(|l| l.starts_with(&format!("12: {SH}*"))) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "window 12 not current: {out}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // A message shows there too: no window 99 says so.
+    c.prefix('\'').await;
+    c.wait_for("index prompt", |s| s.contents().contains("(index)")).await;
+    c.type_str("99").await;
+    c.enter().await;
+    c.wait_for("error message", |s| {
+        let last = s.rows(0, COLS).nth(ROWS as usize - 1).unwrap();
+        !last.starts_with("(index)") && last.contains("99")
+    })
+    .await;
+    // find-window's list of hits is numbered past nine the same way.
+    c.prefix('f').await;
+    c.wait_for("find prompt", |s| s.contents().contains("(find-window)")).await;
+    c.type_str(SH).await;
+    c.enter().await;
+    c.wait_for("hits", |s| s.contents().contains("[1/29] j/k move")).await;
+    assert!(c.row(0).starts_with(&format!("(0)  many:{SH}")), "{:?}", c.row(0));
+    assert!(c.text().contains(&format!("(12) many:{SH}")), "{}", c.text());
+    c.type_str("12").await;
+    c.wait_for("hit 12", |s| s.contents().contains("[13/29]")).await;
+    c.enter().await;
+    c.wait_for("picked", |s| !s.contents().contains("j/k move")).await;
+    let (_, out, _) = h.cli(&["list-windows", "-t", "many"]).await;
+    assert!(out.lines().nth(12).is_some_and(|l| l.starts_with(&format!("13: {SH}*"))), "{out}");
     h.cli(&["kill-server"]).await;
 }
 
@@ -1637,6 +1694,62 @@ async fn layouts_and_pane_numbers() {
     c.wait_for("numbers", |s| s.contents().contains("███")).await;
     c.key(b'2' as u16, '2', 0).await;
     h.wait_list("g", "pane 2 active", |out| out.lines().nth(2).is_some_and(|l| l.contains("(active)"))).await;
+    h.cli(&["kill-server"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn display_panes_takes_numbers_past_nine() {
+    let h = Harness::start("panes12").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "g"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    for _ in 0..11 {
+        let (code, _, err) = h.cli(&["split-window", "-t", "g"]).await;
+        assert_eq!(code, 0, "{err}");
+        h.cli(&["select-layout", "-t", "g", "tiled"]).await;
+    }
+    assert_eq!(h.cli(&["list-panes", "-t", "g"]).await.1.lines().count(), 12);
+    let active = |n: usize| move |out: &str| out.lines().nth(n).is_some_and(|l| l.contains("(active)"));
+    // Each case: show the numbers, type, then the pane that should be active.
+    for (keys, enter, pane) in [
+        ("10", false, 10), // at once: there is no pane 100 to wait for
+        ("1", true, 1),    // Enter picks 1 although 10 and 11 were still possible
+        ("11", false, 11),
+        ("2", false, 2), // at once: there is no pane 20
+    ] {
+        c.prefix('q').await;
+        c.wait_for("numbers", |s| s.contents().contains("███")).await;
+        c.type_str(keys).await;
+        if enter {
+            c.enter().await;
+        }
+        h.wait_list("g", &format!("{keys}: pane {pane}"), active(pane)).await;
+        c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    }
+    // 1 then Escape: nothing picked (pane 2 stays), the numbers go.
+    c.prefix('q').await;
+    c.wait_for("numbers", |s| s.contents().contains("███")).await;
+    c.type_str("1").await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(active(2)(&h.cli(&["list-panes", "-t", "g"]).await.1), "Escape still picked a pane");
+    // 1 and nothing more: pane 1 once the numbers go, without another key.
+    c.prefix('q').await;
+    c.wait_for("numbers", |s| s.contents().contains("███")).await;
+    c.type_str("1").await;
+    let t = Instant::now();
+    h.wait_list("g", "pane 1 after the pause", active(1)).await;
+    let took = t.elapsed();
+    assert!(took >= Duration::from_millis(900), "picked before the pause: {took:?}");
+    // On time, not at some later tick.
+    assert!(took < Duration::from_millis(1800), "picked late: {took:?}");
+    // pane-base-index 5: the panes are 5..16, so 1 is no pane, yet 1 3 is 13.
+    h.cli(&["set", "-g", "pane-base-index", "5"]).await;
+    c.prefix('q').await;
+    c.wait_for("numbers", |s| s.contents().contains("███")).await;
+    c.type_str("13").await;
+    h.wait_list("g", "pane 13 (base 5)", active(13 - 5)).await;
     h.cli(&["kill-server"]).await;
 }
 
@@ -5429,14 +5542,21 @@ async fn choose_jobs_edges() {
     c.prefix('B').await;
     c.wait_for("the board", |s| s.contents().contains("[2/13] j/k move")).await;
     let text = c.text();
-    // Jump tags run 1..9 (items, the header being 0); beyond that, none.
-    assert!(text.contains("(9) e:8.0"), "{text}");
-    assert!(!text.contains("(10)"), "{text}");
-    assert!(text.lines().any(|l| l.trim_start().starts_with("e:10.0")), "{text}");
+    // Jump tags run 1..12 (items, the header being 0 and untagged), padded
+    // to the widest so the columns stay lined up.
+    assert!(text.contains("(9)  e:8.0"), "{text}");
+    assert!(text.contains("(12) e:11.0"), "{text}");
+    assert!(!text.contains("(0)"), "{text}");
     // g never lands on the header: it is a title, not a pane.
     c.type_str("g").await;
     c.wait_for("first pane", |s| s.contents().contains("[2/13]")).await;
-    // A digit jumps to that item.
+    // A digit jumps to that item; two make one number; the header's 0 is
+    // no item, so it leaves the cursor where it is.
+    c.type_str("12").await;
+    c.wait_for("item 12", |s| s.contents().contains("[13/13]")).await;
+    // (On the header the j after it would land on item 1, not 2.)
+    c.type_str("g0j").await;
+    c.wait_for("0 stayed", |s| s.contents().contains("[3/13]")).await;
     c.type_str("7").await;
     c.wait_for("item 7", |s| s.contents().contains("[8/13]")).await;
     // The pane under the cursor is killed from outside: the board notices

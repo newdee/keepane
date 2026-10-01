@@ -453,18 +453,8 @@ pub fn compose(f: &Frame) -> Composed {
     if let (Some(s), Some(sy)) = (&f.status, status_y) {
         let style = Style::colors(s.fg, s.bg);
         g.fill(Rect { x: 0, y: sy, w: f.cols, h: 1 }, style);
-        if let Some((prompt, input, ci)) = &s.prompt {
-            let pstyle = Style::colors(Color::Idx(0), Color::Idx(3));
-            g.fill(Rect { x: 0, y: sy, w: f.cols, h: 1 }, pstyle);
-            let used = g.put_str(0, sy, prompt, pstyle, f.cols);
-            let before: String = input.chars().take(*ci).collect();
-            let bw = before.width() as u16;
-            g.put_str(used, sy, input, pstyle, f.cols.saturating_sub(used));
-            cursor = Some(((used + bw).min(f.cols.saturating_sub(1)), sy));
-        } else if let Some(m) = &s.message {
-            let mstyle = Style::colors(Color::Idx(0), Color::Idx(3));
-            g.fill(Rect { x: 0, y: sy, w: f.cols, h: 1 }, mstyle);
-            g.put_str(0, sy, m, mstyle, f.cols);
+        if s.prompt.is_some() || s.message.is_some() {
+            cursor = draw_notice(&mut g, sy, s.prompt.as_ref(), s.message.as_deref()).or(cursor);
         } else {
             let mut x = g.put_segments(0, sy, &s.left, f.cols);
             // The window list comes before the right side: the right side
@@ -776,6 +766,33 @@ pub fn draw_big_text(g: &mut Grid, rect: Rect, text: &str, style: Style) -> bool
 /// key) does for this kind of list. `status` (the filter, the tag count)
 /// sits at the right end of the hint row and wins over the hint when the
 /// row is too narrow for both: it is state, the hint is not.
+/// A prompt (with its input) or else a message across row `y`, the way the
+/// status line shows them; with `status off` they are drawn over the bottom
+/// row instead, so a prompt is never typed blind. Returns where the cursor
+/// goes for a prompt.
+pub fn draw_notice(
+    g: &mut Grid,
+    y: u16,
+    prompt: Option<&(String, String, usize)>,
+    message: Option<&str>,
+) -> Option<(u16, u16)> {
+    let style = Style::colors(Color::Idx(0), Color::Idx(3));
+    let cols = g.cols;
+    if let Some((label, input, ci)) = prompt {
+        g.fill(Rect { x: 0, y, w: cols, h: 1 }, style);
+        let used = g.put_str(0, y, label, style, cols);
+        let before: String = input.chars().take(*ci).collect();
+        let bw = before.width() as u16;
+        g.put_str(used, y, input, style, cols.saturating_sub(used));
+        return Some(((used + bw).min(cols.saturating_sub(1)), y));
+    }
+    if let Some(m) = message {
+        g.fill(Rect { x: 0, y, w: cols, h: 1 }, style);
+        g.put_str(0, y, m, style, cols);
+    }
+    None
+}
+
 pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize, actions: &str, status: &str) {
     if area.h == 0 || area.w == 0 {
         return;
