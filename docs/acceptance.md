@@ -3077,3 +3077,19 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 12 | 两平台全量 | fmt/clippy 两边通过；Windows 284/10/98，Linux 261/98 | 干净（1/3） |
 | 13 | 真机三平台（CI，提交 9c9afd3） | macos、windows、ubuntu 全部通过 | 干净（2/3） |
 | 14 | 机制通路存活 + 可复现性 | 提示改回"端口"的变异在新断言（3487 行）上被抓；两机开 pane、收件箱、多地址三个 e2e 各连跑 3 次 3/3 | 干净（3/3），验收通过 |
+
+## 85. 状态栏和 `C-b q` 显示 pane 的工作模式
+
+用户要求：底部状态栏标出当前 pane 的模式；`C-b q` 除了序号和名字也显示模式。
+
+- 默认 `status-right` 加一段：`ai`、`shell` 紫底醒目，`normal` 暗色小字；6 个自带主题（tokyo-night、catppuccin-mocha、dracula、gruvbox-dark、nord、plain）各按自己的配色加上。`C-b q`：序号下面 `%名字 · 模式`，没名字的只写模式（太小时同一行文字里）。
+- 自定义了 `status-right` 的看不到默认值：README 中英写明用 `#{pane_work_mode}`。用户本机的 `~/.wmux.conf` 引用旧 wmux 主题 `~/.wmux/themes/tokyo-night.conf`（自定义了 `status-right`），先备份（`.bak-keepane-20261001-105227`）再加上同一段——这个变量旧版就有，`keepane source-file ~/.wmux.conf` 即生效。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| — | 实测（真实二进制） | 默认状态栏在测试 server 上没显示模式：它读了用户自己的配置（旧主题覆盖了 `status-right`）；用空配置启动则 ai/normal 都对 | 定位清楚：用户本机主题另行补上 |
+| 1 | 全量 | `the_tokyo_night_theme_is_the_default_look` 失败：仓库自带主题必须与默认外观一致，默认改了主题没改 | **有问题**：6 个主题都加上（其余 5 个按各自配色），真实二进制逐个主题验证 ai/normal 都显示（不计数） |
+| 2 | 两平台全量 | `zoomed_pane_still_navigates_by_direction` 两平台都失败：它写死了序号下是 `%tests` | **有问题**（测试预期过时）：改为 `%tests · normal`，并加"没名字的 pane 只写模式"；补单测：默认状态栏展开 ai/shell 醒目、normal 不醒目（不计数） |
+| 3 | 两平台全量 | fmt/clippy 两边通过；Windows 285/10/98，Linux 262/98 | 干净（1/3） |
+| 4 | 真机三平台（CI run 36808328902，提交 12c9e69） | macos、windows、ubuntu 全部通过 | 干净（2/3） |
+| 5 | 机制通路存活（4 条变异） | 标签不带模式→渲染单测；绘制时不传模式→e2e `C-b q`；默认状态栏去掉模式段→状态栏单测；normal 也标醒目→状态栏单测：4/4 被抓，都在为它写的断言上 | 干净（3/3），验收通过 |
