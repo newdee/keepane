@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+PackageIdentifier: newdee.keepane
+PackageVersion: 0.25.0
+InstallerType: wix
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+Commands:
+- keepane
+ReleaseDate: 2026-10-02
+Installers:
+- Architecture: x64
+  Scope: machine
+  InstallerUrl: https://github.com/newdee/keepane/releases/download/v0.25.0/keepane-0.25.0-windows-x86_64.msi
+  InstallerSha256: F92ADAB4F3040F18B094E7B5A18B0909C346A80891341771D55552158780F389
+  ProductCode: '{239503E1-A84E-4E6C-84FC-76924DF1FF74}'
+- Architecture: x64
+  Scope: user
+  InstallerUrl: https://github.com/newdee/keepane/releases/download/v0.25.0/keepane-0.25.0-windows-x86_64-user.msi
+  InstallerSha256: 56FA9564495D708A6F64465506367CDFAFE4DF5E528E98EE692923BA80F748B4
+  ProductCode: '{0EC2F146-94B1-40EC-A4F7-710F34855CF2}'
+ManifestType: installer
+ManifestVersion: 1.12.0
