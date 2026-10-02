@@ -569,7 +569,7 @@ source-file ~/.keepane/themes/plain.conf   # 换回 tmux 的样子
 set -g theme tokyo-day
 ```
 
-keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时，pane 的背景色和程序用的颜色（红、蓝等）都是终端自己的。浅色主题必须自己画这些颜色，否则就成了浅色状态栏配深色 pane。所以 `tokyo-day` 会设置 `window-style`（pane 的默认文字色和背景色，和 tmux 一样）和 `pane-colours`（程序用的 16 种颜色，也就是调色板的前 16 个），这样在深色终端里也是完整的浅色效果。主题会同时设置这些颜色和状态栏、边框，所以先设主题，自己的改动写在它后面。
+keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时，pane 的背景色和程序用的颜色（红、蓝等）都是终端自己的。浅色主题必须自己画这些颜色，否则就成了浅色状态栏配深色 pane。所以 `tokyo-day` 会设置 `window-style`（pane 的默认文字色和背景色，和 tmux 一样）和 `pane-colours`（程序用的 16 种颜色，也就是调色板的前 16 个），这样在深色终端里也是完整的浅色效果。主题会同时设置这些颜色和状态栏、边框，所以先设主题，自己的改动写在它后面。这些选项只要有一个用别的方式改过（加载主题文件、手动设置），外观就不再是哪套内置主题，`show -gv theme` 会显示 `custom`。
 
 默认外观用的是 24 位真彩色。在不支持真彩色的终端上（macOS 自带的 Terminal，除非它声明了 `COLORTERM=truecolor`），keepane 会自动换成 256 色里最接近的颜色，keepane 自己的界面和 pane 里程序的输出都一样。
 

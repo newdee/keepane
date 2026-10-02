@@ -206,6 +206,15 @@ pub const THEMES: &[(&str, &str)] = &[
 ];
 pub const THEME_NAMES: &[&str] = &["tokyo-night", "tokyo-day"];
 
+/// The options a theme sets (the same in each).
+fn theme_options() -> &'static [&'static str] {
+    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        let names: Vec<String> = theme_settings(THEMES[0].1).unwrap_or_default().into_iter().map(|(n, _)| n).collect();
+        names.into_iter().map(|n| &*Box::leak(n.into_boxed_str())).collect()
+    })
+}
+
 /// The `set -g <option> <value>` lines of a theme file, comments and blank
 /// lines left out.
 pub fn theme_settings(text: &str) -> Result<Vec<(String, String)>, String> {
@@ -713,13 +722,25 @@ impl Options {
         let settings = theme_settings(text)?;
         let mut next = self.clone();
         for (option, value) in &settings {
-            next.set(option, value).map_err(|e| format!("theme {name}: {e}"))?;
+            next.set_one(option, value).map_err(|e| format!("theme {name}: {e}"))?;
         }
         *self = next;
         Ok(())
     }
 
+    /// Set an option. One a theme sets, set some other way, makes the look
+    /// no built-in theme's any more: `theme` says `custom` then.
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
+        self.set_one(name, value)?;
+        // By its full name: `set status-sty …` is `status-style`.
+        let full = resolve_name(name).unwrap_or_else(|_| name.to_string());
+        if full != "theme" && theme_options().contains(&full.as_str()) {
+            self.theme = "custom".into();
+        }
+        Ok(())
+    }
+
+    fn set_one(&mut self, name: &str, value: &str) -> Result<(), String> {
         let name = &resolve_name(name)?;
         // No value at all flips an on/off option, which is what makes
         // `set mouse` and `set -w sync` worth typing.
@@ -880,6 +901,9 @@ impl Options {
             "event-log-days" => self.event_log_days = ranged(name, value, 1, 3650, "days")?,
             "event-log-max" => self.event_log_max = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024)?,
             "hint-open" => self.hint_open = value.trim().to_string(),
+            // `custom` is what `theme` says once a theme's options were set
+            // some other way; set back, it leaves the look as it is.
+            "theme" if value.trim() == "custom" => self.theme = "custom".into(),
             "theme" => {
                 let name = one_of(name, value, THEME_NAMES)?;
                 self.apply_theme(&name)?;
@@ -1390,6 +1414,19 @@ mod tests {
         let before = o.get("status-style");
         assert!(o.set("theme", "solarized").unwrap_err().contains("tokyo-day"));
         assert_eq!((o.get("status-style"), o.get("theme").as_deref()), (before, Some("tokyo-night")));
+        // A theme's option set some other way (a file, by hand, abbreviated):
+        // the look is no built-in theme's, and says so.
+        o.set("status-sty", "bg=red").unwrap();
+        assert_eq!(o.get("theme").as_deref(), Some("custom"));
+        o.set("theme", "tokyo-day").unwrap();
+        assert_eq!(o.get("theme").as_deref(), Some("tokyo-day"));
+        // An option no theme sets leaves it.
+        o.set("mouse", "off").unwrap();
+        assert_eq!(o.get("theme").as_deref(), Some("tokyo-day"));
+        for (name, value) in theme_settings(include_str!("../themes/nord.conf")).unwrap() {
+            o.set(&name, &value).unwrap();
+        }
+        assert_eq!(o.get("theme").as_deref(), Some("custom"));
     }
 
     /// Every theme file in themes/ reads and sets, and after tokyo-day each

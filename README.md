@@ -1010,7 +1010,7 @@ light status line over dark panes: `tokyo-day` sets `window-style` (a
 pane's default text and background, as in tmux) and `pane-colours` (the 16
 colours programs use, the first 16 of the palette), so it is light in a
 dark terminal too. A theme sets these and the status line and borders all
-at once, so set the theme first and your own changes after it.
+at once, so set the theme first and your own changes after it. Once one of those options is set some other way (a theme file, by hand), the look is no built-in theme's and `show -gv theme` says `custom`.
 
 The default look uses 24-bit colours. On a terminal without them (macOS's
 Terminal, unless it says `COLORTERM=truecolor`), keepane shows the nearest
