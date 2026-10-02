@@ -3209,3 +3209,32 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 4 | 机制通路存活（12 条变异） | 12/12 被抓：↑ 退化为上一行、↓ 不展开、→ 退化为下一行、`v` 无效、树线全为 `├─`、session 色错、根可选、折叠规则退化、过滤不保留后代、起点在窗口、选项被忽略、标记不显示 | 干净（1/3） |
 | 5 | 两平台全量 + 可复现性 | Windows 310/10/104，Linux 287/104；6 个列表相关 e2e 两平台各连跑 5 次 5/5 | 干净（2/3） |
 | 6 | 真机三平台（CI run 37053260564，提交 ca2754d） | macos、windows、ubuntu 全部通过 | 干净（3/3），验收通过 |
+
+## 92. 网页重做：React + HeroUI，手机和电脑都能用
+
+用户：手机界面太丑，用 HeroUI 重新设计（简洁、优雅、美观、现代）；应是标准 web 界面，同时支持 PC 和移动端；网页自己有日间/夜间，终端主题可以从网页切换；做好直接发包。
+
+- `web/`：Vite 8 + React 19 + HeroUI v3 + Tailwind v4，构建成单文件 `web/dist/index.html` 和它的 gzip，两者都提交；`src/web.rs` 用 `include_str!`/`include_bytes!` 收进程序，浏览器接受 gzip 时发 gzip（`Vary: Accept-Encoding`）。构建 keepane 仍然不需要 Node。旧的 `src/web_page.html` 删除。
+- 布局：宽度 ≥ 960 px 时左边列表（360 px）、右边 pane；手机上列表与 pane 两页，返回键回列表。页面右上角选页面样式（日间/夜间/跟随系统，每台设备各自记住）和终端主题（`/api/theme`，电脑上也跟着变；只读页面不显示）。
+- 原有功能全部保留：分组折叠、改名、切换器、发过的命令（☆）、收件箱（置顶/上移/下移/删除/撤销）、命令时间栏、换行与适配屏幕、左右滑动换 pane、完成横幅（声音、震动、标题计数）、Ctrl/Alt 锁定键。测试工具（`tools/phone-driver.mjs`、`phone-shot.mjs`）改用 `[data-pane]` 选择器。
+- 可复现：同一份源码在 Windows 和 Linux 上构建出相同的字节。做法：Tailwind 只扫 `src/` 和 HeroUI 组件（不扫 `dist/`）；不用 lightningcss（它把 oklch 转成 lab 时的浮点舍入在两个系统上不同）；gzip 头的 mtime 清零。CI 新增 `web` job：重新构建，`git diff --exit-code -- web/dist`。
+
+开发中发现并修复：菜单里打开的抽屉按 Escape 关不掉（焦点落在 body 上；打开后 600 ms 内把焦点移进对话框）；键盘连按两次 Enter 时第二次被防抖吞掉（键盘提交不做防抖）；两个系统构建结果不同（见上）。
+
+两处偶发失败（与网页无关，在本条验收中暴露）：
+
+- `histlog::tests::a_dead_writer_is_replaced`（CI Windows）。分类：测试缺陷、个性问题，属于共性模式"固定 sleep 等条件"。原因：测试发出 Crash 后固定等 300 ms 再写一行；全量并行时别的测试的写入排在 Crash 前面，那一行排在 Crash 后面，和旧 writer 一起丢掉，所以 `NotFound`。产品行为与文档一致（"死掉时在路上的消息随之丢失"）。修法：一直等到排在 Crash 后面的 flush 被回应，只有新 writer 能回应它。验证：在 Crash 前人为塞 1 s Stall，旧写法复现同样的 `NotFound`，新写法通过。
+- `display_panes_takes_numbers_past_nine` 的"晚到的第一位"一步（Windows 本机，和 WSL 编译同时跑）。分类：测试缺陷、个性问题。原因：这一步的余量由设计决定，只有几百 ms（第一位离 1.5 s 到期约 300 ms，第二位离 1 s GAP 约 400 ms）。修法：最多试三次。验证：去掉"从数字起再等 1 s"的变异后三次都失败，修复版单独连跑 10/10。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 两平台全量 + 跨平台可复现 | Windows 311/10/104，Linux 288/104；WSL 构建的 gz sha256 与 Windows 相同（641e4506…） | 干净（但第 3 轮有发现） |
+| 2 | 真实浏览器（Edge，桌面 1440 与手机 390，UI check 28 项） | 连跑 3 次，每次 28/28，页面无报错 | 干净（但第 3 轮有发现） |
+| 3 | 真机三平台（CI run 37057935256，提交 f1c2d55） | web job 通过（GitHub 上重建与提交逐字节一致）；ubuntu、macos 通过；windows `a_dead_writer_is_replaced` 失败 | **有问题**（测试），见上（不计数，清零） |
+| 4 | 两平台全量（Windows 与 WSL 同时跑） | Linux 288/104；Windows 2 次中 1 次 `display_panes_takes_numbers_past_nine` 失败 | **有问题**（测试），见上（不计数，清零） |
+| 5 | 两平台全量（同样高负载） | fmt、clippy 通过；Windows 连跑 3 次 3/3（311/10/104），Linux 288/104 | 干净（1/3） |
+| 6 | 真机三平台（CI run 37059180246，提交 a83bf5e） | web、windows、ubuntu、macos 全部通过 | 干净（2/3） |
+| 7 | 静态一致性（文档逐条对照新页面） | README 与代码一致；官网"手机"一节仍写旧页面（按键行在屏幕下方、`+` 菜单、⏱ 按钮），`docs/img/phone*.png` 是旧界面，两处代码注释仍写 `+` 菜单 | **有问题**：官网中英文改写并加一条"电脑浏览器、页面日夜间、终端主题"；截图重拍（`phone-shot.mjs` 的列表视图没有 `#main`，一并修）；94 个翻译键齐全（不计数，清零） |
+| 8 | 边界与损坏输入（Edge，18 项） | 7 个 localStorage 值全部损坏（手机与桌面各一遍）、密钥错误与没有密钥、`#p=99999`、打开着的 pane 被关、320 px 与 2560 px 无横向溢出、5000 字符一行完整到达：18/18，无页面报错。另：检查脚本第一版把提示文字的正则写错（找"二维码"，页面写的是"重新扫码"），属于检查脚本错误，页面本身没问题 | 干净（1/3） |
+| 9 | 可复现性 | Windows 重新构建 `web/dist` 与提交逐字节相同（gz sha256 641e4506…）；clippy 通过；Windows 全量连跑 2 次 2/2；UI check 28/28 | 干净（2/3） |
+| 10 | 真机三平台（CI run 37059568867，提交 8518cfe） | web、windows、ubuntu、macos 全部通过 | 干净（3/3），验收通过 |
