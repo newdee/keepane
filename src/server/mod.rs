@@ -190,10 +190,36 @@ enum ChooserItem {
     Separator,
 }
 
+impl ChooserItem {
+    /// How deep it is in the session tree: the root (`keepane`, a
+    /// separator) 0, a session 1, a window 2, a pane 3; none for the
+    /// other pickers' lines.
+    fn depth(&self) -> Option<usize> {
+        match self {
+            ChooserItem::Separator => Some(0),
+            ChooserItem::Tree(_, None) => Some(1),
+            ChooserItem::Tree(_, Some(_)) => Some(2),
+            ChooserItem::Job(..) => Some(3),
+            _ => None,
+        }
+    }
+
+    /// The session or window line that folds it: itself, or a pane's window.
+    fn fold_target(&self) -> Option<ChooserItem> {
+        match *self {
+            ChooserItem::Tree(..) => Some(*self),
+            ChooserItem::Job(s, w, _) => Some(ChooserItem::Tree(s, Some(w))),
+            _ => None,
+        }
+    }
+}
+
 /// Where a picker's lines come from.
 enum ChooserKind {
-    /// The live session tree; `expand` shows each session's windows.
-    Tree { expand: bool },
+    /// The live session tree; `expand` shows each session's windows and
+    /// their panes; `tree` draws it as a tree of blocks under a `keepane`
+    /// root (`v` turns it into the plain list and back).
+    Tree { expand: bool, tree: bool },
     /// The paste buffers.
     Buffers,
     /// The attached clients.
@@ -247,9 +273,9 @@ struct Chooser {
     /// Items marked with `t`, which `x` (and `r`) act on instead of the
     /// current one. Kept by identity, so a live rebuild does not lose them.
     tagged: Vec<ChooserItem>,
-    /// Sessions folded with `-` (or Left) in the tree: their windows are
-    /// not listed until `+` (or Right) opens them again.
-    collapsed: HashSet<SessionId>,
+    /// Sessions and windows folded with `-` in the tree: what is under them
+    /// is not listed until `+` opens them again.
+    collapsed: Vec<ChooserItem>,
     /// The line number being typed (`1` `2` is line 12); any other key ends it.
     typed: Option<digits::Typed>,
 }
@@ -264,16 +290,8 @@ impl Chooser {
             top: 0,
             filter: String::new(),
             tagged: Vec::new(),
-            collapsed: HashSet::new(),
+            collapsed: Vec::new(),
             typed: None,
-        }
-    }
-
-    /// The session of the current line, when the picker is the tree.
-    fn current_session(&self) -> Option<SessionId> {
-        match self.items.get(self.sel) {
-            Some(ChooserItem::Tree(sid, _)) => Some(*sid),
-            _ => None,
         }
     }
 
@@ -5046,7 +5064,7 @@ impl Server {
                 if self.buffers.is_empty() {
                     return Outcome::Error("no buffers".into());
                 }
-                let (items, lines) = self.chooser_lines(&ChooserKind::Buffers, &HashSet::new()).unwrap_or_default();
+                let (items, lines) = self.chooser_lines(&ChooserKind::Buffers, &[]).unwrap_or_default();
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
@@ -5078,7 +5096,7 @@ impl Server {
                 if self.clients.get(&cid).and_then(|c| c.session).is_none() {
                     return Outcome::Error("choose-jobs: client not attached".into());
                 }
-                let (items, lines) = self.chooser_lines(&ChooserKind::Jobs, &HashSet::new()).unwrap_or_default();
+                let (items, lines) = self.chooser_lines(&ChooserKind::Jobs, &[]).unwrap_or_default();
                 // Start on the client's own pane.
                 let sel = self
                     .resolve(None, Some(cid))
@@ -5152,7 +5170,7 @@ impl Server {
                 if self.clients.get(&cid).and_then(|c| c.session).is_none() {
                     return Outcome::Error("choose-client: client not attached".into());
                 }
-                let (items, lines) = self.chooser_lines(&ChooserKind::Clients, &HashSet::new()).unwrap_or_default();
+                let (items, lines) = self.chooser_lines(&ChooserKind::Clients, &[]).unwrap_or_default();
                 let c = self.clients.get_mut(&cid).unwrap();
                 c.prompt = None;
                 c.overlay = None;
@@ -5330,11 +5348,15 @@ impl Server {
                     return Outcome::Error("choose-tree: client not attached".into());
                 };
                 let expand = windows || !sessions;
-                let kind = ChooserKind::Tree { expand };
-                let (items, lines) = self.chooser_lines(&kind, &HashSet::new()).unwrap_or_default();
-                // Start on the current window (or session).
-                let cur = self.session(sid).and_then(|s| s.window()).map(|w| w.id).filter(|_| expand);
-                let sel = items.iter().position(|i| *i == ChooserItem::Tree(sid, cur)).unwrap_or(0);
+                let kind = ChooserKind::Tree { expand, tree: self.opts.choose_tree_style == "tree" };
+                let (items, lines) = self.chooser_lines(&kind, &[]).unwrap_or_default();
+                // Start on the current pane (or the session, sessions only).
+                let cur = self.session(sid).and_then(|s| s.window()).filter(|_| expand).map(|w| (w.id, w.active));
+                let at = match cur {
+                    Some((w, p)) => ChooserItem::Job(sid, w, p),
+                    None => ChooserItem::Tree(sid, None),
+                };
+                let sel = items.iter().position(|i| *i == at).unwrap_or(0);
                 let c = self.clients.get_mut(&cid).unwrap();
                 // One modal at a time: a picker opened from the `:` prompt
                 // replaces it, or its keys would go to an invisible prompt.
@@ -6503,15 +6525,11 @@ impl Server {
     /// The items and bare lines of a live picker; `chooser_view` filters
     /// and numbers them. None for the fixed lists (`find-window` hits, a
     /// menu), which are built where they are opened.
-    fn chooser_lines(
-        &self,
-        kind: &ChooserKind,
-        collapsed: &HashSet<SessionId>,
-    ) -> Option<(Vec<ChooserItem>, Vec<String>)> {
+    fn chooser_lines(&self, kind: &ChooserKind, collapsed: &[ChooserItem]) -> Option<(Vec<ChooserItem>, Vec<String>)> {
         let mut items = Vec::new();
         let mut lines = Vec::new();
         let expand = match kind {
-            ChooserKind::Tree { expand } => *expand,
+            ChooserKind::Tree { expand, .. } => *expand,
             ChooserKind::Buffers => {
                 for (i, (name, data)) in self.buffers.iter().enumerate() {
                     items.push(ChooserItem::Buffer(i));
@@ -6547,17 +6565,29 @@ impl Server {
             }
             ChooserKind::Found | ChooserKind::Menu(_) | ChooserKind::History { .. } => return None,
         };
+        let tree = matches!(kind, ChooserKind::Tree { tree: true, .. });
+        // The tree hangs from a root of its own, a title that is never picked.
+        if tree {
+            items.push(ChooserItem::Separator);
+            lines.push("keepane".into());
+        }
+        let folded = |item: ChooserItem| collapsed.contains(&item);
         for s in &self.sessions {
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
-            let open = expand && !collapsed.contains(&s.id);
+            let open = expand && !folded(ChooserItem::Tree(s.id, None));
             items.push(ChooserItem::Tree(s.id, None));
-            lines.push(format!(
-                "{} {}: {} windows{}",
-                if open { "-" } else { "+" },
-                s.name,
-                s.windows.len(),
-                if attached { " (attached)" } else { "" }
-            ));
+            lines.push(if tree {
+                let fold = if expand && !open { " +" } else { "" };
+                format!("{} · {} windows{}{fold}", s.name, s.windows.len(), if attached { " · attached" } else { "" })
+            } else {
+                format!(
+                    "{} {}: {} windows{}",
+                    if open { "-" } else { "+" },
+                    s.name,
+                    s.windows.len(),
+                    if attached { " (attached)" } else { "" }
+                )
+            });
             if !open {
                 continue;
             }
@@ -6569,16 +6599,33 @@ impl Server {
                 } else {
                     ""
                 };
+                let win_open = !folded(ChooserItem::Tree(s.id, Some(w.id)));
+                let index = i + self.opts.base_index;
                 let title = w.active_pane().map(|p| p.title.as_str()).unwrap_or("");
                 items.push(ChooserItem::Tree(s.id, Some(w.id)));
-                lines.push(format!(
-                    "  - {}: {}{} ({} panes) \"{}\"",
-                    i + self.opts.base_index,
-                    w.name,
-                    flag,
-                    w.panes.len(),
-                    title
-                ));
+                lines.push(if tree {
+                    let fold = if win_open { "" } else { " +" };
+                    format!("{index}:{}{flag} · {} panes{fold}", w.name, w.panes.len())
+                } else {
+                    let mark = if win_open { "-" } else { "+" };
+                    format!("  {mark} {index}: {}{flag} ({} panes) \"{title}\"", w.name, w.panes.len())
+                });
+                if !win_open {
+                    continue;
+                }
+                for (n, pid) in w.layout.panes().into_iter().enumerate() {
+                    let Some(p) = w.pane(pid) else { continue };
+                    let active = if pid == w.active { "*" } else { "" };
+                    let name = p.actor.name.as_deref().map(|n| format!(" · %{n}")).unwrap_or_default();
+                    let program = truncate(p.display_title(), 40);
+                    let (index, mode) = (n + self.opts.pane_base_index, p.actor.mode.as_str());
+                    items.push(ChooserItem::Job(s.id, w.id, pid));
+                    lines.push(if tree {
+                        format!("{index}:{program}{active} · {mode}{name}")
+                    } else {
+                        format!("      - {index}: {program}{active} · {mode}{name}")
+                    });
+                }
             }
         }
         Some((items, lines))
@@ -6591,13 +6638,23 @@ impl Server {
         let (items, lines) = self.chooser_lines(&ch.kind, &ch.collapsed)?;
         let keep = chooser_filter(&items, &lines, &ch.filter);
         let rows = keep.iter().filter(|k| **k).count();
+        let tree = matches!(ch.kind, ChooserKind::Tree { tree: true, .. });
         let mut out_items = Vec::new();
         let mut out_lines = Vec::new();
         for (item, line) in items.into_iter().zip(lines).zip(keep).filter(|(_, k)| *k).map(|(p, _)| p) {
             let n = out_items.len();
-            let number = digits::label((item != ChooserItem::Separator).then_some(n), rows);
             let mark = if ch.is_tagged(&item) { '*' } else { ' ' };
-            out_lines.push(format!("{number}{mark}{line}"));
+            out_lines.push(if tree {
+                // The number in the block, before what the line is.
+                if item == ChooserItem::Separator {
+                    line
+                } else {
+                    format!("{}{n}  {line}", if mark == '*' { "* " } else { "" })
+                }
+            } else {
+                let number = digits::label((item != ChooserItem::Separator).then_some(n), rows);
+                format!("{number}{mark}{line}")
+            });
             out_items.push(item);
         }
         Some((out_items, out_lines))
@@ -6626,12 +6683,16 @@ impl Server {
         if !matches!((k.code, k.ctrl, k.alt), (KeyCode::Char('0'..='9'), false, false)) {
             ch.typed = None;
         }
+        let tree_view = matches!(ch.kind, ChooserKind::Tree { tree: true, .. });
         match (k.code, k.ctrl, k.alt) {
             (KeyCode::Escape, _, _) | (KeyCode::Char('q'), false, false) | (KeyCode::Char('c'), true, _) => {
                 c.chooser = None;
             }
-            (KeyCode::Down, _, _) | (KeyCode::Char('j'), false, false) | (KeyCode::Char('n'), true, _) => ch.step(1),
-            (KeyCode::Up, _, _) | (KeyCode::Char('k'), false, false) | (KeyCode::Char('p'), true, _) => ch.step(-1),
+            // (In the tree view the arrows go by the tree, below.)
+            (KeyCode::Down, _, _) if !tree_view => ch.step(1),
+            (KeyCode::Up, _, _) if !tree_view => ch.step(-1),
+            (KeyCode::Char('j'), false, false) | (KeyCode::Char('n'), true, _) => ch.step(1),
+            (KeyCode::Char('k'), false, false) | (KeyCode::Char('p'), true, _) => ch.step(-1),
             (KeyCode::Home, _, _) | (KeyCode::Char('g'), false, false) => {
                 ch.sel = 0;
                 ch.settle(1);
@@ -6687,23 +6748,70 @@ impl Server {
                 ch.items = items;
                 ch.lines = lines;
             }
-            // Fold and unfold one session of the tree; the cursor goes to
-            // its line, since its windows are gone from the list.
-            (KeyCode::Left, _, _) | (KeyCode::Char('-'), false, false)
-                if matches!(ch.kind, ChooserKind::Tree { expand: true }) =>
+            // The tree view: Up and Down go to the parent and the first
+            // child (opening a folded line), Left and Right to the one
+            // before and after on the same level, across parents.
+            (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right, _, _)
+                if matches!(ch.kind, ChooserKind::Tree { tree: true, .. }) =>
             {
-                if let Some(sid) = ch.current_session() {
-                    ch.collapsed.insert(sid);
-                    if let Some(i) = ch.items.iter().position(|it| *it == ChooserItem::Tree(sid, None)) {
+                let depths: Vec<Option<usize>> = ch.items.iter().map(ChooserItem::depth).collect();
+                let Some(d) = depths.get(ch.sel).copied().flatten() else { return };
+                let to = match k.code {
+                    KeyCode::Up => {
+                        (0..ch.sel).rev().find(|&i| depths[i] == Some(d.saturating_sub(1))).filter(|_| d > 1)
+                    }
+                    KeyCode::Down => {
+                        let here = ch.items[ch.sel];
+                        if let Some(at) = ch.collapsed.iter().position(|c| *c == here) {
+                            // Folded: open it; the child is there at the next render.
+                            ch.collapsed.remove(at);
+                            None
+                        } else {
+                            Some(ch.sel + 1).filter(|&i| depths.get(i) == Some(&Some(d + 1)))
+                        }
+                    }
+                    KeyCode::Left => (0..ch.sel).rev().find(|&i| depths[i] == Some(d)),
+                    _ => (ch.sel + 1..depths.len()).find(|&i| depths[i] == Some(d)),
+                };
+                if let Some(i) = to {
+                    ch.sel = i;
+                }
+            }
+            // `v`: the tree of blocks, or the plain list.
+            (KeyCode::Char('v'), false, false) if matches!(ch.kind, ChooserKind::Tree { .. }) => {
+                if let ChooserKind::Tree { tree, .. } = &mut ch.kind {
+                    *tree = !*tree;
+                }
+            }
+            // Fold a session or a window (a pane folds its window), and
+            // unfold it; the cursor goes to the folded line, since what was
+            // under it is gone from the list. In the plain list Left and
+            // Right do it too, as before.
+            (KeyCode::Left, _, _) | (KeyCode::Char('-'), false, false)
+                if matches!(ch.kind, ChooserKind::Tree { expand: true, .. }) =>
+            {
+                // An open line folds itself; a folded window (or a pane)
+                // folds the line above it, as a file tree does.
+                let target = match ch.items.get(ch.sel).copied() {
+                    Some(here @ ChooserItem::Tree(s, Some(_))) if ch.collapsed.contains(&here) => {
+                        Some(ChooserItem::Tree(s, None))
+                    }
+                    other => other.as_ref().and_then(ChooserItem::fold_target),
+                };
+                if let Some(target) = target {
+                    if !ch.collapsed.contains(&target) {
+                        ch.collapsed.push(target);
+                    }
+                    if let Some(i) = ch.items.iter().position(|it| *it == target) {
                         ch.sel = i;
                     }
                 }
             }
             (KeyCode::Right, _, _) | (KeyCode::Char('+'), false, false) | (KeyCode::Char('='), false, false)
-                if matches!(ch.kind, ChooserKind::Tree { expand: true }) =>
+                if matches!(ch.kind, ChooserKind::Tree { expand: true, .. }) =>
             {
-                if let Some(sid) = ch.current_session() {
-                    ch.collapsed.remove(&sid);
+                if let Some(target) = ch.items.get(ch.sel).and_then(ChooserItem::fold_target) {
+                    ch.collapsed.retain(|c| *c != target);
                 }
             }
             // `f` types a filter on the status line; the list follows it as
@@ -7868,7 +7976,8 @@ impl Server {
             }
             let actions = match ch.kind {
                 ChooserKind::Jobs => "Enter go  x kill  r restart  t tag  f filter",
-                ChooserKind::Tree { .. } => "Enter select  x kill  t tag  f filter",
+                ChooserKind::Tree { tree: true, .. } => "Enter go  x kill  t tag  f filter  -/+ fold  v list",
+                ChooserKind::Tree { .. } => "Enter select  x kill  t tag  f filter  v tree",
                 ChooserKind::Clients => "Enter detach  f filter",
                 ChooserKind::Buffers => "Enter paste  f filter",
                 ChooserKind::History { .. } => "Enter open  + - fold",
@@ -7881,7 +7990,18 @@ impl Server {
             if !ch.filter.trim().is_empty() {
                 status.push(format!("[filter: {}]", ch.filter.trim()));
             }
-            render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top, actions, &status.join(" "));
+            if matches!(ch.kind, ChooserKind::Tree { tree: true, .. }) {
+                let depths: Vec<usize> = ch.items.iter().map(|i| i.depth().unwrap_or(0)).collect();
+                let rows: Vec<(String, String, usize)> = render::tree_leads(&depths)
+                    .into_iter()
+                    .zip(&ch.lines)
+                    .zip(depths)
+                    .map(|((lead, text), d)| (lead, text.clone(), d))
+                    .collect();
+                render::draw_tree(&mut grid, area, &rows, ch.sel, ch.top, actions, &status.join(" "));
+            } else {
+                render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top, actions, &status.join(" "));
+            }
             cursor = None;
         }
         if let Some((prompt, message)) = &notice
@@ -8108,19 +8228,28 @@ fn chooser_filter(items: &[ChooserItem], lines: &[String], filter: &str) -> Vec<
     }
     let hit: Vec<bool> = lines.iter().map(|l| l.to_lowercase().contains(&needle)).collect();
     let mut keep = hit.clone();
-    let mut parent: Option<usize> = None;
+    // The session, window (and pane) lines above this one in the tree: a
+    // line stays when one of them matches, and they stay when it does. A
+    // separator (the tree's root, the board's header) always stays and is
+    // no one's parent.
+    let mut above: Vec<(usize, usize)> = Vec::new();
     for (i, item) in items.iter().enumerate() {
-        match item {
-            ChooserItem::Separator => keep[i] = true,
-            ChooserItem::Tree(_, None) => parent = Some(i),
-            ChooserItem::Tree(_, Some(_)) => {
-                if let Some(p) = parent {
-                    keep[i] |= hit[p];
-                    keep[p] |= hit[i];
-                }
+        let depth = match item {
+            ChooserItem::Separator => {
+                keep[i] = true;
+                continue;
             }
-            _ => {}
+            ChooserItem::Tree(..) | ChooserItem::Job(..) => item.depth().unwrap_or(0),
+            _ => continue,
+        };
+        while above.last().is_some_and(|&(d, _)| d >= depth) {
+            above.pop();
         }
+        for &(_, a) in &above {
+            keep[i] |= hit[a];
+            keep[a] |= hit[i];
+        }
+        above.push((depth, i));
     }
     keep
 }
@@ -8742,7 +8871,7 @@ mod tests {
     #[test]
     fn tagged_lines_are_what_an_action_key_works_on() {
         let items = vec![ChooserItem::Tree(1, None), ChooserItem::Tree(1, Some(10)), ChooserItem::Tree(2, None)];
-        let mut ch = Chooser::new(ChooserKind::Tree { expand: true }, items, vec!["a".into(); 3], 1);
+        let mut ch = Chooser::new(ChooserKind::Tree { expand: true, tree: false }, items, vec!["a".into(); 3], 1);
         assert_eq!(ch.targets(), vec![ChooserItem::Tree(1, Some(10))], "nothing tagged: the current line");
         ch.tagged.push(ChooserItem::Tree(2, None));
         ch.tagged.push(ChooserItem::Tree(1, None));

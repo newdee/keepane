@@ -21,7 +21,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | capture-pane | part | `-p`, `-S`, `-e`, `-J`; no buffer output (`-b`) |
 | choose-buffer | yes | `prefix =`; Enter pastes |
 | choose-client | yes | `prefix D`; Enter detaches the client picked |
-| choose-tree | part | `-s`, `-w`; `f` filters by a substring (not a format), `t`/`T` tag, `x` kills the tagged, `-`/`+` (Left/Right) fold and unfold a session |
+| choose-tree | part | `-s`, `-w` (down to the panes); `f` filters by a substring (not a format), `t`/`T` tag, `x` kills the tagged, `-`/`+` fold and unfold a session or a window; keepane draws it as a tree of blocks by default (`v` or `choose-tree-style list` for tmux's list) |
 | clear-history | yes | |
 | clear-prompt-history | no | keepane keeps no prompt history |
 | clock-mode | yes | `prefix t`, any key leaves |

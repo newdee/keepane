@@ -266,21 +266,24 @@ fn choose_tree_through_the_real_keyboard() {
     }
     t.wait_for("three windows", |s| s.rows(0, 80).nth(23).unwrap().contains("2:cmd"));
 
-    // prefix w opens the tree with the cursor on the current window (2 of 4).
+    // prefix w opens the list (set to the plain one here) with the cursor on
+    // the current pane (3 of 7: the session, 3 windows, a pane each).
+    let out = keepane().args(["-L", &socket, "set", "-g", "choose-tree-style", "list"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     t.send("\x02w");
-    t.wait_for("picker", |s| s.contents().contains("[2/4] j/k move"));
+    t.wait_for("picker", |s| s.contents().contains("[3/7] j/k move"));
     assert!(t.row(0).starts_with("(0) - t: 3 windows (attached)"), "{:?}", t.row(0));
     assert!(t.row(1).starts_with("(1)   - 0: cmd*"), "{:?}", t.row(1));
     // g to the top, j down, k back up, G to the bottom: the hint tracks it.
     t.send("g");
-    t.wait_for("g", |s| s.contents().contains("[1/4]"));
+    t.wait_for("g", |s| s.contents().contains("[1/7]"));
     t.send("j");
-    t.wait_for("j", |s| s.contents().contains("[2/4]"));
+    t.wait_for("j", |s| s.contents().contains("[2/7]"));
     t.send("k");
-    t.wait_for("k", |s| s.contents().contains("[1/4]"));
+    t.wait_for("k", |s| s.contents().contains("[1/7]"));
     t.send("G");
-    t.wait_for("G", |s| s.contents().contains("[4/4]"));
-    // Enter on the last window makes it current.
+    t.wait_for("G", |s| s.contents().contains("[7/7]"));
+    // Enter on the last window's pane makes that window current.
     t.send("\r");
     t.wait_for("selected", |s| !s.contents().contains("j/k move") && s.rows(0, 80).nth(23).unwrap().contains("2:cmd*"));
     // The shell never saw any of it.

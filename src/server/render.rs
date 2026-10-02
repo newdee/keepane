@@ -860,11 +860,78 @@ pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top:
         }
         g.put_str(area.x, y, line, st, area.w);
     }
-    let hint = format!(
-        "[{}/{}] j/k move  g/G top/bottom  {actions}  q quit",
-        if lines.is_empty() { 0 } else { sel + 1 },
-        lines.len()
-    );
+    draw_chooser_footer(g, area, lines.len(), sel, "j/k move  g/G top/bottom", actions, status);
+}
+
+/// The tree lines in front of each node of a tree, from the nodes' depths
+/// in order (0 the root): `├─ ` before a node with a sibling after it, `└─ `
+/// before the last, and for each level above, `│  ` where that ancestor has
+/// a sibling still to come, else blanks.
+pub fn tree_leads(depths: &[usize]) -> Vec<String> {
+    let has_next = |i: usize| depths[i + 1..].iter().take_while(|&&d| d >= depths[i]).any(|&d| d == depths[i]);
+    let mut out = Vec::with_capacity(depths.len());
+    // For each level from 1: whether the ancestor there has a sibling to come.
+    let mut open: Vec<bool> = Vec::new();
+    for (i, &d) in depths.iter().enumerate() {
+        if d == 0 {
+            open.clear();
+            out.push(String::new());
+            continue;
+        }
+        open.truncate(d - 1);
+        let mut lead: String =
+            (0..d - 1).map(|k| if open.get(k).copied().unwrap_or(false) { "│  " } else { "   " }).collect();
+        let next = has_next(i);
+        lead.push_str(if next { "├─ " } else { "└─ " });
+        out.push(lead);
+        open.resize(d - 1, false);
+        open.push(next);
+    }
+    out
+}
+
+/// The session tree as blocks: each line its tree lines, then a block in
+/// its level's colour (the root cyan, a session blue, a window purple, a
+/// pane grey; the selected one yellow) with its number and what it is.
+/// `rows` are (tree lines, block text, depth).
+pub fn draw_tree(
+    g: &mut Grid,
+    area: Rect,
+    rows: &[(String, String, usize)],
+    sel: usize,
+    top: usize,
+    actions: &str,
+    status: &str,
+) {
+    if area.h == 0 || area.w == 0 {
+        return;
+    }
+    g.fill(area, Style::colors(Color::Default, Color::Default));
+    let line = Style::colors(Color::Idx(8), Color::Default);
+    let block = |depth: usize, selected: bool| {
+        let (fg, bg) = match (selected, depth) {
+            (true, _) => (Color::Idx(0), Color::Idx(3)),
+            (_, 0) => (Color::Idx(0), Color::Idx(6)),
+            (_, 1) => (Color::Idx(0), Color::Idx(4)),
+            (_, 2) => (Color::Idx(0), Color::Idx(5)),
+            _ => (Color::Idx(15), Color::Idx(8)),
+        };
+        Style { bold: selected || depth < 2, ..Style::colors(fg, bg) }
+    };
+    let body_h = area.h.saturating_sub(1) as usize;
+    for (row, (i, (lead, text, depth))) in rows.iter().enumerate().skip(top).take(body_h).enumerate() {
+        let y = area.y + row as u16;
+        let x = area.x + g.put_str(area.x, y, lead, line, area.w).saturating_sub(area.x);
+        let room = (area.x + area.w).saturating_sub(x);
+        g.put_str(x, y, &format!(" {text} "), block(*depth, i == sel), room);
+    }
+    draw_chooser_footer(g, area, rows.len(), sel, "↑↓ parent/child  ←→ same level  j/k line", actions, status);
+}
+
+/// A picker's last line: where the cursor is of how many, the keys, and a
+/// note (tags, the filter) at the right end.
+fn draw_chooser_footer(g: &mut Grid, area: Rect, count: usize, sel: usize, moves: &str, actions: &str, status: &str) {
+    let hint = format!("[{}/{count}] {moves}  {actions}  q quit", if count == 0 { 0 } else { sel + 1 });
     let hint_style = Style::colors(Color::Idx(0), Color::Idx(3));
     let y = area.y + area.h - 1;
     g.fill(Rect { x: area.x, y, w: area.w, h: 1 }, hint_style);
@@ -1487,6 +1554,23 @@ mod tests {
         // A pane on row 0 asked for a top line: nothing to draw, nothing broken.
         let (g, _, _) = compose(&frame(Rect { x: 0, y: 0, w: 6, h: 2 }, Some((label("[0]"), true))));
         assert_eq!(row(&g, 0), "abcdef");
+    }
+
+    /// Tree lines from depths: `├─` with a sibling to come, `└─` for the
+    /// last, `│` under an ancestor whose siblings are still to come.
+    #[test]
+    fn tree_lines_follow_the_depths() {
+        let leads = tree_leads(&[0, 1, 2, 3, 3, 2, 3, 1, 2, 3]);
+        assert_eq!(
+            leads,
+            ["", "├─ ", "│  ├─ ", "│  │  ├─ ", "│  │  └─ ", "│  └─ ", "│     └─ ", "└─ ", "   └─ ", "      └─ "]
+        );
+        // A lone node, and nothing at all.
+        assert_eq!(tree_leads(&[0, 1]), ["", "└─ "]);
+        assert!(tree_leads(&[]).is_empty());
+        // A filter can leave a deeper line without its parents: no panic,
+        // the lines still drawn.
+        assert_eq!(tree_leads(&[0, 3]).len(), 2);
     }
 
     /// A theme's colours: the palette's first 16 everywhere, the default

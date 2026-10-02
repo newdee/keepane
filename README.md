@@ -333,7 +333,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names) |
 | `d` | detach |
 | `?` | list key bindings |
-| `s` / `w` | pick a session / a window from a list (`j` `k` or arrows move, `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` selects, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `-`/`+` or Left/Right fold and unfold a session) |
+| `s` / `w` | pick a session / a window, `w` down to every pane: a tree of blocks under a `keepane` root by default (↑ ↓ go to the parent and the first child, ← → along the same level, `j` `k` line by line, `-` / `+` fold and unfold a session or a window, `v` the plain list and back), or the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold); in both `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one. `set -g choose-tree-style list` opens it as the list |
 | `(` / `)` | switch the client to the previous / next session |
 | `D` | pick a client from a list and detach it |
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |

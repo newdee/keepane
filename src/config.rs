@@ -164,6 +164,9 @@ pub struct Options {
     /// `pane-colours`: the 16 colours drawn for the palette's first 16 (a
     /// program's red, blue...); empty, the terminal's own.
     pub pane_colours: Vec<Color>,
+    /// How `choose-tree` (prefix w, s) shows the sessions at first: `tree`
+    /// (blocks under a `keepane` root) or `list` (tmux's lines).
+    pub choose_tree_style: String,
 }
 
 /// What a pane can be done with (`done-events`).
@@ -353,6 +356,7 @@ pub const SHOWABLE: &[&str] = &[
     "theme",
     "window-style",
     "pane-colours",
+    "choose-tree-style",
 ];
 
 impl Default for Options {
@@ -443,6 +447,7 @@ impl Default for Options {
             window_fg: Color::Default,
             window_bg: Color::Default,
             pane_colours: Vec::new(),
+            choose_tree_style: "tree".into(),
         }
     }
 }
@@ -534,6 +539,7 @@ pub const KNOWN: &[&str] = &[
     "animation-time",
     "autosave",
     "base-index",
+    "choose-tree-style",
     "default-command",
     "default-shell",
     "default-terminal",
@@ -709,6 +715,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "done-panes" => &["all", "named"],
         "done-webhook-format" => DONE_WEBHOOK_FORMATS,
         "theme" => THEME_NAMES,
+        "choose-tree-style" => &["list", "tree"],
         "done-events" => &["all", "none", "command agent"],
         _ => &[],
     }
@@ -919,6 +926,7 @@ impl Options {
                 }
             }
             "pane-colours" => self.pane_colours = parse_colours(value)?,
+            "choose-tree-style" => self.choose_tree_style = one_of(name, value, &["tree", "list"])?,
             "default-terminal" => {
                 let v = value.trim();
                 if v.is_empty() || v.contains(char::is_whitespace) {
@@ -1046,6 +1054,7 @@ impl Options {
             "theme" => self.theme.clone(),
             "window-style" => format!("fg={},bg={}", color_name(self.window_fg), color_name(self.window_bg)),
             "pane-colours" => self.pane_colours.iter().map(|c| color_name(*c)).collect::<Vec<_>>().join(" "),
+            "choose-tree-style" => self.choose_tree_style.clone(),
             "log-history-dir" => {
                 if self.log_history_dir.is_empty() {
                     crate::histlog::default_dir().to_string_lossy().into_owned()

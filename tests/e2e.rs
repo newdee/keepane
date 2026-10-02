@@ -1045,6 +1045,8 @@ async fn vim_keys_and_synchronize_panes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_tree_picker() {
     let h = Harness::start("choose").await;
+    // The plain list, tmux's look (the tree of blocks has its own test).
+    h.cli(&["set", "-g", "choose-tree-style", "list"]).await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "a"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
@@ -1055,36 +1057,42 @@ async fn choose_tree_picker() {
     // The shell in the detached session must be up before its keystrokes matter.
     h.wait_capture("b:0", "shell prompt", |t| t.contains("keepane>")).await;
 
-    // prefix w: every session expanded, cursor on the current window (item 3 of 5).
+    // prefix w: every session expanded down to its panes, the cursor on the
+    // current pane (item 5 of 8).
     c.prefix('w').await;
     // The pane title arrives over OSC, so wait for the fully drawn tree.
     c.wait_for("picker", |s| {
         let t = s.contents();
         // The title is cmd's own path, with "Administrator: " (localized)
         // in front of it when the test runs elevated; sh sets none.
-        t.contains("[3/5] j/k move")
+        t.contains("[5/8] j/k move")
             && t.contains(&format!("(1)   - 0: {SH}- (1 panes) \""))
             && (cfg!(unix) || t.contains("cmd.exe\""))
     })
     .await;
     let text = c.text();
     assert!(text.contains("(0) - a: 2 windows (attached)"), "{text}");
-    assert!(text.contains(&format!("(2)   - 1: {SH}* (1 panes)")), "{text}");
-    assert!(text.contains("(3) - b: 1 windows"), "{text}");
+    assert!(text.contains(&format!("(3)   - 1: {SH}* (1 panes)")), "{text}");
+    assert!(text.contains("(5) - b: 1 windows"), "{text}");
     // Every session's current window carries the *, as in tmux.
-    assert!(text.contains(&format!("(4)   - 0: {SH}* (1 panes)")), "{text}");
+    assert!(text.contains(&format!("(6)   - 0: {SH}* (1 panes)")), "{text}");
+    // Under each window its panes: index, program, the active one *, mode.
+    let pane_line = |n: usize| text.lines().find(|l| l.starts_with(&format!("({n})       - 0: "))).map(str::trim_end);
+    for n in [2, 4, 7] {
+        assert!(pane_line(n).is_some_and(|l| l.ends_with("* · normal")), "pane line {n}: {text}");
+    }
     // vim motions: k up, g top, G bottom, j clamps at the end, digits jump.
     c.type_str("k").await;
-    c.wait_for("k", |s| s.contents().contains("[2/5]")).await;
+    c.wait_for("k", |s| s.contents().contains("[4/8]")).await;
     c.type_str("g").await;
-    c.wait_for("g", |s| s.contents().contains("[1/5]")).await;
+    c.wait_for("g", |s| s.contents().contains("[1/8]")).await;
     c.key(b'G' as u16, 'G', SHIFT_PRESSED).await;
-    c.wait_for("G", |s| s.contents().contains("[5/5]")).await;
+    c.wait_for("G", |s| s.contents().contains("[8/8]")).await;
     c.type_str("j").await;
     c.key(b'Z' as u16, 'z', 0).await; // unbound key: ignored, picker stays
-    c.wait_for("clamped", |s| s.contents().contains("[5/5]")).await;
+    c.wait_for("clamped", |s| s.contents().contains("[8/8]")).await;
     c.key(b'1' as u16, '1', 0).await;
-    c.wait_for("digit", |s| s.contents().contains("[2/5]")).await;
+    c.wait_for("digit", |s| s.contents().contains("[2/8]")).await;
     // Enter on "a:0" selects window 0 and closes the picker.
     c.enter().await;
     c.wait_for("window 0", |s| {
@@ -1124,13 +1132,13 @@ async fn choose_tree_picker() {
     c.type_str("q").await;
     c.wait_for("closed", |s| !s.contents().contains("j/k move")).await;
     c.prefix('w').await;
-    c.wait_for("picker again", |s| s.contents().contains("[5/5] j/k move")).await;
+    c.wait_for("picker again", |s| s.contents().contains("[8/8] j/k move")).await;
     // The tree is live: a window created meanwhile shows up, the cursor stays
-    // on the same item (b:0 is now 5 of 6).
+    // on the same item (b:0's pane, still 8, of 10 now).
     let (code, _, err) = h.cli(&["new-window", "-d", "-t", "b"]).await;
     assert_eq!(code, 0, "{err}");
     c.wait_for("live", |s| {
-        s.contents().contains("[5/6] j/k move") && s.contents().contains(&format!("(5)   - 1: {SH}"))
+        s.contents().contains("[8/10] j/k move") && s.contents().contains(&format!("(8)   - 1: {SH}"))
     })
     .await;
     c.key(0x1B, '\x1b', 0).await;
@@ -1148,6 +1156,7 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
     // gets the whole screen.
     h.cli(&["set", "-g", "base-index", "1"]).await;
     h.cli(&["set", "-g", "status", "off"]).await;
+    h.cli(&["set", "-g", "choose-tree-style", "list"]).await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "many"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
@@ -1156,67 +1165,71 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
         assert_eq!(code, 0, "{err}");
     }
 
-    // 1 session + 30 windows = 31 items, 23 body rows (24 rows, no status line).
+    // 1 session + 30 windows + their 30 panes = 61 items (window k is item
+    // 2k-1, its pane 2k), 23 body rows (24 rows, no status line); the
+    // cursor starts on the current pane.
     c.prefix('w').await;
-    c.wait_for("picker", |s| s.contents().contains("[2/31] j/k move")).await;
+    c.wait_for("picker", |s| s.contents().contains("[3/61] j/k move")).await;
     // Every line has its number, past nine too, padded so the text lines up.
     assert!(c.row(0).starts_with("(0)  - many: 30 windows (attached)"), "{:?}", c.row(0));
     assert!(c.row(1).starts_with(&format!("(1)    - 1: {SH}*")), "base-index 1: {:?}", c.row(1));
-    // Nothing scrolled yet; the last body row is item 22.
-    assert!(c.row(22).starts_with("(22)   - 22:"), "{:?}", c.row(22));
+    assert!(c.row(2).starts_with("(2)        - 0: "), "the pane: {:?}", c.row(2));
+    // Nothing scrolled yet; the last body row is item 22, window 11's pane.
+    assert!(c.row(22).starts_with("(22)       - 0: "), "{:?}", c.row(22));
+    assert!(c.row(21).starts_with("(21)   - 11:"), "{:?}", c.row(21));
     // G: the last item is visible on the last body row, the list scrolled.
     c.key(b'G' as u16, 'G', SHIFT_PRESSED).await;
-    c.wait_for("bottom", |s| s.contents().contains("[31/31]")).await;
-    // Item 8 is now the top line; its "(8)" jump tag travels with it.
-    assert!(c.row(0).starts_with("(8)    - 8:"), "scrolled: {:?}", c.row(0));
-    assert!(c.row(22).starts_with("(30)   - 30:"), "{:?}", c.row(22));
+    c.wait_for("bottom", |s| s.contents().contains("[61/61]")).await;
+    // Item 38 is now the top line; its "(38)" jump tag travels with it.
+    assert!(c.row(0).starts_with("(38)       - 0: "), "scrolled: {:?}", c.row(0));
+    assert!(c.row(21).starts_with("(59)   - 30:"), "{:?}", c.row(21));
     // g: back to the top, scrolled back.
     c.type_str("g").await;
-    c.wait_for("top", |s| s.contents().contains("[1/31]")).await;
+    c.wait_for("top", |s| s.contents().contains("[1/61]")).await;
     assert!(c.row(0).starts_with("(0)  - many: 30 windows"), "{:?}", c.row(0));
     // Two digits are one number: 1 2 is line 12.
     c.type_str("12").await;
-    c.wait_for("line 12", |s| s.contents().contains("[13/31]")).await;
+    c.wait_for("line 12", |s| s.contents().contains("[13/61]")).await;
     // Another key ends the number: 1, j, 2 is line 2, not 12.
     c.type_str("1j2").await;
-    c.wait_for("line 2", |s| s.contents().contains("[3/31]")).await;
+    c.wait_for("line 2", |s| s.contents().contains("[3/61]")).await;
     // So does a pause: 1, a pause, 3 is line 3, not 13.
     c.type_str("g1").await;
-    c.wait_for("line 1", |s| s.contents().contains("[2/31]")).await;
+    c.wait_for("line 1", |s| s.contents().contains("[2/61]")).await;
     tokio::time::sleep(Duration::from_millis(1200)).await;
     c.type_str("3").await;
-    c.wait_for("line 3", |s| s.contents().contains("[4/31]")).await;
-    // A number past the end starts over at its last digit: 3 9 is line 9.
-    c.type_str("39").await;
-    c.wait_for("line 9", |s| s.contents().contains("[10/31]")).await;
+    c.wait_for("line 3", |s| s.contents().contains("[4/61]")).await;
+    // A number past the end starts over at its last digit: 6 9 is line 9.
+    c.type_str("69").await;
+    c.wait_for("line 9", |s| s.contents().contains("[10/61]")).await;
     c.type_str("g").await;
-    c.wait_for("top again", |s| s.contents().contains("[1/31]")).await;
+    c.wait_for("top again", |s| s.contents().contains("[1/61]")).await;
 
     // The tree is live under the cursor: kill a window and the count drops
     // while the selection stays on the session line.
     c.key(0x22, '\0', 0).await; // PageDown (VK_NEXT): one body page down
-    c.wait_for("paged", |s| s.contents().contains("[24/31]")).await;
+    c.wait_for("paged", |s| s.contents().contains("[24/61]")).await;
     let (code, _, err) = h.cli(&["kill-window", "-t", "many:30"]).await;
     assert_eq!(code, 0, "{err}");
-    c.wait_for("30 items", |s| s.contents().contains("[24/30]")).await;
-    // Enter on window 23 (item 24 with base-index 1) selects it.
+    c.wait_for("59 items", |s| s.contents().contains("[24/59]")).await;
+    // Enter on window 12 (item 23 = 2 * 12 - 1) selects it.
     c.enter().await;
     c.wait_for("selected", |s| !s.contents().contains("j/k move")).await;
     let (_, out, _) = h.cli(&["list-windows", "-t", "many"]).await;
-    assert!(out.lines().nth(22).unwrap().starts_with(&format!("23: {SH}*")), "{out}");
+    assert!(out.lines().nth(11).unwrap().starts_with(&format!("12: {SH}*")), "{out}");
     // prefix 0-9 is one key, as in tmux; past 9, prefix ' asks for the index.
     // The status line is off here: the prompt shows over the bottom row.
     c.prefix('\'').await;
     c.wait_for("index prompt", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().starts_with("(index)")).await;
-    c.type_str("12").await;
+    c.type_str("15").await;
     c.enter().await;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let (_, out, _) = h.cli(&["list-windows", "-t", "many"]).await;
-        if out.lines().nth(11).is_some_and(|l| l.starts_with(&format!("12: {SH}*"))) {
+        if out.lines().nth(14).is_some_and(|l| l.starts_with(&format!("15: {SH}*"))) {
             break;
         }
-        assert!(Instant::now() < deadline, "window 12 not current: {out}");
+        assert!(Instant::now() < deadline, "window 15 not current: {out}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     // A message shows there too: no window 99 says so.
@@ -1246,6 +1259,91 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
     h.cli(&["kill-server"]).await;
 }
 
+/// The tree view (the default for prefix w): blocks under a keepane root;
+/// Up and Down go to the parent and the first child, Left and Right along
+/// the level; `-` folds, Down opens; `v` gives the plain list and back;
+/// `choose-tree-style` picks the view it opens in.
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_tree_as_a_tree_of_blocks() {
+    let h = Harness::start("treeview").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "s"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    h.cli(&["split-window", "-h", "-t", "s"]).await;
+    h.cli(&["new-window", "-d", "-t", "s"]).await;
+    h.cli(&["new", "-d", "-s", "t"]).await;
+    assert_eq!(h.cli(&["show", "-gv", "choose-tree-style"]).await.1.trim(), "tree");
+    // root, s, s:0, its 2 panes, s:1, its pane, t, t:0, its pane: 10 lines;
+    // the cursor on the current pane, s:0's second (line 5).
+    c.prefix('w').await;
+    let at = |n: usize, of: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/{of}] ↑↓"));
+    c.wait_for("tree", at(5, 10)).await;
+    let text = c.text();
+    let row = |i: usize| text.lines().nth(i).unwrap_or_default().trim_end().to_string();
+    assert_eq!(row(0), " keepane");
+    assert!(row(1).starts_with("├─  1  s · 2 windows · attached"), "{text}");
+    assert!(row(2).starts_with("│  ├─  2  0:") && row(2).ends_with("· 2 panes"), "{text}");
+    assert!(row(3).starts_with("│  │  ├─  3  0:") && row(4).starts_with("│  │  └─  4  1:"), "{text}");
+    assert!(row(5).starts_with("│  └─  5  1:") && row(6).starts_with("│     └─  6  0:"), "{text}");
+    assert!(row(7).starts_with("└─  7  t · 1 windows") && row(9).starts_with("      └─  9  0:"), "{text}");
+    // The blocks' colours: a session blue, the selected one yellow.
+    let bg = |s: &vt100::Screen, r: u16| s.cell(r, 4).map(|c| c.bgcolor());
+    assert_eq!(bg(c.screen.screen(), 1), Some(vt100::Color::Idx(4)), "session block");
+    assert_eq!(c.screen.screen().cell(4, 10).map(|c| c.bgcolor()), Some(vt100::Color::Idx(3)), "selected block");
+    let key = |vk: u16| (vk, '\0');
+    let (up, down, left, right) = (key(0x26), key(0x28), key(0x25), key(0x27));
+    // Up: the window, the session; never the root.
+    for (k, want) in [(up, 3), (up, 2), (up, 2)] {
+        c.key(k.0, k.1, 0).await;
+        c.wait_for("up", at(want, 10)).await;
+    }
+    // Down: the first child, and its first child.
+    for (k, want) in [(down, 3), (down, 4)] {
+        c.key(k.0, k.1, 0).await;
+        c.wait_for("down", at(want, 10)).await;
+    }
+    // Right along the panes, across windows and sessions; stops at the end.
+    for (k, want) in [(right, 5), (right, 7), (right, 10), (right, 10), (left, 7)] {
+        c.key(k.0, k.1, 0).await;
+        c.wait_for("along", at(want, 10)).await;
+    }
+    // Up to s:1, fold it (its pane goes), Down opens it again.
+    c.key(up.0, up.1, 0).await;
+    c.wait_for("s:1", at(6, 10)).await;
+    c.type_str("-").await;
+    c.wait_for("folded", |s| s.contents().contains("[6/9] ↑↓") && s.contents().contains("· 1 panes + ")).await;
+    c.key(down.0, down.1, 0).await;
+    c.wait_for("opened", at(6, 10)).await;
+    // v: the plain list (no root, so s:1 is line 5 of 9), and back.
+    c.type_str("v").await;
+    c.wait_for("list", |s| s.contents().contains("[5/9] j/k move") && s.contents().contains("(0) - s: 2 windows"))
+        .await;
+    c.type_str("v").await;
+    c.wait_for("tree again", at(6, 10)).await;
+    // Enter on a pane goes to it: s:0's first.
+    c.key(left.0, left.1, 0).await;
+    c.wait_for("s:0", at(3, 10)).await;
+    c.key(down.0, down.1, 0).await;
+    c.wait_for("its first pane", at(4, 10)).await;
+    c.enter().await;
+    c.wait_for("gone", |s| !s.contents().contains("[4/10]")).await;
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "s", "#{window_index}.#{pane_index}"]).await.1.trim(), "0.0");
+    // A tagged block says so in front of its number; T clears it.
+    c.prefix('w').await;
+    c.wait_for("tree on s:0.0", at(4, 10)).await;
+    c.type_str("t").await;
+    c.wait_for("tagged", |s| s.contents().contains("[1 tagged]") && s.contents().contains("├─  * 3  0:")).await;
+    c.key(b'T' as u16, 'T', SHIFT_PRESSED).await;
+    c.wait_for("untagged", |s| !s.contents().contains("tagged]") && s.contents().contains("├─  3  0:")).await;
+    c.type_str("q").await;
+    // The view it opens in is an option: the plain list.
+    h.cli(&["set", "-g", "choose-tree-style", "list"]).await;
+    c.prefix('w').await;
+    c.wait_for("opens as a list", |s| s.contents().contains("[3/9] j/k move")).await;
+    c.type_str("q").await;
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_tree_degenerate_sizes_and_wide_names() {
     let h = Harness::start("choose-edge").await;
@@ -1256,34 +1354,38 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
     assert_eq!(code, 0, "{err}");
 
     c.prefix('w').await;
-    // 2 sessions + their 2 windows = 4 items; the cursor starts on 会话:0.
-    c.wait_for("picker", |s| s.contents().contains("[2/4] j/k move")).await;
-    // Double-width names survive the layout.
-    assert!(c.row(0).starts_with("(0) - 会话: 1 windows (attached)"), "{:?}", c.row(0));
-    assert!(c.row(1).starts_with("(1)   - 0: 编辑器*"), "{:?}", c.row(1));
+    // The tree (the default view): the keepane root, 2 sessions, their
+    // windows and panes = 7 items; the cursor starts on 会话's pane.
+    c.wait_for("picker", |s| s.contents().contains("[4/7]")).await;
+    // Double-width names survive the layout, each block under its tree lines.
+    assert_eq!(c.row(0).trim_end(), " keepane", "{:?}", c.row(0));
+    assert!(c.row(1).starts_with("├─  1  会话 · 1 windows · attached "), "{:?}", c.row(1));
+    assert!(c.row(2).starts_with("│  └─  2  0:编辑器* · 1 panes "), "{:?}", c.row(2));
+    assert!(c.row(3).starts_with("│     └─  3  0:") && c.row(3).contains("* · normal"), "{:?}", c.row(3));
+    assert!(c.row(4).starts_with("└─  4  gone · 1 windows "), "{:?}", c.row(4));
 
     // A terminal with room for a single body row still renders hint and all.
     c.send(ClientMsg::Resize { cols: 20, rows: 3 }).await;
     c.screen = vt100::Parser::new(3, 20, 0);
-    c.wait_for("tiny", |s| s.rows(0, 20).nth(1).unwrap().starts_with("[2/4] j/k move")).await;
-    assert!(c.row(0).starts_with("(1)   - 0: 编辑器*"), "the selection stays visible: {:?}", c.row(0));
+    c.wait_for("tiny", |s| s.rows(0, 20).nth(1).unwrap().starts_with("[4/7]")).await;
+    assert!(c.row(0).starts_with("│     └─  3  0:"), "the selection stays visible: {:?}", c.row(0));
     // One column wide is degenerate but must not panic or wedge the server.
     c.send(ClientMsg::Resize { cols: 1, rows: 1 }).await;
     c.screen = vt100::Parser::new(1, 1, 0);
     c.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
     c.screen = vt100::Parser::new(ROWS, COLS, 0);
-    c.wait_for("back", |s| s.contents().contains("[2/4] j/k move")).await;
+    c.wait_for("back", |s| s.contents().contains("[4/7]")).await;
 
     // The item under the cursor vanishing clamps the selection instead of
     // pointing past the end.
-    c.key(0x23, '\0', 0).await; // End: the last item, the window of "gone"
-    c.wait_for("last", |s| s.contents().contains("[4/4]")).await;
+    c.key(0x23, '\0', 0).await; // End: the last item, the pane of "gone"
+    c.wait_for("last", |s| s.contents().contains("[7/7]")).await;
     let (code, _, err) = h.cli(&["kill-session", "-t", "gone"]).await;
     assert_eq!(code, 0, "{err}");
-    c.wait_for("clamped", |s| s.contents().contains("[2/2] j/k move")).await;
+    c.wait_for("clamped", |s| s.contents().contains("[4/4]")).await;
     c.enter().await;
     c.wait_for("still alive", |s| {
-        !s.contents().contains("j/k move") && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:编辑器*")
+        !s.contents().contains("j/k") && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:编辑器*")
     })
     .await;
     let (_, out, _) = h.cli(&["ls"]).await;
@@ -2070,7 +2172,7 @@ async fn hints_copy_or_open_what_is_on_screen() {
     assert_eq!(h.cli(&["show-buffer"]).await.1.trim_end(), "af9af7e");
     // Not over a list, where the labels could not be seen.
     c.prefix('w').await;
-    c.wait_for("list", |s| s.contents().contains("j/k move")).await;
+    c.wait_for("list", |s| s.contents().contains("j/k")).await;
     c.prefix('F').await;
     c.wait_for("refused", |s| s.contents().contains("close the list")).await;
     c.type_str("q").await;
@@ -5477,24 +5579,30 @@ async fn the_last_small_tmux_gaps_are_closed() {
     c.enter().await;
     c.wait_for("popup closed", |s| !s.contents().contains("pip>")).await;
     // Folding a session in the tree: `-` hides its windows, `+` shows them.
+    // (The plain list: 2 sessions, 4 windows, 4 panes.)
+    h.cli(&["set", "-g", "choose-tree-style", "list"]).await;
     c.prefix('w').await;
-    c.wait_for("tree", |s| s.contents().contains("/6] j/k move")).await;
+    c.wait_for("tree", |s| s.contents().contains("/10] j/k move")).await;
     c.type_str("g").await; // session a's line
     c.key(0xBD, '-', 0).await;
     c.wait_for("a folded", |s| {
         let t = s.contents();
-        t.contains("/4] j/k move") && t.contains("(0) + a: 2 windows") && t.contains("(1) - b: 2 windows")
+        t.contains("/6] j/k move") && t.contains("(0) + a: 2 windows") && t.contains("(1) - b: 2 windows")
     })
     .await;
     assert!(!c.text().contains("- 0: a0"), "{}", c.text());
     c.key(0xBB, '+', SHIFT_PRESSED).await;
     c.wait_for("a open again", |s| {
-        s.contents().contains("/6] j/k move") && s.contents().contains("(0) - a: 2 windows")
+        s.contents().contains("/10] j/k move") && s.contents().contains("(0) - a: 2 windows")
     })
     .await;
-    c.type_str("j").await; // a:0; Left folds its session from a window line too
+    // a:0: Left folds the window (its pane goes), Left again its session.
+    c.type_str("j").await;
     c.key(0x25, '\0', 0).await;
-    c.wait_for("folded from a window line", |s| s.contents().contains("[1/4] j/k move")).await;
+    c.wait_for("window folded", |s| s.contents().contains("[2/9] j/k move") && s.contents().contains("  + 0: a0"))
+        .await;
+    c.key(0x25, '\0', 0).await;
+    c.wait_for("then its session", |s| s.contents().contains("[1/6] j/k move")).await;
     c.type_str("q").await;
     h.cli(&["kill-server"]).await;
 }
@@ -5720,6 +5828,7 @@ async fn window_size_picks_which_client_sizes_the_session() {
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_tree_filters_and_tags() {
     let h = Harness::start("treetags").await;
+    h.cli(&["set", "-g", "choose-tree-style", "list"]).await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "alpha"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
@@ -5727,27 +5836,30 @@ async fn choose_tree_filters_and_tags() {
     h.cli(&["new", "-d", "-s", "gamma"]).await;
     h.wait_capture("gamma:0", "shell prompt", |t| t.contains("keepane>")).await;
     c.prefix('w').await;
-    // The cursor starts on the current window, alpha:0 (line 2 of 5).
-    c.wait_for("picker", |s| s.contents().contains("[2/5] j/k move")).await;
+    // The cursor starts on the current pane, alpha:0's (line 3 of 8: the
+    // sessions, their windows and their panes).
+    c.wait_for("picker", |s| s.contents().contains("[3/8] j/k move")).await;
     // f types a filter; the list follows it, and a session stays with its
-    // matching window. Escape puts the old (empty) filter back.
+    // matching window, and the window with its panes. Escape puts the old
+    // (empty) filter back.
     c.type_str("f").await;
     c.wait_for("filter prompt", |s| s.contents().contains("(filter)")).await;
     c.type_str("beta").await;
-    c.wait_for("filtered", |s| s.contents().contains("/2] j/k move") && s.contents().contains("[filter: beta]")).await;
+    c.wait_for("filtered", |s| s.contents().contains("/3] j/k move") && s.contents().contains("[filter: beta]")).await;
     let text = c.text();
     assert!(text.contains("(0) - alpha: 2 windows (attached)"), "{text}");
     assert!(text.contains("(1)   - 1: beta"), "{text}");
+    assert!(text.contains("(2)       - 0: "), "beta's pane: {text}");
     assert!(!text.contains("gamma"), "{text}");
     assert!(text.contains("[filter: beta]"), "{text}");
     c.key(VK_ESCAPE, '\x1b', 0).await;
-    c.wait_for("filter cancelled", |s| s.contents().contains("/5] j/k move") && !s.contents().contains("[filter"))
+    c.wait_for("filter cancelled", |s| s.contents().contains("/8] j/k move") && !s.contents().contains("[filter"))
         .await;
     // A filter by session name keeps its windows; Enter keeps the filter.
     c.type_str("f").await;
     c.wait_for("filter prompt", |s| s.contents().contains("(filter)")).await;
     c.type_str("GAMMA").await;
-    c.wait_for("filtered", |s| s.contents().contains("/2] j/k move") && s.contents().contains("[filter: GAMMA]")).await;
+    c.wait_for("filtered", |s| s.contents().contains("/3] j/k move") && s.contents().contains("[filter: GAMMA]")).await;
     c.enter().await;
     c.wait_for("filter kept", |s| {
         let t = s.contents();
@@ -5758,27 +5870,28 @@ async fn choose_tree_filters_and_tags() {
     c.wait_for("filter prompt", |s| s.contents().contains("(filter)")).await;
     c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await; // C-u: clear the input
     c.enter().await;
-    c.wait_for("no filter", |s| s.contents().contains("/5] j/k move") && !s.contents().contains("[filter")).await;
+    c.wait_for("no filter", |s| s.contents().contains("/8] j/k move") && !s.contents().contains("[filter")).await;
     // t tags a line (marked *) and moves down; x kills every tagged line.
     c.type_str("g").await; // alpha
-    c.type_str("j").await; // alpha:0
-    c.type_str("j").await; // alpha:1 (beta)
-    c.wait_for("on beta", |s| s.contents().contains("[3/5] j/k move")).await;
+    c.type_str("jjj").await; // alpha:0, its pane, alpha:1 (beta)
+    c.wait_for("on beta", |s| s.contents().contains("[4/8] j/k move")).await;
+    c.type_str("t").await; // beta (the cursor goes on to its pane)
+    c.wait_for("tagged", |s| s.contents().contains("(3)*  - 1: beta") && s.contents().contains("[1 tagged]")).await;
+    c.type_str("j").await; // gamma (session)
     c.type_str("t").await;
-    c.wait_for("tagged", |s| s.contents().contains("(2)*  - 1: beta") && s.contents().contains("[1 tagged]")).await;
-    c.type_str("t").await; // gamma (session)
-    c.wait_for("two tagged", |s| s.contents().contains("(3)*- gamma") && s.contents().contains("[2 tagged]")).await;
-    c.type_str("t").await; // gamma's window (the last line: the cursor stays)
+    c.wait_for("two tagged", |s| s.contents().contains("(5)*- gamma") && s.contents().contains("[2 tagged]")).await;
+    c.type_str("t").await; // gamma's window
     c.wait_for("three", |s| s.contents().contains("[3 tagged]")).await;
+    c.type_str("k").await; // back on it...
     c.type_str("t").await; // ...and untag it again
     c.wait_for("back to two", |s| {
-        s.contents().contains("[2 tagged]") && s.contents().contains(&format!("(4)   - 0: {SH}*"))
+        s.contents().contains("[2 tagged]") && s.contents().contains(&format!("(6)   - 0: {SH}*"))
     })
     .await;
     c.key(b'X' as u16, 'x', 0).await;
     c.wait_for("killed", |s| {
         let t = s.contents();
-        t.contains("/2] j/k move") && !t.contains("beta") && !t.contains("gamma") && !t.contains("tagged]")
+        t.contains("/3] j/k move") && !t.contains("beta") && !t.contains("gamma") && !t.contains("tagged]")
     })
     .await;
     let (_, out, _) = h.cli(&["ls"]).await;
