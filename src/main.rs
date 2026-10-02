@@ -44,6 +44,8 @@ Upgrading:  version (this keepane and the server's)   update [--check]   restart
 On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
 History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
   list-marks [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines)
+  copy-output [-p] [-t pane]   (what the last command printed, to a buffer and the clipboard; -p prints it; prefix y)
+  hints   (prefix F: label paths, addresses and hashes on screen; a label copies, in capitals opens; hint-open)
   undo-kill   (prefix u: the pane or window killed in the last 10 seconds comes back; undo-kill-time)
 Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   rename-pane [-t pane] name   (then -t %name finds it; a full address $1:@3.%7 works too)   whoami

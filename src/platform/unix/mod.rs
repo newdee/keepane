@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod keys;
 pub mod netif;
 pub mod notify;
+pub mod open;
 pub mod private;
 pub mod proccwd;
 pub mod process;

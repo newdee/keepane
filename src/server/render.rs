@@ -766,6 +766,27 @@ pub fn draw_big_text(g: &mut Grid, rect: Rect, text: &str, style: Style) -> bool
 /// key) does for this kind of list. `status` (the filter, the tag count)
 /// sits at the right end of the hint row and wins over the hint when the
 /// row is too narrow for both: it is state, the hint is not.
+/// One `hints` pick: the thing found at `row`, `col` of the pane at `rect`
+/// (`width` cells), shown yellow and underlined, with what is left of its
+/// label over its first cells in black on yellow.
+pub fn draw_hint(g: &mut Grid, rect: Rect, row: u16, col: u16, width: u16, label: &str) {
+    if row >= rect.h || col >= rect.w {
+        return;
+    }
+    let y = rect.y + row;
+    for x in rect.x + col..rect.x + col.saturating_add(width).min(rect.w) {
+        if x < g.cols && y < g.rows {
+            let mut cell = g.get(x, y).clone();
+            cell.style.fg = Color::Idx(3);
+            cell.style.underline = true;
+            cell.style.inverse = false;
+            g.set(x, y, cell);
+        }
+    }
+    let style = Style { bold: true, ..Style::colors(Color::Idx(0), Color::Idx(3)) };
+    g.put_str(rect.x + col, y, label, style, rect.w - col);
+}
+
 /// A prompt (with its input) or else a message across row `y`, the way the
 /// status line shows them; with `status off` they are drawn over the bottom
 /// row instead, so a prompt is never typed blind. Returns where the cursor

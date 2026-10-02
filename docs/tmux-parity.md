@@ -145,12 +145,12 @@ tmux's table, with what keepane does today.
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 keepane adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
-(save / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps) and `v` (dashboard) on top of that table.
+(save / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed) and `F` (hints: pick a path, address or hash on screen) on top of that table.
 
 ## Copy mode
 
 Movement: arrows and `h j k l`, `w` `b` `e` and their `W` `B` `E` forms,
-`0` `^` `$`, `H` `M` `L`, `{` `}`, `g` `G`, `C-b` `C-f` `C-u` `C-d`, PgUp and
+`0` `^` `$`, `H` `M` `L`, `{` `}`, `[` `]` (the previous / next command a shell ran, tmux's `previous-prompt` / `next-prompt`), `g` `G`, `C-b` `C-f` `C-u` `C-d`, PgUp and
 PgDn. A count works in front of a motion (`3j`, `2w`).
 
 Selecting and copying: `Space` or `v` starts a selection, `C-v` makes it a
@@ -163,7 +163,8 @@ Searching: `/` forward (towards the newest line), `?` back through the scrollbac
 `cursor-up/-down/-left/-right`, `next-word`, `next-word-end`,
 `previous-word` (and the `-space` forms), `start-of-line`,
 `back-to-indentation`, `end-of-line`, `top-line`, `middle-line`,
-`bottom-line`, `previous-paragraph`, `next-paragraph`, `history-top`,
+`bottom-line`, `previous-paragraph`, `next-paragraph`, `previous-prompt`,
+`next-prompt` (from command to command, keys `[` `]`), `history-top`,
 `history-bottom`, `page-up`, `page-down`, `halfpage-up`, `halfpage-down`,
 `begin-selection`, `rectangle-toggle`, `copy-selection`, `search-forward`,
 `search-backward`, `search-again`, `search-reverse` and `cancel`.

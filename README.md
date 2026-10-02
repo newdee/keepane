@@ -317,6 +317,8 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `u` | bring back the pane or window killed in the last 10 seconds (`undo-kill`) |
 | `C-t` | show when each command ran, how long it took and how it ended, at the end of its line (`pane-timestamps`) |
 | `/` | browse what panes printed, by pane and day (`choose-history`) |
+| `y` | copy what the last command printed, without the prompt or the command, to a paste buffer and the clipboard (`copy-output`) |
+| `F` | put a label on every path, web address and git hash on screen; type one to copy that thing, in capitals to open it (`hints`, see below) |
 | `{` / `}` | swap pane with previous / next |
 | `q` | show the pane numbers (with the name and work mode, `%name · ai`, under them); press one to go there at once (past 9, a second digit straight after goes on from there: `1` `2` is pane 12) |
 | `Space` / `M-1`…`M-5` / `E` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) / even out the panes next to this one |
@@ -345,7 +347,8 @@ waits for the animation. `set -g animation off` turns it off, and
 Copy mode, the keys used most:
 
 - Moving: `h` `j` `k` `l` or the arrows; `w` `b` `e` by word; `0` `^` `$`,
-  `H` `M` `L`, `{` `}`, `g` `G` jump.
+  `H` `M` `L`, `{` `}`, `g` `G` jump; `[` `]` go to the previous / next
+  command the shell ran, where it was typed.
 - Paging: `PageUp` / `PageDown` or `C-b` / `C-f`; `C-u` / `C-d` by half a
   page. Since `C-b` is also the prefix, `C-b C-b` pages up in copy mode. A
   number repeats a key, such as `3j`.
@@ -364,6 +367,27 @@ normal screen, sends arrow keys to full-screen programs, and is passed
 through to programs that ask for mouse events. Drag to select text; it is
 copied to the Windows clipboard on release, and a right click pastes the
 clipboard into the pane, as the terminal itself would.
+
+`C-b F` (`hints`) puts a label of one or two letters on every path, web
+address and git hash in the panes on screen: a compiler's
+`src/main.rs:12:5` or `App.cs(12,5)`, `https://…`, `af9af7e`. Typing a
+label copies that thing to a paste buffer and the clipboard (a path without
+its line). Typing it in capitals opens it: an address in the browser, a path
+at its line in VS Code when `code` is on the PATH, else in `$VISUAL` or
+`$EDITOR` in a new window (`vim +12 src/main.rs`), else in what the desktop
+opens it with. A relative path is taken from the pane's directory. Escape
+puts the labels away. A bare name with no slash and no line number
+(`notes.txt`) counts only when that file is there, so prose is left alone;
+something the terminal wrapped onto the next row is not found.
+
+`set -g hint-open '<command>'` opens paths your way: a keepane command in
+which `{file}`, `{line}` and `{col}` are put as they are, so quote a path
+that may hold spaces with single quotes:
+
+```tmux
+set -g hint-open "new-window hx '{file}:{line}:{col}'"
+set -g hint-open "run-shell 'idea --line {line} {file}'"
+```
 
 ## Command times and history
 
@@ -392,6 +416,12 @@ width nor what the program printed; copy mode and `capture-pane` do not
 include it. A line without room for it goes without. `keepane list-marks`
 prints the same for a script. On the phone, the ⏱ button shows the times
 in a column to the left.
+
+Knowing where each command starts and ends, `C-b y` (`copy-output`) copies
+what the last one printed (the lines between it and the next prompt, at most
+4 MB) to a paste buffer and the clipboard: a failing test's output, ready to
+paste into an issue or an agent. `keepane copy-output -p -t %3` prints it
+instead, for a script. In copy mode, `[` and `]` go from command to command.
 
 A shell started with a script or command of its own (`pwsh -File`,
 `bash -c`) is left as it is, hook and all; that script can install the hook

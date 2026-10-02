@@ -190,6 +190,8 @@ keepane kill-server
 | `u` | 把 10 秒内关掉的 pane 或窗口放回原处（`undo-kill`） |
 | `C-t` | 在每条命令那一行的末尾显示开始时间、耗时和成败（`pane-timestamps`） |
 | `/` | 按 pane 和日期翻看输出过的历史（`choose-history`） |
+| `y` | 把上一条命令的输出（不含提示符和命令本身）复制到粘贴缓冲区和剪贴板（`copy-output`） |
+| `F` | 给屏幕上的路径、网址和 git hash 都标上字母；按字母复制，按大写字母打开（`hints`，见下文） |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
 | `q` | 每块显示自己的编号（下面显示名字和工作模式，如 `%名字 · ai`），按数字立刻跳过去（超过 9 个时，紧接着再按一位就接着跳：`1` `2` 是第 12 块） |
 | `Space` / `M-1`…`M-5` / `E` | 轮换布局 / 直接选一种（左右平分、上下平分、主窗在上、主窗在左、平铺）/ 把旁边这一排 pane 拉成等宽等高 |
@@ -216,7 +218,7 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 
 copy mode 的常用操作：
 
-- 移动：`h` `j` `k` `l` 或方向键；`w` `b` `e` 按词移动；`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转。
+- 移动：`h` `j` `k` `l` 或方向键；`w` `b` `e` 按词移动；`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转；`[` `]` 跳到上一条 / 下一条命令输入的位置。
 - 翻页：`PageUp` / `PageDown` 或 `C-b` / `C-f`；`C-u` / `C-d` 翻半页。由于 `C-b` 也是前缀键，在 copy mode 中按 `C-b C-b` 可上翻一页。数字可指定重复次数，例如 `3j`。
 - 选择与复制：`Space` 或 `v` 开始选择，`C-v` 切换矩形选择，`Enter` 或 `y` 复制到粘贴缓冲区和 Windows 剪贴板。
 - 搜索：`/` 开始搜索、`?` 反向搜索，`n` / `N` 跳到下一个结果；`q` 退出。
@@ -224,6 +226,15 @@ copy mode 的常用操作：
 脚本可用 `send-keys -X <命令名>` 执行对应操作，命令名与 tmux 相同。
 
 鼠标可用于选择 pane、拖动边框调整大小，以及点击状态栏切换窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去。拖选一段文字，松手就复制到 Windows 剪贴板了；右键把剪贴板贴进 pane，和终端本身的右键一样。
+
+`C-b F`（`hints`）给屏幕上各个 pane 里的路径、网址和 git hash 都标上一两个字母：编译器给的 `src/main.rs:12:5` 或 `App.cs(12,5)`、`https://…`、`af9af7e`。按标签字母就把它复制到粘贴缓冲区和剪贴板（路径不带行号）；按大写字母就打开：网址用浏览器开；路径在 PATH 里有 `code` 时用 VS Code 跳到那一行，没有就在新窗口里用 `$VISUAL` 或 `$EDITOR` 打开（`vim +12 src/main.rs`），再没有就交给系统默认程序。相对路径按那个 pane 的当前目录算。按 Esc 收起标签。没有斜杠也没有行号的单个名字（`notes.txt`）只在文件确实存在时才算，所以普通文字不会被标上；被终端折到下一行的内容找不到。
+
+`set -g hint-open '<命令>'` 可以换成自己的打开方式：一条 keepane 命令，`{file}`、`{line}`、`{col}` 原样填进去，路径可能带空格的话用单引号括起来：
+
+```tmux
+set -g hint-open "new-window hx '{file}:{line}:{col}'"
+set -g hint-open "run-shell 'idea --line {line} {file}'"
+```
 
 ## 命令时间和历史
 
@@ -240,6 +251,8 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 ```
 
 时间信息显示在行尾空白处，不改变 pane 宽度或程序输出；copy mode 和 `capture-pane` 不会包含这段信息。如果行尾空间不足，就不显示。脚本要用的话，`keepane list-marks` 打印同样的信息。手机上点 ⏱ 按钮，时间显示在左边一栏。
+
+既然知道每条命令从哪开始、到哪结束，`C-b y`（`copy-output`）就把上一条命令的输出（它和下一个提示符之间的行，最多 4 MB）复制到粘贴缓冲区和剪贴板：测试失败的输出，直接贴进 issue 或者发给 agent。`keepane copy-output -p -t %3` 改成打印出来，给脚本用。copy mode 里 `[` `]` 在命令之间跳。
 
 带脚本或命令启动的 shell（`pwsh -File`、`bash -c`）keepane 不去动它，也就没有 hook；可以在那个脚本里自己装上：PowerShell 里写 `Invoke-Expression (keepane __shell-hook | Out-String)`，bash 里写 `eval "$(keepane __shell-hook)"`。
 

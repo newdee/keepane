@@ -1770,6 +1770,158 @@ async fn display_panes_takes_numbers_past_nine() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `copy-output` (prefix y) takes what the last command printed, and copy
+/// mode's `[` / `]` step from one command to the next.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_commands_output_is_copied_and_copy_mode_steps_between_commands() {
+    let h = Harness::start("copyout").await;
+    let mut c = h.connect().await;
+    let root = if cfg!(windows) { "C:\\" } else { "/" };
+    c.attach(&[&["new", "-s", "o", "-c", root], HOOKED_SHELL].concat()).await;
+    let p = pane_id(&h, "o:0.0").await;
+    let t = format!("%{p}");
+    // Idle means at its prompt for a pane in shell mode: ready for keys.
+    h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    // Nothing has run yet.
+    let (code, _, err) = h.cli(&["copy-output", "-p", "-t", &t]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("no finished command"), "{err}");
+    let (first, second) = if cfg!(windows) {
+        ("Write-Output first-1 first-2 first-3", "Write-Output second-1 second-2")
+    } else {
+        ("printf '%s\\n' first-1 first-2 first-3", "printf '%s\\n' second-1 second-2")
+    };
+    for (cmd, want) in [(first, "first-1\nfirst-2\nfirst-3"), (second, "second-1\nsecond-2")] {
+        h.cli(&["send-keys", "-t", &t, cmd, "Enter"]).await;
+        // The command is done once its shell says so: its mark is finished.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let (code, out, _) = h.cli(&["copy-output", "-p", "-t", &t]).await;
+            if code == 0 && out.trim_end() == want {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{cmd}: {out:?}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    // Each step below changes the buffer, so waiting for the new text is
+    // waiting for the step (a status-line "copied" may be the last one's).
+    let buffer_is = async |want: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let out = h.cli(&["show-buffer"]).await.1;
+            if out.trim_end() == want {
+                return;
+            }
+            assert!(Instant::now() < deadline, "buffer {out:?}, waiting for {want:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    // prefix y: the same into a paste buffer, said on the status line.
+    c.prefix('y').await;
+    c.wait_for("copied", |s| s.contents().contains("copied 2 lines")).await;
+    buffer_is("second-1\nsecond-2").await;
+    // Copy mode: [ goes to the last command where it was typed; selecting
+    // to the end of that line copies the command.
+    let copy_line = async |c: &mut Conn, keys: &str| {
+        c.prefix('[').await;
+        c.type_str(keys).await;
+        c.type_str("v$").await;
+        c.enter().await;
+    };
+    copy_line(&mut c, "[").await;
+    buffer_is(second).await;
+    // [ [ is the one before; [ [ ] the last again.
+    copy_line(&mut c, "[[").await;
+    buffer_is(first).await;
+    copy_line(&mut c, "[[]").await;
+    buffer_is(second).await;
+    // tmux's names for them, from a script.
+    c.prefix('[').await;
+    for name in ["previous-prompt", "previous-prompt", "begin-selection", "end-of-line", "copy-selection"] {
+        let (code, _, err) = h.cli(&["send-keys", "-X", "-t", &t, name]).await;
+        assert_eq!(code, 0, "{name}: {err}");
+    }
+    buffer_is(first).await;
+    // Past the last there is nothing: it says so and stays.
+    c.prefix('[').await;
+    c.type_str("]").await;
+    c.wait_for("no later", |s| s.contents().contains("no later command")).await;
+    c.type_str("q").await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// `hints` (prefix F) labels paths, addresses and hashes; a label copies,
+/// in capitals it opens (`hint-open` here, to see what it was given).
+#[tokio::test(flavor = "multi_thread")]
+async fn hints_copy_or_open_what_is_on_screen() {
+    let h = Harness::start("hints").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "h"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let line = "src/server/mod.rs:6454:13 https://example.com/a af9af7e";
+    c.type_str(&format!("echo {line}")).await;
+    c.enter().await;
+    c.wait_for("printed", |s| s.rows(0, COLS).any(|r| r.trim_end() == line)).await;
+    // Labelled from the bottom up, one label per text: the hash a, the
+    // address s, the path d, each over the start of its thing.
+    let labelled = |s: &vt100::Screen| {
+        s.rows(0, COLS).any(|r| r.trim_end() == "drc/server/mod.rs:6454:13 sttps://example.com/a af9af7e")
+    };
+    // Escape puts them away.
+    c.prefix('F').await;
+    c.wait_for("labels", labelled).await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("labels gone", |s| s.rows(0, COLS).any(|r| r.trim_end() == line)).await;
+    // A label copies its thing (the path without its line and column); a
+    // letter no label has before it is ignored, the labels staying up.
+    c.prefix('F').await;
+    c.wait_for("labels", labelled).await;
+    c.type_str("zd").await;
+    c.wait_for("copied", |s| s.contents().contains("copied src/server/mod.rs")).await;
+    assert_eq!(h.cli(&["show-buffer"]).await.1.trim_end(), "src/server/mod.rs");
+    // In capitals it opens: the path from the pane's directory, its line
+    // and column, handed to hint-open.
+    let (code, _, err) = h.cli(&["set", "-g", "hint-open", "set-buffer -b opened '{file}|{line}|{col}'"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.prefix('F').await;
+    c.wait_for("labels", labelled).await;
+    c.key(b'D' as u16, 'D', SHIFT_PRESSED).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let opened = loop {
+        let (code, out, _) = h.cli(&["show-buffer", "-b", "opened"]).await;
+        if code == 0 {
+            break out.trim_end().to_string();
+        }
+        assert!(Instant::now() < deadline, "hint-open never ran");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let (file, rest) = opened.split_once('|').unwrap();
+    assert_eq!(rest, "6454|13");
+    assert!(
+        std::path::Path::new(file).is_absolute() && file.replace('\\', "/").ends_with("src/server/mod.rs"),
+        "{file}"
+    );
+    // A hash has nothing to open: in capitals it is copied all the same.
+    c.prefix('F').await;
+    c.wait_for("labels", labelled).await;
+    c.key(b'A' as u16, 'A', SHIFT_PRESSED).await;
+    c.wait_for("copied", |s| s.contents().contains("copied af9af7e")).await;
+    assert_eq!(h.cli(&["show-buffer"]).await.1.trim_end(), "af9af7e");
+    // Not over a list, where the labels could not be seen.
+    c.prefix('w').await;
+    c.wait_for("list", |s| s.contents().contains("j/k move")).await;
+    c.prefix('F').await;
+    c.wait_for("refused", |s| s.contents().contains("close the list")).await;
+    c.type_str("q").await;
+    // From a script there is no screen to label.
+    let (code, _, err) = h.cli(&["hints"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("not attached"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn copy_mode_search_finds_scrolled_off_lines() {
     let h = Harness::start("search").await;
@@ -2903,7 +3055,8 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     // (prefix v is keepane's own dashboard; what matters is that the
     // copy-mode commands did not land there.)
     assert!(!keys.lines().any(|l| l.contains("-T prefix v ") && l.contains("selection")), "{keys}");
-    assert!(!keys.lines().any(|l| l.contains("-T prefix y ")), "{keys}");
+    // (prefix y is keepane's own copy-output, as v is the dashboard.)
+    assert!(!keys.lines().any(|l| l.contains("-T prefix y ") && l.contains("selection")), "{keys}");
     assert!(
         keys.lines().any(|l| l.starts_with("bind-key -T copy-mode-vi v") && l.contains("begin-selection")),
         "{keys}"

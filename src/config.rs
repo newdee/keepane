@@ -151,6 +151,10 @@ pub struct Options {
     pub event_log_days: u32,
     /// The most bytes one day's event log holds.
     pub event_log_max: u64,
+    /// What opens a path picked in `hints` (a keepane command with
+    /// `{file}`, `{line}`, `{col}`); empty: VS Code, else `$EDITOR`, else
+    /// the desktop.
+    pub hint_open: String,
 }
 
 /// What a pane can be done with (`done-events`).
@@ -293,6 +297,7 @@ pub const SHOWABLE: &[&str] = &[
     "event-log",
     "event-log-days",
     "event-log-max",
+    "hint-open",
 ];
 
 impl Default for Options {
@@ -378,6 +383,7 @@ impl Default for Options {
             event_log: true,
             event_log_days: 30,
             event_log_max: 20 * 1024 * 1024,
+            hint_open: String::new(),
         }
     }
 }
@@ -484,6 +490,7 @@ pub const KNOWN: &[&str] = &[
     "event-log",
     "event-log-days",
     "event-log-max",
+    "hint-open",
     "history-limit",
     "keep-zoom",
     "log-history",
@@ -805,6 +812,7 @@ impl Options {
             "event-log" => self.event_log = parse_bool(value)?,
             "event-log-days" => self.event_log_days = ranged(name, value, 1, 3650, "days")?,
             "event-log-max" => self.event_log_max = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024)?,
+            "hint-open" => self.hint_open = value.trim().to_string(),
             "default-terminal" => {
                 let v = value.trim();
                 if v.is_empty() || v.contains(char::is_whitespace) {
@@ -928,6 +936,7 @@ impl Options {
             "event-log" => onoff(self.event_log),
             "event-log-days" => self.event_log_days.to_string(),
             "event-log-max" => size_name(self.event_log_max),
+            "hint-open" => self.hint_open.clone(),
             "log-history-dir" => {
                 if self.log_history_dir.is_empty() {
                     crate::histlog::default_dir().to_string_lossy().into_owned()

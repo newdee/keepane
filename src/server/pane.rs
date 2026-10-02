@@ -88,6 +88,20 @@ pub fn command_of(line: &str, col: u16) -> String {
     String::new()
 }
 
+/// The prompt on a line: the part before column `col`, blanks trimmed.
+pub fn prompt_of(line: &str, col: u16) -> String {
+    let mut width = 0;
+    let end = line
+        .char_indices()
+        .find(|(_, c)| {
+            let fits = width < usize::from(col);
+            width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            !fits
+        })
+        .map_or(line.len(), |(i, _)| i);
+    line[..end].trim().to_string()
+}
+
 /// One command a shell ran, pinned to the line it was typed on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
@@ -1231,6 +1245,84 @@ impl Pane {
         out
     }
 
+    /// The finished commands whose lines still read as they did (not
+    /// cleared, not written over, not scrolled out of the scrollback),
+    /// oldest first.
+    pub fn readable_marks(&mut self) -> Vec<Mark> {
+        let cols = self.cols;
+        let marks: Vec<Mark> = self.marks.iter().filter(|m| m.end.is_some()).cloned().collect();
+        marks.into_iter().filter(|m| self.text_at(m.line).is_some_and(|now| still_reads(&now, &m.text, cols))).collect()
+    }
+
+    /// Line `line` (`scrolled_total() + row`) as copy mode counts lines
+    /// (0 = the oldest line kept); None when it has left the scrollback or
+    /// is below the screen.
+    pub fn abs_of_line(&mut self, line: u64) -> Option<usize> {
+        let kept = self.scrollback_len() as u64;
+        let oldest = self.parser.screen().scrolled_total().checked_sub(kept)?;
+        let abs = line.checked_sub(oldest)?;
+        (abs < kept + u64::from(self.rows)).then_some(abs as usize)
+    }
+
+    /// Command `m` as typed (all of it: a mark keeps only its first row) and
+    /// what it printed: the lines after the command up to the next prompt,
+    /// or to the cursor for the last one; at most `max` bytes, and whether
+    /// that was cut.
+    pub fn output_of(&mut self, m: &Mark, max: usize) -> (String, String, bool) {
+        let cursor = self.cursor_line();
+        let mut next =
+            self.marks.iter().map(|n| n.line).filter(|&l| l > m.line).min().unwrap_or(cursor + 1).min(cursor + 1);
+        let end = self.line_end(m.line, next);
+        let (typed, _) = self.text_between(m.line, end + 1, 64 * 1024);
+        let command = command_of(typed.lines().next().unwrap_or(""), m.col);
+        // An empty Enter's prompt has no mark (it moved down to the next):
+        // it is the same prompt again, and the output ends there.
+        let prompt = prompt_of(&m.text, m.col);
+        if !prompt.is_empty()
+            && let Some(again) = (end + 1..next).find(|&l| self.text_at(l).is_some_and(|t| t.trim_end() == prompt))
+        {
+            next = again;
+        }
+        if end + 1 >= next {
+            return (command, String::new(), false);
+        }
+        let (text, cut) = self.text_between(end + 1, next, max);
+        (command, text, cut)
+    }
+
+    /// The last row of the line that starts at row `line`, before `limit`:
+    /// a row the terminal wrapped goes on in the next, as `text_between`
+    /// reads them (a row ending in a blank ends its line: ConPTY pads a
+    /// line to the width and so marks it wrapped).
+    fn line_end(&mut self, line: u64, limit: u64) -> u64 {
+        let mut end = line;
+        while end + 1 < limit {
+            let Some(abs) = self.abs_of_line(end) else { break };
+            let (text, wrapped) = self.line_text(abs);
+            if !wrapped || text.ends_with(' ') {
+                break;
+            }
+            end += 1;
+        }
+        end
+    }
+
+    /// The last command the shell ran that is still readable and had
+    /// something typed (an empty Enter is no command): what was typed, what
+    /// it printed (at most `max` bytes), and whether that was cut.
+    pub fn last_output(&mut self, max: usize) -> Result<(String, String, bool), String> {
+        if self.parser.screen().alternate_screen() {
+            return Err("a full-screen program is up in this pane; its last command is under it".into());
+        }
+        let m = self
+            .readable_marks()
+            .into_iter()
+            .rev()
+            .find(|m| !command_of(&m.text, m.col).is_empty())
+            .ok_or("no finished command here (or its shell does not report its commands)")?;
+        Ok(self.output_of(&m, max))
+    }
+
     /// The text of lines `from..to` (`scrolled_total() + row`), rows the
     /// terminal wrapped joined back into the line the program printed, at
     /// most `max` bytes; and whether it was cut there.
@@ -2082,6 +2174,61 @@ mod tests {
         let mut p = quiet_pane(30, 8, 100);
         p.process_output(format!("user@host:~$ {B}whoami\r\nuser\r\n{}user@host:~$ {B}", ran(1, 2, true)).as_bytes());
         assert_eq!(p.last_line(), "user");
+    }
+
+    /// `copy-output`: the last command's own lines, between the command as
+    /// typed and the next prompt.
+    #[test]
+    fn the_last_output_is_the_last_commands_own_lines() {
+        let mut p = quiet_pane(30, 8, 100);
+        let none = p.last_output(1000).unwrap_err();
+        assert!(none.contains("no finished command"), "{none}");
+        p.process_output(format!("PS C:\\> {B}").as_bytes());
+        p.process_output(b"echo a\r\nout-1\r\nout-2\r\n");
+        p.process_output(format!("{}PS C:\\> {B}", ran(1, 2, true)).as_bytes());
+        let want = ("echo a".to_string(), "out-1\nout-2".to_string(), false);
+        assert_eq!(p.last_output(1000).unwrap(), want);
+        // An empty Enter is no command: still the one before.
+        p.process_output(format!("\r\nPS C:\\> {B}").as_bytes());
+        assert_eq!(p.last_output(1000).unwrap(), want);
+        // Cut at the most asked for.
+        assert_eq!(p.last_output(3).unwrap(), ("echo a".to_string(), "out".to_string(), true));
+        // A command that printed nothing has nothing.
+        p.process_output(b"cd x\r\n");
+        p.process_output(format!("{}PS C:\\x> {B}", ran(3, 4, true)).as_bytes());
+        assert_eq!(p.last_output(1000).unwrap(), ("cd x".to_string(), String::new(), false));
+        // A command typed over two rows (the terminal wrapped it): its
+        // second row is the command's, not output.
+        p.process_output(format!("{}\r\nprinted\r\n", "w".repeat(30)).as_bytes());
+        p.process_output(format!("{}PS C:\\x> {B}", ran(5, 6, true)).as_bytes());
+        assert_eq!(p.last_output(1000).unwrap(), ("w".repeat(30), "printed".to_string(), false));
+        // A full-screen program over it: refused, not its screen read.
+        p.process_output(b"\x1b[?1049hvim");
+        assert!(p.last_output(1000).unwrap_err().contains("full-screen"));
+    }
+
+    /// Copy mode's lines (0 = the oldest kept) and the marks' lines (which
+    /// keep counting as the screen scrolls) name the same line.
+    #[test]
+    fn a_marks_line_is_found_in_copy_modes_count() {
+        let mut p = quiet_pane(30, 4, 100);
+        p.process_output(format!("PS> {B}echo a\r\nout\r\n{}PS> {B}", ran(1, 2, true)).as_bytes());
+        for i in 0..10 {
+            p.process_output(format!("filler {i}\r\n").as_bytes());
+        }
+        let m = p.readable_marks().pop().expect("the command is still readable from the scrollback");
+        let abs = p.abs_of_line(m.line).unwrap();
+        assert_eq!(p.line_text(abs).0.trim_end(), "PS> echo a");
+        // A line below the screen, or scrolled out of what is kept, is none.
+        assert_eq!(p.abs_of_line(p.cursor_line() + 4), None);
+        let mut q = quiet_pane(30, 4, 2);
+        q.process_output(format!("PS> {B}echo a\r\n{}PS> {B}", ran(1, 2, true)).as_bytes());
+        let line = q.marks[0].line;
+        for i in 0..10 {
+            q.process_output(format!("filler {i}\r\n").as_bytes());
+        }
+        assert_eq!(q.abs_of_line(line), None);
+        assert!(q.readable_marks().is_empty());
     }
 
     /// The command's end read off the screen, wherever it was drawn: here a

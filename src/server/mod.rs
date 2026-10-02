@@ -4,6 +4,7 @@
 pub mod actor;
 mod digits;
 mod done;
+mod hints;
 pub mod import;
 pub mod input;
 pub mod layout;
@@ -215,6 +216,17 @@ impl ChooserKind {
     }
 }
 
+/// `hints` on screen (prefix F).
+struct HintMode {
+    /// Each pick: the pane it is in, what was found, its label (the same
+    /// text has the same label wherever it is).
+    found: Vec<(PaneId, hints::Found, String)>,
+    /// The label's letters typed so far.
+    typed: String,
+    /// A capital was typed: open the pick rather than copy it.
+    open: bool,
+}
+
 /// The digits typed while the `display-panes` numbers are up.
 #[derive(Clone, Copy)]
 struct PanesTyped {
@@ -376,6 +388,8 @@ struct Client {
     /// The pane number typed while they show, when another digit could
     /// still make a bigger one (`1` with pane 10 up).
     panes_typed: Option<PanesTyped>,
+    /// `hints` is up: the picks on screen and what has been typed.
+    hints: Option<HintMode>,
     prompt: Option<Prompt>,
     message: Option<(String, Instant)>,
     /// Multi-line command output shown over the window until a key is pressed
@@ -1079,6 +1093,8 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("C-r", "restore-session"),
         ("S", "set-option -w synchronize-panes"),
         ("C-t", "set-option -g pane-timestamps"),
+        ("y", "copy-output"),
+        ("F", "hints"),
     ];
     for (k, l) in lines {
         let key = Key::parse(k).expect(k);
@@ -1900,6 +1916,7 @@ impl Server {
                         repeat_until: None,
                         panes_until: None,
                         panes_typed: None,
+                        hints: None,
                         prompt: None,
                         message: None,
                         overlay: None,
@@ -4600,6 +4617,8 @@ impl Server {
                     "bottom-line" => Key::ch('L'),
                     "previous-paragraph" => Key::ch('{'),
                     "next-paragraph" => Key::ch('}'),
+                    "previous-prompt" => Key::ch('['),
+                    "next-prompt" => Key::ch(']'),
                     "history-top" => Key::ch('g'),
                     "history-bottom" => Key::ch('G'),
                     "page-up" => Key::ctrl('b'),
@@ -5360,6 +5379,54 @@ impl Server {
                     lines => Outcome::Text(lines.join("\n")),
                 }
             }
+            Cmd::CopyOutput { target, print } => {
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
+                let (command, text, cut) = match p.last_output(OUTPUT_MAX) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                if print {
+                    return Outcome::Text(text);
+                }
+                if text.is_empty() {
+                    return Outcome::Error(format!("`{command}` printed nothing"));
+                }
+                let lines = text.lines().count();
+                self.set_buffer(None, &text, false);
+                let note = match crate::clipboard::set_text(&text) {
+                    Err(e) => format!(" (clipboard: {e})"),
+                    Ok(()) if cut => format!(" (cut at {} MB)", OUTPUT_MAX >> 20),
+                    Ok(()) => String::new(),
+                };
+                let s = if lines == 1 { "" } else { "s" };
+                let what = format!("copied {lines} line{s} `{}` printed{note}", truncate(&command, 40));
+                if let Some(cid) = cid {
+                    self.message(cid, &what);
+                }
+                Outcome::Ok
+            }
+            Cmd::Hints => {
+                let Some(cid) = cid.filter(|c| self.clients.get(c).is_some_and(|c| c.session.is_some())) else {
+                    return Outcome::Error("hints: client not attached".into());
+                };
+                // A list or a popup covers the panes: labels under it could
+                // not be seen, yet would take the keys.
+                if self.clients.get(&cid).is_some_and(|c| c.chooser.is_some() || c.popup.is_some()) {
+                    return Outcome::Error("hints: close the list or popup first".into());
+                }
+                let found = self.hints_on_screen(cid);
+                if found.is_empty() {
+                    return Outcome::Error("nothing on screen to pick (paths, addresses, hashes)".into());
+                }
+                if let Some(c) = self.clients.get_mut(&cid) {
+                    c.hints = Some(HintMode { found, typed: String::new(), open: false });
+                }
+                Outcome::Ok
+            }
             Cmd::SourceFile { path } => self.source_file(&path).map(|_| ()).into(),
             // Window-scoped, so it is not in the global table: answer it from
             // the window the client is looking at.
@@ -5618,6 +5685,123 @@ impl Server {
 
     // ------------------------------------------------------------------ keys
 
+    /// The picks for `hints` in every pane of the window on screen: what is
+    /// found in the rows shown (the copy-mode view for a pane in copy mode),
+    /// labelled from the bottom up, so the newest output gets the easiest
+    /// keys; the same text has the same label.
+    fn hints_on_screen(&mut self, cid: ClientId) -> Vec<(PaneId, hints::Found, String)> {
+        let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return Vec::new() };
+        let Some(rects) = self.session(sid).and_then(|s| s.window()).map(|w| w.rects.clone()) else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for (pid, rect) in rects {
+            let Some(p) = self.find_pane_mut(pid) else { continue };
+            let (cols, offset) = (p.cols, p.copy.as_ref().map_or(0, |c| c.offset));
+            let dir = p.current_path();
+            let s = p.parser.screen_mut();
+            let keep = s.scrollback();
+            s.set_scrollback(offset);
+            let rows: Vec<String> = s.rows(0, cols).take(usize::from(rect.h)).collect();
+            s.set_scrollback(keep);
+            let exists = |f: &str| hints::resolve(f, dir.as_deref()).exists();
+            for (i, row) in rows.iter().enumerate() {
+                found.extend(hints::find(i as u16, row, &exists).into_iter().map(|f| (pid, f)));
+            }
+        }
+        let mut texts: Vec<&str> = Vec::new();
+        for (_, f) in found.iter().rev() {
+            if !texts.contains(&f.text.as_str()) {
+                texts.push(&f.text);
+            }
+        }
+        let labels = hints::labels(texts.len());
+        let label_of = |t: &str| texts.iter().position(|x| *x == t).and_then(|i| labels.get(i)).cloned();
+        let labelled: Vec<Option<String>> = found.iter().map(|(_, f)| label_of(&f.text)).collect();
+        found.into_iter().zip(labelled).filter_map(|((pid, f), l)| Some((pid, f, l?))).collect()
+    }
+
+    /// A key while `hints` is up: a label's letters pick its thing (a
+    /// capital among them opens it), Backspace takes one back, a letter no
+    /// label goes on with is ignored, anything else puts the labels away.
+    fn hints_key(&mut self, cid: ClientId, k: Key) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let Some(hm) = c.hints.as_mut() else { return };
+        match k.code {
+            KeyCode::Char(ch) if ch.is_ascii_alphabetic() && !k.ctrl && !k.alt => {
+                let typed = format!("{}{}", hm.typed, ch.to_ascii_lowercase());
+                if !hm.found.iter().any(|(_, _, l)| l.starts_with(&typed)) {
+                    return;
+                }
+                hm.typed = typed;
+                hm.open |= ch.is_ascii_uppercase();
+                let Some((pid, f, _)) = hm.found.iter().find(|(_, _, l)| *l == hm.typed).cloned() else { return };
+                let open = hm.open;
+                c.hints = None;
+                self.hint_pick(cid, pid, f, open);
+            }
+            KeyCode::BSpace => {
+                hm.typed.pop();
+            }
+            _ => c.hints = None,
+        }
+    }
+
+    /// What a `hints` label does: copy its thing, or open it (an address in
+    /// the browser, a path in the editor at its line). A hash has nothing to
+    /// open and is copied.
+    fn hint_pick(&mut self, cid: ClientId, pid: PaneId, f: hints::Found, open: bool) {
+        match (&f.kind, open) {
+            (hints::Kind::Url, true) => match crate::platform::open::open(&f.text) {
+                Ok(()) => self.message(cid, &format!("opening {}", f.text)),
+                Err(e) => self.message(cid, &e),
+            },
+            (hints::Kind::Path { line, col }, true) => self.hint_open_path(cid, pid, &f.text, *line, *col),
+            _ => {
+                self.set_buffer(None, &f.text, false);
+                let note = crate::clipboard::set_text(&f.text).err().map(|e| format!(" (clipboard: {e})"));
+                self.message(cid, &format!("copied {}{}", f.text, note.unwrap_or_default()));
+            }
+        }
+    }
+
+    /// Open `file` (relative to pane `pid`'s directory) at `line`/`col`:
+    /// with `hint-open` when it is set, else VS Code, else `$VISUAL` /
+    /// `$EDITOR` in a new window, else the desktop.
+    fn hint_open_path(&mut self, cid: ClientId, pid: PaneId, file: &str, line: Option<u32>, col: Option<u32>) {
+        let dir = self.find_pane_mut(pid).and_then(|p| p.current_path());
+        let path = hints::resolve(file, dir.as_deref()).display().to_string();
+        let out = if !self.opts.hint_open.is_empty() {
+            match crate::command::parse_line(&hints::fill(&self.opts.hint_open, &path, line, col)) {
+                Ok(Some(cmd)) => self.exec(cmd, Some(cid)),
+                Ok(None) => Outcome::Ok,
+                Err(e) => Outcome::Error(format!("hint-open: {e}")),
+            }
+        } else {
+            let editor = std::env::var("VISUAL").ok().or_else(|| std::env::var("EDITOR").ok());
+            match hints::plan(&path, line, col, hints::on_path("code"), editor) {
+                hints::Plan::Code { code, arg } => {
+                    match crate::platform::open::spawn(&code, &["-g".into(), arg.clone()]) {
+                        Ok(()) => Outcome::Text(format!("opening {arg} in VS Code")),
+                        Err(e) => Outcome::Error(e),
+                    }
+                }
+                hints::Plan::Editor { argv } => {
+                    self.exec(Cmd::NewWindow { name: None, cwd: dir, target: None, argv, detached: false }, Some(cid))
+                }
+                hints::Plan::Desktop => match crate::platform::open::open(&path) {
+                    Ok(()) => Outcome::Text(format!("opening {path}")),
+                    Err(e) => Outcome::Error(e),
+                },
+            }
+        };
+        match out {
+            Outcome::Error(e) => self.message(cid, &e),
+            Outcome::Text(t) => self.message(cid, &t),
+            _ => {}
+        }
+    }
+
     fn handle_key(&mut self, cid: ClientId, rec: KeyRecord) {
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(sid) = c.session else { return };
@@ -5651,6 +5835,14 @@ impl Server {
             if let Some(k) = key {
                 c.swallow_up.insert(rec.vk);
                 self.prompt_key(cid, k);
+            }
+            return;
+        }
+        // `hints` labels are up: every key is theirs.
+        if c.hints.is_some() {
+            if let Some(k) = key {
+                c.swallow_up.insert(rec.vk);
+                self.hints_key(cid, k);
             }
             return;
         }
@@ -6827,6 +7019,32 @@ impl Server {
                 }
                 copy_goto(p, abs);
             }
+            // Commands: the previous or next one the shell ran, the cursor
+            // where it was typed (the prompt's end).
+            (KeyCode::Char(dir @ ('[' | ']')), false, false) => {
+                let back = dir == '[';
+                let from = copy_abs(p);
+                let marks = p.readable_marks();
+                let at: Vec<(usize, u16)> =
+                    marks.iter().filter_map(|m| Some((p.abs_of_line(m.line)?, m.col))).collect();
+                let to = if back {
+                    at.iter().filter(|(a, _)| *a < from).max_by_key(|(a, _)| *a)
+                } else {
+                    at.iter().filter(|(a, _)| *a > from).min_by_key(|(a, _)| *a)
+                };
+                match to {
+                    Some(&(abs, col)) => {
+                        copy_goto(p, abs);
+                        if let Some(c) = p.copy.as_mut() {
+                            c.cx = col.min(cols.saturating_sub(1));
+                        }
+                    }
+                    None => {
+                        let which = if back { "earlier" } else { "later" };
+                        self.message(cid, &format!("no {which} command"));
+                    }
+                }
+            }
             // Search as tmux does: / looks forward (towards the newest line),
             // ? looks back through the scrollback, n and N repeat.
             (KeyCode::Char('/'), false, false) | (KeyCode::Char('?'), false, false) => {
@@ -7499,6 +7717,16 @@ impl Server {
                 let name = p.and_then(|p| p.actor.name.as_deref());
                 let mode = p.map_or("", |p| p.actor.mode.as_str());
                 render::draw_pane_number(&mut grid, *rect, n, colour, name, mode);
+            }
+            cursor = None;
+        }
+        // `hints`: each pick lit up with what is left of its label to type.
+        if let Some(hm) = self.clients.get(&cid).and_then(|c| c.hints.as_ref()) {
+            let w = &self.sessions[spos].windows[self.sessions[spos].cur];
+            for (pid, f, label) in &hm.found {
+                if let (Some(rest), Some(rect)) = (label.strip_prefix(hm.typed.as_str()), w.rect_of(*pid)) {
+                    render::draw_hint(&mut grid, rect, f.row, f.col, f.width, rest);
+                }
             }
             cursor = None;
         }
@@ -8179,6 +8407,9 @@ fn list_marks(p: &mut Pane) -> Vec<String> {
     out
 }
 
+/// The most of a command's output `copy-output` takes.
+const OUTPUT_MAX: usize = 4 << 20;
+
 /// Absolute line number under the copy-mode cursor. The scrollback can shrink
 /// under us (resize, clear-history), so the offset is re-clamped here.
 fn copy_abs(p: &mut Pane) -> usize {
@@ -8306,6 +8537,7 @@ mod tests {
             repeat_until: None,
             panes_until: None,
             panes_typed: None,
+            hints: None,
             prompt: None,
             message: None,
             overlay: None,

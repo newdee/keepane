@@ -78,7 +78,10 @@ seconds comes back).
 ### Copy mode and buffers
 
 `copy-mode`, `set-buffer`, `list-buffers`, `show-buffer`, `delete-buffer`,
-`choose-buffer`, `load-buffer`, `save-buffer`, `paste-buffer`.
+`choose-buffer`, `load-buffer`, `save-buffer`, `paste-buffer`. `copy-output`
+(what the last command printed, to a buffer and the clipboard; `-p` prints
+it) and `hints` (label the paths, addresses and hashes on screen to copy or,
+in capitals, open one; `hint-open`).
 
 ### Seeing what happened
 

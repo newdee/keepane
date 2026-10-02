@@ -181,6 +181,15 @@ pub enum Cmd {
     ListMarks {
         target: Option<Target>,
     },
+    /// `copy-output [-p] [-t pane]`: what the pane's last command printed,
+    /// to a paste buffer and the clipboard; `-p` prints it instead.
+    CopyOutput {
+        target: Option<Target>,
+        print: bool,
+    },
+    /// `hints`: label the paths, addresses and hashes on screen; typing a
+    /// label copies that one, typing it in capitals opens it.
+    Hints,
     /// `list-done [-a after] [-J]`: when panes were done (`done-events`),
     /// those after number `after`; `-J` as JSON, for the phone's page.
     ListDone {
@@ -910,6 +919,14 @@ impl fmt::Display for Cmd {
                 f.write_str("list-marks")?;
                 fmt_target(f, target)
             }
+            Cmd::CopyOutput { target, print } => {
+                f.write_str("copy-output")?;
+                if *print {
+                    f.write_str(" -p")?;
+                }
+                fmt_target(f, target)
+            }
+            Cmd::Hints => f.write_str("hints"),
             Cmd::ListDone { after, json } => {
                 f.write_str("list-done")?;
                 if *after > 0 {
@@ -2023,6 +2040,8 @@ pub const COMMANDS: &[&str] = &[
     "list-commands",
     "list-keys",
     "list-marks",
+    "copy-output",
+    "hints",
     "list-done",
     "send-message",
     "read-message",
@@ -2151,6 +2170,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-commands", &[]),
     ("list-keys", &[]),
     ("list-marks", &["-t"]),
+    ("copy-output", &["-p", "-t"]),
+    ("hints", &[]),
     ("list-done", &["-a", "-J"]),
     ("send-message", &["-t", "-r", "-w", "--to", "--re", "--task"]),
     ("read-message", &["-t", "-w"]),
@@ -2554,6 +2575,22 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ListMarks { target }
+        }
+        "copy-output" => {
+            let (mut target, mut print) = (None, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-p" => print = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::CopyOutput { target, print }
+        }
+        "hints" => {
+            a.none_left(n)?;
+            Cmd::Hints
         }
         "list-done" => {
             let (mut after, mut json) = (0, false);
