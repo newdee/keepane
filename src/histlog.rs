@@ -407,7 +407,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("keepane-histlog-crash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         send(Lane::History, Msg::Crash);
-        std::thread::sleep(Duration::from_millis(300));
+        // Until another writer is there: a flush sent after the crash can
+        // only be answered by one (other tests write here too, so the crash
+        // may wait behind them; a flush lost with the dead writer is sent
+        // again).
+        let end = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let (tx, rx) = channel();
+            send(Lane::History, Msg::Flush(tx));
+            if rx.recv_timeout(Duration::from_secs(5)).is_ok() {
+                break;
+            }
+            assert!(std::time::Instant::now() < end, "no writer took over");
+        }
         let f = file_for(&dir, "s", 0, 0, chrono::Local::now().date_naive());
         append(f.clone(), "after the crash\n".into());
         flush(Duration::from_secs(5));

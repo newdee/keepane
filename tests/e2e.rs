@@ -1833,15 +1833,31 @@ async fn display_panes_takes_numbers_past_nine() {
     c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
     // A first digit late in the numbers' time still leaves time for the
     // second: they stay up a second from the digit, not only display-time
-    // (1.5s) from prefix q.
-    c.prefix('q').await;
-    c.wait_for("numbers", |s| s.contents().contains("███")).await;
-    tokio::time::sleep(Duration::from_millis(1200)).await;
-    c.type_str("1").await;
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    c.type_str("0").await;
-    h.wait_list("g", "late 1 0: pane 10", active(10)).await;
-    c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+    // (1.5s) from prefix q. The margins are a few hundred ms either side, so
+    // a loaded machine may miss them: up to three tries (without the second
+    // from the digit, every try misses).
+    let mut late = String::new();
+    for _ in 0..3 {
+        c.prefix('q').await;
+        c.wait_for("numbers", |s| s.contents().contains("███")).await;
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        c.type_str("1").await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        c.type_str("0").await;
+        let end = Instant::now() + Duration::from_secs(3);
+        loop {
+            late = h.cli(&["list-panes", "-t", "g"]).await.1;
+            if active(10)(&late) || Instant::now() > end {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        c.wait_for("numbers gone", |s| !s.contents().contains("███")).await;
+        if active(10)(&late) {
+            break;
+        }
+    }
+    assert!(active(10)(&late), "late 1 0 did not reach pane 10 in three tries:\n{late}");
     // From pane 2, 1 1 passes pane 1 on its way to 11: `last-pane` goes
     // back to 2, where it began.
     c.prefix('q').await;
