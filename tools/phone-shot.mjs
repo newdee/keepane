@@ -26,7 +26,7 @@ try {
   await page.waitForFunction(
     (v) =>
       v === "list"
-        ? document.querySelectorAll(".pane").length > 0
+        ? document.querySelectorAll("[data-pane]").length > 0
         : v === "pane-detail"
           ? document.querySelectorAll(".stamp").length >= 2
           : document.getElementById("screen").textContent.trim().length > 0,

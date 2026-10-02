@@ -37,7 +37,10 @@ const MAX_LINK_BODY: usize = 1024 * 1024 + 4096;
 /// A connection that has not sent its request by then is dropped.
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 
-const PAGE: &str = include_str!("web_page.html");
+/// The page, built from web/ (`npm run build` there), and the same gzipped
+/// for a browser that takes it.
+const PAGE: &str = include_str!("../web/dist/index.html");
+const PAGE_GZ: &[u8] = include_bytes!("../web/dist/index.html.gz");
 const ICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a1b26"/><rect x="10" y="12" width="44" height="40" rx="5" fill="none" stroke="#7aa2f7" stroke-width="4"/><path d="M32 12v40M32 32h22" stroke="#7aa2f7" stroke-width="4"/><path d="M16 22l6 5-6 5" fill="none" stroke="#9ece6a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const MANIFEST: &str = r##"{"name":"keepane","short_name":"keepane","start_url":"/","display":"standalone","background_color":"#1a1b26","theme_color":"#16161e","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml"}]}"##;
 
@@ -323,6 +326,8 @@ pub struct Request {
     /// The `x-keepane-*` headers (names in lower case): what another
     /// machine's request carries (docs/design/link.md).
     pub headers: Vec<(String, String)>,
+    /// The browser takes a gzip body (`Accept-Encoding: gzip`).
+    pub gzip: bool,
     pub body: Vec<u8>,
 }
 
@@ -360,12 +365,14 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
         (Some(m), Some(t)) if !m.is_empty() && t.starts_with('/') => (m.to_string(), t),
         _ => bail!("not an HTTP request"),
     };
-    let (mut length, mut key, mut headers) = (0usize, None, Vec::new());
+    let (mut length, mut key, mut headers, mut gzip) = (0usize, None, Vec::new(), false);
     for line in lines {
         let Some((name, value)) = line.split_once(':') else { continue };
         let value = value.trim();
         if name.eq_ignore_ascii_case("content-length") {
             length = value.parse().context("bad Content-Length")?;
+        } else if name.eq_ignore_ascii_case("accept-encoding") {
+            gzip = value.split(',').any(|e| e.split(';').next().is_some_and(|e| e.trim().eq_ignore_ascii_case("gzip")));
         } else if name.eq_ignore_ascii_case("x-keepane-key") {
             key = Some(value.to_string());
         } else if name.len() > 10 && name[..10].eq_ignore_ascii_case("x-keepane-") {
@@ -393,7 +400,7 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
             (percent_decode(k), percent_decode(v))
         })
         .collect();
-    Ok(Some(Request { method, path: percent_decode(path), query, key, headers, body }))
+    Ok(Some(Request { method, path: percent_decode(path), query, key, headers, gzip, body }))
 }
 
 /// `%XX` escapes and `+` for a space, as a browser writes a query; a `%`
@@ -749,7 +756,16 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
     let get = req.method == "GET";
     // The page and its bits carry no secret: the key comes from the address.
     match (get, req.path.as_str()) {
-        (true, "/") => return Response::new(200, "text/html; charset=utf-8", PAGE),
+        (true, "/") if req.gzip => {
+            let mut r = Response::new(200, "text/html; charset=utf-8", PAGE_GZ);
+            r.headers = vec![("Content-Encoding", "gzip".into()), ("Vary", "Accept-Encoding".into())];
+            return r;
+        }
+        (true, "/") => {
+            let mut r = Response::new(200, "text/html; charset=utf-8", PAGE);
+            r.headers = vec![("Vary", "Accept-Encoding".into())];
+            return r;
+        }
         (true, "/icon.svg") => return Response::new(200, "image/svg+xml", ICON),
         (true, "/manifest.webmanifest") => return Response::new(200, "application/manifest+json", MANIFEST),
         _ => {}
@@ -1125,6 +1141,7 @@ mod tests {
             query: Vec::new(),
             key: key.map(String::from),
             headers: Vec::new(),
+            gzip: false,
             body: Vec::new(),
         }
     }
@@ -1240,6 +1257,32 @@ mod tests {
         assert_eq!(r.body.len(), MAX_BODY + 1);
         let too_big = format!("POST /link/send HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_LINK_BODY + 1);
         assert!(read_request(&mut too_big.as_bytes()).await.is_err());
+    }
+
+    /// The page goes gzipped to a browser that takes it, as it is otherwise.
+    #[tokio::test]
+    async fn the_page_is_gzipped_for_a_browser_that_takes_it() {
+        let head = |enc: &str| format!("GET / HTTP/1.1\r\nHost: x\r\n{enc}\r\n\r\n");
+        for (enc, gzip) in [
+            ("Accept-Encoding: gzip, deflate, br", true),
+            ("accept-encoding: br, GZIP;q=1.0", true),
+            ("Accept-Encoding: br", false),
+            ("X-None: 1", false),
+        ] {
+            let r = read_request(&mut head(enc).as_bytes()).await.unwrap().unwrap();
+            assert_eq!(r.gzip, gzip, "{enc}");
+            let state = State::new("nowhere", "k", false);
+            let resp = handle(&r, "127.0.0.1".parse().unwrap(), &state).await;
+            assert_eq!(resp.status, 200);
+            let encoding = resp.headers.iter().find(|(k, _)| *k == "Content-Encoding").map(|(_, v)| v.as_str());
+            assert_eq!(encoding, gzip.then_some("gzip"), "{enc}");
+            if gzip {
+                assert_eq!(&resp.body[..2], [0x1f, 0x8b], "gzip's magic");
+                assert!(resp.body.len() * 3 < PAGE.len(), "smaller by far");
+            } else {
+                assert!(String::from_utf8_lossy(&resp.body).contains("<title>keepane</title>"));
+            }
+        }
     }
 
     #[tokio::test]

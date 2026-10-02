@@ -9,6 +9,28 @@ permissions:
   contents: read
 
 jobs:
+  web:
+    # The page `keepane web` serves is built from web/ into web/dist, which is
+    # committed (cargo builds without Node). Built again here, it must come
+    # out the same, byte for byte.
+    name: web page (types, build = committed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run check
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - name: the committed page is what the source builds
+        run: git diff --exit-code --stat -- web/dist
+
   test:
     name: fmt, clippy, test (${{ matrix.os }})
     strategy:

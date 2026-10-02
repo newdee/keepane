@@ -32,14 +32,12 @@ async function run(c) {
   switch (c.do) {
     case "open":
       await page.goto(c.url, { waitUntil: "load" });
-      await page.waitForFunction(() => document.querySelectorAll(".pane").length > 0, { timeout: 15000 });
+      await page.waitForFunction(() => document.querySelectorAll("[data-pane]").length > 0, { timeout: 15000 });
       await settle(300);
       return;
     case "tap": {
       const hit = await page.evaluate((name) => {
-        const b = [...document.querySelectorAll("button.pane")].find((b) =>
-          b.querySelector(".where").textContent.startsWith(`%${name} `),
-        );
+        const b = document.querySelector(`[data-pane][data-name="${name}"]`);
         if (!b) return false;
         b.click();
         return true;
@@ -64,7 +62,7 @@ async function run(c) {
       return;
     case "back":
       await page.click("#back");
-      await page.waitForFunction(() => document.querySelectorAll(".pane").length > 0, { timeout: 15000 });
+      await page.waitForFunction(() => document.querySelectorAll("[data-pane]").length > 0, { timeout: 15000 });
       return;
     case "shot":
       await page.screenshot({ path: c.path });

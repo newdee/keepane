@@ -1,3 +1,6 @@
 # Package manifests go to other repositories as they are: keep them LF on
 # every checkout (winget-pkgs validation, Scoop's autoupdate diffs).
 packaging/** text eol=lf
+# The web page as built (web/): kept byte for byte, as include_str! and the
+# CI check that it is what the source builds both need.
+web/dist/** -text

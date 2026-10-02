@@ -1,0 +1,89 @@
+/* The classes are looked for here and in HeroUI's components only, never in
+   dist/ (a build left there would change the next one) or elsewhere: the same
+   source builds the same page on every machine (CI checks it). */
+@import "tailwindcss" source(none);
+@source "./";
+@source "../node_modules/@heroui/react/dist";
+@import "@heroui/styles";
+
+/* The page's own colours come from HeroUI's light and dark themes; a pane's
+   text is drawn in the terminal's theme (`/api/theme`), set on the screen
+   element as --term-fg / --term-bg. */
+
+:root {
+  --term-font: "Maple Mono NF CN", "Maple Mono", "JetBrains Mono", "Cascadia Code", ui-monospace, Menlo, Consolas,
+    monospace;
+  --vh: 100dvh;
+}
+
+html,
+body,
+#root {
+  height: var(--vh);
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  -webkit-tap-highlight-color: transparent;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* No double-tap zoom and no tap delay. */
+button,
+textarea,
+input {
+  touch-action: manipulation;
+}
+
+.font-term {
+  font-family: var(--term-font);
+}
+
+/* A pane's screen: its lines as the program drew them. */
+.term {
+  margin: 0;
+  white-space: pre;
+  line-height: 1.25;
+  font-family: var(--term-font);
+  color: var(--term-fg);
+}
+.term.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.term .stamp {
+  color: color-mix(in oklab, var(--term-fg) 45%, transparent);
+  cursor: pointer;
+}
+.term .stamp.fail {
+  color: var(--danger);
+}
+
+/* Scrollbars that stay out of the way. */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 18%, transparent) transparent;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.drop-in {
+  animation: drop-in 0.22s ease-out;
+}
