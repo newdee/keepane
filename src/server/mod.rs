@@ -17,6 +17,7 @@ pub mod observe;
 pub mod pane;
 mod public_ip;
 pub mod render;
+mod shellhist;
 mod web_fit;
 mod web_host;
 
@@ -2747,6 +2748,64 @@ impl Server {
         self.sessions_dir().join("psreadline").join(format!("{name}.txt"))
     }
 
+    /// `shell-history`: pane `pid`'s own history, an entry a line (numbered
+    /// by its place in the history, the lines of an entry of several under
+    /// its first), a message delivered as a command marked `✉ #id from`;
+    /// `commands_only` leaves the messages out.
+    fn shell_history_of(&mut self, pid: PaneId, commands_only: bool) -> Result<Vec<String>, String> {
+        let p = self.pane_ref(pid).ok_or("no such pane")?;
+        let no =
+            || format!("%{pid} keeps no shell history (not a PowerShell, bash or zsh pane); -m lists its messages");
+        let shell = p.argv.first().and_then(|a| shellhist::Shell::of_program(a)).ok_or_else(no)?;
+        let name = p.shell_history.clone().ok_or_else(no)?;
+        let path = self.shell_history_path(&name);
+        // A shell that has run nothing yet may not have written its file.
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        let mut out = Vec::new();
+        for (i, entry) in shellhist::entries(&bytes, shell).iter().enumerate() {
+            let shown = match shellhist::delivered(entry) {
+                Some(_) if commands_only => continue,
+                Some(d) => format!("✉ #{} {}  {}", d.id, d.from, d.command),
+                None => entry.clone(),
+            };
+            let mut lines = shown.lines();
+            out.push(format!("{:>5}  {}", i + 1, lines.next().unwrap_or_default()));
+            out.extend(lines.map(|l| format!("       {l}")));
+        }
+        Ok(out)
+    }
+
+    /// `shell-history -m`: every message sent to pane `pid` that the event
+    /// log still has, oldest first: when, its id, who from, the mode it was
+    /// for, where it stands, and its text's first line.
+    fn messages_to(&self, pid: PaneId) -> Result<Vec<String>, String> {
+        self.pane_ref(pid).ok_or("no such pane")?;
+        let to_pane = |to: &str| to.rsplit_once('%').and_then(|(_, n)| n.parse::<PaneId>().ok()) == Some(pid);
+        Ok(self
+            .observe
+            .records()
+            .filter(|r| to_pane(&r.msg.to))
+            .map(|r| {
+                let m = &r.msg;
+                let mut text = m.text.lines();
+                let first = text.next().unwrap_or_default();
+                let more = if text.next().is_some() { " …" } else { "" };
+                format!(
+                    "{}  #{}  {} → {}  {}  {first}{more}",
+                    m.at.format("%m-%d %H:%M"),
+                    m.id,
+                    m.from.short(),
+                    m.via.as_str(),
+                    r.stage.as_str()
+                )
+            })
+            .collect())
+    }
+
     /// Give history file `name` a start when it does not exist yet: a copy of
     /// pane `from`'s, or of PowerShell's shared file. A new shell has what the
     /// one it came from had.
@@ -5408,6 +5467,22 @@ impl Server {
                     self.message(cid, &what);
                 }
                 Outcome::Ok
+            }
+            Cmd::ShellHistory { target, commands, messages, last } => {
+                let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let lines = if messages { self.messages_to(pid) } else { self.shell_history_of(pid, commands) };
+                let lines = match lines {
+                    Ok(l) => l,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let skip = last.map_or(0, |n| lines.len().saturating_sub(n));
+                match lines.into_iter().skip(skip).collect::<Vec<_>>() {
+                    l if l.is_empty() => Outcome::Ok,
+                    l => Outcome::Text(l.join("\n")),
+                }
             }
             Cmd::Hints => {
                 let Some(cid) = cid.filter(|c| self.clients.get(c).is_some_and(|c| c.session.is_some())) else {

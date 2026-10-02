@@ -46,6 +46,7 @@ History (what panes printed, a file a day, 30 days):  choose-history (prefix /) 
   list-marks [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines)
   copy-output [-p] [-t pane]   (what the last command printed, to a buffer and the clipboard; -p prints it; prefix y)
   hints   (prefix F: label paths, addresses and hashes on screen; a label copies, in capitals opens; hint-open)
+  shell-history [-t pane] [-c | -m] [-n count]   (a pane's own shell history, messages marked; -c commands only, -m every message sent to it)
   undo-kill   (prefix u: the pane or window killed in the last 10 seconds comes back; undo-kill-time)
 Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   rename-pane [-t pane] name   (then -t %name finds it; a full address $1:@3.%7 works too)   whoami

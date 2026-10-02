@@ -190,6 +190,16 @@ pub enum Cmd {
     /// `hints`: label the paths, addresses and hashes on screen; typing a
     /// label copies that one, typing it in capitals opens it.
     Hints,
+    /// `shell-history [-t pane] [-c | -m] [-n count]`: the pane's own
+    /// shell history, the messages delivered to it as commands marked;
+    /// `-c` only the commands, `-m` only the messages sent to the pane (from
+    /// the event log); `-n` the last so many.
+    ShellHistory {
+        target: Option<Target>,
+        commands: bool,
+        messages: bool,
+        last: Option<usize>,
+    },
     /// `list-done [-a after] [-J]`: when panes were done (`done-events`),
     /// those after number `after`; `-J` as JSON, for the phone's page.
     ListDone {
@@ -927,6 +937,19 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)
             }
             Cmd::Hints => f.write_str("hints"),
+            Cmd::ShellHistory { target, commands, messages, last } => {
+                f.write_str("shell-history")?;
+                if *commands {
+                    f.write_str(" -c")?;
+                }
+                if *messages {
+                    f.write_str(" -m")?;
+                }
+                if let Some(n) = last {
+                    write!(f, " -n {n}")?;
+                }
+                fmt_target(f, target)
+            }
             Cmd::ListDone { after, json } => {
                 f.write_str("list-done")?;
                 if *after > 0 {
@@ -2042,6 +2065,7 @@ pub const COMMANDS: &[&str] = &[
     "list-marks",
     "copy-output",
     "hints",
+    "shell-history",
     "list-done",
     "send-message",
     "read-message",
@@ -2172,6 +2196,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-marks", &["-t"]),
     ("copy-output", &["-p", "-t"]),
     ("hints", &[]),
+    ("shell-history", &["-c", "-m", "-n", "-t"]),
     ("list-done", &["-a", "-J"]),
     ("send-message", &["-t", "-r", "-w", "--to", "--re", "--task"]),
     ("read-message", &["-t", "-w"]),
@@ -2591,6 +2616,26 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "hints" => {
             a.none_left(n)?;
             Cmd::Hints
+        }
+        "shell-history" => {
+            let (mut target, mut commands, mut messages, mut last) = (None, false, false, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-c" => commands = true,
+                    "-m" => messages = true,
+                    "-n" => {
+                        let v = a.value("-n")?;
+                        last = Some(v.parse().map_err(|_| format!("{n}: -n takes a count, not '{v}'"))?);
+                    }
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            if commands && messages {
+                return Err(format!("{n}: -c (only the commands) or -m (only the messages), not both"));
+            }
+            Cmd::ShellHistory { target, commands, messages, last }
         }
         "list-done" => {
             let (mut after, mut json) = (0, false);

@@ -1852,6 +1852,101 @@ async fn a_commands_output_is_copied_and_copy_mode_steps_between_commands() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `shell-history` reads a pane's own history back: commands and the
+/// messages delivered as commands (marked), only the commands (`-c`), or
+/// every message sent to the pane, from the event log (`-m`).
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_history_shows_commands_messages_or_both() {
+    let h = Harness::start("shellhist").await;
+    let root = if cfg!(windows) { "C:\\" } else { "/" };
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "s", "-c", root], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let p = pane_id(&h, "s:0.0").await;
+    let t = format!("%{p}");
+    at_hooked_prompt(&h, &t).await;
+    let say = if cfg!(windows) { "Write-Output" } else { "echo" };
+    let typed = format!("{say} typed-{}", std::process::id());
+    let sent = format!("{say} sent-{}", std::process::id());
+    h.cli(&["send-keys", "-t", &t, &typed, "Enter"]).await;
+    // Typed first, so it is first in the history: wait for it to be there.
+    let history = async |flags: &[&str]| h.cli(&[&["shell-history", "-t", &t], flags].concat()).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !history(&[]).await.1.contains(&typed) {
+        assert!(Instant::now() < deadline, "the typed command never reached the history");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (code, out, err) = h.cli(&["send-message", "--to", &t, &sent]).await;
+    assert_eq!(code, 0, "{err}");
+    let id: u32 =
+        out.split_whitespace().find_map(|w| w.strip_prefix('#')?.parse().ok()).unwrap_or_else(|| panic!("{out}"));
+    let marked = format!("✉ #{id} user  {sent}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, out, _) = history(&[]).await;
+        if out.contains(&marked) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the message never reached the history: {out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // A command after the message, to see the numbers stay with -c.
+    let after = format!("{say} after-{}", std::process::id());
+    h.cli(&["send-keys", "-t", &t, &after, "Enter"]).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let both = loop {
+        let (_, out, _) = history(&[]).await;
+        if out.contains(&after) {
+            break out;
+        }
+        assert!(Instant::now() < deadline, "{out}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // Both, in order, numbered by their place in the history.
+    let lines: Vec<&str> = both.lines().collect();
+    let at = |s: &str| lines.iter().position(|l| l.ends_with(s)).unwrap_or_else(|| panic!("{s} in {both}"));
+    assert!(at(&typed) < at(&marked) && at(&marked) < at(&after), "{both}");
+    let number = |l: &str| l.split_whitespace().next().unwrap().parse::<usize>().unwrap();
+    assert_eq!(number(lines[at(&marked)]), number(lines[at(&typed)]) + 1, "{both}");
+    assert_eq!(number(lines[at(&after)]), number(lines[at(&marked)]) + 1, "{both}");
+    // Only the commands: the message's line is not there, and the command
+    // after it keeps its number.
+    let (_, only, _) = history(&["-c"]).await;
+    assert!(!only.contains('✉'), "{only}");
+    assert!(only.lines().any(|l| l == lines[at(&typed)]) && only.lines().any(|l| l == lines[at(&after)]), "{only}");
+    // -n: the last so many.
+    let (_, last, _) = history(&["-n", "1"]).await;
+    assert_eq!(last.trim_end(), lines.last().unwrap().trim_end());
+    // Only the messages to this pane: one to another pane is not among them.
+    h.cli(&["new-window", "-d", "-t", "s"]).await;
+    h.cli(&["set-work-mode", "-t", "s:1", "ai"]).await;
+    let (code, _, err) = h.cli(&["send-message", "--to", "s:1", "for-the-other-pane"]).await;
+    assert_eq!(code, 0, "{err}");
+    // From the event log, with how each went.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, msgs, _) = history(&["-m"]).await;
+        let line = msgs.lines().find(|l| l.contains(&format!("#{id} ")));
+        if line.is_some_and(|l| l.contains("user → shell") && l.contains(" done ") && l.ends_with(&sent)) {
+            assert_eq!(msgs.lines().count(), 1, "{msgs}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{msgs}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Not both at once; a pane with no shell history says what to use.
+    let (code, _, err) = history(&["-c", "-m"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("not both"), "{err}");
+    let (code, _, err) = h.cli(&["shell-history", "-t", "s:1"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("keeps no shell history") && err.contains("-m"), "{err}");
+    // That pane's own messages are its own.
+    let (code, out, _) = h.cli(&["shell-history", "-m", "-t", "s:1"]).await;
+    assert_eq!(code, 0);
+    assert!(out.lines().count() == 1 && out.trim_end().ends_with("for-the-other-pane"), "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
 /// `hints` (prefix F) labels paths, addresses and hashes; a label copies,
 /// in capitals it opens (`hint-open` here, to see what it was given).
 #[tokio::test(flavor = "multi_thread")]

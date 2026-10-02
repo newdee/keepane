@@ -495,6 +495,13 @@ copy of the history of the pane it came from (the one split, or the one in
 use for a new window), else of the shell's own history file. Files no pane or saved
 session refers to go after `log-history-days`.
 
+A message delivered to a pane in `shell` mode is a command there too, and
+goes into that history with its envelope in front (`<# [keepane id=12 …] #>`).
+`keepane shell-history -t %3` reads the history back, each message marked
+(`✉ #12 %builder  cargo test`); `-c` leaves the messages out, `-m` lists
+instead every message sent to the pane in any mode, from the event log, with
+how it went; `-n 20` shows the last 20.
+
 To have all of that happen by itself when you log on to Windows:
 
 ```powershell
