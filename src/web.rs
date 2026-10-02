@@ -50,7 +50,7 @@ const KEYS: &[&str] = &[
     "NPage", "DC",
 ];
 
-/// What the page's + menu and its names can do, and nothing else.
+/// What the page's ⋯ menu and its names can do, and nothing else.
 const ACTIONS: &[&str] = &["new-window", "split-h", "split-v", "kill-pane", "rename-session", "rename-window"];
 
 /// How `web-start` serves: its flags (`keepane web` passes its own on).

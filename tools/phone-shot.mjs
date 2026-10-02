@@ -4,7 +4,7 @@
 //
 //   node phone-shot.mjs <edge.exe> <url> <out.png> <list|pane|pane-detail> [en|zh-CN]
 //
-// pane-detail: the pane with its command times on (the ⏱ button).
+// pane-detail: the pane with its command times on (the clock button).
 import puppeteer from "puppeteer-core";
 
 const [edge, url, out, view, lang = "en"] = process.argv.slice(2);
@@ -16,6 +16,8 @@ try {
     Object.defineProperty(navigator, "language", { get: () => l });
   }, lang);
   await page.evaluateOnNewDocument((on) => localStorage.setItem("keepane-detail", on ? "1" : "0"), view === "pane-detail");
+  // The page dark, as the background the two pictures are put on.
+  await page.evaluateOnNewDocument(() => localStorage.setItem("keepane-mode", "dark"));
   await page.emulate({
     viewport: { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
     userAgent:
@@ -36,6 +38,8 @@ try {
   await new Promise((r) => setTimeout(r, 700));
   const state = await page.evaluate(() => {
     const m = document.getElementById("main");
+    // The list has no screen.
+    if (!m) return { panes: document.querySelectorAll("[data-pane]").length };
     return { scrollTop: m.scrollTop, scrollHeight: m.scrollHeight, clientHeight: m.clientHeight, lines: document.getElementById("screen").textContent.split("\n").length };
   });
   console.log(JSON.stringify(state));

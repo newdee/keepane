@@ -4126,7 +4126,7 @@ async fn the_phone_page_shows_and_orders_an_inbox() {
 
 /// `keepane web` end to end over real HTTP: the key is asked for, the list
 /// names the panes, text typed on the phone runs in the pane (`-` first
-/// included), the screen comes back with it, and the + menu splits.
+/// included), the screen comes back with it, and the ⋯ menu splits.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_phone_page_lists_shows_types_and_splits() {
     let h = Harness::start("web").await;
@@ -4172,7 +4172,7 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     assert_eq!(code, 200);
     assert!(joined.contains(&long), "{joined}");
 
-    // The + menu; the new pane starts in the directory of the pane it came
+    // The ⋯ menu; the new pane starts in the directory of the pane it came
     // from, not where the web client runs.
     let (cd, there) = if cfg!(windows) { ("cd /d C:\\Windows", "[c:\\windows]") } else { ("cd /usr", "[/usr]") };
     h.cli(&["send-keys", "-t", "w:0", cd, "Enter"]).await;
