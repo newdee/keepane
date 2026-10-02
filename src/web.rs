@@ -716,6 +716,35 @@ async fn write_response(stream: &mut TcpStream, r: &Response) -> Result<()> {
 
 /// Answer one request. Public for the tests, which drive it without a
 /// network.
+/// The colours a page draws panes in when the theme leaves them to the
+/// terminal (tokyo-night): Tokyo Night's, as the page always had.
+const PAGE_FG: &str = "#c0caf5";
+const PAGE_BG: &str = "#1a1b26";
+const PAGE_PALETTE: [&str; 16] = [
+    "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6", "#414868", "#f7768e",
+    "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5",
+];
+
+/// `/api/theme`: the theme's name, every name there is, and the colours a
+/// page draws a pane's text in: `fg`, `bg` and the 16 of the palette, from
+/// `window-style` (`fg=…,bg=…`) and `pane-colours`, the page's own where the
+/// theme leaves them to the terminal.
+fn theme_json(name: &str, style: &str, colours: &str) -> String {
+    let part = |k: &str| {
+        style.split(',').find_map(|p| p.trim().strip_prefix(k)).filter(|v| v.starts_with('#')).map(String::from)
+    };
+    let given: Vec<&str> = colours.split_whitespace().filter(|c| c.starts_with('#')).collect();
+    let palette: Vec<&str> = if given.len() == 16 { given } else { PAGE_PALETTE.to_vec() };
+    serde_json::json!({
+        "name": name,
+        "names": crate::config::THEME_NAMES,
+        "fg": part("fg=").unwrap_or_else(|| PAGE_FG.into()),
+        "bg": part("bg=").unwrap_or_else(|| PAGE_BG.into()),
+        "palette": palette,
+    })
+    .to_string()
+}
+
 pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
     let get = req.method == "GET";
     // The page and its bits carry no secret: the key comes from the address.
@@ -802,10 +831,35 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 Err((status, msg)) => Response::text(status, &msg),
             }
         }
-        (false, "/api/send") | (false, "/api/action") | (false, "/api/fit") | (false, "/api/message")
+        (true, "/api/theme") => {
+            let show = |o: &str| q(vec!["show-options".into(), "-gv".into(), o.into()]);
+            match (show("theme").await, show("window-style").await, show("pane-colours").await) {
+                (Ok((0, name, _)), Ok((0, style, _)), Ok((0, colours, _))) => {
+                    Response::json(theme_json(name.trim(), style.trim(), colours.trim()))
+                }
+                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Response::text(500, &format!("{e:#}")),
+                _ => Response::text(500, "theme: the server would not say"),
+            }
+        }
+        (false, "/api/send")
+        | (false, "/api/action")
+        | (false, "/api/fit")
+        | (false, "/api/message")
+        | (false, "/api/theme")
             if state.read_only =>
         {
             Response::text(403, "read-only")
+        }
+        // The terminal's theme, from the phone: `set -g theme`.
+        (false, "/api/theme") => {
+            let Some(name) = req.param("name").filter(|n| crate::config::THEME_NAMES.contains(n)) else {
+                return Response::text(400, &format!("name: {}", crate::config::THEME_NAMES.join(", ")));
+            };
+            match q(vec!["set-option".into(), "-g".into(), "theme".into(), name.into()]).await {
+                Ok((0, _, _)) => Response::text(200, name),
+                Ok((_, _, err)) => Response::text(500, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
         }
         // The pane sized to the phone (`cols`, `rows`: what fits on its
         // screen), or back (`off`): `web-fit`.

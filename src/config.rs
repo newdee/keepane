@@ -155,6 +155,15 @@ pub struct Options {
     /// `{file}`, `{line}`, `{col}`); empty: VS Code, else `$EDITOR`, else
     /// the desktop.
     pub hint_open: String,
+    /// The built-in theme last set (`theme`): its options were set then.
+    pub theme: String,
+    /// `window-style`: the colours a pane's default ones are drawn in;
+    /// `Default` is the terminal's own.
+    pub window_fg: Color,
+    pub window_bg: Color,
+    /// `pane-colours`: the 16 colours drawn for the palette's first 16 (a
+    /// program's red, blue...); empty, the terminal's own.
+    pub pane_colours: Vec<Color>,
 }
 
 /// What a pane can be done with (`done-events`).
@@ -187,6 +196,40 @@ fn one_of(name: &str, value: &str, words: &[&str]) -> Result<String, String> {
     } else {
         Err(format!("bad {name} '{value}' (one of {})", words.join(", ")))
     }
+}
+
+/// The built-in themes (`theme`), each the `set -g` lines of its file in
+/// themes/: the same options in each, so one replaces another whole.
+pub const THEMES: &[(&str, &str)] = &[
+    ("tokyo-night", include_str!("../themes/tokyo-night.conf")),
+    ("tokyo-day", include_str!("../themes/tokyo-day.conf")),
+];
+pub const THEME_NAMES: &[&str] = &["tokyo-night", "tokyo-day"];
+
+/// The `set -g <option> <value>` lines of a theme file, comments and blank
+/// lines left out.
+pub fn theme_settings(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        match crate::command::tokenize(line)?.as_slice() {
+            [set, g, name, value] if set == "set" && g == "-g" => out.push((name.clone(), value.clone())),
+            _ => return Err(format!("a theme line is `set -g <option> <value>`: {line}")),
+        }
+    }
+    Ok(out)
+}
+
+/// `pane-colours`: 16 colours (names, `colourN` or `#rrggbb`, apart by
+/// blanks or commas), or nothing for the terminal's own.
+fn parse_colours(value: &str) -> Result<Vec<Color>, String> {
+    let words: Vec<&str> = value.split([',', ' ', '\t']).filter(|w| !w.is_empty()).collect();
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+    if words.len() != 16 {
+        return Err(format!("pane-colours: 16 colours, or none for the terminal's own; got {}", words.len()));
+    }
+    words.into_iter().map(parse_color).collect()
 }
 
 /// A number option within its bounds; out of them it is an error, never
@@ -298,6 +341,9 @@ pub const SHOWABLE: &[&str] = &[
     "event-log-days",
     "event-log-max",
     "hint-open",
+    "theme",
+    "window-style",
+    "pane-colours",
 ];
 
 impl Default for Options {
@@ -384,6 +430,10 @@ impl Default for Options {
             event_log_days: 30,
             event_log_max: 20 * 1024 * 1024,
             hint_open: String::new(),
+            theme: "tokyo-night".into(),
+            window_fg: Color::Default,
+            window_bg: Color::Default,
+            pane_colours: Vec::new(),
         }
     }
 }
@@ -511,6 +561,7 @@ pub const KNOWN: &[&str] = &[
     "pane-border-format",
     "pane-border-status",
     "pane-border-style",
+    "pane-colours",
     "pane-timestamps",
     "plugin-path",
     "prefix",
@@ -531,6 +582,7 @@ pub const KNOWN: &[&str] = &[
     "status-right-length",
     "status-style",
     "synchronize-panes",
+    "theme",
     "undo-kill-time",
     "update-check",
     "visual-activity",
@@ -539,6 +591,7 @@ pub const KNOWN: &[&str] = &[
     "window-status-current-format",
     "window-status-format",
     "window-status-separator",
+    "window-style",
 ];
 
 /// Names taken only so that a `.tmux.conf` loads; setting them does nothing.
@@ -646,12 +699,26 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "window-size" => &["largest", "latest", "manual", "smallest"],
         "done-panes" => &["all", "named"],
         "done-webhook-format" => DONE_WEBHOOK_FORMATS,
+        "theme" => THEME_NAMES,
         "done-events" => &["all", "none", "command agent"],
         _ => &[],
     }
 }
 
 impl Options {
+    /// Set every option of built-in theme `name`. Checked first and set
+    /// after, so a theme that does not read leaves the look as it was.
+    fn apply_theme(&mut self, name: &str) -> Result<(), String> {
+        let text = THEMES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t).ok_or(format!("no theme {name}"))?;
+        let settings = theme_settings(text)?;
+        let mut next = self.clone();
+        for (option, value) in &settings {
+            next.set(option, value).map_err(|e| format!("theme {name}: {e}"))?;
+        }
+        *self = next;
+        Ok(())
+    }
+
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let name = &resolve_name(name)?;
         // No value at all flips an on/off option, which is what makes
@@ -813,6 +880,21 @@ impl Options {
             "event-log-days" => self.event_log_days = ranged(name, value, 1, 3650, "days")?,
             "event-log-max" => self.event_log_max = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024)?,
             "hint-open" => self.hint_open = value.trim().to_string(),
+            "theme" => {
+                let name = one_of(name, value, THEME_NAMES)?;
+                self.apply_theme(&name)?;
+                self.theme = name;
+            }
+            "window-style" => {
+                let (fg, bg) = parse_style(value)?;
+                if let Some(c) = fg {
+                    self.window_fg = c;
+                }
+                if let Some(c) = bg {
+                    self.window_bg = c;
+                }
+            }
+            "pane-colours" => self.pane_colours = parse_colours(value)?,
             "default-terminal" => {
                 let v = value.trim();
                 if v.is_empty() || v.contains(char::is_whitespace) {
@@ -937,6 +1019,9 @@ impl Options {
             "event-log-days" => self.event_log_days.to_string(),
             "event-log-max" => size_name(self.event_log_max),
             "hint-open" => self.hint_open.clone(),
+            "theme" => self.theme.clone(),
+            "window-style" => format!("fg={},bg={}", color_name(self.window_fg), color_name(self.window_bg)),
+            "pane-colours" => self.pane_colours.iter().map(|c| color_name(*c)).collect::<Vec<_>>().join(" "),
             "log-history-dir" => {
                 if self.log_history_dir.is_empty() {
                     crate::histlog::default_dir().to_string_lossy().into_owned()
@@ -1278,6 +1363,77 @@ mod tests {
         let err = o.set("save-history", "some").unwrap_err();
         assert!(err.contains("or all"), "{err}");
         assert!(o.set("save-history", "").is_err(), "not an on/off option");
+    }
+
+    /// The built-in themes set the same options, so one replaces another
+    /// whole: tokyo-day and back is the default look again.
+    #[test]
+    fn a_theme_replaces_the_other_whole() {
+        let names = |t: &str| theme_settings(t).unwrap().into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        let night = names(THEMES[0].1);
+        for (name, text) in THEMES {
+            assert_eq!(names(text), night, "{name} sets other options than tokyo-night");
+        }
+        assert_eq!(THEMES.iter().map(|(n, _)| *n).collect::<Vec<_>>(), THEME_NAMES);
+        let default = Options::default();
+        let mut o = Options::default();
+        o.set("theme", "tokyo-day").unwrap();
+        assert_eq!(o.get("theme").as_deref(), Some("tokyo-day"));
+        assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x37, 0x60, 0xbf), Color::Rgb(0xe1, 0xe2, 0xe7)));
+        assert_eq!(o.pane_colours.len(), 16);
+        assert_ne!(o.get("status-right"), default.get("status-right"));
+        o.set("theme", "tokyo-night").unwrap();
+        for n in night.iter().map(String::as_str).chain(["theme"]) {
+            assert_eq!(o.get(n), default.get(n), "{n} after tokyo-day and back");
+        }
+        // No such theme: an error, and nothing changed.
+        let before = o.get("status-style");
+        assert!(o.set("theme", "solarized").unwrap_err().contains("tokyo-day"));
+        assert_eq!((o.get("status-style"), o.get("theme").as_deref()), (before, Some("tokyo-night")));
+    }
+
+    /// Every theme file in themes/ reads and sets, and after tokyo-day each
+    /// gives the panes back to the terminal.
+    #[test]
+    fn every_theme_file_sets_and_gives_the_panes_back() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes");
+        let mut seen = 0;
+        for f in std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()) {
+            let text = std::fs::read_to_string(&f).unwrap();
+            let mut o = Options::default();
+            o.set("theme", "tokyo-day").unwrap();
+            for (name, value) in theme_settings(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display())) {
+                o.set(&name, &value).unwrap_or_else(|e| panic!("{}: {name}: {e}", f.display()));
+            }
+            if !f.ends_with("tokyo-day.conf") {
+                assert!(
+                    o.window_bg == Color::Default && o.pane_colours.is_empty(),
+                    "{} leaves the panes drawn as tokyo-day did",
+                    f.display()
+                );
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, 7);
+    }
+
+    #[test]
+    fn pane_colours_are_sixteen_or_none() {
+        let mut o = Options::default();
+        assert_eq!(o.get("pane-colours").as_deref(), Some(""));
+        let fifteen = vec!["red"; 15].join(" ");
+        assert!(o.set("pane-colours", &fifteen).unwrap_err().contains("16"));
+        let sixteen = format!("{fifteen},#112233");
+        o.set("pane-colours", &sixteen).unwrap();
+        assert_eq!(o.pane_colours[0], Color::Idx(1));
+        assert_eq!(o.pane_colours[15], Color::Rgb(0x11, 0x22, 0x33));
+        assert!(o.get("pane-colours").unwrap().ends_with("#112233"));
+        o.set("pane-colours", "").unwrap();
+        assert!(o.pane_colours.is_empty());
+        o.set("window-style", "bg=#ffffff").unwrap();
+        assert_eq!(o.get("window-style").as_deref(), Some("fg=default,bg=#ffffff"));
+        o.set("window-style", "default").unwrap();
+        assert_eq!((o.window_fg, o.window_bg), (Color::Default, Color::Default));
     }
 
     /// themes/tokyo-night.conf is the built-in look written out: every

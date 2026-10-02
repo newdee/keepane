@@ -7901,6 +7901,9 @@ impl Server {
             let hint = p.finished.then_some("press any key");
             cursor = render::draw_popup(&mut grid, p.rect, p.pane.screen(), active_fg, hint);
         }
+        // The theme's colours, over everything drawn.
+        let bar = (opts_status && rows > 1).then(|| if status_top { 0 } else { rows - 1 });
+        render::recolor(&mut grid, bar, self.opts.window_fg, self.opts.window_bg, &self.opts.pane_colours);
         let changed = c.last_grid.as_ref() != Some(&grid) || c.last_cursor != cursor;
         if !changed && !bell {
             return;

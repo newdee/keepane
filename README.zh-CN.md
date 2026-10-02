@@ -563,6 +563,14 @@ source-file ~/.keepane/themes/dracula.conf
 source-file ~/.keepane/themes/plain.conf   # 换回 tmux 的样子
 ```
 
+内置两套主题，一个选项就能切换（手机页面上也能切）：默认的 `tokyo-night`，和它的浅色版 `tokyo-day`。
+
+```tmux
+set -g theme tokyo-day
+```
+
+keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时，pane 的背景色和程序用的颜色（红、蓝等）都是终端自己的。浅色主题必须自己画这些颜色，否则就成了浅色状态栏配深色 pane。所以 `tokyo-day` 会设置 `window-style`（pane 的默认文字色和背景色，和 tmux 一样）和 `pane-colours`（程序用的 16 种颜色，也就是调色板的前 16 个），这样在深色终端里也是完整的浅色效果。主题会同时设置这些颜色和状态栏、边框，所以先设主题，自己的改动写在它后面。
+
 默认外观用的是 24 位真彩色。在不支持真彩色的终端上（macOS 自带的 Terminal，除非它声明了 `COLORTERM=truecolor`），keepane 会自动换成 256 色里最接近的颜色，keepane 自己的界面和 pane 里程序的输出都一样。
 
 `.tmux.conf` 里常见但 keepane 用不上的选项（`escape-time`、`focus-events` 这些）如果还是被设置了（比如用 `source-file` 读了一份 tmux 配置），会被接受然后忽略；`import-config` 不会导入它们。`default-terminal`（不设就是 `xterm-256color`）是 Linux 和 macOS 上 pane 拿到的 `TERM`；Windows 上终端由 ConPTY 安排，这个选项不起作用。

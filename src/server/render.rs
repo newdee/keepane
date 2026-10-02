@@ -766,6 +766,36 @@ pub fn draw_big_text(g: &mut Grid, rect: Rect, text: &str, style: Style) -> bool
 /// key) does for this kind of list. `status` (the filter, the tag count)
 /// sits at the right end of the hint row and wins over the hint when the
 /// row is too narrow for both: it is state, the hint is not.
+/// Draw in the theme's colours (`pane-colours`, `window-style`): the
+/// palette's first 16 as the theme's own everywhere, and the default colours
+/// as `fg` / `bg` everywhere but row `bar` (the status line, which has a
+/// style of its own). With neither set, the grid is left as it is: the
+/// terminal's own colours.
+pub fn recolor(g: &mut Grid, bar: Option<u16>, fg: Color, bg: Color, palette: &[Color]) {
+    let palette = (palette.len() == 16).then_some(palette);
+    if fg == Color::Default && bg == Color::Default && palette.is_none() {
+        return;
+    }
+    let map = |c: Color| match (c, palette) {
+        (Color::Idx(n), Some(p)) if n < 16 => p[usize::from(n)],
+        _ => c,
+    };
+    let cols = usize::from(g.cols);
+    for (i, cell) in g.cells.iter_mut().enumerate() {
+        let s = &mut cell.style;
+        s.fg = map(s.fg);
+        s.bg = map(s.bg);
+        if bar != Some((i / cols.max(1)) as u16) {
+            if s.fg == Color::Default {
+                s.fg = fg;
+            }
+            if s.bg == Color::Default {
+                s.bg = bg;
+            }
+        }
+    }
+}
+
 /// One `hints` pick: the thing found at `row`, `col` of the pane at `rect`
 /// (`width` cells), shown yellow and underlined, with what is left of its
 /// label over its first cells in black on yellow.
@@ -1457,6 +1487,38 @@ mod tests {
         // A pane on row 0 asked for a top line: nothing to draw, nothing broken.
         let (g, _, _) = compose(&frame(Rect { x: 0, y: 0, w: 6, h: 2 }, Some((label("[0]"), true))));
         assert_eq!(row(&g, 0), "abcdef");
+    }
+
+    /// A theme's colours: the palette's first 16 everywhere, the default
+    /// colours everywhere but the status line, nothing at all when the theme
+    /// leaves the colours to the terminal.
+    #[test]
+    fn a_theme_recolors_all_but_the_status_lines_defaults() {
+        let red = Style::colors(Color::Idx(1), Color::Default);
+        let mut g = Grid::new(3, 2);
+        g.put_str(0, 0, "ab", red, 3);
+        g.put_str(0, 1, "cd", red, 3);
+        let before = g.clone();
+        recolor(&mut g, Some(1), Color::Default, Color::Default, &[]);
+        assert_eq!(g, before, "nothing set: the terminal's own colours");
+        recolor(&mut g, Some(1), Color::Default, Color::Default, &[Color::Idx(9); 15]);
+        assert_eq!(g, before, "not 16 colours: no palette");
+        let (fg, bg) = (Color::Rgb(1, 2, 3), Color::Rgb(9, 9, 9));
+        let mut palette = vec![Color::Idx(0); 16];
+        palette[1] = Color::Rgb(0xf5, 0x2a, 0x65);
+        recolor(&mut g, Some(1), fg, bg, &palette);
+        // A pane row: its red is the theme's, its default background too, and
+        // a blank cell takes both defaults.
+        assert_eq!((g.get(0, 0).style.fg, g.get(0, 0).style.bg), (palette[1], bg));
+        assert_eq!((g.get(2, 0).style.fg, g.get(2, 0).style.bg), (fg, bg));
+        // The status line: the palette, but its defaults stay the terminal's.
+        assert_eq!((g.get(0, 1).style.fg, g.get(0, 1).style.bg), (palette[1], Color::Default));
+        assert_eq!((g.get(2, 1).style.fg, g.get(2, 1).style.bg), (Color::Default, Color::Default));
+        // Colours past the 16 and explicit ones are the program's.
+        let mut g = Grid::new(1, 1);
+        g.put_str(0, 0, "x", Style::colors(Color::Idx(200), Color::Rgb(4, 5, 6)), 1);
+        recolor(&mut g, None, fg, bg, &palette);
+        assert_eq!((g.get(0, 0).style.fg, g.get(0, 0).style.bg), (Color::Idx(200), Color::Rgb(4, 5, 6)));
     }
 
     #[test]

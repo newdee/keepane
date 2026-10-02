@@ -258,8 +258,10 @@ A tmux config is not read on its own: `keepane import-config` brings over
 what keepane can use from `~/.tmux.conf` (or any config), once, and writes
 the rest commented out with why. The default look is Tokyo Night; the themes
 in the repository's `themes/` directory (`plain.conf` is tmux's look) are
-ordinary config files to source. `show-options -g` lists every option and
-its value.
+ordinary config files to source. Two are built in: `set -g theme tokyo-day`
+switches to the light one (it draws the panes with `window-style` and
+`pane-colours`, whatever the terminal's colours), `set -g theme tokyo-night`
+back. `show-options -g` lists every option and its value.
 
 Once a day the server asks GitHub for the latest release's version (one
 request with `curl`, nothing about you in it); a newer one shows on the

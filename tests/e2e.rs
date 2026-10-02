@@ -1852,6 +1852,70 @@ async fn a_commands_output_is_copied_and_copy_mode_steps_between_commands() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `theme`: tokyo-day draws the panes light (their default colours and the
+/// palette's first 16) whatever the terminal's are; tokyo-night leaves them
+/// to the terminal. The phone's page reads it and sets it at `/api/theme`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
+    let h = Harness::start("theme").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "t"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    // In red: palette colour 1, which a theme may redraw.
+    c.type_str(&red_prompt("red")).await;
+    c.enter().await;
+    c.wait_for("red prompt", |s| s.contents().contains("red>")).await;
+    let red_cell = |s: &vt100::Screen| {
+        (0..ROWS).find_map(|r| {
+            let row = s.rows(0, COLS).nth(r as usize)?;
+            let col = row.rfind("red>")?;
+            Some(s.cell(r, col as u16)?.fgcolor())
+        })
+    };
+    let bg_at = |s: &vt100::Screen| s.cell(0, COLS - 1).map(|c| c.bgcolor());
+    use vt100::Color;
+    assert_eq!(bg_at(c.screen.screen()), Some(Color::Default), "tokyo-night leaves the panes to the terminal");
+    assert_eq!(red_cell(c.screen.screen()), Some(Color::Idx(1)));
+    let (code, _, err) = h.cli(&["set", "-g", "theme", "tokyo-day"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("light panes", |s| bg_at(s) == Some(Color::Rgb(0xe1, 0xe2, 0xe7))).await;
+    c.wait_for("the day's red", |s| red_cell(s) == Some(Color::Rgb(0xf5, 0x2a, 0x65))).await;
+    assert_eq!(h.cli(&["show", "-gv", "theme"]).await.1.trim(), "tokyo-day");
+    // The page: what it is, set from there, refused when read-only.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, "k", false))));
+    let (code, body) = http(addr, "GET", "/api/theme", "k", "").await;
+    assert_eq!(code, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (v["name"].as_str(), v["bg"].as_str(), v["fg"].as_str()),
+        (Some("tokyo-day"), Some("#e1e2e7"), Some("#3760bf"))
+    );
+    assert_eq!(v["palette"][1].as_str(), Some("#f52a65"));
+    assert_eq!(v["names"], serde_json::json!(["tokyo-night", "tokyo-day"]));
+    let (code, body) = http(addr, "POST", "/api/theme?name=solarized", "k", "").await;
+    assert_eq!(code, 400, "{body}");
+    let (code, body) = http(addr, "POST", "/api/theme?name=tokyo-night", "k", "").await;
+    assert_eq!(code, 200, "{body}");
+    c.wait_for("the terminal's own again", |s| bg_at(s) == Some(Color::Default) && red_cell(s) == Some(Color::Idx(1)))
+        .await;
+    let (_, body) = http(addr, "GET", "/api/theme", "k", "").await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    // Left to the terminal: the page draws in Tokyo Night's own.
+    assert_eq!(
+        (v["name"].as_str(), v["bg"].as_str(), v["palette"][1].as_str()),
+        (Some("tokyo-night"), Some("#1a1b26"), Some("#f7768e"))
+    );
+    let ro = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ro_addr = ro.local_addr().unwrap();
+    tokio::spawn(keepane::web::serve(ro, std::sync::Arc::new(keepane::web::State::new(&h.socket, "k", true))));
+    let (code, _) = http(ro_addr, "POST", "/api/theme?name=tokyo-day", "k", "").await;
+    assert_eq!(code, 403);
+    assert_eq!(h.cli(&["show", "-gv", "theme"]).await.1.trim(), "tokyo-night");
+    h.cli(&["kill-server"]).await;
+}
+
 /// `shell-history` reads a pane's own history back: commands and the
 /// messages delivered as commands (marked), only the commands (`-c`), or
 /// every message sent to the pane, from the event log (`-m`).

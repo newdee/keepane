@@ -996,6 +996,22 @@ source-file ~/.keepane/themes/dracula.conf
 source-file ~/.keepane/themes/plain.conf   # tmux's look instead
 ```
 
+Two themes are built in, to switch with one option (or from the phone's
+page): `tokyo-night`, the default, and `tokyo-day`, its light one.
+
+```tmux
+set -g theme tokyo-day
+```
+
+keepane draws in the terminal it runs in, so with `tokyo-night` a pane's
+background and the colours programs use (their red, blue...) are the
+terminal's own. A light theme has to draw them itself, or it would be a
+light status line over dark panes: `tokyo-day` sets `window-style` (a
+pane's default text and background, as in tmux) and `pane-colours` (the 16
+colours programs use, the first 16 of the palette), so it is light in a
+dark terminal too. A theme sets these and the status line and borders all
+at once, so set the theme first and your own changes after it.
+
 The default look uses 24-bit colours. On a terminal without them (macOS's
 Terminal, unless it says `COLORTERM=truecolor`), keepane shows the nearest
 of the 256 colours instead, for its own look and for programs in panes.
