@@ -723,7 +723,12 @@ The same page works in a computer's browser: on a wide screen the list stays
 on the left and the pane fills the right. The button at the top right picks
 the page's own look, light, dark or the system's (each device keeps its own),
 and the terminal's theme (`theme`, see Themes): that one is the computer's, so
-its terminal changes too, and every page shows the panes in it. (The page is
+its terminal changes too, and every page shows the panes in it. The same menu
+picks the page's language: the system's (Chinese on a Chinese system, else
+English), Chinese or English. Beside it, the time a request takes to the
+computer and back (`23 ms`, a green dot under 100 ms, yellow under 300, red
+above or `offline`), and a button that puts the page over the whole screen,
+for a tablet (where the browser can: not on an iPhone). (The page is
 built from `web/`, React and HeroUI, into one file keepane carries.)
 
 <p align="center">

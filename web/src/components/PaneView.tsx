@@ -56,6 +56,8 @@ type Props = {
   reloadPanes: () => Promise<void>;
   onRename: (kind: "session" | "window", p: Pane) => void;
   onInbox: (id: string) => void;
+  /** The latency and the full-screen button, where the page's own header is not shown. */
+  status?: ReactNode;
 };
 
 export function PaneView(props: Props) {
@@ -297,6 +299,7 @@ export function PaneView(props: Props) {
         <Tool label={t("When each command ran", "每条命令的时间")} on={!!detail} onPress={toggleDetail}>
           <Clock className="size-4" />
         </Tool>
+        {props.status}
         {readOnly ? (
           <Tool label={t("Inbox", "收件箱")} onPress={() => props.onInbox(id)}>
             <Inbox className="size-4" />

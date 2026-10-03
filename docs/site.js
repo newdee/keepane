@@ -35,7 +35,7 @@ const ZH = {
   "cw.p6":
     "pane 完成时（长命令跑完、agent 这一轮结束）页面会提醒你：顶部横幅（点一下跳过去）、响一声、震动。手机锁屏也要收到的话，keepane 可以推到 ntfy、飞书、企业微信、钉钉、Slack、Discord（<code>done-webhook</code>），或者运行你自己的 hook。",
   "cw.p7":
-    "电脑的浏览器也能打开同一个页面：左边是列表，右边是 pane。页面有自己的日间和夜间样式；也可以在页面上切换终端主题（Tokyo Night 或 Tokyo Day），电脑上的终端会跟着变。",
+    "电脑的浏览器也能打开同一个页面：左边是列表，右边是 pane。页面有自己的日间和夜间样式，中英文跟随系统也能手动切换；也可以在页面上切换终端主题（Tokyo Night 或 Tokyo Day），电脑上的终端会跟着变。右上角显示到电脑的延迟，平板上可以一键全屏。",
   "cw.p3": "命令在电脑上执行。手机只能看 pane、往里输入、用那个菜单，别的做不了；加 <code>--read-only</code> 就只能看。",
   "cw.p4":
     "不启动就不开；启动后由 keepane 的 server 在后台提供服务，直到 <code>keepane web stop</code>，<code>keepane web status</code> 可以看谁连着。二维码里的 128 位密钥每次启动都重新生成。用的是普通 HTTP，在家里的网络没问题；在外面用，中间接一层 Tailscale 之类的私有网络。",

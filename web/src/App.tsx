@@ -1,9 +1,10 @@
 import { Button, Chip, Dropdown, Header, Label, Separator, Toast, toast } from "@heroui/react";
-import { Check, Laptop, Moon, MousePointerClick, Palette, Sun, Terminal } from "lucide-react";
+import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, Sun, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, post, q, startPane, type DoneItem, type Info, type Pane } from "./api";
-import { useDone, useMedia, usePageMode, usePanes, useTermTheme, useViewportHeight, type Mode } from "./hooks";
-import { t } from "./i18n";
+import { useDone, useFullscreen, useLatency, useMedia, usePageMode, usePanes, useTermTheme, useViewportHeight, type Mode } from "./hooks";
+import { lang as currentLang, setLang, t, type Lang } from "./i18n";
+import { FullscreenButton, Latency } from "./components/Status";
 import { PaneList } from "./components/PaneList";
 import { PaneView } from "./components/PaneView";
 import { InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
@@ -19,6 +20,16 @@ export default function App() {
   const { panes, error, reload } = usePanes(!!info);
   const term = useTermTheme();
   const page = usePageMode();
+  // The language is kept in i18n; this state only redraws the page when it changes.
+  const [lang, setLangState] = useState<Lang>(currentLang);
+  const latency = useLatency(!!info);
+  const fs = useFullscreen();
+  const status = (
+    <>
+      <Latency ms={latency} />
+      <FullscreenButton {...fs} />
+    </>
+  );
   const [switcher, setSwitcher] = useState(false);
   const [inbox, setInbox] = useState<string | null>(null);
   const [ask, setAsk] = useState<{ title: string; value: string; kind: "session" | "window"; pane: string } | null>(null);
@@ -142,7 +153,14 @@ export default function App() {
               {t("read-only", "只读")}
             </Chip>
           ) : null}
+          {status}
           <Settings
+            lang={lang}
+            setLang={(l) => {
+              setLang(l);
+              setLangState(l);
+              if (info) document.title = `keepane · ${info.host}`;
+            }}
             mode={page.mode}
             setMode={page.setMode}
             themes={term.theme.names}
@@ -199,6 +217,7 @@ export default function App() {
             reloadPanes={reload}
             onRename={rename}
             onInbox={setInbox}
+            status={wide ? null : status}
           />
         ) : wide ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-muted">
@@ -243,6 +262,8 @@ export default function App() {
 }
 
 function Settings({
+  lang,
+  setLang,
   mode,
   setMode,
   themes,
@@ -250,6 +271,8 @@ function Settings({
   setTheme,
   readOnly,
 }: {
+  lang: Lang;
+  setLang: (l: Lang) => void;
   mode: Mode;
   setMode: (m: Mode) => void;
   themes: string[];
@@ -268,6 +291,7 @@ function Settings({
           onAction={(k) => {
             const key = String(k);
             if (key.startsWith("mode:")) setMode(key.slice(5) as Mode);
+            else if (key.startsWith("lang:")) setLang(key.slice(5) as Lang);
             else if (key.startsWith("theme:")) setTheme(key.slice(6));
           }}
         >
@@ -284,6 +308,23 @@ function Settings({
                 <I className="size-4" />
                 <Label>{label}</Label>
                 {mode === m ? <Check className="ml-auto size-4 text-accent" /> : null}
+              </Dropdown.Item>
+            ))}
+          </Dropdown.Section>
+          <Separator />
+          <Dropdown.Section>
+            <Header>{t("Language", "语言")}</Header>
+            {(
+              [
+                ["system", t("Like the system", "跟随系统")],
+                ["zh", "中文"],
+                ["en", "English"],
+              ] as const
+            ).map(([l, label]) => (
+              <Dropdown.Item key={l} id={"lang:" + l} textValue={label}>
+                <Languages className="size-4" />
+                <Label>{label}</Label>
+                {lang === l ? <Check className="ml-auto size-4 text-accent" /> : null}
               </Dropdown.Item>
             ))}
           </Dropdown.Section>

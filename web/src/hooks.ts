@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, getJson, key, NEEDS_CODE, post, type Done, type Pane, type Screen, type Theme } from "./api";
+import { api, getJson, key, needsCode, post, type Done, type Pane, type Screen, type Theme } from "./api";
 import { store, stored } from "./format";
 import { t } from "./i18n";
 
@@ -108,7 +108,7 @@ export function useScreen(pane: string | null, query: string) {
             signal: ctl.signal,
           });
           if (r.status === 401) {
-            setState((x) => ({ ...x, error: NEEDS_CODE }));
+            setState((x) => ({ ...x, error: needsCode() }));
             return;
           }
           if (!r.ok) throw new Error((await r.text()) || r.statusText);
@@ -279,3 +279,67 @@ export function useViewportHeight() {
 }
 
 export { api };
+
+/** The time a small request takes to the computer and back, in ms, asked
+ *  every five seconds while the page is shown; null before the first
+ *  answer, "off" when the last one did not come. */
+export function useLatency(enabled: boolean) {
+  const visible = useVisible();
+  const [ms, setMs] = useState<number | "off" | null>(null);
+  useEffect(() => {
+    if (!enabled || !visible) return;
+    let stop = false;
+    let timer: number | undefined;
+    const loop = async () => {
+      const t0 = performance.now();
+      try {
+        await api("/api/info");
+        if (!stop) setMs(Math.max(1, Math.round(performance.now() - t0)));
+      } catch {
+        if (!stop) setMs("off");
+      }
+      if (!stop) timer = window.setTimeout(loop, 5000);
+    };
+    loop();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [enabled, visible]);
+  return ms;
+}
+
+type FsDoc = Document & { webkitFullscreenEnabled?: boolean; webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void };
+type FsEl = HTMLElement & { webkitRequestFullscreen?: () => void };
+
+/** The page over the whole screen, where the browser can (not an iPhone's
+ *  Safari): whether it can, whether it is, and the switch. */
+export function useFullscreen() {
+  const d = document as FsDoc;
+  const can = !!(d.fullscreenEnabled || d.webkitFullscreenEnabled);
+  const now = () => !!(d.fullscreenElement || d.webkitFullscreenElement);
+  const [on, setOn] = useState(now);
+  useEffect(() => {
+    const changed = () => setOn(now());
+    document.addEventListener("fullscreenchange", changed);
+    document.addEventListener("webkitfullscreenchange", changed);
+    return () => {
+      document.removeEventListener("fullscreenchange", changed);
+      document.removeEventListener("webkitfullscreenchange", changed);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const toggle = useCallback(() => {
+    const el = document.documentElement as FsEl;
+    if (now()) {
+      if (d.exitFullscreen) d.exitFullscreen().catch(() => {});
+      else d.webkitExitFullscreen?.();
+    } else if (el.requestFullscreen) {
+      el.requestFullscreen().catch(() => {});
+    } else {
+      el.webkitRequestFullscreen?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return { can, on, toggle };
+}

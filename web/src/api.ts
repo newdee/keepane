@@ -64,7 +64,8 @@ export type DoneItem = { text: string; pane: string; output?: string[] };
 export type Done = { last: number; done: DoneItem[] };
 export type Info = { readOnly: boolean; host: string; version: string };
 
-export const NEEDS_CODE = t(
+/** Said in the page's language at the time. */
+export const needsCode = () => t(
   "This page needs the code again: run `keepane web` and scan it.",
   "需要重新扫码：在电脑上运行 `keepane web` 再扫一次。",
 );
@@ -76,7 +77,7 @@ export async function api(path: string, opts: RequestInit = {}): Promise<Respons
     cache: "no-store",
     headers: { "X-Keepane-Key": key, ...(opts.headers || {}) },
   });
-  if (r.status === 401) throw new Error(NEEDS_CODE);
+  if (r.status === 401) throw new Error(needsCode());
   if (!r.ok) throw new Error((await r.text()) || r.statusText);
   return r;
 }
