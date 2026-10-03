@@ -562,7 +562,7 @@ pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
         g.put_str(area.x, area.y + i as u16, line, style, area.w);
     }
     let hint = if lines.len() > body_h {
-        format!("[{} of {} lines] press any key", body_h, lines.len())
+        format!("[{} of {}] press any key", body_h, crate::format::count(lines.len(), "line"))
     } else {
         "press any key".to_string()
     };

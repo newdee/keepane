@@ -596,12 +596,28 @@ pub fn style_from_spec(spec: &str, base: Style) -> Style {
     apply_style(base, base, spec)
 }
 
+/// A count and its noun, singular for one: `count(1, "pane")` is `1 pane`,
+/// `count(3, "pane")` is `3 panes`. For keepane's own words; output copied
+/// from tmux (`list-sessions`' `1 windows`) keeps tmux's.
+pub fn count<N: std::fmt::Display + PartialEq + From<u8>>(n: N, noun: &str) -> String {
+    if n == N::from(1) { format!("1 {noun}") } else { format!("{n} {noun}s") }
+}
+
 #[allow(dead_code)]
 fn _color_in_scope(_: Color) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_is_singular() {
+        assert_eq!(count(0, "pane"), "0 panes");
+        assert_eq!(count(1, "pane"), "1 pane");
+        assert_eq!(count(2usize, "window"), "2 windows");
+        assert_eq!(count(1u16, "pane"), "1 pane");
+        assert_eq!(count(1u64, "line"), "1 line");
+    }
 
     #[test]
     fn durations_read_like_speech() {

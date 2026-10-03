@@ -309,7 +309,7 @@ impl Server {
             let charging = if sys.battery_charging { ", charging" } else { "" };
             rows.push(("battery", format!("{}{charging}", sys.battery_percentage)));
         }
-        rows.push(("panes", format!("{panes} in {} sessions", self.sessions.len())));
+        rows.push(("panes", format!("{panes} in {}", crate::format::count(self.sessions.len(), "session"))));
         rows.push(("time", chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string()));
         rows.iter().map(|(k, v)| format!("{k:<8} {v}")).collect::<Vec<_>>().join("\n")
     }

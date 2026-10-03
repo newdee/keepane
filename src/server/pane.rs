@@ -1123,7 +1123,10 @@ impl Pane {
                 let lost = oldest - self.logged;
                 self.log_hold.push_back((
                     u64::MAX,
-                    format!("[keepane: {lost} lines scrolled past the history before they were kept]"),
+                    format!(
+                        "[keepane: {} scrolled past the history before they were kept]",
+                        crate::format::count(lost, "line")
+                    ),
                 ));
                 self.logged = oldest;
             }

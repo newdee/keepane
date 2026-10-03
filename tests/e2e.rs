@@ -1285,7 +1285,12 @@ async fn choose_tree_as_a_tree_of_blocks() {
     assert!(row(2).starts_with("│  ├─  2  0:") && row(2).ends_with("· 2 panes"), "{text}");
     assert!(row(3).starts_with("│  │  ├─  3  0:") && row(4).starts_with("│  │  └─  4  1:"), "{text}");
     assert!(row(5).starts_with("│  └─  5  1:") && row(6).starts_with("│     └─  6  0:"), "{text}");
-    assert!(row(7).starts_with("└─  7  t · 1 windows") && row(9).starts_with("      └─  9  0:"), "{text}");
+    assert!(
+        row(7).starts_with("└─  7  t · 1 window")
+            && !row(7).contains("windows")
+            && row(9).starts_with("      └─  9  0:"),
+        "{text}"
+    );
     // The blocks' colours: a session blue, the selected one yellow.
     let bg = |s: &vt100::Screen, r: u16| s.cell(r, 4).map(|c| c.bgcolor());
     assert_eq!(bg(c.screen.screen(), 1), Some(vt100::Color::Idx(4)), "session block");
@@ -1311,7 +1316,7 @@ async fn choose_tree_as_a_tree_of_blocks() {
     c.key(up.0, up.1, 0).await;
     c.wait_for("s:1", at(6, 10)).await;
     c.type_str("-").await;
-    c.wait_for("folded", |s| s.contents().contains("[6/9] ↑↓") && s.contents().contains("· 1 panes + ")).await;
+    c.wait_for("folded", |s| s.contents().contains("[6/9] ↑↓") && s.contents().contains("· 1 pane + ")).await;
     c.key(down.0, down.1, 0).await;
     c.wait_for("opened", at(6, 10)).await;
     // v: the plain list (no root, so s:1 is line 5 of 9), and back.
@@ -1359,10 +1364,10 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
     c.wait_for("picker", |s| s.contents().contains("[4/7]")).await;
     // Double-width names survive the layout, each block under its tree lines.
     assert_eq!(c.row(0).trim_end(), " keepane", "{:?}", c.row(0));
-    assert!(c.row(1).starts_with("├─  1  会话 · 1 windows · attached "), "{:?}", c.row(1));
-    assert!(c.row(2).starts_with("│  └─  2  0:编辑器* · 1 panes "), "{:?}", c.row(2));
+    assert!(c.row(1).starts_with("├─  1  会话 · 1 window · attached "), "{:?}", c.row(1));
+    assert!(c.row(2).starts_with("│  └─  2  0:编辑器* · 1 pane "), "{:?}", c.row(2));
     assert!(c.row(3).starts_with("│     └─  3  0:") && c.row(3).contains("* · normal"), "{:?}", c.row(3));
-    assert!(c.row(4).starts_with("└─  4  gone · 1 windows "), "{:?}", c.row(4));
+    assert!(c.row(4).starts_with("└─  4  gone · 1 window "), "{:?}", c.row(4));
 
     // A terminal with room for a single body row still renders hint and all.
     c.send(ClientMsg::Resize { cols: 20, rows: 3 }).await;
@@ -3354,7 +3359,7 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     c.attach(&["attach", "-t", "t"]).await;
     c.wait_for("the one-line summary", |s| {
         let t = s.contents();
-        t.contains("tmux.conf:") && t.contains("lines keepane could not use were skipped")
+        t.contains("tmux.conf:") && t.contains("skipped ") && t.contains("lines keepane could not use")
     })
     .await;
     assert!(!c.text().contains("@plugin"), "the details stay in show-messages: {}", c.text());
@@ -6262,7 +6267,7 @@ async fn the_newer_variables_come_from_the_live_tree() {
     assert_eq!(ask("v:0", "#{window_layout}").await, before, "the layout string round-trips");
     let (code, _, err) = h.cli(&["select-layout", "-t", "v:0", "80x24,0,0,0"]).await;
     assert_eq!(code, 1);
-    assert!(err.contains("has 1 panes, the window 2"), "{err}");
+    assert!(err.contains("has 1 pane, the window 2"), "{err}");
     let (code, _, err) = h.cli(&["select-layout", "-t", "v:0", "0000,80x24,0,0{40x24,0,0,0,39x24,41,0,1}"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("checksum"), "{err}");

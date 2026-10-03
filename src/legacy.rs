@@ -95,13 +95,14 @@ pub fn move_data_dir_at_start() {
     let (moved, stayed) = move_tree(&old, &new);
     if moved > 0 {
         eprintln!(
-            "keepane: moved {moved} files from {} (wmux, keepane's old name) to {}",
+            "keepane: moved {} from {} (wmux, keepane's old name) to {}",
+            crate::format::count(moved, "file"),
             old.display(),
             new.display()
         );
     }
     if stayed > 0 {
-        eprintln!("keepane: {stayed} files stayed in {}", old.display());
+        eprintln!("keepane: {} stayed in {}", crate::format::count(stayed, "file"), old.display());
     }
 }
 

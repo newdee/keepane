@@ -64,8 +64,8 @@ pub fn run(args: &[String]) -> Result<i32> {
     if dry {
         print!("{block}");
         eprintln!(
-            "import-config -n: {} lines would go into {} ({skipped} of them commented out, why above each)",
-            report.imported + skipped,
+            "import-config -n: {} would go into {} ({skipped} of them commented out, why above each)",
+            crate::format::count(report.imported + skipped, "line"),
             to.display()
         );
         return Ok(0);

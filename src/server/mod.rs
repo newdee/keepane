@@ -1553,7 +1553,7 @@ impl Server {
     fn load_config(&mut self) {
         if let Some(path) = self.config_override.clone().or_else(crate::config::find_config) {
             match self.source_file(&path.to_string_lossy()) {
-                Ok(n) => log::info!("loaded {} ({n} commands)", path.display()),
+                Ok(n) => log::info!("loaded {} ({})", path.display(), crate::format::count(n, "command")),
                 Err(e) => {
                     log::error!("config {}: {e}", path.display());
                     // Shown to the first client that attaches, like tmux does.
@@ -1635,9 +1635,9 @@ impl Server {
             }
             let short = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned());
             return Err(format!(
-                "{}: {} lines keepane could not use were skipped (prefix ~ or show-messages lists them)",
+                "{}: skipped {} keepane could not use (prefix ~ or show-messages lists them)",
                 short.unwrap_or_else(|| path.clone()),
-                errors.len()
+                crate::format::count(errors.len(), "line")
             ));
         }
         Err(errors.join("\n"))
@@ -4045,7 +4045,10 @@ impl Server {
                         Ok(nid) => newest = Some(nid),
                         Err(e) if made == 0 => return Outcome::Error(e),
                         Err(e) => {
-                            stopped = Some(format!("split-window: made {made} of {count} panes: {e}"));
+                            stopped = Some(format!(
+                                "split-window: made {made} of {}: {e}",
+                                crate::format::count(count, "pane")
+                            ));
                             break;
                         }
                     }
@@ -4298,7 +4301,8 @@ impl Server {
                             let cells = tree.panes().len();
                             if cells != panes.len() {
                                 return Outcome::Error(format!(
-                                    "select-layout: the layout has {cells} panes, the window {}",
+                                    "select-layout: the layout has {}, the window {}",
+                                    crate::format::count(cells, "pane"),
                                     panes.len()
                                 ));
                             }
@@ -5483,8 +5487,11 @@ impl Server {
                     Ok(()) if cut => format!(" (cut at {} MB)", OUTPUT_MAX >> 20),
                     Ok(()) => String::new(),
                 };
-                let s = if lines == 1 { "" } else { "s" };
-                let what = format!("copied {lines} line{s} `{}` printed{note}", truncate(&command, 40));
+                let what = format!(
+                    "copied {} `{}` printed{note}",
+                    crate::format::count(lines, "line"),
+                    truncate(&command, 40)
+                );
                 if let Some(cid) = cid {
                     self.message(cid, &what);
                 }
@@ -6578,7 +6585,12 @@ impl Server {
             items.push(ChooserItem::Tree(s.id, None));
             lines.push(if tree {
                 let fold = if expand && !open { " +" } else { "" };
-                format!("{} · {} windows{}{fold}", s.name, s.windows.len(), if attached { " · attached" } else { "" })
+                format!(
+                    "{} · {}{}{fold}",
+                    s.name,
+                    crate::format::count(s.windows.len(), "window"),
+                    if attached { " · attached" } else { "" }
+                )
             } else {
                 format!(
                     "{} {}: {} windows{}",
@@ -6605,7 +6617,7 @@ impl Server {
                 items.push(ChooserItem::Tree(s.id, Some(w.id)));
                 lines.push(if tree {
                     let fold = if win_open { "" } else { " +" };
-                    format!("{index}:{}{flag} · {} panes{fold}", w.name, w.panes.len())
+                    format!("{index}:{}{flag} · {}{fold}", w.name, crate::format::count(w.panes.len(), "pane"))
                 } else {
                     let mark = if win_open { "-" } else { "+" };
                     format!("  {mark} {index}: {}{flag} ({} panes) \"{title}\"", w.name, w.panes.len())
@@ -8565,11 +8577,11 @@ fn history_lines(kept: &[crate::histlog::Kept], open: &HashSet<usize>) -> (Vec<C
         let n = k.days.len();
         items.push(ChooserItem::Log(i, None));
         lines.push(format!(
-            "{} {}:{}  {n} day{}, newest {}",
+            "{} {}:{}  {}, newest {}",
             if is_open { "-" } else { "+" },
             k.session,
             k.key,
-            if n == 1 { "" } else { "s" },
+            crate::format::count(n, "day"),
             k.days.first().map(|d| d.0.to_string()).unwrap_or_default()
         ));
         if !is_open {

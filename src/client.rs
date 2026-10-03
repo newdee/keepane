@@ -303,9 +303,18 @@ pub async fn migrate(socket: &str) -> Result<i32> {
         let new = crate::logger::log_dir();
         if let Some(old) = crate::legacy::old_data_dir(&new).filter(|o| o.is_dir()) {
             let (moved, stayed) = crate::legacy::move_tree(&old, &new);
-            lines.push(format!("data: {moved} files moved from {} to {}", old.display(), new.display()));
+            lines.push(format!(
+                "data: {} moved from {} to {}",
+                crate::format::count(moved, "file"),
+                old.display(),
+                new.display()
+            ));
             if stayed > 0 {
-                lines.push(format!("data: {stayed} files already here or in use stayed in {}", old.display()));
+                lines.push(format!(
+                    "data: {} already here or in use stayed in {}",
+                    crate::format::count(stayed, "file"),
+                    old.display()
+                ));
             }
         }
     }
