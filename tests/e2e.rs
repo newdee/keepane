@@ -1360,6 +1360,10 @@ async fn choose_tree_as_a_tree_of_blocks() {
 /// first; `-` folds nothing here; Enter goes to the pane.
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_tree_as_a_chart() {
+    // The link directory the link tests use: a machine that never paired
+    // must not get a key pair from opening the chart.
+    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
+    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
     let h = Harness::start("chartview").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "s"]).await;
@@ -1373,6 +1377,7 @@ async fn choose_tree_as_a_chart() {
     c.prefix('w').await;
     let at = |n: usize, of: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/{of}] ↑↓"));
     c.wait_for("chart", at(5, 10)).await;
+    assert!(!keepane::link::dir(&h.socket).join("key").exists(), "never paired, so no key pair made");
     let text = c.text();
     let rows: Vec<&str> = text.lines().collect();
     let find = |s: &str| rows.iter().position(|r| r.contains(s));
@@ -1473,6 +1478,8 @@ async fn choose_tree_as_a_chart() {
     c.screen = vt100::Parser::new(ROWS, COLS, 0);
     c.wait_for("back", |s| s.contents().contains("[49/68] ↑↓")).await;
     c.type_str("q").await;
+    // Seconds of an open chart later (the tick asks every second): still none.
+    assert!(!keepane::link::dir(&h.socket).join("key").exists(), "never paired, so no key pair made");
     h.cli(&["kill-server"]).await;
 }
 
@@ -4853,6 +4860,93 @@ async fn a_machine_allowed_to_starts_panes_on_another_and_closes_only_those() {
     assert!(b.cli(&["display", "-p", "-t", &format!("%{pid}"), "#{pane_id}"]).await.0 != 0, "gone there");
     a.cli(&["kill-server"]).await;
     b.cli(&["kill-server"]).await;
+}
+
+/// The chart with another machine paired: a row of machines under the
+/// root (this one first), the other's sessions, windows and panes under it
+/// by their names, Enter on one of its panes shows that pane's screen,
+/// `x` touches nothing there, and a machine that went off says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_chart_shows_the_paired_machines() {
+    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
+    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
+    let a = Harness::start("lca").await;
+    let b = Harness::start("lcb").await;
+    let mut c = a.connect().await;
+    c.attach(&["new", "-s", "wa"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    b.cli(&["new", "-d", "-s", "wb", "-n", "edit"]).await;
+    b.cli(&["split-window", "-t", "wb"]).await;
+    b.wait_capture("wb:0.1", "shell prompt", |t| t.contains("keepane>")).await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    let (code, _, err) = a.cli(&["link-add", &ub]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = b.cli(&["link-allow", &addr_a, "--screen"]).await;
+    assert_eq!(code, 0, "{err}");
+    // root, this machine, wa, wa:0, its pane; b, wb, wb:0 (edit), its two
+    // panes: 10, the cursor on wa's pane (5).
+    c.prefix('w').await;
+    let at = |n: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/10] ↑↓"));
+    c.wait_for("the machines", |s| {
+        let t = s.contents();
+        at(5)(s)
+            && t.matches("host").count() == 2
+            && t.contains(&addr_b)
+            && t.contains("1 session")
+            && !t.contains("asking")
+    })
+    .await;
+    assert!(c.text().contains("this machine · 1 session"), "{}", c.text());
+    // Up to this machine (never the root), along to the other.
+    for want in [4, 3, 2, 2] {
+        c.key(0x26, '\0', 0).await;
+        c.wait_for("up", at(want)).await;
+    }
+    c.key(0x27, '\0', 0).await;
+    c.wait_for("the other machine: its session, by name", |s| at(6)(s) && s.contents().contains("6  wb")).await;
+    // Down: its session, its current window, that window's active pane
+    // (the second, made by the split).
+    for want in [7, 8, 10] {
+        c.key(0x28, '\0', 0).await;
+        c.wait_for("down", at(want)).await;
+    }
+    assert!(c.text().contains("7  0:edit*"), "{}", c.text());
+    // x leaves it alone.
+    c.type_str("x").await;
+    c.wait_for("refused", |s| s.contents().contains("x closes what is on this machine only")).await;
+    assert_eq!(b.cli(&["list-panes", "-t", "wb"]).await.1.lines().count(), 2);
+    // Enter: its screen over the chart; a key and the chart is back.
+    c.enter().await;
+    c.wait_for("its screen", |s| {
+        let t = s.contents();
+        t.contains(&format!("{addr_b}/$")) && t.contains("keepane>")
+    })
+    .await;
+    c.type_str("q").await;
+    c.wait_for("the chart again", at(10)).await;
+    // A filter keeps what matches with the machine, session and window
+    // above it: root, b, wb, edit, its two panes (this machine has none).
+    c.type_str("f").await;
+    c.type_str("edit").await;
+    c.enter().await;
+    c.wait_for("filtered", |s| {
+        let t = s.contents();
+        t.contains("[6/6] ↑↓") && t.contains("2  wb") && t.contains("3  0:edit*") && !t.contains("this machine")
+    })
+    .await;
+    // The other machine goes: said on its block, its panes as last heard.
+    b.cli(&["kill-server"]).await;
+    c.wait_for("offline", |s| s.contents().contains("1 session · offline")).await;
+    c.type_str("q").await;
+    a.cli(&["kill-server"]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

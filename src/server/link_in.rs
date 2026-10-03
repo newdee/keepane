@@ -52,9 +52,12 @@ fn sender_fields_ok(body: &SendBody) -> Result<(), String> {
     Ok(())
 }
 
-/// The pane list as another machine sees it.
-const PANES: &str =
-    "#{pane_address}\t#{pane_name}\t#{pane_work_mode}\t#{?pane_idle,idle,busy}\t#{pane_inbox}\t#{pane_current_command}";
+/// The pane list as another machine sees it: address, name, mode, idle or
+/// busy, inbox, program; then (0.26 on, for the chart of `choose-tree`
+/// there) session name, window index, window active, pane index, pane
+/// active, window name. New fields go at the end, so an older keepane
+/// reading this takes the first six as before.
+const PANES: &str = "#{pane_address}\t#{pane_name}\t#{pane_work_mode}\t#{?pane_idle,idle,busy}\t#{pane_inbox}\t#{pane_current_command}\t#{session_name}\t#{window_index}\t#{window_active}\t#{pane_index}\t#{pane_active}\t#{window_name}";
 
 /// The session another machine's panes go in, from its host name: what
 /// keepane takes in a name (letters, digits, `-`, `_`; others become `-`),

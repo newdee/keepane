@@ -91,7 +91,7 @@ keepane link id                              # 本机公钥
 keepane link add <对方 web 地址>             # 配对（ssh-copy-id）
 keepane link trust <主机:端口> <公钥> [--shell] [--screen]  # 手工授权一台机器
 keepane link list                            # 已配对的机器：地址、公钥指纹、能否执行命令、最近一次通信（不探测在不在线）
-keepane link panes <主机:端口>               # 对方的窗格列表（完整地址、名字、模式、空闲、收件箱、程序）
+keepane link panes <主机:端口>               # 对方的窗格列表（完整地址、名字、模式、空闲、收件箱、程序；0.26 起再加 session 名、窗口序号、窗口是否当前、窗格序号、窗格是否活动、窗口名，供 choose-tree 的 chart 用）
 keepane link info <主机:端口>                # 对方机器：主机名、系统、版本、开机时长、CPU、内存、pane 数（第 10 条）
 keepane link capture [-S 行数] <主机:端口/pane>  # 对方 pane 的屏幕文字，要对方 --screen 授权（第 10 条）
 keepane link allow <主机:端口> [--shell | --no-shell] [--screen | --no-screen]

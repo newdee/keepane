@@ -59,7 +59,7 @@ the config file take. `keepane list-commands` lists them, and
 `new-session` (`new`), `attach-session` (`attach`), `list-sessions` (`ls`),
 `has-session`, `kill-session`, `kill-server`, `rename-session`,
 `switch-client`, `detach-client`, `start-server`, `choose-session`,
-`choose-tree` (sessions, windows and panes; a chart of rows by default, a tree of blocks with `choose-tree-style tree`, the plain list with `choose-tree-style list`; `v` goes to the next), `choose-client`, `list-clients`.
+`choose-tree` (sessions, windows and panes, and the paired machines' in the chart; a chart of rows by default, a tree of blocks with `choose-tree-style tree`, the plain list with `choose-tree-style list`; `v` goes to the next), `choose-client`, `list-clients`.
 
 ### Windows and panes
 
@@ -176,7 +176,7 @@ on every request is signed, and the web key plays no part. `keepane link
 trust <host:port> <key> [--shell]` (`link-trust`) lets a machine in by hand,
 by the key `keepane link id` (`link-id`) prints there. `keepane link list`
 (`link-list`) shows the machines paired; `keepane link panes <host:port>`
-(`link-panes`) their panes; `keepane link info <host:port>` (`link-info`)
+(`link-panes`) their panes (address, name, mode, idle or busy, inbox, program, then session name, window index, window active, pane index, pane active, window name); `keepane link info <host:port>` (`link-info`)
 the machine: its name, system, keepane version, uptime, CPU, memory, panes;
 `keepane link capture [-S lines] <host:port/pane>` (`link-capture`) what one
 of its panes shows, as text, which that machine must allow (`--screen`,

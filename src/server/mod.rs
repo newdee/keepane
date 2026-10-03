@@ -11,6 +11,7 @@ pub mod layout;
 mod link_in;
 mod link_out;
 mod link_state;
+mod link_tree;
 mod mail;
 mod newer;
 pub mod observe;
@@ -188,6 +189,12 @@ enum ChooserItem {
     Log(usize, Option<usize>),
     /// A title or separator line: shown, never selected.
     Separator,
+    /// A machine in the chart: this one (None), or a paired one by its
+    /// place in the table.
+    Host(Option<u16>),
+    /// A session, window or pane of a paired machine: its place in the
+    /// table, then its numbers there.
+    Remote(u16, u32, Option<u32>, Option<u32>),
 }
 
 impl ChooserItem {
@@ -200,8 +207,26 @@ impl ChooserItem {
             ChooserItem::Tree(_, None) => Some(1),
             ChooserItem::Tree(_, Some(_)) => Some(2),
             ChooserItem::Job(..) => Some(3),
+            ChooserItem::Host(_) => Some(1),
+            ChooserItem::Remote(_, _, None, _) => Some(2),
+            ChooserItem::Remote(_, _, Some(_), None) => Some(3),
+            ChooserItem::Remote(..) => Some(4),
             _ => None,
         }
+    }
+
+    /// The depths of a list of items: with machines in it (the chart, when
+    /// this machine is paired), this machine's sessions, windows and panes
+    /// are a level further down, under it.
+    fn depths(items: &[ChooserItem]) -> Vec<Option<usize>> {
+        let hosts = items.iter().any(|i| matches!(i, ChooserItem::Host(_)));
+        items
+            .iter()
+            .map(|i| match i {
+                ChooserItem::Tree(..) | ChooserItem::Job(..) if hosts => i.depth().map(|d| d + 1),
+                _ => i.depth(),
+            })
+            .collect()
     }
 
     /// The session or window line that folds it: itself, or a pane's window.
@@ -325,6 +350,10 @@ impl Chooser {
             typed: None,
             active: Vec::new(),
         }
+    }
+
+    fn is_chart(&self) -> bool {
+        matches!(self.kind, ChooserKind::Tree { style: TreeStyle::Chart, .. })
     }
 
     fn is_tagged(&self, item: &ChooserItem) -> bool {
@@ -859,6 +888,8 @@ pub struct Server {
     web_generation: u64,
     /// The links to other machines (docs/design/link.md), once first used.
     link: Option<link_state::LinkHost>,
+    /// The paired machines' panes, by address, for the chart of `choose-tree`.
+    remote_views: HashMap<String, link_tree::RemoteView>,
     /// Sessions sized to a phone (`web-fit`), by session.
     web_fits: HashMap<SessionId, web_fit::WebFit>,
 }
@@ -1216,6 +1247,7 @@ impl Server {
             web: None,
             web_generation: 0,
             link: None,
+            remote_views: HashMap::new(),
             web_fits: HashMap::new(),
         }
     }
@@ -2073,6 +2105,10 @@ impl Server {
                 self.public_ip_tick();
                 self.web_tick();
                 self.web_fit_tick();
+                // An open chart keeps the paired machines' panes fresh.
+                if self.a_chart_is_open() {
+                    self.ask_remote_trees(false);
+                }
                 // Kept long enough: gone for good.
                 let keep = Duration::from_secs(self.opts.undo_kill_time);
                 self.killed.retain(|k| k.at().elapsed() < keep);
@@ -5384,7 +5420,13 @@ impl Server {
                     return Outcome::Error("choose-tree: client not attached".into());
                 };
                 let expand = windows || !sessions;
-                let kind = ChooserKind::Tree { expand, style: TreeStyle::parse(&self.opts.choose_tree_style) };
+                let style = TreeStyle::parse(&self.opts.choose_tree_style);
+                // The chart asks the paired machines first, so that they are
+                // in it from the first frame (their panes as they come).
+                if style == TreeStyle::Chart && expand {
+                    self.ask_remote_trees(true);
+                }
+                let kind = ChooserKind::Tree { expand, style };
                 let (items, lines) = self.chooser_lines(&kind, &[]).unwrap_or_default();
                 // Start on the current pane (or the session, sessions only).
                 let cur = self.session(sid).and_then(|s| s.window()).filter(|_| expand).map(|w| (w.id, w.active));
@@ -6620,6 +6662,17 @@ impl Server {
             items.push(ChooserItem::Separator);
             lines.push("keepane".into());
         }
+        // Paired with other machines, the chart has a row of them under
+        // the root, this one first.
+        let hosts = if chart && expand { self.chart_hosts() } else { Vec::new() };
+        if !hosts.is_empty() {
+            items.push(ChooserItem::Host(None));
+            lines.push(format!(
+                "{}\nthis machine · {}",
+                crate::sysinfo::hostname(),
+                crate::format::count(self.sessions.len(), "session")
+            ));
+        }
         // The chart shows the chosen branch, so nothing in it is folded.
         let folded = |item: ChooserItem| !chart && collapsed.contains(&item);
         for s in &self.sessions {
@@ -6683,7 +6736,63 @@ impl Server {
                 }
             }
         }
+        for (m, addr) in hosts.iter().enumerate() {
+            self.remote_lines(m as u16, addr, &mut items, &mut lines);
+        }
         Some((items, lines))
+    }
+
+    /// A paired machine in the chart: its block (what is known of it), then
+    /// its sessions, windows and panes as it last said them.
+    fn remote_lines(&self, m: u16, addr: &str, items: &mut Vec<ChooserItem>, lines: &mut Vec<String>) {
+        use crate::format::count;
+        let view = self.remote_views.get(addr);
+        let panes: &[link_tree::RemotePane] = view.map(|v| v.panes.as_slice()).unwrap_or_default();
+        let mut sessions: Vec<u32> = Vec::new();
+        for p in panes {
+            if !sessions.contains(&p.session) {
+                sessions.push(p.session);
+            }
+        }
+        let about = match view {
+            Some(v) if v.heard && v.error.is_some() => format!("{} · offline", count(sessions.len(), "session")),
+            Some(v) if v.heard => count(sessions.len(), "session"),
+            Some(v) if v.error.is_some() => {
+                format!("offline: {}", truncate(v.error.as_deref().unwrap_or_default(), 60))
+            }
+            _ => "asking…".to_string(),
+        };
+        items.push(ChooserItem::Host(Some(m)));
+        lines.push(format!("{addr}\n{about}"));
+        for s in sessions {
+            let of_s: Vec<&link_tree::RemotePane> = panes.iter().filter(|p| p.session == s).collect();
+            let mut windows: Vec<u32> = Vec::new();
+            for p in &of_s {
+                if !windows.contains(&p.window) {
+                    windows.push(p.window);
+                }
+            }
+            let name = of_s[0].session_name.clone().unwrap_or_else(|| format!("${s}"));
+            items.push(ChooserItem::Remote(m, s, None, None));
+            lines.push(format!("{name}\n{}", count(windows.len(), "window")));
+            for w in windows {
+                let of_w: Vec<&&link_tree::RemotePane> = of_s.iter().filter(|p| p.window == w).collect();
+                let first = of_w[0];
+                let title = match (first.window_index, &first.window_name) {
+                    (Some(i), Some(n)) => format!("{i}:{n}{}", if first.window_active { "*" } else { "" }),
+                    _ => format!("@{w}"),
+                };
+                items.push(ChooserItem::Remote(m, s, Some(w), None));
+                lines.push(format!("{title}\n{}", count(of_w.len(), "pane")));
+                for p in of_w {
+                    let at = p.pane_index.map(|i| i.to_string()).unwrap_or_else(|| format!("%{}", p.pane));
+                    let active = if p.pane_active { "*" } else { "" };
+                    let name = if p.name.is_empty() { String::new() } else { format!(" · %{}", p.name) };
+                    items.push(ChooserItem::Remote(m, s, Some(w), Some(p.pane)));
+                    lines.push(format!("{at}:{}{active}\n{}{name}", truncate(&p.command, 40), p.mode));
+                }
+            }
+        }
     }
 
     /// Whether a line of the session tree is its parent's current one: a
@@ -6695,6 +6804,15 @@ impl Server {
             }
             ChooserItem::Job(sid, wid, pid) => {
                 self.session(sid).and_then(|s| s.windows.iter().find(|w| w.id == wid)).is_some_and(|w| w.active == pid)
+            }
+            ChooserItem::Host(None) => true,
+            ChooserItem::Remote(m, s, Some(w), pane) => {
+                let hosts = self.chart_hosts();
+                let Some(view) = hosts.get(m as usize).and_then(|a| self.remote_views.get(a)) else { return false };
+                view.panes.iter().any(|p| match pane {
+                    None => p.session == s && p.window == w && p.window_active,
+                    Some(id) => p.session == s && p.window == w && p.pane == id && p.pane_active,
+                })
             }
             _ => false,
         }
@@ -6823,7 +6941,7 @@ impl Server {
             // shown one), Left and Right to the one before and after on the
             // same level, across parents.
             (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right, _, _) if tree_view => {
-                let depths: Vec<Option<usize>> = ch.items.iter().map(ChooserItem::depth).collect();
+                let depths = ChooserItem::depths(&ch.items);
                 let Some(d) = depths.get(ch.sel).copied().flatten() else { return };
                 let to = match k.code {
                     KeyCode::Up => {
@@ -6943,6 +7061,10 @@ impl Server {
                                 },
                             }
                         }
+                        ChooserItem::Host(_) | ChooserItem::Remote(..) => {
+                            self.message(cid, "x closes what is on this machine only");
+                            continue;
+                        }
                         _ => continue,
                     };
                     if let Outcome::Error(e) = self.exec(cmd, Some(cid)) {
@@ -6976,6 +7098,21 @@ impl Server {
                     }
                     _ => None,
                 };
+                // A machine in the chart: another machine's pane shows its
+                // screen over the chart, which stays; the rest says how.
+                match target {
+                    Some(ChooserItem::Remote(m, s, Some(w), Some(p))) => {
+                        if let Some(addr) = self.chart_hosts().get(m as usize).cloned() {
+                            self.peek_remote(cid, &addr, &format!("${s}:@{w}.%{p}"));
+                        }
+                        return;
+                    }
+                    Some(ChooserItem::Host(_) | ChooserItem::Remote(..)) => {
+                        self.message(cid, "Enter on a pane: one here goes there, another machine's shows its screen");
+                        return;
+                    }
+                    _ => {}
+                }
                 c.chooser = None;
                 if let Some(cmd) = menu {
                     let out = self.exec(*cmd, Some(cid));
@@ -6996,7 +7133,11 @@ impl Server {
                         }
                     }
                     Some(ChooserItem::Job(sid, wid, pid)) => self.chooser_go_pane(cid, sid, wid, pid),
-                    Some(ChooserItem::Menu(_)) | Some(ChooserItem::Separator) | Some(ChooserItem::Log(..)) => {}
+                    Some(ChooserItem::Menu(_))
+                    | Some(ChooserItem::Separator)
+                    | Some(ChooserItem::Log(..))
+                    | Some(ChooserItem::Host(_))
+                    | Some(ChooserItem::Remote(..)) => {}
                     Some(ChooserItem::Buffer(i)) => {
                         let name = self.buffers.get(i).map(|(n, _)| n.clone());
                         match name {
@@ -8069,6 +8210,7 @@ impl Server {
                 status.push(format!("[filter: {}]", ch.filter.trim()));
             }
             if matches!(ch.kind, ChooserKind::Tree { style: TreeStyle::Chart, .. }) {
+                let depths = ChooserItem::depths(&ch.items);
                 let nodes: Vec<render::ChartNode> = ch
                     .items
                     .iter()
@@ -8076,8 +8218,16 @@ impl Server {
                     .enumerate()
                     .map(|(i, (item, line))| {
                         let (title, info) = line.split_once('\n').unwrap_or((line, ""));
+                        let kind = match item {
+                            ChooserItem::Host(_) => "host",
+                            ChooserItem::Tree(_, None) | ChooserItem::Remote(_, _, None, _) => "session",
+                            ChooserItem::Tree(_, Some(_)) | ChooserItem::Remote(_, _, Some(_), None) => "window",
+                            ChooserItem::Job(..) | ChooserItem::Remote(..) => "pane",
+                            _ => "",
+                        };
                         render::ChartNode {
-                            depth: item.depth().unwrap_or(0),
+                            kind,
+                            depth: depths[i].unwrap_or(0),
                             title: title.to_string(),
                             info: info.to_string(),
                             active: ch.active.get(i).copied().unwrap_or(false),
@@ -8327,6 +8477,8 @@ fn chooser_filter(items: &[ChooserItem], lines: &[String], filter: &str) -> Vec<
     // line stays when one of them matches, and they stay when it does. A
     // separator (the tree's root, the board's header) always stays and is
     // no one's parent.
+    // (Depths as the tree has them: under a row of machines in the chart.)
+    let depths = ChooserItem::depths(items);
     let mut above: Vec<(usize, usize)> = Vec::new();
     for (i, item) in items.iter().enumerate() {
         let depth = match item {
@@ -8334,7 +8486,9 @@ fn chooser_filter(items: &[ChooserItem], lines: &[String], filter: &str) -> Vec<
                 keep[i] = true;
                 continue;
             }
-            ChooserItem::Tree(..) | ChooserItem::Job(..) => item.depth().unwrap_or(0),
+            ChooserItem::Tree(..) | ChooserItem::Job(..) | ChooserItem::Host(_) | ChooserItem::Remote(..) => {
+                depths[i].unwrap_or(0)
+            }
             _ => continue,
         };
         while above.last().is_some_and(|&(d, _)| d >= depth) {

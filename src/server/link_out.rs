@@ -34,6 +34,10 @@ pub(super) enum LinkOp {
     /// `trace-message` of a message handed to them: the record here, then
     /// theirs; `waited`, a `-w` that may run out.
     Trace { addr: String, key: String, here: String, waited: bool },
+    /// The chart of `choose-tree`: their panes, kept, told to no one.
+    Tree { addr: String, key: String },
+    /// Enter on a pane of theirs in the chart: its screen, shown over it.
+    Peek { addr: String, key: String, title: String },
 }
 
 /// How a message handed to another machine is known there, for asking
@@ -88,7 +92,7 @@ impl Server {
 
     /// A request signed for the machine whose key is `to`.
     #[allow(clippy::too_many_arguments)]
-    fn link_signed(
+    pub(super) fn link_signed(
         &mut self,
         cid: Option<ClientId>,
         addr: &str,
@@ -326,6 +330,30 @@ impl Server {
     /// The answer came (or did not): check it, act on it, tell the client.
     pub(super) fn link_answered(&mut self, a: LinkAnswer) {
         let LinkAnswer { cid, nonce, op, result } = a;
+        let op = match op {
+            // The chart's asking: kept for it, said to no one.
+            LinkOp::Tree { addr, key } => {
+                let result = Self::checked(&addr, &key, &nonce, result);
+                return self.remote_tree_answered(&addr, result);
+            }
+            LinkOp::Peek { addr, key, title } => {
+                let Some(cid) = cid else { return };
+                match Self::checked(&addr, &key, &nonce, result) {
+                    Ok(ans) if ans.status == 200 => {
+                        let screen = String::from_utf8_lossy(&ans.body);
+                        let mut lines = vec![title, String::new()];
+                        lines.extend(screen.trim_end_matches('\n').lines().map(str::to_string));
+                        if let Some(c) = self.clients.get_mut(&cid) {
+                            c.overlay = Some(lines);
+                        }
+                    }
+                    Ok(ans) => self.message(cid, &format!("{addr} said: {}", ans.text())),
+                    Err(e) => self.message(cid, &e),
+                }
+                return;
+            }
+            other => other,
+        };
         let out = match op {
             LinkOp::Pair { addr, webkey } => self.paired(&addr, &webkey, &nonce, result),
             LinkOp::Send { id, addr, key, waited } => match Self::checked(&addr, &key, &nonce, result) {
@@ -414,6 +442,7 @@ impl Server {
                 Ok(ans) => Outcome::Text(format!("{here}\non {addr}: {}", ans.text())),
                 Err(e) => Outcome::Text(format!("{here}\non {addr}: not asked ({e})")),
             },
+            LinkOp::Tree { .. } | LinkOp::Peek { .. } => unreachable!("answered above"),
         };
         if let Some(cid) = cid {
             self.reply(cid, out);
