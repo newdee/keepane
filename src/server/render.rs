@@ -1026,16 +1026,114 @@ fn skip_cols(s: &str, n: usize) -> String {
     out
 }
 
+/// How much of a block the chart draws: its box, one line (each at most
+/// so many columns wide), or its number.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ChartLevel {
+    Box(usize),
+    Line(usize),
+    Number,
+}
+
+/// The label in a box's top border, when there is room for it.
+fn chart_label(n: &ChartNode, w: usize) -> String {
+    if n.kind.is_empty() || n.kind.width() + 4 > w { String::new() } else { format!(" {} ", n.kind) }
+}
+
+/// A block's number: its title's first word (after a tag's `*`).
+fn chart_number(title: &str) -> &str {
+    title.trim_start_matches("* ").split_whitespace().next().unwrap_or("")
+}
+
+fn chart_width(n: &ChartNode, level: ChartLevel, aw: usize) -> usize {
+    let w = match level {
+        ChartLevel::Box(cap) => (n.title.width().max(n.info.width()) + 4).max(n.kind.width() + 5).min(cap),
+        ChartLevel::Line(cap) => (n.title.width() + 2).min(cap),
+        ChartLevel::Number => chart_number(&n.title).width() + 2,
+    };
+    w.min(aw).max(1)
+}
+
+/// Where a block is joined to the rows above and below: a box's middle,
+/// or just past its label when the label reaches that far; a line's middle.
+fn chart_join_at(n: &ChartNode, w: usize, level: ChartLevel) -> usize {
+    match level {
+        ChartLevel::Box(_) => (w / 2).max(chart_label(n, w).width() + 1).min(w.saturating_sub(2)),
+        _ => w / 2,
+    }
+}
+
+/// A block's lines, each `w` columns. A box: what it is in the top border
+/// (`up` puts a join there), its title, its info (not for the root), the
+/// bottom border (`down` puts a join there). One line: `[title]`; a number:
+/// `[n]`.
+fn chart_lines(n: &ChartNode, w: usize, level: ChartLevel, root: bool, up: bool, down: bool) -> Vec<String> {
+    if !matches!(level, ChartLevel::Box(_)) {
+        let text = if level == ChartLevel::Number { chart_number(&n.title) } else { n.title.as_str() };
+        return vec![if w >= 2 { format!("[{}]", fit(text, w - 2)) } else { fit(text, w) }];
+    }
+    let at = chart_join_at(n, w, level);
+    let edge = |l: &str, r: &str, label: &str, join: Option<char>| -> String {
+        if w < 2 {
+            return fit("", w);
+        }
+        let mut cs: Vec<char> = format!("{l}{label}{}{r}", "─".repeat(w - 2 - label.width())).chars().collect();
+        if let Some(j) = join
+            && cs.get(at) == Some(&'─')
+        {
+            cs[at] = j;
+        }
+        cs.into_iter().collect()
+    };
+    let mid = |text: &str| if w >= 4 { format!("│ {} │", fit(text, w - 4)) } else { fit(text, w) };
+    let mut out = vec![edge("┌", "┐", &chart_label(n, w), up.then_some('┴')), mid(&n.title)];
+    if !root {
+        out.push(mid(&n.info));
+    }
+    out.push(edge("└", "┘", "", down.then_some('┬')));
+    out
+}
+
+/// The line from a parent at `parent` across to its children at `mids`,
+/// on row `y`.
+fn chart_bar(g: &mut Grid, area: Rect, y: u16, parent: i32, mids: &[i32], style: Style) {
+    let aw = area.w as i32;
+    let lo = mids.iter().copied().chain([parent]).min().unwrap_or(parent);
+    let hi = mids.iter().copied().chain([parent]).max().unwrap_or(parent);
+    for x in lo.max(0)..=hi.min(aw - 1) {
+        let (up, down, left, right) = (x == parent, mids.contains(&x), x > lo, x < hi);
+        let ch = match (up, down, left, right) {
+            (true, true, true, true) => "┼",
+            (true, true, true, false) => "┤",
+            (true, true, false, true) => "├",
+            (true, true, false, false) | (true, false, false, false) | (false, true, false, false) => "│",
+            (true, false, true, true) => "┴",
+            (false, true, true, true) => "┬",
+            (true, false, true, false) => "┘",
+            (true, false, false, true) => "└",
+            (false, true, true, false) => "┐",
+            (false, true, false, true) => "┌",
+            _ => "─",
+        };
+        g.put_str(area.x + x as u16, y, ch, style, 1);
+    }
+}
+
 /// The session tree as a chart (`choose-tree-style chart`): the `keepane`
 /// root on the first row; then the machines when this one is paired; the
-/// sessions (of the machine on the selected branch); the windows of the
-/// session on the branch; that window's panes. Each row is spread across
-/// and joined to its parent by lines; each block says what it is on its
-/// first line. A row wider than the screen scrolls to keep its block on the
-/// branch in view (`‹` `›` say there is more). Every block is an open
-/// box in the terminal's own colours, the selected one in the highlight
-/// colour; the names on the branch are bold.
-pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, actions: &str, status: &str) {
+/// sessions; the windows; the panes. Each row is spread across and joined
+/// to its parents by lines. Every block is an open box in the terminal's
+/// own colours with what it is in its top border, the selected one in the
+/// highlight colour; the names on the selected branch are bold.
+///
+/// `all` off, only the selected branch is open: the sessions of the
+/// machine on it, the windows of its session, that window's panes; a row
+/// wider than the screen scrolls to keep its block on the branch in view.
+/// `all` on (`a`), every node is drawn, each parent centred over what is
+/// under it; when that does not fit, the blocks shrink to one line, then to
+/// their numbers, and what is still too wide scrolls to the selection.
+/// `‹` `›` say a row goes on past the edge.
+pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, all: bool, actions: &str, status: &str) {
     if area.h == 0 || area.w == 0 {
         return;
     }
@@ -1045,30 +1143,150 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, act
     let active: Vec<bool> = nodes.iter().map(|n| n.active).collect();
     let path = chart_path(&depths, &active, sel);
     let parents = chart_parents(&depths);
-    // The rows: the root, then the children of each node on the branch.
-    let mut rows: Vec<Vec<usize>> = Vec::new();
-    if let Some(&root) = path.first() {
-        rows.push(vec![root]);
-    }
-    for &p in &path {
-        let kids: Vec<usize> = (p + 1..nodes.len()).filter(|&i| parents[i] == Some(p)).collect();
-        if kids.is_empty() {
-            break;
-        }
-        rows.push(kids);
-    }
+    let kids = |p: usize| -> Vec<usize> { (p + 1..nodes.len()).filter(|&i| parents[i] == Some(p)).collect() };
+    let aw = area.w as i32;
     let body_h = area.h.saturating_sub(1) as usize;
-    // A block is a box: the root's three lines (its name between borders),
-    // the others' four (what it is in the top border, its two lines, the
-    // bottom border). Between rows, two lines of joins when there is room,
-    // else one, else none.
-    // Short of room, the root gives up its box (one line) before the joins
-    // go.
-    let need = |root: usize, links: usize| root + rows.len().saturating_sub(1) * (4 + links);
-    let (root_h, links) =
-        [(3, 2), (3, 1), (1, 1), (3, 0), (1, 0)].into_iter().find(|&(r, l)| need(r, l) <= body_h).unwrap_or((1, 0));
-    // In the terminal's own colours; the selected box in the highlight
-    // colour, the names on the branch in bold.
+    // The rows of blocks, top down, and for each how deep it is.
+    let rows: Vec<Vec<usize>> = if all {
+        let deepest = depths.iter().copied().max().unwrap_or(0);
+        (0..=deepest).map(|d| (0..nodes.len()).filter(|&i| depths[i] == d).collect::<Vec<_>>()).collect()
+    } else {
+        let mut rows = Vec::new();
+        if let Some(&root) = path.first() {
+            rows.push(vec![root]);
+        }
+        for &p in &path {
+            let k = kids(p);
+            if k.is_empty() {
+                break;
+            }
+            rows.push(k);
+        }
+        rows
+    };
+    let rows: Vec<Vec<usize>> = rows.into_iter().filter(|r| !r.is_empty()).collect();
+    if rows.is_empty() {
+        draw_chooser_footer(g, area, nodes.len(), sel, "hjkl move", actions, status);
+        return;
+    }
+    // How tall it is: the root's box three lines (one when short of room),
+    // the others' four; one line each smaller; between rows, two lines of
+    // joins, else one, else none.
+    let need = |level: ChartLevel, root: usize, links: usize| {
+        let h = if matches!(level, ChartLevel::Box(_)) { 4 } else { 1 };
+        root + (rows.len() - 1) * (h + links)
+    };
+    let gap = |level: ChartLevel| if matches!(level, ChartLevel::Box(_)) { CHART_GAP } else { 1 };
+    // The whole tree, laid out at a size: each block's x and width.
+    let lay_all = |level: ChartLevel| -> (Vec<i32>, Vec<usize>, i32) {
+        let ws: Vec<usize> = nodes.iter().map(|n| chart_width(n, level, area.w as usize)).collect();
+        let gp = gap(level);
+        // Each subtree's width, children first (they come after their parent).
+        let mut span = ws.clone();
+        for i in (0..nodes.len()).rev() {
+            let k = kids(i);
+            if !k.is_empty() {
+                let under = k.iter().map(|&c| span[c]).sum::<usize>() + gp * (k.len() - 1);
+                span[i] = span[i].max(under);
+            }
+        }
+        let mut left = vec![0i32; nodes.len()];
+        let mut next = 0i32;
+        for (i, p) in parents.iter().enumerate() {
+            if p.is_none() {
+                left[i] = next;
+                next += (span[i] + gp) as i32;
+            }
+        }
+        let total = (next - gp as i32).max(0);
+        for i in 0..nodes.len() {
+            let k = kids(i);
+            let under = (k.iter().map(|&c| span[c]).sum::<usize>() + gp * k.len().saturating_sub(1)) as i32;
+            let mut x = left[i] + (span[i] as i32 - under) / 2;
+            for c in k {
+                left[c] = x;
+                x += (span[c] + gp) as i32;
+            }
+        }
+        // A leaf in the middle of its span; a parent over the middle of its
+        // first and last child (children first: they come after it).
+        let mut xs: Vec<i32> = (0..nodes.len()).map(|i| left[i] + (span[i] - ws[i]) as i32 / 2).collect();
+        for i in (0..nodes.len()).rev() {
+            let k = kids(i);
+            if let (Some(&a), Some(&b)) = (k.first(), k.last()) {
+                let centre = (xs[a] + ws[a] as i32 / 2 + xs[b] + ws[b] as i32 / 2) / 2;
+                xs[i] = (centre - ws[i] as i32 / 2).clamp(left[i], left[i] + (span[i] - ws[i]) as i32);
+            }
+        }
+        (xs, ws, total)
+    };
+    // The size: branch mode keeps its boxes; the whole tree takes the first
+    // that fits, else the numbers, scrolled.
+    let (level, root_h, links) = if all {
+        // Boxes, narrower and narrower; then one line each; then numbers.
+        let mut tries = Vec::new();
+        for cap in [CHART_BLOCK + 2, 20, 14] {
+            tries.extend([(ChartLevel::Box(cap), 3, 2), (ChartLevel::Box(cap), 3, 1), (ChartLevel::Box(cap), 1, 1)]);
+        }
+        for cap in [20, 12] {
+            tries.extend([(ChartLevel::Line(cap), 1, 2), (ChartLevel::Line(cap), 1, 1)]);
+        }
+        tries.extend([(ChartLevel::Number, 1, 2), (ChartLevel::Number, 1, 1)]);
+        tries
+            .into_iter()
+            .find(|&(l, r, k)| need(l, r, k) <= body_h && lay_all(l).2 <= aw)
+            .or_else(|| {
+                [(ChartLevel::Number, 1, 2), (ChartLevel::Number, 1, 1)]
+                    .into_iter()
+                    .find(|&(l, r, k)| need(l, r, k) <= body_h)
+            })
+            .unwrap_or((ChartLevel::Number, 1, 0))
+    } else {
+        [(3, 2), (3, 1), (1, 1), (3, 0), (1, 0)]
+            .into_iter()
+            .find(|&(r, k)| need(ChartLevel::Box(CHART_BLOCK + 2), r, k) <= body_h)
+            .map(|(r, k)| (ChartLevel::Box(CHART_BLOCK + 2), r, k))
+            .unwrap_or((ChartLevel::Box(CHART_BLOCK + 2), 1, 0))
+    };
+    // Each block's x and width.
+    let mut xs = vec![0i32; nodes.len()];
+    let mut ws = vec![0usize; nodes.len()];
+    if all {
+        let (x, w, total) = lay_all(level);
+        // Centred when it fits; else scrolled so that the selection is in
+        // the middle, no blank past either end.
+        let shift = if total <= aw {
+            (aw - total) / 2
+        } else {
+            let mid = x.get(sel).copied().unwrap_or(0) + w.get(sel).copied().unwrap_or(0) as i32 / 2;
+            (aw / 2 - mid).clamp(aw - total, 0)
+        };
+        xs = x.iter().map(|x| x + shift).collect();
+        ws = w;
+    } else {
+        let mut parent_mid = aw / 2;
+        for row in &rows {
+            let rw: Vec<usize> = row.iter().map(|&i| chart_width(&nodes[i], level, area.w as usize)).collect();
+            let total = (rw.iter().sum::<usize>() + CHART_GAP * (rw.len() - 1)) as i32;
+            let on = row.iter().position(|i| path.contains(i)).unwrap_or(0);
+            let before = (rw[..on].iter().sum::<usize>() + CHART_GAP * on) as i32;
+            // Centred under its parent when it fits; else scrolled so that
+            // the block on the branch is in the middle.
+            let mut x = if total <= aw {
+                (parent_mid - total / 2).clamp(0, aw - total)
+            } else {
+                -(before + rw[on] as i32 / 2 - aw / 2).clamp(0, total - aw)
+            };
+            for (&i, &w) in row.iter().zip(&rw) {
+                xs[i] = x;
+                ws[i] = w;
+                x += (w + CHART_GAP) as i32;
+            }
+            let i = row[on];
+            parent_mid = xs[i] + chart_join_at(&nodes[i], ws[i], level) as i32;
+        }
+    }
+    let mid = |i: usize| xs[i] + chart_join_at(&nodes[i], ws[i], level) as i32;
     let style_of = |i: usize, name: bool| {
         if i == sel {
             Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) }
@@ -1076,114 +1294,44 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, act
             Style { bold: name && path.contains(&i), ..Style::colors(Color::Default, Color::Default) }
         }
     };
-    let width = |i: usize| {
-        let n = &nodes[i];
-        (n.title.width().max(n.info.width()) + 4)
-            .max(n.kind.width() + 5)
-            .min(CHART_BLOCK + 2)
-            .min(area.w as usize)
-            .max(1)
-    };
-    // The label in a box's top border, when there is room for it.
-    let label = |i: usize, w: usize| {
-        let kind = nodes[i].kind;
-        if kind.is_empty() || kind.width() + 4 > w { String::new() } else { format!(" {kind} ") }
-    };
-    // Where a box is joined to the rows above and below: its middle, or
-    // just past its label when the label reaches that far.
-    let join_at = |i: usize, w: usize| (w / 2).max(label(i, w).width() + 1).min(w.saturating_sub(2));
-    // A box's lines, each `w` columns; `up` and `down` put a join on the
-    // top and bottom border.
-    let lines_of = |i: usize, w: usize, root: bool, up: bool, down: bool| -> Vec<String> {
-        let n = &nodes[i];
-        let at = join_at(i, w);
-        let edge = |l: &str, r: &str, label: &str, join: Option<char>| -> String {
-            if w < 2 {
-                return fit("", w);
-            }
-            let mut cs: Vec<char> = format!("{l}{label}{}{r}", "─".repeat(w - 2 - label.width())).chars().collect();
-            if let Some(j) = join
-                && cs.get(at) == Some(&'─')
-            {
-                cs[at] = j;
-            }
-            cs.into_iter().collect()
-        };
-        let mid = |text: &str| if w >= 4 { format!("│ {} │", fit(text, w - 4)) } else { fit(text, w) };
-        let mut out = vec![edge("┌", "┐", &label(i, w), up.then_some('┴'))];
-        if root {
-            out.push(mid(&n.title));
-        } else {
-            out.push(mid(&n.title));
-            out.push(mid(&n.info));
-        }
-        out.push(edge("└", "┘", "", down.then_some('┬')));
-        out
-    };
-    let (aw, top, bottom) = (area.w as i32, area.y as usize, area.y as usize + body_h);
+    let (top, bottom) = (area.y as usize, area.y as usize + body_h);
     let mut y = top;
-    let mut parent_mid = aw / 2;
     for (r, row) in rows.iter().enumerate() {
-        let ws: Vec<usize> = row.iter().map(|&i| width(i)).collect();
-        let total = (ws.iter().sum::<usize>() + CHART_GAP * (ws.len() - 1)) as i32;
-        let on = row.iter().position(|i| path.contains(i)).unwrap_or(0);
-        let before = (ws[..on].iter().sum::<usize>() + CHART_GAP * on) as i32;
-        // Centred under its parent when it fits; else scrolled so that the
-        // block on the branch is in the middle, no blank past either end.
-        let start = if total <= aw {
-            (parent_mid - total / 2).clamp(0, aw - total)
-        } else {
-            -(before + ws[on] as i32 / 2 - aw / 2).clamp(0, total - aw)
-        };
-        let mut xs = Vec::with_capacity(row.len());
-        let mut x = start;
-        for &w in &ws {
-            xs.push(x);
-            x += (w + CHART_GAP) as i32;
-        }
-        let mids: Vec<i32> = xs.iter().zip(&ws).zip(row).map(|((x, w), &i)| x + join_at(i, *w) as i32).collect();
-        // The joins from the parent above: down from it, then across.
+        // The joins from the row above: down from each parent, then across.
+        let shown: Vec<usize> = if r + 1 < rows.len() { rows[r + 1].clone() } else { Vec::new() };
         if r > 0 && links > 0 {
-            if links == 2 && y < bottom && (0..aw).contains(&parent_mid) {
-                g.put_str(area.x + parent_mid as u16, y as u16, "│", line, 1);
-            }
-            let bar = y + links - 1;
-            let lo = mids.iter().copied().chain([parent_mid]).min().unwrap_or(parent_mid);
-            let hi = mids.iter().copied().chain([parent_mid]).max().unwrap_or(parent_mid);
-            if bar < bottom {
-                for x in lo.max(0)..=hi.min(aw - 1) {
-                    let (up, down, left, right) = (x == parent_mid, mids.contains(&x), x > lo, x < hi);
-                    let ch = match (up, down, left, right) {
-                        (true, true, true, true) => "┼",
-                        (true, true, true, false) => "┤",
-                        (true, true, false, true) => "├",
-                        (true, true, false, false) | (true, false, false, false) | (false, true, false, false) => "│",
-                        (true, false, true, true) => "┴",
-                        (false, true, true, true) => "┬",
-                        (true, false, true, false) => "┘",
-                        (true, false, false, true) => "└",
-                        (false, true, true, false) => "┐",
-                        (false, true, false, true) => "┌",
-                        _ => "─",
-                    };
-                    g.put_str(area.x + x as u16, bar as u16, ch, line, 1);
+            for &p in &rows[r - 1] {
+                let under: Vec<i32> = row.iter().filter(|&&c| parents[c] == Some(p)).map(|&c| mid(c)).collect();
+                if under.is_empty() {
+                    continue;
+                }
+                if links == 2 && y < bottom && (0..aw).contains(&mid(p)) {
+                    g.put_str(area.x + mid(p) as u16, y as u16, "│", line, 1);
+                }
+                if y + links - 1 < bottom {
+                    chart_bar(g, area, (y + links - 1) as u16, mid(p), &under, line);
                 }
             }
             y += links;
         }
-        // The boxes; the one on the branch joined to the row under it.
-        let more = r + 1 < rows.len() && links > 0;
-        let height = if r == 0 { root_h } else { 4 };
-        for (k, &i) in row.iter().enumerate() {
-            let (x, w) = (xs[k], ws[k]);
+        let height = match (level, r) {
+            (ChartLevel::Box(_), 0) => root_h,
+            (ChartLevel::Box(_), _) => 4,
+            _ => 1,
+        };
+        for &i in row {
+            let (x, w) = (xs[i], ws[i]);
             if x >= aw || x + w as i32 <= 0 {
                 continue;
             }
-            let mut box_lines = lines_of(i, w, r == 0, r > 0 && links > 0, more && k == on);
-            if r == 0 && root_h == 1 {
-                box_lines = vec![fit(&format!("  {}", nodes[i].title), w)];
-            }
-            for (dy, s) in box_lines.iter().enumerate() {
+            let joined = links > 0 && matches!(level, ChartLevel::Box(_));
+            let down = joined && shown.iter().any(|&c| parents[c] == Some(i));
+            let lines = if r == 0 && height == 1 {
+                vec![fit(&format!("  {}", nodes[i].title), w)]
+            } else {
+                chart_lines(&nodes[i], w, level, r == 0, joined && r > 0, down)
+            };
+            for (dy, s) in lines.iter().enumerate() {
                 let yy = y + dy;
                 if yy >= bottom {
                     break;
@@ -1194,19 +1342,17 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, act
         }
         // More of the row than the screen shows: a mark at that end, on
         // the line of the names.
-        let names = y + 1;
-        if names < bottom && xs.first().is_some_and(|&x| x < 0) {
+        let names = y + usize::from(height > 1);
+        if names < bottom && row.iter().any(|&i| xs[i] < 0) {
             g.put_str(area.x, names as u16, "‹", line, 1);
         }
-        if names < bottom && xs.last().zip(ws.last()).is_some_and(|(&x, &w)| x + w as i32 > aw) {
+        if names < bottom && row.iter().any(|&i| xs[i] + ws[i] as i32 > aw) {
             g.put_str(area.x + area.w - 1, names as u16, "›", line, 1);
         }
-        parent_mid = mids[on];
         y += height;
     }
-    draw_chooser_footer(g, area, nodes.len(), sel, "hjkl ↑↓←→ move", actions, status);
+    draw_chooser_footer(g, area, nodes.len(), sel, "hjkl move", actions, status);
 }
-
 /// A picker's last line: where the cursor is of how many, the keys, and a
 /// note (tags, the filter) at the right end.
 fn draw_chooser_footer(g: &mut Grid, area: Rect, count: usize, sel: usize, moves: &str, actions: &str, status: &str) {
@@ -1986,7 +2132,7 @@ mod tests {
     fn the_chart_draws_its_rows() {
         let nodes = chart_nodes();
         let mut g = Grid::new(80, 24);
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 4, "Enter go", "");
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 4, false, "Enter go", "");
         let t = chart_text(&g);
         let all = t.join("\n");
         eprintln!("{all}");
@@ -2019,8 +2165,113 @@ mod tests {
         let ops = cell(s, "7  ops");
         assert!(ops.style.fg == Color::Default && !ops.style.bold, "off it: plain");
         // The footer says where the cursor is and how to move.
-        assert!(t[23].starts_with("[5/10] hjkl ↑↓←→ move  Enter go"), "{:?}", t[23]);
+        assert!(t[23].starts_with("[5/10] hjkl move  Enter go"), "{:?}", t[23]);
     }
+    /// `a`: every node at once, each parent over its own; boxes when they
+    /// fit, else one line each, else numbers, scrolled to the selection.
+    #[test]
+    fn the_chart_opens_every_node_and_shrinks_to_fit() {
+        let nodes = chart_nodes();
+        let draw = |w: u16, h: u16, sel: usize| {
+            let mut g = Grid::new(w, h);
+            draw_chart(&mut g, Rect { x: 0, y: 0, w, h }, &nodes, sel, true, "", "");
+            (chart_text(&g), g)
+        };
+        // Room: every box, joined.
+        let (t, g) = draw(80, 24, 4);
+        let all = t.join("\n");
+        eprintln!("{all}");
+        for name in [
+            "1  dev",
+            "7  ops",
+            "2  0:edit*",
+            "5  1:logs",
+            "8  0:deploy*",
+            "3  0:pwsh",
+            "4  1:pwsh*",
+            "6  0:pwsh*",
+            "9  0:ping*",
+        ] {
+            assert!(all.contains(name), "{name}: {all}");
+        }
+        assert_eq!(all.matches("┌ pane ").count(), 4, "{all}");
+        joins_land(&t).map_err(|e| format!("{e}\n{all}")).unwrap();
+        // ops over its one window, over its one pane: one column.
+        let col = |s: &str| {
+            let y = t.iter().position(|r| r.contains(s)).unwrap();
+            t[y][..t[y].find(s).unwrap()].width()
+        };
+        assert!(
+            col("8  0:deploy*").abs_diff(col("9  0:ping*")) <= 2 && col("7  ops").abs_diff(col("8  0:deploy*")) <= 2,
+            "{all}"
+        );
+        let x = col("4  1:pwsh*") as u16;
+        let y = t.iter().position(|r| r.contains("4  1:pwsh*")).unwrap() as u16;
+        assert_eq!(g.get(x, y).style.fg, Color::Idx(3), "the selection");
+        // A parent sits over the middle of its children: the middle of a box
+        // from its side borders on the line of its name.
+        let mid = |s: &str| {
+            let y = t.iter().position(|r| r.contains(s)).unwrap();
+            let r: Vec<char> = t[y].chars().collect();
+            let at = t[y][..t[y].find(s).unwrap()].chars().count();
+            let l = (0..at).rev().find(|&i| r[i] == '│').unwrap() as i32;
+            let rr = (at..r.len()).find(|&i| r[i] == '│').unwrap() as i32;
+            (l + rr) / 2
+        };
+        let between = |p: &str, a: &str, b: &str| (mid(p) - (mid(a) + mid(b)) / 2).abs() <= 2;
+        assert!(between("1  dev", "2  0:edit*", "5  1:logs"), "{all}");
+        assert!(between("2  0:edit*", "3  0:pwsh", "4  1:pwsh*"), "{all}");
+        // Titles too long for full boxes on 80 columns: narrower boxes, cut.
+        let mut long = chart_nodes();
+        for n in long.iter_mut().filter(|n| n.kind == "pane") {
+            n.title = format!("{}  0:管理员: C:\\WINDOWS\\system32\\cmd.exe", chart_number(&n.title));
+        }
+        let mut g = Grid::new(80, 24);
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &long, 4, true, "", "");
+        let t = chart_text(&g);
+        let all = t.join("\n");
+        eprintln!("{all}");
+        assert_eq!(all.matches("┌ pane").count(), 4, "still boxes: {all}");
+        assert!(t.iter().any(|r| r.contains("3  0:") && r.contains('…')), "{all}");
+        // Narrower: one line each, still joined.
+        let (t, _) = draw(56, 24, 4);
+        let all = t.join("\n");
+        eprintln!("{all}");
+        assert!(!all.contains("┌ pane") && all.contains("[4  1:pwsh*]") && all.contains("[9  0:ping*]"), "{all}");
+        assert!(all.contains('┴') || all.contains('┬') || all.contains('┌'), "joined: {all}");
+        // Narrower still: numbers; too narrow even so: scrolled, the
+        // selection in view, ‹ › at the edges.
+        let (t, _) = draw(30, 24, 4);
+        let all = t.join("\n");
+        eprintln!("{all}");
+        assert!(all.contains("[4]") && all.contains("[9]") && !all.contains("pwsh"), "{all}");
+        let mut many =
+            vec![ChartNode { kind: "", depth: 0, title: "keepane".into(), info: String::new(), active: false }];
+        many.push(ChartNode { kind: "session", depth: 1, title: "1  s".into(), info: String::new(), active: false });
+        for k in 0..30 {
+            many.push(ChartNode {
+                kind: "window",
+                depth: 2,
+                title: format!("{}  {k}:w", k + 2),
+                info: String::new(),
+                active: false,
+            });
+        }
+        let mut g = Grid::new(40, 12);
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 40, h: 12 }, &many, 25, true, "", "");
+        let t = chart_text(&g);
+        let all = t.join("\n");
+        eprintln!("{all}");
+        let row = t.iter().find(|r| r.contains("[25]")).unwrap_or_else(|| panic!("the selection in view: {all}"));
+        assert!(row.starts_with('‹') && row.ends_with('›'), "{row:?}");
+        // Any size: no panic.
+        for (w, h) in [(1u16, 1u16), (2, 2), (5, 30), (200, 3), (12, 5)] {
+            let mut g = Grid::new(w, h);
+            draw_chart(&mut g, Rect { x: 0, y: 0, w, h }, &nodes, 4, true, "", "");
+            draw_chart(&mut g, Rect { x: 0, y: 0, w, h }, &many, 31, true, "", "");
+        }
+    }
+
     /// Paired with other machines: a row of them under the root (`host`),
     /// and below, the sessions of the machine on the branch only.
     #[test]
@@ -2047,7 +2298,7 @@ mod tests {
         ];
         let mut g = Grid::new(80, 24);
         // On the other machine's session: its current window (1:logs).
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 6, "", "");
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 6, false, "", "");
         let t = chart_text(&g);
         let all = t.join("\n");
         eprintln!("{all}");
@@ -2065,7 +2316,7 @@ mod tests {
         // An 80x24 terminal leaves the chart 22 rows: the root gives up its
         // box, the joins stay (one line each).
         let mut g = Grid::new(80, 23);
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 23 }, &nodes, 6, "", "");
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 23 }, &nodes, 6, false, "", "");
         let t = chart_text(&g);
         let all = t.join("\n");
         assert!(t[0].contains("keepane") && !t[0].contains('┌'), "{all}");
@@ -2092,7 +2343,7 @@ mod tests {
         }
         let mut g = Grid::new(60, 14);
         // The 21st window selected: it is on screen, with more either side.
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 14 }, &nodes, 22, "", "");
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 14 }, &nodes, 22, false, "", "");
         let t = chart_text(&g);
         eprintln!("{}", t.join("\n"));
         let y = t.iter().position(|r| r.contains("window-20")).expect("the selected window is drawn");
@@ -2100,7 +2351,7 @@ mod tests {
         let x = t[y][..t[y].find("22  20").unwrap()].width() as u16;
         assert_eq!(g.get(x, y as u16).style.fg, Color::Idx(3), "the selection is the one in view");
         // The first window: no ‹, it starts at the left edge.
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 14 }, &nodes, 2, "", "");
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 14 }, &nodes, 2, false, "", "");
         let t = chart_text(&g);
         let row = t.iter().find(|r| r.contains("0:window-0")).unwrap();
         assert!(!row.starts_with('‹') && row.ends_with('›'), "{row:?}");
@@ -2108,7 +2359,7 @@ mod tests {
         let nodes = chart_nodes();
         for (h, joins) in [(19u16, 1usize), (16, 0)] {
             let mut g = Grid::new(80, h);
-            draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h }, &nodes, 4, "", "");
+            draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h }, &nodes, 4, false, "", "");
             let t = chart_text(&g);
             // The root's box (3), then three rows of joins and a box (4):
             // the panes' names on the second line of the last.
@@ -2126,11 +2377,11 @@ mod tests {
         nodes[1].title = "1  会话会话会话会话会话会话会话会话会话会话".into();
         for (w, h) in [(1u16, 1u16), (2, 2), (20, 3), (5, 30), (200, 2)] {
             let mut g = Grid::new(w, h);
-            draw_chart(&mut g, Rect { x: 0, y: 0, w, h }, &nodes, 1, "Enter go", "[1 tagged]");
+            draw_chart(&mut g, Rect { x: 0, y: 0, w, h }, &nodes, 1, false, "Enter go", "[1 tagged]");
         }
         // A block longer than the widest a block gets is cut with `…`.
         let mut g = Grid::new(80, 24);
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 1, "", "");
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 1, false, "", "");
         assert!(chart_text(&g).iter().any(|r| r.contains("1  会") && r.contains('…')), "{}", chart_text(&g).join("\n"));
     }
 }

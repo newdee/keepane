@@ -334,6 +334,8 @@ struct Chooser {
     /// For each item, whether it is its parent's current one (a session's
     /// current window, a window's active pane): the branch the chart shows.
     active: Vec<bool>,
+    /// The chart shows every node, not only the selected branch (`a`).
+    all: bool,
 }
 
 impl Chooser {
@@ -349,6 +351,7 @@ impl Chooser {
             collapsed: Vec::new(),
             typed: None,
             active: Vec::new(),
+            all: false,
         }
     }
 
@@ -6980,6 +6983,8 @@ impl Server {
                     ch.sel = i;
                 }
             }
+            // `a`: the chart opens every node, or only the selected branch.
+            (KeyCode::Char('a'), false, false) if chart => ch.all = !ch.all,
             // `v`: the chart, the tree of blocks, the plain list, in turn.
             (KeyCode::Char('v'), false, false) if matches!(ch.kind, ChooserKind::Tree { .. }) => {
                 if let ChooserKind::Tree { style, .. } = &mut ch.kind {
@@ -8204,7 +8209,10 @@ impl Server {
             }
             let actions = match ch.kind {
                 ChooserKind::Jobs => "Enter go  x kill  r restart  t tag  f filter",
-                ChooserKind::Tree { style: TreeStyle::Chart, .. } => "Enter go  x kill  t tag  f filter  v tree",
+                ChooserKind::Tree { style: TreeStyle::Chart, .. } if ch.all => {
+                    "Enter go  x kill  t tag  f filter  a branch  v tree"
+                }
+                ChooserKind::Tree { style: TreeStyle::Chart, .. } => "Enter go  x kill  t tag  f filter  a all  v tree",
                 ChooserKind::Tree { style: TreeStyle::Tree, .. } => {
                     "Enter go  x kill  t tag  f filter  -/+ fold  v list"
                 }
@@ -8246,7 +8254,7 @@ impl Server {
                         }
                     })
                     .collect();
-                render::draw_chart(&mut grid, area, &nodes, ch.sel, actions, &status.join(" "));
+                render::draw_chart(&mut grid, area, &nodes, ch.sel, ch.all, actions, &status.join(" "));
             } else if matches!(ch.kind, ChooserKind::Tree { style: TreeStyle::Tree, .. }) {
                 let depths: Vec<usize> = ch.items.iter().map(|i| i.depth().unwrap_or(0)).collect();
                 let rows: Vec<(String, String, usize)> = render::tree_leads(&depths)
