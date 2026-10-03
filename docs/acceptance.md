@@ -3238,3 +3238,23 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 8 | 边界与损坏输入（Edge，18 项） | 7 个 localStorage 值全部损坏（手机与桌面各一遍）、密钥错误与没有密钥、`#p=99999`、打开着的 pane 被关、320 px 与 2560 px 无横向溢出、5000 字符一行完整到达：18/18，无页面报错。另：检查脚本第一版把提示文字的正则写错（找"二维码"，页面写的是"重新扫码"），属于检查脚本错误，页面本身没问题 | 干净（1/3） |
 | 9 | 可复现性 | Windows 重新构建 `web/dist` 与提交逐字节相同（gz sha256 641e4506…）；clippy 通过；Windows 全量连跑 2 次 2/2；UI check 28/28 | 干净（2/3） |
 | 10 | 真机三平台（CI run 37059568867，提交 8518cfe） | web、windows、ubuntu、macos 全部通过 | 干净（3/3），验收通过 |
+
+## 93. 截图与录像全部重做；"1 panes" 改为单数
+
+用户：README 和网站的截图、视频是不是也该更新了。
+
+- `tools/make-demos.ps1` 重录全部 5 段（demo、alerts、history、messages、tour），22 个文件更新。tour 第 4 段的手机是新页面；`picker.png` 是树状 `C-b w`。
+- 新图暴露一个产品 bug：树状视图里只有一个 pane 的窗口写成 "1 panes"。
+  - 定性：共性问题。仓库没有统一的单复数处理，keepane 自己的文字都是"数字 + 复数名词"。全仓搜到 13 处，另有 2 处各自手写判断。
+  - 结构缺陷，收敛到一个共享实现：`format::count(n, "pane")`（泛型，接受 usize、u16、u64）。改用它的地方：树状视图 2 处、`select-layout` 与 `split-window` 报错、配置跳过行提示（同时把 "were skipped" 改成 "skipped N line(s)"，单数也通顺）、popup 页脚、历史丢行提示、`link info`、数据迁移提示 4 处、原先手写的 2 处（copy-output、history 选择器）。
+  - 不改的地方：照搬 tmux 输出格式的 `list-sessions`、`list-windows`、choose-tree 列表视图。tmux 自己写 "1 windows"，脚本可能解析这些输出。已有断言（"1 windows"、"(1 panes)"）继续通过，证明原行为不变。
+  - 新 bug 风险：只改显示文字，不改数据与解析；测试里引用旧文字的 6 处已同步。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 两平台全量 | Windows 1 次失败：我改的断言多写了结尾空格，`row()` 会去掉行尾空格（输出本身正确："1 window"、"1 pane"） | **有问题**（测试），改为"以 `1 window` 开头且不含 `windows`"（不计数） |
+| 2 | 两平台全量 | fmt、clippy 通过；Windows 连跑 2 次 2/2（312/10/104），Linux 289/104 | 干净（1/3） |
+| 3 | 机制通路存活（4 条变异） | `count` 永远加 s、树状 session 行改回、树状窗口行改回、`select-layout` 报错改回：4/4 被抓，失败位置正是对应断言（format 单测、e2e 1288、1368、6270 行）；恢复后 diff 与变异前相同 | 干净（2/3） |
+| 4 | 真机三平台（CI run 37084818284，提交 b8b7d0d）+ 逐张看图 | web、windows、ubuntu、macos 全部通过；重录后的 `picker.png` 显示 "1 pane"，tour 手机画面、dashboard、panes 图正常 | 干净（3/3），验收通过 |
+
+遗留（不是本次引入）：100 列宽时 `C-b w` 底部提示行被截断在 "v l"（提示比终端宽）。
