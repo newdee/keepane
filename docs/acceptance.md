@@ -3280,3 +3280,22 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 5 | 边界与退化输入（真实 server） | 30 个窗口、40×10 终端：窗口那一排随选中项滚动，两端有 `‹` `›`；1×1、20×3、3×20 下不崩溃，恢复尺寸后画面回来；全量 Windows 2/2，Linux 292/105 | 干净（1/3） |
 | 6 | 可复现性 | chart 相关的 6 个端到端测试和 3 个单元测试各连跑 10 次：10/10、10/10 | 干净（2/3） |
 | 7 | 真机三平台（CI run 37091507885，提交 b6bc025） | web、windows、ubuntu、macos 全部通过；重录的 `picker.png` 是横排视图 | 干净（3/3），验收通过 |
+
+## 95. chart 显示配对的机器；每个方块标明类型
+
+用户：远程节点能否也显示（`keepane host:port`）；第一排固定 keepane，第二排是本机和其他 host；每个方框标注是什么（host、session、window、pane）；其余按推荐：没有配对时不显示机器那一排；本机方块写主机名和 `this machine`，远程方块写 `host:port`；Enter 弹窗看对方 pane 的屏幕；扩展协议带上名字。
+
+- 只在 chart 里显示。配对过至少一台机器时，keepane 下面多一排 `host`：本机在最前，然后按配对表顺序排列。本机的 session、窗口、pane 都往下移一层。没有配对时画面和第 94 条完全一样。
+- 远程数据：打开 chart 时向每台机器发一次 `GET /link/panes`（签名请求，5 s 超时），chart 开着时每 5 秒再问一次（由 1 s 的 Tick 驱动）。还没收到时显示 `asking…`，收不到时显示 `offline: 原因`；以前收到过的话保留上次的结构，并标上 `· offline`。
+- `/link/panes` 在原来 6 列后面追加 6 列：session 名、窗口序号、窗口是否当前、pane 序号、pane 是否活动、窗口名（放最后，名字里有 tab 也不影响其他列）。旧版本只读前 6 列，不受影响；新版本读到旧格式时退回显示 `$1`、`@3`、`%7`。
+- 远程 pane 上按 Enter：用 `/link/capture` 取它的屏幕，盖在 chart 上显示，按任意键回到 chart（需要对方执行过 `link allow --screen`）。`x` 不动远程的东西，并给出提示。
+- 不变量：从没配对过的机器打开 chart 时，不加载 link 状态，所以不会生成密钥对。只有磁盘上的配对表非空时才加载。
+- 方块变成三行：类型（暗色）、"编号  名字"、补充信息。颜色按类型取：host 绿、session 蓝、window 紫、pane 灰。
+- 开发中发现并修复（进验收轮之前）：过滤函数自己按旧层级推算祖先，并跳过了机器条目，导致过滤后远程 pane 失去它的 session 和窗口。改为和 chart 共用 `ChooserItem::depths`。补了测试步骤；改回旧写法时这一步失败。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 两平台全量 | fmt、clippy 通过；Windows 连跑 2 次 2/2（317/10/106），Linux 294/106 | 干净（1/3） |
+| 2 | 机制通路存活（11 条变异） | 没配对也显示机器排、从不询问、本机不下移一层、Enter 不显示、`x` 不提示、协议不带名字、远程当前子节点未知、收到过以后不标 offline、Tick 不再询问、没配对也生成密钥、过滤跳过机器：11/11 被抓，每条都失败在对应的等待或断言上（"the machines"、"up"、"its screen"、"refused"、"its session, by name"、"down"、"offline"、"never paired, so no key pair made"、"filtered"） | 干净（2/3） |
+| 3 | 静态一致性 + 两平台全量 | `PANES` 的 12 列顺序与 man 手册一致；"每 5 秒"与 `ASK_EVERY` 一致；README 中英文写明 `--screen` 要求；"0.26 起"要求下一次发版是 0.26.0；Windows 2/2（317/10/106），Linux 294/106 | 干净（3/3），验收通过 |
+| 补充 | 真机三平台（CI run 37099115758，提交 9dddfbe） | web、windows、ubuntu、macos 全部通过；重录的 `picker.png` 每个方块都标出了类型 | 通过 |
