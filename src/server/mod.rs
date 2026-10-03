@@ -217,9 +217,8 @@ impl ChooserItem {
 /// Where a picker's lines come from.
 enum ChooserKind {
     /// The live session tree; `expand` shows each session's windows and
-    /// their panes; `tree` draws it as a tree of blocks under a `keepane`
-    /// root (`v` turns it into the plain list and back).
-    Tree { expand: bool, tree: bool },
+    /// their panes; `style` is how it is drawn (`v` goes to the next).
+    Tree { expand: bool, style: TreeStyle },
     /// The paste buffers.
     Buffers,
     /// The attached clients.
@@ -234,6 +233,35 @@ enum ChooserKind {
     /// The history log on disk (`choose-history`), read when opened; the
     /// positions in `open` show their days.
     History { kept: Vec<crate::histlog::Kept>, open: HashSet<usize> },
+}
+
+/// How the session tree is drawn (`choose-tree-style`): a chart of rows
+/// under a `keepane` root (sessions, then the chosen session's windows,
+/// then the chosen window's panes), a tree of blocks, or tmux's list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TreeStyle {
+    Chart,
+    Tree,
+    List,
+}
+
+impl TreeStyle {
+    fn parse(name: &str) -> TreeStyle {
+        match name {
+            "tree" => TreeStyle::Tree,
+            "list" => TreeStyle::List,
+            _ => TreeStyle::Chart,
+        }
+    }
+
+    /// What `v` turns it into.
+    fn next(self) -> TreeStyle {
+        match self {
+            TreeStyle::Chart => TreeStyle::Tree,
+            TreeStyle::Tree => TreeStyle::List,
+            TreeStyle::List => TreeStyle::Chart,
+        }
+    }
 }
 
 impl ChooserKind {
@@ -278,6 +306,9 @@ struct Chooser {
     collapsed: Vec<ChooserItem>,
     /// The line number being typed (`1` `2` is line 12); any other key ends it.
     typed: Option<digits::Typed>,
+    /// For each item, whether it is its parent's current one (a session's
+    /// current window, a window's active pane): the branch the chart shows.
+    active: Vec<bool>,
 }
 
 impl Chooser {
@@ -292,6 +323,7 @@ impl Chooser {
             tagged: Vec::new(),
             collapsed: Vec::new(),
             typed: None,
+            active: Vec::new(),
         }
     }
 
@@ -5352,7 +5384,7 @@ impl Server {
                     return Outcome::Error("choose-tree: client not attached".into());
                 };
                 let expand = windows || !sessions;
-                let kind = ChooserKind::Tree { expand, tree: self.opts.choose_tree_style == "tree" };
+                let kind = ChooserKind::Tree { expand, style: TreeStyle::parse(&self.opts.choose_tree_style) };
                 let (items, lines) = self.chooser_lines(&kind, &[]).unwrap_or_default();
                 // Start on the current pane (or the session, sessions only).
                 let cur = self.session(sid).and_then(|s| s.window()).filter(|_| expand).map(|w| (w.id, w.active));
@@ -5361,12 +5393,15 @@ impl Server {
                     None => ChooserItem::Tree(sid, None),
                 };
                 let sel = items.iter().position(|i| *i == at).unwrap_or(0);
+                let active = items.iter().map(|item| self.current_in_tree(item)).collect();
                 let c = self.clients.get_mut(&cid).unwrap();
                 // One modal at a time: a picker opened from the `:` prompt
                 // replaces it, or its keys would go to an invisible prompt.
                 c.prompt = None;
                 c.overlay = None;
-                c.chooser = Some(Chooser::new(kind, items, lines, sel));
+                let mut ch = Chooser::new(kind, items, lines, sel);
+                ch.active = active;
+                c.chooser = Some(ch);
                 Outcome::Ok
             }
             Cmd::ListKeys => {
@@ -6572,13 +6607,21 @@ impl Server {
             }
             ChooserKind::Found | ChooserKind::Menu(_) | ChooserKind::History { .. } => return None,
         };
-        let tree = matches!(kind, ChooserKind::Tree { tree: true, .. });
+        let style = match kind {
+            ChooserKind::Tree { style, .. } => *style,
+            _ => TreeStyle::List,
+        };
+        let tree = style != TreeStyle::List;
+        let chart = style == TreeStyle::Chart;
+        // A chart block has two lines: what it is, then about it.
+        let sep = if chart { "\n" } else { " · " };
         // The tree hangs from a root of its own, a title that is never picked.
         if tree {
             items.push(ChooserItem::Separator);
             lines.push("keepane".into());
         }
-        let folded = |item: ChooserItem| collapsed.contains(&item);
+        // The chart shows the chosen branch, so nothing in it is folded.
+        let folded = |item: ChooserItem| !chart && collapsed.contains(&item);
         for s in &self.sessions {
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
             let open = expand && !folded(ChooserItem::Tree(s.id, None));
@@ -6586,7 +6629,7 @@ impl Server {
             lines.push(if tree {
                 let fold = if expand && !open { " +" } else { "" };
                 format!(
-                    "{} · {}{}{fold}",
+                    "{}{sep}{}{}{fold}",
                     s.name,
                     crate::format::count(s.windows.len(), "window"),
                     if attached { " · attached" } else { "" }
@@ -6617,7 +6660,7 @@ impl Server {
                 items.push(ChooserItem::Tree(s.id, Some(w.id)));
                 lines.push(if tree {
                     let fold = if win_open { "" } else { " +" };
-                    format!("{index}:{}{flag} · {}{fold}", w.name, crate::format::count(w.panes.len(), "pane"))
+                    format!("{index}:{}{flag}{sep}{}{fold}", w.name, crate::format::count(w.panes.len(), "pane"))
                 } else {
                     let mark = if win_open { "-" } else { "+" };
                     format!("  {mark} {index}: {}{flag} ({} panes) \"{title}\"", w.name, w.panes.len())
@@ -6633,7 +6676,7 @@ impl Server {
                     let (index, mode) = (n + self.opts.pane_base_index, p.actor.mode.as_str());
                     items.push(ChooserItem::Job(s.id, w.id, pid));
                     lines.push(if tree {
-                        format!("{index}:{program}{active} · {mode}{name}")
+                        format!("{index}:{program}{active}{sep}{mode}{name}")
                     } else {
                         format!("      - {index}: {program}{active} · {mode}{name}")
                     });
@@ -6643,6 +6686,20 @@ impl Server {
         Some((items, lines))
     }
 
+    /// Whether a line of the session tree is its parent's current one: a
+    /// session's current window, a window's active pane.
+    fn current_in_tree(&self, item: &ChooserItem) -> bool {
+        match *item {
+            ChooserItem::Tree(sid, Some(wid)) => {
+                self.session(sid).and_then(|s| s.window()).is_some_and(|w| w.id == wid)
+            }
+            ChooserItem::Job(sid, wid, pid) => {
+                self.session(sid).and_then(|s| s.windows.iter().find(|w| w.id == wid)).is_some_and(|w| w.active == pid)
+            }
+            _ => false,
+        }
+    }
+
     /// What a live picker shows right now: its lines through the filter
     /// (a session stays when one of its windows matches, and its windows
     /// stay when it does), numbered for the digit keys, tagged ones marked.
@@ -6650,7 +6707,7 @@ impl Server {
         let (items, lines) = self.chooser_lines(&ch.kind, &ch.collapsed)?;
         let keep = chooser_filter(&items, &lines, &ch.filter);
         let rows = keep.iter().filter(|k| **k).count();
-        let tree = matches!(ch.kind, ChooserKind::Tree { tree: true, .. });
+        let tree = matches!(ch.kind, ChooserKind::Tree { style, .. } if style != TreeStyle::List);
         let mut out_items = Vec::new();
         let mut out_lines = Vec::new();
         for (item, line) in items.into_iter().zip(lines).zip(keep).filter(|(_, k)| *k).map(|(p, _)| p) {
@@ -6695,7 +6752,8 @@ impl Server {
         if !matches!((k.code, k.ctrl, k.alt), (KeyCode::Char('0'..='9'), false, false)) {
             ch.typed = None;
         }
-        let tree_view = matches!(ch.kind, ChooserKind::Tree { tree: true, .. });
+        let tree_view = matches!(ch.kind, ChooserKind::Tree { style, .. } if style != TreeStyle::List);
+        let chart = matches!(ch.kind, ChooserKind::Tree { style: TreeStyle::Chart, .. });
         match (k.code, k.ctrl, k.alt) {
             (KeyCode::Escape, _, _) | (KeyCode::Char('q'), false, false) | (KeyCode::Char('c'), true, _) => {
                 c.chooser = None;
@@ -6760,17 +6818,20 @@ impl Server {
                 ch.items = items;
                 ch.lines = lines;
             }
-            // The tree view: Up and Down go to the parent and the first
-            // child (opening a folded line), Left and Right to the one
-            // before and after on the same level, across parents.
-            (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right, _, _)
-                if matches!(ch.kind, ChooserKind::Tree { tree: true, .. }) =>
-            {
+            // The tree and the chart: Up and Down go to the parent and a
+            // child (the tree's first, opening a folded line; the chart's
+            // shown one), Left and Right to the one before and after on the
+            // same level, across parents.
+            (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right, _, _) if tree_view => {
                 let depths: Vec<Option<usize>> = ch.items.iter().map(ChooserItem::depth).collect();
                 let Some(d) = depths.get(ch.sel).copied().flatten() else { return };
                 let to = match k.code {
                     KeyCode::Up => {
                         (0..ch.sel).rev().find(|&i| depths[i] == Some(d.saturating_sub(1))).filter(|_| d > 1)
+                    }
+                    KeyCode::Down if chart => {
+                        let depths: Vec<usize> = depths.iter().map(|d| d.unwrap_or(0)).collect();
+                        render::chart_path(&depths, &ch.active, ch.sel).get(d + 1).copied()
                     }
                     KeyCode::Down => {
                         let here = ch.items[ch.sel];
@@ -6789,10 +6850,10 @@ impl Server {
                     ch.sel = i;
                 }
             }
-            // `v`: the tree of blocks, or the plain list.
+            // `v`: the chart, the tree of blocks, the plain list, in turn.
             (KeyCode::Char('v'), false, false) if matches!(ch.kind, ChooserKind::Tree { .. }) => {
-                if let ChooserKind::Tree { tree, .. } = &mut ch.kind {
-                    *tree = !*tree;
+                if let ChooserKind::Tree { style, .. } = &mut ch.kind {
+                    *style = style.next();
                 }
             }
             // Fold a session or a window (a pane folds its window), and
@@ -6800,7 +6861,7 @@ impl Server {
             // under it is gone from the list. In the plain list Left and
             // Right do it too, as before.
             (KeyCode::Left, _, _) | (KeyCode::Char('-'), false, false)
-                if matches!(ch.kind, ChooserKind::Tree { expand: true, .. }) =>
+                if matches!(ch.kind, ChooserKind::Tree { expand: true, .. }) && !chart =>
             {
                 // An open line folds itself; a folded window (or a pane)
                 // folds the line above it, as a file tree does.
@@ -6820,7 +6881,7 @@ impl Server {
                 }
             }
             (KeyCode::Right, _, _) | (KeyCode::Char('+'), false, false) | (KeyCode::Char('='), false, false)
-                if matches!(ch.kind, ChooserKind::Tree { expand: true, .. }) =>
+                if matches!(ch.kind, ChooserKind::Tree { expand: true, .. }) && !chart =>
             {
                 if let Some(target) = ch.items.get(ch.sel).and_then(ChooserItem::fold_target) {
                     ch.collapsed.retain(|c| *c != target);
@@ -7656,13 +7717,15 @@ impl Server {
         // appearing or vanishing meanwhile do not move it. A fixed list (the
         // find-window hits, a menu) is left alone.
         let fresh = match c.chooser.as_ref() {
-            Some(ch) if ch.kind.live() => {
-                self.chooser_view(ch).map(|(i, l)| (i, l, ch.items.get(ch.sel).copied(), ch.sel))
-            }
+            Some(ch) if ch.kind.live() => self.chooser_view(ch).map(|(i, l)| {
+                let active = i.iter().map(|item| self.current_in_tree(item)).collect::<Vec<_>>();
+                (i, l, active, ch.items.get(ch.sel).copied(), ch.sel)
+            }),
             _ => None,
         };
-        if let Some((items, lines, want, sel)) = fresh {
+        if let Some((items, lines, active, want, sel)) = fresh {
             let ch = self.clients.get_mut(&cid).unwrap().chooser.as_mut().unwrap();
+            ch.active = active;
             ch.sel =
                 want.and_then(|w| items.iter().position(|i| *i == w)).unwrap_or(sel.min(items.len().saturating_sub(1)));
             ch.items = items;
@@ -7988,8 +8051,11 @@ impl Server {
             }
             let actions = match ch.kind {
                 ChooserKind::Jobs => "Enter go  x kill  r restart  t tag  f filter",
-                ChooserKind::Tree { tree: true, .. } => "Enter go  x kill  t tag  f filter  -/+ fold  v list",
-                ChooserKind::Tree { .. } => "Enter select  x kill  t tag  f filter  v tree",
+                ChooserKind::Tree { style: TreeStyle::Chart, .. } => "Enter go  x kill  t tag  f filter  v tree",
+                ChooserKind::Tree { style: TreeStyle::Tree, .. } => {
+                    "Enter go  x kill  t tag  f filter  -/+ fold  v list"
+                }
+                ChooserKind::Tree { .. } => "Enter select  x kill  t tag  f filter  v chart",
                 ChooserKind::Clients => "Enter detach  f filter",
                 ChooserKind::Buffers => "Enter paste  f filter",
                 ChooserKind::History { .. } => "Enter open  + - fold",
@@ -8002,7 +8068,24 @@ impl Server {
             if !ch.filter.trim().is_empty() {
                 status.push(format!("[filter: {}]", ch.filter.trim()));
             }
-            if matches!(ch.kind, ChooserKind::Tree { tree: true, .. }) {
+            if matches!(ch.kind, ChooserKind::Tree { style: TreeStyle::Chart, .. }) {
+                let nodes: Vec<render::ChartNode> = ch
+                    .items
+                    .iter()
+                    .zip(&ch.lines)
+                    .enumerate()
+                    .map(|(i, (item, line))| {
+                        let (title, info) = line.split_once('\n').unwrap_or((line, ""));
+                        render::ChartNode {
+                            depth: item.depth().unwrap_or(0),
+                            title: title.to_string(),
+                            info: info.to_string(),
+                            active: ch.active.get(i).copied().unwrap_or(false),
+                        }
+                    })
+                    .collect();
+                render::draw_chart(&mut grid, area, &nodes, ch.sel, actions, &status.join(" "));
+            } else if matches!(ch.kind, ChooserKind::Tree { style: TreeStyle::Tree, .. }) {
                 let depths: Vec<usize> = ch.items.iter().map(|i| i.depth().unwrap_or(0)).collect();
                 let rows: Vec<(String, String, usize)> = render::tree_leads(&depths)
                     .into_iter()
@@ -8883,7 +8966,8 @@ mod tests {
     #[test]
     fn tagged_lines_are_what_an_action_key_works_on() {
         let items = vec![ChooserItem::Tree(1, None), ChooserItem::Tree(1, Some(10)), ChooserItem::Tree(2, None)];
-        let mut ch = Chooser::new(ChooserKind::Tree { expand: true, tree: false }, items, vec!["a".into(); 3], 1);
+        let mut ch =
+            Chooser::new(ChooserKind::Tree { expand: true, style: TreeStyle::List }, items, vec!["a".into(); 3], 1);
         assert_eq!(ch.targets(), vec![ChooserItem::Tree(1, Some(10))], "nothing tagged: the current line");
         ch.tagged.push(ChooserItem::Tree(2, None));
         ch.tagged.push(ChooserItem::Tree(1, None));

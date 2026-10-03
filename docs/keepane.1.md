@@ -59,7 +59,7 @@ the config file take. `keepane list-commands` lists them, and
 `new-session` (`new`), `attach-session` (`attach`), `list-sessions` (`ls`),
 `has-session`, `kill-session`, `kill-server`, `rename-session`,
 `switch-client`, `detach-client`, `start-server`, `choose-session`,
-`choose-tree` (sessions, windows and panes; a tree of blocks, or the plain list with `choose-tree-style list`; `v` switches), `choose-client`, `list-clients`.
+`choose-tree` (sessions, windows and panes; a chart of rows by default, a tree of blocks with `choose-tree-style tree`, the plain list with `choose-tree-style list`; `v` goes to the next), `choose-client`, `list-clients`.
 
 ### Windows and panes
 

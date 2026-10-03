@@ -1259,10 +1259,10 @@ async fn choose_tree_scrolls_and_follows_the_live_tree() {
     h.cli(&["kill-server"]).await;
 }
 
-/// The tree view (the default for prefix w): blocks under a keepane root;
+/// The tree view (`choose-tree-style tree`): blocks under a keepane root;
 /// Up and Down go to the parent and the first child, Left and Right along
-/// the level; `-` folds, Down opens; `v` gives the plain list and back;
-/// `choose-tree-style` picks the view it opens in.
+/// the level; `-` folds, Down opens; `v` gives the plain list, then the
+/// chart, then the tree again; `choose-tree-style` picks the view it opens in.
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_tree_as_a_tree_of_blocks() {
     let h = Harness::start("treeview").await;
@@ -1272,7 +1272,8 @@ async fn choose_tree_as_a_tree_of_blocks() {
     h.cli(&["split-window", "-h", "-t", "s"]).await;
     h.cli(&["new-window", "-d", "-t", "s"]).await;
     h.cli(&["new", "-d", "-s", "t"]).await;
-    assert_eq!(h.cli(&["show", "-gv", "choose-tree-style"]).await.1.trim(), "tree");
+    assert_eq!(h.cli(&["show", "-gv", "choose-tree-style"]).await.1.trim(), "chart");
+    h.cli(&["set", "-g", "choose-tree-style", "tree"]).await;
     // root, s, s:0, its 2 panes, s:1, its pane, t, t:0, its pane: 10 lines;
     // the cursor on the current pane, s:0's second (line 5).
     c.prefix('w').await;
@@ -1319,12 +1320,15 @@ async fn choose_tree_as_a_tree_of_blocks() {
     c.wait_for("folded", |s| s.contents().contains("[6/9] ↑↓") && s.contents().contains("· 1 pane + ")).await;
     c.key(down.0, down.1, 0).await;
     c.wait_for("opened", at(6, 10)).await;
-    // v: the plain list (no root, so s:1 is line 5 of 9), and back.
+    // v: the plain list (no root, so s:1 is line 5 of 9), the chart, the
+    // tree again.
     c.type_str("v").await;
     c.wait_for("list", |s| s.contents().contains("[5/9] j/k move") && s.contents().contains("(0) - s: 2 windows"))
         .await;
     c.type_str("v").await;
-    c.wait_for("tree again", at(6, 10)).await;
+    c.wait_for("chart", |s| s.contents().contains("[6/10] ↑↓") && s.contents().contains("f filter  v tree")).await;
+    c.type_str("v").await;
+    c.wait_for("tree again", |s| s.contents().contains("[6/10] ↑↓") && s.contents().contains("v list")).await;
     // Enter on a pane goes to it: s:0's first.
     c.key(left.0, left.1, 0).await;
     c.wait_for("s:0", at(3, 10)).await;
@@ -1349,6 +1353,129 @@ async fn choose_tree_as_a_tree_of_blocks() {
     h.cli(&["kill-server"]).await;
 }
 
+/// The chart (the default for prefix w): the keepane root centred, the
+/// sessions on the next row, the windows of the session on the branch, its
+/// window's panes; Left and Right move along a row and the rows under it
+/// follow; Down goes to the current window and the active pane, not the
+/// first; `-` folds nothing here; Enter goes to the pane.
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_tree_as_a_chart() {
+    let h = Harness::start("chartview").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "s"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    h.cli(&["split-window", "-h", "-t", "s"]).await;
+    h.cli(&["new-window", "-d", "-t", "s"]).await;
+    h.cli(&["new", "-d", "-s", "t"]).await;
+    assert_eq!(h.cli(&["show", "-gv", "choose-tree-style"]).await.1.trim(), "chart");
+    // Items as in the tree: root, s, s:0, its 2 panes, s:1, its pane, t,
+    // t:0, its pane; the cursor on s:0's second pane (5 of 10).
+    c.prefix('w').await;
+    let at = |n: usize, of: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/{of}] ↑↓"));
+    c.wait_for("chart", at(5, 10)).await;
+    let text = c.text();
+    let rows: Vec<&str> = text.lines().collect();
+    let find = |s: &str| rows.iter().position(|r| r.contains(s));
+    // The root on the first row, about the middle of 80 columns.
+    let root = rows[0].find("keepane").unwrap_or(0);
+    assert!((30..=42).contains(&root), "{text}");
+    // Then the sessions, the windows of s, the panes of s:0, row under row.
+    let (sessions, windows, panes) = (find("1  s").unwrap(), find("2  0:").unwrap(), find("3  0:").unwrap());
+    assert!(rows[sessions].contains("7  t"), "{text}");
+    assert!(rows[windows].contains("5  1:") && !text.contains("8  0:"), "{text}");
+    assert!(rows[panes].contains("4  1:") && !text.contains("6  0:"), "{text}");
+    assert!(sessions < windows && windows < panes, "{text}");
+    assert!(rows[sessions + 1].contains("2 windows · attached"), "{text}");
+    // The keys fit in 80 columns, down to `q quit`.
+    assert!(text.contains("↑↓←→ move  Enter go  x kill  t tag  f filter  v tree  q quit"), "{text}");
+    let key = |vk: u16| (vk, '\0');
+    let (up, down, left, right) = (key(0x26), key(0x28), key(0x25), key(0x27));
+    // Right along the panes, across windows and sessions: the rows above
+    // the selection follow it.
+    c.key(right.0, right.1, 0).await;
+    c.wait_for("s:1's pane", |s| at(7, 10)(s) && s.contents().contains("6  0:") && !s.contents().contains("3  0:"))
+        .await;
+    c.key(right.0, right.1, 0).await;
+    c.wait_for("t's pane", |s| at(10, 10)(s) && s.contents().contains("8  0:") && !s.contents().contains("5  1:"))
+        .await;
+    // Up to the window, the session; never the root.
+    for want in [9, 8, 8] {
+        c.key(up.0, up.1, 0).await;
+        c.wait_for("up", at(want, 10)).await;
+    }
+    // Left to s; Down to its current window (s:0) and that window's active
+    // pane (its second, 4, not its first, 3).
+    c.key(left.0, left.1, 0).await;
+    c.wait_for("s", at(2, 10)).await;
+    for want in [3, 5] {
+        c.key(down.0, down.1, 0).await;
+        c.wait_for("down", at(want, 10)).await;
+    }
+    // Nothing folds in the chart: `-` leaves all 10.
+    c.type_str("-").await;
+    c.type_str("j").await;
+    c.wait_for("not folded", at(6, 10)).await;
+    c.type_str("k").await;
+    c.wait_for("back", at(5, 10)).await;
+    // A fold made in the tree hides nothing in the chart.
+    c.type_str("v").await;
+    c.wait_for("tree", |s| s.contents().contains("v list")).await;
+    c.type_str("-").await;
+    c.wait_for("folded in the tree", |s| s.contents().contains("[3/8] ↑↓")).await;
+    c.type_str("v").await;
+    c.type_str("v").await;
+    c.wait_for("chart, all there", |s| {
+        at(3, 10)(s) && s.contents().contains("3  0:") && s.contents().contains("v tree  q quit")
+    })
+    .await;
+    c.key(down.0, down.1, 0).await;
+    c.wait_for("its active pane", at(5, 10)).await;
+    // Enter on s:0's first pane goes there.
+    c.key(left.0, left.1, 0).await;
+    c.wait_for("first pane", at(4, 10)).await;
+    c.enter().await;
+    c.wait_for("gone", |s| !s.contents().contains("[4/10]")).await;
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "s", "#{window_index}.#{pane_index}"]).await.1.trim(), "0.0");
+    // Sessions only (choose-tree -s): the root and the sessions.
+    c.prefix('s').await;
+    c.wait_for("sessions", |s| s.contents().contains("[2/3] ↑↓") && s.contents().contains("2  t")).await;
+    c.type_str("q").await;
+    // Thirty windows in t on a small screen: the row of windows scrolls to
+    // keep the selected one in view, `›` saying there is more.
+    for _ in 0..29 {
+        h.cli(&["new-window", "-d", "-t", "t"]).await;
+    }
+    c.send(ClientMsg::Resize { cols: 40, rows: 10 }).await;
+    c.screen = vt100::Parser::new(10, 40, 0);
+    c.prefix('w').await;
+    c.wait_for("small chart", |s| s.contents().contains("/68] ↑↓")).await;
+    for _ in 0..3 {
+        c.key(right.0, right.1, 0).await;
+    }
+    c.wait_for("along the panes to t:0's", |s| s.contents().contains("[10/68] ↑↓")).await;
+    c.key(up.0, up.1, 0).await;
+    c.wait_for("its window", |s| s.contents().contains("[9/68] ↑↓")).await;
+    for _ in 0..20 {
+        c.key(right.0, right.1, 0).await;
+    }
+    c.wait_for("t's 21st window, in view, more both sides", |s| {
+        let rows: Vec<String> = s.rows(0, 40).collect();
+        let at = rows.iter().find(|r| r.contains("20:"));
+        s.contents().contains("[49/68] ↑↓") && at.is_some_and(|r| r.starts_with('‹') && r.trim_end().ends_with('›'))
+    })
+    .await;
+    // Degenerate sizes: nothing panics, and it comes back.
+    for (cols, rows) in [(1u16, 1u16), (20, 3), (3, 20)] {
+        c.send(ClientMsg::Resize { cols, rows }).await;
+        c.screen = vt100::Parser::new(rows, cols, 0);
+    }
+    c.send(ClientMsg::Resize { cols: COLS, rows: ROWS }).await;
+    c.screen = vt100::Parser::new(ROWS, COLS, 0);
+    c.wait_for("back", |s| s.contents().contains("[49/68] ↑↓")).await;
+    c.type_str("q").await;
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_tree_degenerate_sizes_and_wide_names() {
     let h = Harness::start("choose-edge").await;
@@ -1357,9 +1484,10 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let (code, _, err) = h.cli(&["new", "-d", "-s", "gone"]).await;
     assert_eq!(code, 0, "{err}");
+    h.cli(&["set", "-g", "choose-tree-style", "tree"]).await;
 
     c.prefix('w').await;
-    // The tree (the default view): the keepane root, 2 sessions, their
+    // The tree: the keepane root, 2 sessions, their
     // windows and panes = 7 items; the cursor starts on 会话's pane.
     c.wait_for("picker", |s| s.contents().contains("[4/7]")).await;
     // Double-width names survive the layout, each block under its tree lines.
@@ -1390,7 +1518,7 @@ async fn choose_tree_degenerate_sizes_and_wide_names() {
     c.wait_for("clamped", |s| s.contents().contains("[4/4]")).await;
     c.enter().await;
     c.wait_for("still alive", |s| {
-        !s.contents().contains("j/k") && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:编辑器*")
+        !s.contents().contains("q quit") && s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("0:编辑器*")
     })
     .await;
     let (_, out, _) = h.cli(&["ls"]).await;
@@ -2193,7 +2321,7 @@ async fn hints_copy_or_open_what_is_on_screen() {
     assert_eq!(h.cli(&["show-buffer"]).await.1.trim_end(), "af9af7e");
     // Not over a list, where the labels could not be seen.
     c.prefix('w').await;
-    c.wait_for("list", |s| s.contents().contains("j/k")).await;
+    c.wait_for("list", |s| s.contents().contains("q quit")).await;
     c.prefix('F').await;
     c.wait_for("refused", |s| s.contents().contains("close the list")).await;
     c.type_str("q").await;

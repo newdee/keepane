@@ -925,7 +925,242 @@ pub fn draw_tree(
         let room = (area.x + area.w).saturating_sub(x);
         g.put_str(x, y, &format!(" {text} "), block(*depth, i == sel), room);
     }
-    draw_chooser_footer(g, area, rows.len(), sel, "↑↓ parent/child  ←→ same level  j/k line", actions, status);
+    draw_chooser_footer(g, area, rows.len(), sel, "↑↓←→ move", actions, status);
+}
+
+/// One block of the chart view: how deep it is (0 the root), its two
+/// lines, and whether it is its parent's current one (a session's current
+/// window, a window's active pane).
+pub struct ChartNode {
+    pub depth: usize,
+    pub title: String,
+    pub info: String,
+    pub active: bool,
+}
+
+/// Columns between two blocks of a chart row.
+const CHART_GAP: usize = 2;
+/// The widest a chart block gets; longer text is cut with `…`.
+const CHART_BLOCK: usize = 30;
+
+/// The parent of each node of a tree given in order by depths: the
+/// nearest node before it one level up.
+fn chart_parents(depths: &[usize]) -> Vec<Option<usize>> {
+    let mut last: Vec<Option<usize>> = Vec::new();
+    depths
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| {
+            last.resize(d, None);
+            let parent = d.checked_sub(1).and_then(|k| last.get(k).copied().flatten());
+            last.push(Some(i));
+            parent
+        })
+        .collect()
+}
+
+/// The branch the chart shows for the node `sel`: its ancestors from the
+/// root, itself, then below it each level's current child (else its first).
+pub fn chart_path(depths: &[usize], active: &[bool], sel: usize) -> Vec<usize> {
+    if sel >= depths.len() {
+        return Vec::new();
+    }
+    let parents = chart_parents(depths);
+    let mut path = vec![sel];
+    let mut at = sel;
+    while let Some(p) = parents[at] {
+        path.push(p);
+        at = p;
+    }
+    path.reverse();
+    let mut at = sel;
+    loop {
+        let kids: Vec<usize> = (at + 1..depths.len()).filter(|&i| parents[i] == Some(at)).collect();
+        let Some(&next) = kids.iter().find(|&&i| active.get(i).copied().unwrap_or(false)).or(kids.first()) else {
+            break;
+        };
+        path.push(next);
+        at = next;
+    }
+    path
+}
+
+/// `s` cut or padded to exactly `w` columns, with `…` where it was cut.
+fn fit(s: &str, w: usize) -> String {
+    let sw = s.width();
+    if sw <= w {
+        return format!("{s}{}", " ".repeat(w - sw));
+    }
+    if w == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw > w - 1 {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    out + &" ".repeat(w - used - 1)
+}
+
+/// `s` without its first `n` columns; half of a wide character becomes a space.
+fn skip_cols(s: &str, n: usize) -> String {
+    let mut used = 0;
+    let mut out = String::new();
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used >= n {
+            out.push(ch);
+        } else if used + cw > n {
+            out.push_str(&" ".repeat(used + cw - n));
+        }
+        used += cw;
+    }
+    out
+}
+
+/// The session tree as a chart (`choose-tree-style chart`): the `keepane`
+/// root on the first row, the sessions on the next, then the windows of
+/// the session on the selected branch, then that window's panes, each row
+/// spread across and joined to its parent by lines. A row wider than the
+/// screen scrolls to keep its block on the branch in view (`‹` `›` say
+/// there is more). Blocks on the branch are filled in their level's colour
+/// (the selected one yellow), the others only written in it.
+pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, actions: &str, status: &str) {
+    if area.h == 0 || area.w == 0 {
+        return;
+    }
+    g.fill(area, Style::colors(Color::Default, Color::Default));
+    let line = Style::colors(Color::Idx(8), Color::Default);
+    let depths: Vec<usize> = nodes.iter().map(|n| n.depth).collect();
+    let active: Vec<bool> = nodes.iter().map(|n| n.active).collect();
+    let path = chart_path(&depths, &active, sel);
+    let parents = chart_parents(&depths);
+    // The rows: the root, then the children of each node on the branch.
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    if let Some(&root) = path.first() {
+        rows.push(vec![root]);
+    }
+    for &p in &path {
+        let kids: Vec<usize> = (p + 1..nodes.len()).filter(|&i| parents[i] == Some(p)).collect();
+        if kids.is_empty() {
+            break;
+        }
+        rows.push(kids);
+    }
+    let body_h = area.h.saturating_sub(1) as usize;
+    // The root is one line, the others two; between rows, two lines of
+    // joins when there is room, else one, else none.
+    let need = |links: usize| 1 + rows.len().saturating_sub(1) * (2 + links);
+    let links = (0..=2).rev().find(|&l| need(l) <= body_h).unwrap_or(0);
+    let colour = |depth: usize| match depth {
+        0 => Color::Idx(6),
+        1 => Color::Idx(4),
+        2 => Color::Idx(5),
+        _ => Color::Idx(8),
+    };
+    let style_of = |i: usize| {
+        let depth = nodes[i].depth;
+        if i == sel {
+            Style { bold: true, ..Style::colors(Color::Idx(0), Color::Idx(3)) }
+        } else if path.contains(&i) {
+            let fg = if depth >= 3 { Color::Idx(15) } else { Color::Idx(0) };
+            Style { bold: depth < 2, ..Style::colors(fg, colour(depth)) }
+        } else {
+            let fg = if depth >= 3 { Color::Idx(7) } else { colour(depth) };
+            Style::colors(fg, Color::Default)
+        }
+    };
+    let width = |i: usize| {
+        let n = &nodes[i];
+        (n.title.width().max(n.info.width()) + 2).min(CHART_BLOCK).min(area.w as usize).max(1)
+    };
+    let (aw, top, bottom) = (area.w as i32, area.y as usize, area.y as usize + body_h);
+    let mut y = top;
+    let mut parent_mid = aw / 2;
+    for (r, row) in rows.iter().enumerate() {
+        let ws: Vec<usize> = row.iter().map(|&i| width(i)).collect();
+        let total = (ws.iter().sum::<usize>() + CHART_GAP * (ws.len() - 1)) as i32;
+        let on = row.iter().position(|i| path.contains(i)).unwrap_or(0);
+        let before = (ws[..on].iter().sum::<usize>() + CHART_GAP * on) as i32;
+        // Centred under its parent when it fits; else scrolled so that the
+        // block on the branch is in the middle, no blank past either end.
+        let start = if total <= aw {
+            (parent_mid - total / 2).clamp(0, aw - total)
+        } else {
+            -(before + ws[on] as i32 / 2 - aw / 2).clamp(0, total - aw)
+        };
+        let mut xs = Vec::with_capacity(row.len());
+        let mut x = start;
+        for &w in &ws {
+            xs.push(x);
+            x += (w + CHART_GAP) as i32;
+        }
+        let mids: Vec<i32> = xs.iter().zip(&ws).map(|(x, w)| x + *w as i32 / 2).collect();
+        // The joins from the parent above: down from it, then across.
+        if r > 0 && links > 0 {
+            if links == 2 && y < bottom && (0..aw).contains(&parent_mid) {
+                g.put_str(area.x + parent_mid as u16, y as u16, "│", line, 1);
+            }
+            let bar = y + links - 1;
+            let lo = mids.iter().copied().chain([parent_mid]).min().unwrap_or(parent_mid);
+            let hi = mids.iter().copied().chain([parent_mid]).max().unwrap_or(parent_mid);
+            if bar < bottom {
+                for x in lo.max(0)..=hi.min(aw - 1) {
+                    let (up, down, left, right) = (x == parent_mid, mids.contains(&x), x > lo, x < hi);
+                    let ch = match (up, down, left, right) {
+                        (true, true, true, true) => "┼",
+                        (true, true, true, false) => "┤",
+                        (true, true, false, true) => "├",
+                        (true, true, false, false) | (true, false, false, false) | (false, true, false, false) => "│",
+                        (true, false, true, true) => "┴",
+                        (false, true, true, true) => "┬",
+                        (true, false, true, false) => "┘",
+                        (true, false, false, true) => "└",
+                        (false, true, true, false) => "┐",
+                        (false, true, false, true) => "┌",
+                        _ => "─",
+                    };
+                    g.put_str(area.x + x as u16, bar as u16, ch, line, 1);
+                }
+            }
+            y += links;
+        }
+        // The blocks: the root one line, the rest two.
+        let height = if r == 0 { 1 } else { 2 };
+        for (k, &i) in row.iter().enumerate() {
+            let (x, w) = (xs[k], ws[k]);
+            if x >= aw || x + w as i32 <= 0 {
+                continue;
+            }
+            let texts = [&nodes[i].title, &nodes[i].info];
+            for (dy, text) in texts.iter().take(height).enumerate() {
+                let yy = y + dy;
+                if yy >= bottom {
+                    break;
+                }
+                let s = format!(" {} ", fit(text, w.saturating_sub(2)));
+                let s = fit(&s, w);
+                let (sx, s) = if x < 0 { (0, skip_cols(&s, (-x) as usize)) } else { (x, s) };
+                g.put_str(area.x + sx as u16, yy as u16, &s, style_of(i), (aw - sx) as u16);
+            }
+        }
+        // More of the row than the screen shows: a mark at that end.
+        if y < bottom && xs.first().is_some_and(|&x| x < 0) {
+            g.put_str(area.x, y as u16, "‹", line, 1);
+        }
+        if y < bottom && xs.last().zip(ws.last()).is_some_and(|(&x, &w)| x + w as i32 > aw) {
+            g.put_str(area.x + area.w - 1, y as u16, "›", line, 1);
+        }
+        parent_mid = mids[on];
+        y += height;
+    }
+    draw_chooser_footer(g, area, nodes.len(), sel, "↑↓←→ move", actions, status);
 }
 
 /// A picker's last line: where the cursor is of how many, the keys, and a
@@ -1632,5 +1867,142 @@ mod tests {
         // Cursor cell is inside the selection: double inversion cancels.
         assert!(!g.get(1, 1).style.inverse);
         assert!(!g.get(2, 1).style.inverse);
+    }
+
+    /// root; s1 (windows w1 current, w2); w1 (panes p1, p2 active); w2 (p3); s2 (w3 (p4)).
+    fn chart_nodes() -> Vec<ChartNode> {
+        let n = |depth: usize, title: &str, info: &str, active: bool| ChartNode {
+            depth,
+            title: title.into(),
+            info: info.into(),
+            active,
+        };
+        vec![
+            n(0, "keepane", "", false),
+            n(1, "1  dev", "2 windows · attached", false),
+            n(2, "2  0:edit*", "2 panes", true),
+            n(3, "3  0:pwsh", "normal", false),
+            n(3, "4  1:pwsh*", "shell · %builder", true),
+            n(2, "5  1:logs", "1 pane", false),
+            n(3, "6  0:pwsh*", "normal", true),
+            n(1, "7  ops", "1 window", false),
+            n(2, "8  0:deploy*", "1 pane", true),
+            n(3, "9  0:ping*", "normal", true),
+        ]
+    }
+
+    fn chart_text(g: &Grid) -> Vec<String> {
+        (0..g.rows)
+            .map(|y| (0..g.cols).map(|x| g.get(x, y).text()).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    /// The branch: up to the root, then down the current children (else
+    /// the first).
+    #[test]
+    fn the_chart_follows_the_branch_of_the_selection() {
+        let nodes = chart_nodes();
+        let depths: Vec<usize> = nodes.iter().map(|n| n.depth).collect();
+        let active: Vec<bool> = nodes.iter().map(|n| n.active).collect();
+        assert_eq!(chart_path(&depths, &active, 1), vec![0, 1, 2, 4], "a session: its current window, its active pane");
+        assert_eq!(chart_path(&depths, &active, 5), vec![0, 1, 5, 6]);
+        assert_eq!(chart_path(&depths, &active, 3), vec![0, 1, 2, 3], "a pane: nothing below it");
+        // No current child (a filter took it away): the first.
+        let none = vec![false; depths.len()];
+        assert_eq!(chart_path(&depths, &none, 1), vec![0, 1, 2, 3]);
+        assert_eq!(chart_path(&depths, &active, 99), Vec::<usize>::new());
+    }
+
+    /// Four rows: the root centred, the sessions, the session's windows,
+    /// the window's panes, joined by lines; the selection yellow, the
+    /// branch filled, the rest only written in their colour.
+    #[test]
+    fn the_chart_draws_its_rows() {
+        let nodes = chart_nodes();
+        let mut g = Grid::new(80, 16);
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 16 }, &nodes, 4, "Enter go", "");
+        let t = chart_text(&g);
+        eprintln!("{}", t.join("\n"));
+        // The root, centred.
+        let root = t[0].find("keepane").unwrap();
+        assert!((34..=38).contains(&root), "{root}: {}", t[0]);
+        // Two lines of joins, then the sessions, two lines each.
+        assert!(t[1].trim() == "│", "{:?}", t[1]);
+        assert!(t[3].contains("1  dev") && t[3].contains("7  ops"), "{}", t.join("\n"));
+        assert!(t[4].contains("2 windows · attached") && t[4].contains("1 window"), "{}", t.join("\n"));
+        // dev's windows, then edit's panes (not logs').
+        assert!(
+            t[7].contains("2  0:edit*") && t[7].contains("5  1:logs") && !t[7].contains("deploy"),
+            "{}",
+            t.join("\n")
+        );
+        assert!(
+            t[11].contains("3  0:pwsh") && t[11].contains("4  1:pwsh*") && !t[11].contains("6  0:pwsh"),
+            "{}",
+            t.join("\n")
+        );
+        assert!(t[12].contains("shell · %builder"), "{}", t.join("\n"));
+        // The bar under the root spans both sessions: corners at its ends.
+        assert!(t[2].contains('┌') && t[2].contains('┐') && t[2].contains('┴'), "{:?}", t[2]);
+        // Colours: the selected pane yellow, dev (on the branch) blue, ops
+        // (off it) only written in blue.
+        let at = |y: usize, s: &str| t[y].find(s).map(|b| t[y][..b].width() as u16).unwrap();
+        assert_eq!(g.get(at(11, "4  1:pwsh*"), 11).style.bg, Color::Idx(3));
+        assert_eq!(g.get(at(3, "1  dev"), 3).style.bg, Color::Idx(4));
+        let ops = g.get(at(3, "7  ops"), 3).style;
+        assert_eq!((ops.fg, ops.bg), (Color::Idx(4), Color::Default));
+        // The footer says where the cursor is and how to move.
+        assert!(t[15].starts_with("[5/10] ↑↓←→ move  Enter go"), "{:?}", t[15]);
+    }
+
+    /// A row wider than the screen scrolls to keep the branch's block in
+    /// view, with `‹` `›` for what is past the edges; short screens drop
+    /// the join lines; nothing panics at any size.
+    #[test]
+    fn the_chart_scrolls_and_shrinks() {
+        let mut nodes = vec![ChartNode { depth: 0, title: "keepane".into(), info: String::new(), active: false }];
+        nodes.push(ChartNode { depth: 1, title: "1  s".into(), info: "30 windows".into(), active: false });
+        for k in 0..30 {
+            nodes.push(ChartNode {
+                depth: 2,
+                title: format!("{}  {k}:window-{k}", k + 2),
+                info: "1 pane".into(),
+                active: false,
+            });
+        }
+        let mut g = Grid::new(60, 12);
+        // The 21st window selected: it is on screen, with more either side.
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 12 }, &nodes, 22, "", "");
+        let t = chart_text(&g);
+        eprintln!("{}", t.join("\n"));
+        let y = t.iter().position(|r| r.contains("window-20")).expect("the selected window is drawn");
+        assert!(t[y].starts_with('‹') && t[y].ends_with('›'), "{:?}", t[y]);
+        let x = t[y][..t[y].find("22  20").unwrap()].width() as u16;
+        assert_eq!(g.get(x, y as u16).style.bg, Color::Idx(3), "the selection is the one in view");
+        // The first window: no ‹, it starts at the left edge.
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 12 }, &nodes, 2, "", "");
+        let t = chart_text(&g);
+        let row = t.iter().find(|r| r.contains("0:window-0")).unwrap();
+        assert!(!row.starts_with('‹') && row.ends_with('›'), "{row:?}");
+        // Short: one join line, then none; the selection's row still drawn.
+        let nodes = chart_nodes();
+        for (h, joins) in [(11u16, 1usize), (8, 0)] {
+            let mut g = Grid::new(80, h);
+            draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h }, &nodes, 4, "", "");
+            let t = chart_text(&g);
+            let pane_row = 1 + 3 * (2 + joins) - 2;
+            assert!(t[pane_row].contains("4  1:pwsh*"), "h {h}: {}", t.join("\n"));
+        }
+        // Degenerate sizes, wide names: no panic.
+        let mut nodes = chart_nodes();
+        nodes[1].title = "1  会话会话会话会话会话会话会话会话会话会话".into();
+        for (w, h) in [(1u16, 1u16), (2, 2), (20, 3), (5, 30), (200, 2)] {
+            let mut g = Grid::new(w, h);
+            draw_chart(&mut g, Rect { x: 0, y: 0, w, h }, &nodes, 1, "Enter go", "[1 tagged]");
+        }
+        // A block longer than the widest a block gets is cut with `…`.
+        let mut g = Grid::new(80, 16);
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 16 }, &nodes, 1, "", "");
+        assert!(chart_text(&g)[3].contains('…'), "{}", chart_text(&g).join("\n"));
     }
 }

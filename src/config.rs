@@ -164,8 +164,9 @@ pub struct Options {
     /// `pane-colours`: the 16 colours drawn for the palette's first 16 (a
     /// program's red, blue...); empty, the terminal's own.
     pub pane_colours: Vec<Color>,
-    /// How `choose-tree` (prefix w, s) shows the sessions at first: `tree`
-    /// (blocks under a `keepane` root) or `list` (tmux's lines).
+    /// How `choose-tree` (prefix w, s) shows the sessions at first: `chart`
+    /// (rows of blocks under a centred `keepane` root), `tree` (blocks under
+    /// a `keepane` root, one a line) or `list` (tmux's lines).
     pub choose_tree_style: String,
 }
 
@@ -447,7 +448,7 @@ impl Default for Options {
             window_fg: Color::Default,
             window_bg: Color::Default,
             pane_colours: Vec::new(),
-            choose_tree_style: "tree".into(),
+            choose_tree_style: "chart".into(),
         }
     }
 }
@@ -715,7 +716,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "done-panes" => &["all", "named"],
         "done-webhook-format" => DONE_WEBHOOK_FORMATS,
         "theme" => THEME_NAMES,
-        "choose-tree-style" => &["list", "tree"],
+        "choose-tree-style" => &["chart", "list", "tree"],
         "done-events" => &["all", "none", "command agent"],
         _ => &[],
     }
@@ -926,7 +927,7 @@ impl Options {
                 }
             }
             "pane-colours" => self.pane_colours = parse_colours(value)?,
-            "choose-tree-style" => self.choose_tree_style = one_of(name, value, &["tree", "list"])?,
+            "choose-tree-style" => self.choose_tree_style = one_of(name, value, &["chart", "tree", "list"])?,
             "default-terminal" => {
                 let v = value.trim();
                 if v.is_empty() || v.contains(char::is_whitespace) {
