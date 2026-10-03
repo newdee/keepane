@@ -750,8 +750,10 @@ its terminal changes too, and every page shows the panes in it. The same menu
 picks the page's language: the system's (Chinese on a Chinese system, else
 English), Chinese or English. Beside it, the time a request takes to the
 computer and back (`23 ms`, a green dot under 100 ms, yellow under 300, red
-above or `offline`), and a button that puts the page over the whole screen,
-for a tablet (where the browser can: not on an iPhone). (The page is
+above or `offline`). The full-screen button in a pane's bar leaves only its
+screen and the input box, over the whole screen where the browser can (on an
+iPhone, over the whole page); the button beside the box, or the browser's own
+way out, brings the rest back. (The page is
 built from `web/`, React and HeroUI, into one file keepane carries.)
 
 <p align="center">

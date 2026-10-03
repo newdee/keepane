@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, post, q, startPane, type DoneItem, type Info, type Pane } from "./api";
 import { useDone, useFullscreen, useLatency, useMedia, usePageMode, usePanes, useTermTheme, useViewportHeight, type Mode } from "./hooks";
 import { lang as currentLang, setLang, t, type Lang } from "./i18n";
-import { FullscreenButton, Latency } from "./components/Status";
+import { Latency } from "./components/Status";
 import { PaneList } from "./components/PaneList";
 import { PaneView } from "./components/PaneView";
 import { InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
@@ -24,12 +24,29 @@ export default function App() {
   const [lang, setLangState] = useState<Lang>(currentLang);
   const latency = useLatency(!!info);
   const fs = useFullscreen();
-  const status = (
-    <>
-      <Latency ms={latency} />
-      <FullscreenButton {...fs} />
-    </>
-  );
+  const status = <Latency ms={latency} />;
+  // Full screen: only the pane's screen and its input are left, over the
+  // whole screen where the browser can (elsewhere, over the whole page).
+  const [focus, setFocus] = useState(false);
+  const setFocused = (on: boolean) => {
+    setFocus(on);
+    if (fs.can && fs.on !== on) fs.toggle();
+  };
+  // Leaving the browser's full screen (its Escape, a swipe) leaves it too.
+  const wasFull = useRef(false);
+  useEffect(() => {
+    if (wasFull.current && !fs.on) setFocus(false);
+    wasFull.current = fs.on;
+  }, [fs.on]);
+  // Back to the list: out of it.
+  useEffect(() => {
+    if (!current) {
+      setFocus(false);
+      if (fs.on) fs.toggle();
+    }
+    // fs changes as it goes in and out; only leaving the pane matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
   const [switcher, setSwitcher] = useState(false);
   const [inbox, setInbox] = useState<string | null>(null);
   const [ask, setAsk] = useState<{ title: string; value: string; kind: "session" | "window"; pane: string } | null>(null);
@@ -133,13 +150,13 @@ export default function App() {
   };
 
   const list = panes ?? [];
-  const showList = wide || !current;
+  const showList = (wide || !current) && !(focus && current);
   const message = fatal || error;
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       <Toast.Provider placement={wide ? "bottom end" : "top"} />
-      {showList || wide ? (
+      {(showList || wide) && !(focus && current) ? (
         <header className="flex items-center gap-2 border-b border-separator px-3 pt-[calc(env(safe-area-inset-top)+8px)] pb-2">
           <span className="grid size-8 place-items-center rounded-xl bg-accent text-accent-foreground shadow-sm">
             <Terminal className="size-4.5" />
@@ -218,6 +235,8 @@ export default function App() {
             onRename={rename}
             onInbox={setInbox}
             status={wide ? null : status}
+            focus={focus}
+            onFocus={setFocused}
           />
         ) : wide ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-muted">

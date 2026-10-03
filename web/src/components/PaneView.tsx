@@ -1,6 +1,8 @@
 import { Button, Dropdown, Label, TextArea, toast, Tooltip } from "@heroui/react";
 import {
   ArrowLeft,
+  Fullscreen,
+  Minimize,
   ChevronDown,
   Clock,
   CornerDownLeft,
@@ -56,8 +58,11 @@ type Props = {
   reloadPanes: () => Promise<void>;
   onRename: (kind: "session" | "window", p: Pane) => void;
   onInbox: (id: string) => void;
-  /** The latency and the full-screen button, where the page's own header is not shown. */
+  /** The latency, where the page's own header is not shown. */
   status?: ReactNode;
+  /** Full screen: the screen and the input only. */
+  focus: boolean;
+  onFocus: (on: boolean) => void;
 };
 
 export function PaneView(props: Props) {
@@ -259,6 +264,7 @@ export function PaneView(props: Props) {
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       {/* The pane's bar: back (phone), what it is (tap: another pane), the tools. */}
+      {props.focus ? null : (
       <div className="flex items-center gap-1 border-b border-separator px-2 py-1.5 sm:px-3">
         {!props.wide ? (
           <Button id="back" isIconOnly variant="ghost" size="sm" aria-label={t("Back", "返回")} onPress={props.onBack}>
@@ -300,6 +306,9 @@ export function PaneView(props: Props) {
           <Clock className="size-4" />
         </Tool>
         {props.status}
+        <Tool id="fullscreen" label={t("Full screen: the screen and the box only", "全屏：只留屏幕和输入框")} onPress={() => props.onFocus(true)}>
+          <Fullscreen className="size-4" />
+        </Tool>
         {readOnly ? (
           <Tool label={t("Inbox", "收件箱")} onPress={() => props.onInbox(id)}>
             <Inbox className="size-4" />
@@ -323,9 +332,27 @@ export function PaneView(props: Props) {
           </Dropdown>
         )}
       </div>
+      )}
 
       {/* The screen, in the terminal's colours. */}
-      <div className="min-h-0 flex-1 p-0 sm:p-3">
+      <div
+        className={"relative min-h-0 flex-1 p-0" + (props.focus ? "" : " sm:p-3")}
+        style={props.focus ? { paddingTop: "env(safe-area-inset-top)", background: theme.bg } : undefined}
+      >
+        {/* Read-only, there is no input row to hold the way out: over the screen. */}
+        {props.focus && readOnly ? (
+          <Button
+            id="fullscreen-exit"
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label={t("Leave full screen", "退出全屏")}
+            onPress={() => props.onFocus(false)}
+            className="absolute top-[calc(env(safe-area-inset-top)+6px)] right-2 z-10 rounded-full bg-black/35 text-white opacity-70 hover:opacity-100"
+          >
+            <Minimize className="size-4" />
+          </Button>
+        ) : null}
         <div
           id="main"
           ref={mainRef}
@@ -335,7 +362,7 @@ export function PaneView(props: Props) {
           }}
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
-          className="thin-scroll h-full overflow-auto px-3 py-2 sm:rounded-2xl sm:shadow-lg sm:ring-1 sm:ring-black/5"
+          className={"thin-scroll h-full overflow-auto px-3 py-2" + (props.focus ? "" : " sm:rounded-2xl sm:shadow-lg sm:ring-1 sm:ring-black/5")}
           style={{ background: theme.bg, ["--term-fg" as string]: theme.fg, ["--term-bg" as string]: theme.bg }}
         >
           {screen.error ? (
@@ -357,16 +384,29 @@ export function PaneView(props: Props) {
         </div>
       </div>
 
-      {readOnly ? null : <Composer id={id} onSent={() => !screen.streaming && setTimeout(screen.poll, 120)} />}
+      {readOnly ? null : (
+        <Composer
+          id={id}
+          onSent={() => !screen.streaming && setTimeout(screen.poll, 120)}
+          exit={
+            props.focus ? (
+              <Button id="fullscreen-exit" isIconOnly variant="ghost" size="sm" className="mb-0.5" aria-label={t("Leave full screen", "退出全屏")}
+                onPress={() => props.onFocus(false)}>
+                <Minimize className="size-4.5" />
+              </Button>
+            ) : null
+          }
+        />
+      )}
       <ConfirmClose open={closing} onDone={close} />
     </div>
   );
 }
 
-function Tool({ label, on, onPress, children }: { label: string; on?: boolean; onPress: () => void; children: ReactNode }) {
+function Tool({ id, label, on, onPress, children }: { id?: string; label: string; on?: boolean; onPress: () => void; children: ReactNode }) {
   return (
     <Tooltip delay={500}>
-      <Button isIconOnly size="sm" variant={on ? "secondary" : "ghost"} aria-label={label} aria-pressed={on} onPress={onPress}
+      <Button id={id} isIconOnly size="sm" variant={on ? "secondary" : "ghost"} aria-label={label} aria-pressed={on} onPress={onPress}
         className={on ? "text-accent" : ""}>
         {children}
       </Button>
@@ -388,7 +428,7 @@ function Item({ id, icon, danger, children }: { id: string; icon: ReactNode; dan
  *  tapped. Send sends what is in the box, no Enter after it: Send again with
  *  the box empty (or ⏎ among the keys) is the Enter. Ctrl and Alt stay down
  *  for the next character typed in the box. */
-function Composer({ id, onSent }: { id: string; onSent: () => void }) {
+function Composer({ id, onSent, exit }: { id: string; onSent: () => void; exit?: ReactNode }) {
   const [text, setText] = useState("");
   const [held, setHeld] = useState<"C" | "M" | null>(null);
   const [more, setMore] = useStored<boolean | number>("keepane-more-keys", false);
@@ -465,6 +505,7 @@ function Composer({ id, onSent }: { id: string; onSent: () => void }) {
       <div className="no-scrollbar flex gap-1 overflow-x-auto pb-1.5">{KEYS.map(keyBtn)}</div>
       {more ? <div className="flex flex-wrap gap-1 pb-1.5">{MORE_KEYS.map(keyBtn)}</div> : null}
       <div className="flex items-end gap-1.5">
+        {exit}
         <Button isIconOnly variant="ghost" size="sm" className="mb-0.5" aria-label={t("Sent before", "发过的命令")}
           onPress={() => !bounced("hist") && setHistOpen(true)}>
           <HistoryIcon className="size-4.5" />
