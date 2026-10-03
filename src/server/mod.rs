@@ -6872,6 +6872,18 @@ impl Server {
         }
         let tree_view = matches!(ch.kind, ChooserKind::Tree { style, .. } if style != TreeStyle::List);
         let chart = matches!(ch.kind, ChooserKind::Tree { style: TreeStyle::Chart, .. });
+        // The chart goes by its rows: j and k down to a child and up to the
+        // parent, h and l along the row, as the arrows do.
+        let mut k = k;
+        if chart && !k.ctrl && !k.alt {
+            k.code = match k.code {
+                KeyCode::Char('j') => KeyCode::Down,
+                KeyCode::Char('k') => KeyCode::Up,
+                KeyCode::Char('h') => KeyCode::Left,
+                KeyCode::Char('l') => KeyCode::Right,
+                other => other,
+            };
+        }
         match (k.code, k.ctrl, k.alt) {
             (KeyCode::Escape, _, _) | (KeyCode::Char('q'), false, false) | (KeyCode::Char('c'), true, _) => {
                 c.chooser = None;

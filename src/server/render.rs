@@ -1032,15 +1032,15 @@ fn skip_cols(s: &str, n: usize) -> String {
 /// session on the branch; that window's panes. Each row is spread across
 /// and joined to its parent by lines; each block says what it is on its
 /// first line. A row wider than the screen scrolls to keep its block on the
-/// branch in view (`‹` `›` say there is more). Blocks on the branch are
-/// filled in their kind's colour (the selected one yellow), the others
-/// only written in it.
+/// branch in view (`‹` `›` say there is more). Every block is an open
+/// box in the terminal's own colours, the selected one in the highlight
+/// colour; the names on the branch are bold.
 pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, actions: &str, status: &str) {
     if area.h == 0 || area.w == 0 {
         return;
     }
     g.fill(area, Style::colors(Color::Default, Color::Default));
-    let line = Style::colors(Color::Idx(8), Color::Default);
+    let line = Style::colors(Color::Default, Color::Default);
     let depths: Vec<usize> = nodes.iter().map(|n| n.depth).collect();
     let active: Vec<bool> = nodes.iter().map(|n| n.active).collect();
     let path = chart_path(&depths, &active, sel);
@@ -1058,35 +1058,67 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, act
         rows.push(kids);
     }
     let body_h = area.h.saturating_sub(1) as usize;
-    // The root is one line, the others three; between rows, two lines of
-    // joins when there is room, else one, else none.
-    let need = |links: usize| 1 + rows.len().saturating_sub(1) * (3 + links);
-    let links = (0..=2).rev().find(|&l| need(l) <= body_h).unwrap_or(0);
-    let colour = |kind: &str| match kind {
-        "host" => Color::Idx(2),
-        "session" => Color::Idx(4),
-        "window" => Color::Idx(5),
-        "pane" => Color::Idx(8),
-        _ => Color::Idx(6),
-    };
-    // Line 0 of a block says what it is, a little quieter than the rest.
-    let style_of = |i: usize, line: usize| {
-        let kind = nodes[i].kind;
-        let pane = kind == "pane";
+    // A block is a box: the root's three lines (its name between borders),
+    // the others' four (what it is in the top border, its two lines, the
+    // bottom border). Between rows, two lines of joins when there is room,
+    // else one, else none.
+    // Short of room, the root gives up its box (one line) before the joins
+    // go.
+    let need = |root: usize, links: usize| root + rows.len().saturating_sub(1) * (4 + links);
+    let (root_h, links) =
+        [(3, 2), (3, 1), (1, 1), (3, 0), (1, 0)].into_iter().find(|&(r, l)| need(r, l) <= body_h).unwrap_or((1, 0));
+    // In the terminal's own colours; the selected box in the highlight
+    // colour, the names on the branch in bold.
+    let style_of = |i: usize, name: bool| {
         if i == sel {
-            Style { bold: line != 0, ..Style::colors(Color::Idx(0), Color::Idx(3)) }
-        } else if path.contains(&i) {
-            let fg = if pane { Color::Idx(15) } else { Color::Idx(0) };
-            Style { bold: line == 1 && !pane, ..Style::colors(fg, colour(kind)) }
+            Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) }
         } else {
-            let fg = if line == 0 || pane { Color::Idx(8) } else { colour(kind) };
-            let fg = if pane && line != 0 { Color::Idx(7) } else { fg };
-            Style::colors(fg, Color::Default)
+            Style { bold: name && path.contains(&i), ..Style::colors(Color::Default, Color::Default) }
         }
     };
     let width = |i: usize| {
         let n = &nodes[i];
-        (n.title.width().max(n.info.width()).max(n.kind.width()) + 2).min(CHART_BLOCK).min(area.w as usize).max(1)
+        (n.title.width().max(n.info.width()) + 4)
+            .max(n.kind.width() + 5)
+            .min(CHART_BLOCK + 2)
+            .min(area.w as usize)
+            .max(1)
+    };
+    // The label in a box's top border, when there is room for it.
+    let label = |i: usize, w: usize| {
+        let kind = nodes[i].kind;
+        if kind.is_empty() || kind.width() + 4 > w { String::new() } else { format!(" {kind} ") }
+    };
+    // Where a box is joined to the rows above and below: its middle, or
+    // just past its label when the label reaches that far.
+    let join_at = |i: usize, w: usize| (w / 2).max(label(i, w).width() + 1).min(w.saturating_sub(2));
+    // A box's lines, each `w` columns; `up` and `down` put a join on the
+    // top and bottom border.
+    let lines_of = |i: usize, w: usize, root: bool, up: bool, down: bool| -> Vec<String> {
+        let n = &nodes[i];
+        let at = join_at(i, w);
+        let edge = |l: &str, r: &str, label: &str, join: Option<char>| -> String {
+            if w < 2 {
+                return fit("", w);
+            }
+            let mut cs: Vec<char> = format!("{l}{label}{}{r}", "─".repeat(w - 2 - label.width())).chars().collect();
+            if let Some(j) = join
+                && cs.get(at) == Some(&'─')
+            {
+                cs[at] = j;
+            }
+            cs.into_iter().collect()
+        };
+        let mid = |text: &str| if w >= 4 { format!("│ {} │", fit(text, w - 4)) } else { fit(text, w) };
+        let mut out = vec![edge("┌", "┐", &label(i, w), up.then_some('┴'))];
+        if root {
+            out.push(mid(&n.title));
+        } else {
+            out.push(mid(&n.title));
+            out.push(mid(&n.info));
+        }
+        out.push(edge("└", "┘", "", down.then_some('┬')));
+        out
     };
     let (aw, top, bottom) = (area.w as i32, area.y as usize, area.y as usize + body_h);
     let mut y = top;
@@ -1109,7 +1141,7 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, act
             xs.push(x);
             x += (w + CHART_GAP) as i32;
         }
-        let mids: Vec<i32> = xs.iter().zip(&ws).map(|(x, w)| x + *w as i32 / 2).collect();
+        let mids: Vec<i32> = xs.iter().zip(&ws).zip(row).map(|((x, w), &i)| x + join_at(i, *w) as i32).collect();
         // The joins from the parent above: down from it, then across.
         if r > 0 && links > 0 {
             if links == 2 && y < bottom && (0..aw).contains(&parent_mid) {
@@ -1139,36 +1171,30 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, act
             }
             y += links;
         }
-        // The blocks: the root its name, the rest what they are, then
-        // their two lines.
-        let height = if r == 0 { 1 } else { 3 };
+        // The boxes; the one on the branch joined to the row under it.
+        let more = r + 1 < rows.len() && links > 0;
+        let height = if r == 0 { root_h } else { 4 };
         for (k, &i) in row.iter().enumerate() {
             let (x, w) = (xs[k], ws[k]);
             if x >= aw || x + w as i32 <= 0 {
                 continue;
             }
-            let n = &nodes[i];
-            let texts: Vec<&str> = if r == 0 { vec![&n.title] } else { vec![n.kind, &n.title, &n.info] };
-            for (dy, text) in texts.iter().enumerate() {
+            let mut box_lines = lines_of(i, w, r == 0, r > 0 && links > 0, more && k == on);
+            if r == 0 && root_h == 1 {
+                box_lines = vec![fit(&format!("  {}", nodes[i].title), w)];
+            }
+            for (dy, s) in box_lines.iter().enumerate() {
                 let yy = y + dy;
                 if yy >= bottom {
                     break;
                 }
-                let s = format!(" {} ", fit(text, w.saturating_sub(2)));
-                let s = fit(&s, w);
-                let (sx, s) = if x < 0 { (0, skip_cols(&s, (-x) as usize)) } else { (x, s) };
-                g.put_str(
-                    area.x + sx as u16,
-                    yy as u16,
-                    &s,
-                    style_of(i, if r == 0 { 1 } else { dy }),
-                    (aw - sx) as u16,
-                );
+                let (sx, s) = if x < 0 { (0, skip_cols(s, (-x) as usize)) } else { (x, s.clone()) };
+                g.put_str(area.x + sx as u16, yy as u16, &s, style_of(i, dy == 1 || height == 1), (aw - sx) as u16);
             }
         }
         // More of the row than the screen shows: a mark at that end, on
         // the line of the names.
-        let names = y + usize::from(r > 0);
+        let names = y + 1;
         if names < bottom && xs.first().is_some_and(|&x| x < 0) {
             g.put_str(area.x, names as u16, "‹", line, 1);
         }
@@ -1178,7 +1204,7 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, act
         parent_mid = mids[on];
         y += height;
     }
-    draw_chooser_footer(g, area, nodes.len(), sel, "↑↓←→ move", actions, status);
+    draw_chooser_footer(g, area, nodes.len(), sel, "hjkl ↑↓←→ move", actions, status);
 }
 
 /// A picker's last line: where the cursor is of how many, the keys, and a
@@ -1910,6 +1936,26 @@ mod tests {
         ]
     }
 
+    /// The joins meet: whatever goes down (`┌` `┬` `┐`, a corner of a box
+    /// too) has something coming up right under it, and every `┴` has
+    /// something coming down right above it.
+    fn joins_land(t: &[String]) -> Result<(), String> {
+        let rows: Vec<Vec<char>> = t.iter().map(|r| r.chars().collect()).collect();
+        let at = |y: usize, x: usize| rows.get(y).and_then(|r| r.get(x)).copied().unwrap_or(' ');
+        for (y, row) in rows.iter().enumerate() {
+            for (x, &c) in row.iter().enumerate() {
+                if "┌┬┐".contains(c) && !"┴│┼┤├┘└".contains(at(y + 1, x)) {
+                    return Err(format!("row {y} col {x}: {c} over {:?}", at(y + 1, x)));
+                }
+                // (Under the root's name when the root is one line.)
+                if c == '┴' && (y == 0 || !("┌┬┐┼├┤│".contains(at(y - 1, x)) || at(y - 1, x).is_alphanumeric()))
+                {
+                    return Err(format!("row {y} col {x}: ┴ under {:?}", at(y.saturating_sub(1), x)));
+                }
+            }
+        }
+        Ok(())
+    }
     fn chart_text(g: &Grid) -> Vec<String> {
         (0..g.rows)
             .map(|y| (0..g.cols).map(|x| g.get(x, y).text()).collect::<String>().trim_end().to_string())
@@ -1932,47 +1978,49 @@ mod tests {
         assert_eq!(chart_path(&depths, &active, 99), Vec::<usize>::new());
     }
 
-    /// Four rows: the root centred, the sessions, the session's windows,
-    /// the window's panes, joined by lines; each block says what it is on
-    /// its first line; the selection yellow, the branch filled, the rest
-    /// only written in their colour.
+    /// Four rows of boxes: the root centred, the sessions, the session's
+    /// windows, the window's panes, joined by lines; each box says what it
+    /// is in its top border; all in the terminal's colours but the selected
+    /// one, in the highlight colour; nothing filled.
     #[test]
     fn the_chart_draws_its_rows() {
         let nodes = chart_nodes();
-        let mut g = Grid::new(80, 18);
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 18 }, &nodes, 4, "Enter go", "");
+        let mut g = Grid::new(80, 24);
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 4, "Enter go", "");
         let t = chart_text(&g);
-        eprintln!("{}", t.join("\n"));
         let all = t.join("\n");
-        // The root, centred.
-        let root = t[0].find("keepane").unwrap();
-        assert!((34..=38).contains(&root), "{root}: {}", t[0]);
-        // Two lines of joins, then the sessions: what they are, their names,
-        // about them.
-        assert_eq!(t[1].trim(), "│", "{all}");
-        assert_eq!(t[3].matches("session").count(), 2, "{all}");
-        assert!(t[4].contains("1  dev") && t[4].contains("7  ops"), "{all}");
-        assert!(t[5].contains("2 windows · attached") && t[5].contains("1 window"), "{all}");
-        // dev's windows, then edit's panes (not logs').
-        assert_eq!(t[8].matches("window").count(), 2, "{all}");
-        assert!(t[9].contains("2  0:edit*") && t[9].contains("5  1:logs") && !all.contains("deploy"), "{all}");
-        assert_eq!(t[13].matches("pane").count(), 2, "{all}");
-        assert!(t[14].contains("3  0:pwsh") && t[14].contains("4  1:pwsh*") && !all.contains("6  0:pwsh"), "{all}");
-        assert!(t[15].contains("shell · %builder"), "{all}");
-        // The bar under the root spans both sessions: corners at its ends.
-        assert!(t[2].contains('┌') && t[2].contains('┐') && t[2].contains('┴'), "{:?}", t[2]);
-        // Colours: the selected pane yellow, dev (on the branch) blue, ops
-        // (off it) only written in blue; what a block is, quieter than its name.
-        let at = |y: usize, s: &str| t[y][..t[y].find(s).unwrap()].width() as u16;
-        assert_eq!(g.get(at(14, "4  1:pwsh*"), 14).style.bg, Color::Idx(3));
-        assert_eq!(g.get(at(4, "1  dev"), 4).style.bg, Color::Idx(4));
-        assert!(g.get(at(4, "1  dev"), 4).style.bold && !g.get(at(4, "1  dev"), 3).style.bold);
-        let ops = g.get(at(4, "7  ops"), 4).style;
-        assert_eq!((ops.fg, ops.bg), (Color::Idx(4), Color::Default));
+        eprintln!("{all}");
+        let row = |s: &str| t.iter().position(|r| r.contains(s)).unwrap_or_else(|| panic!("no {s}: {all}"));
+        // The root, centred, in a box.
+        let root = t[1].find("keepane").unwrap();
+        assert!((34..=40).contains(&root) && t[0].contains('┌') && t[2].contains('┬'), "{all}");
+        // The sessions, dev's windows, edit's panes (not logs', not ops').
+        let (s, w, p) = (row("1  dev"), row("2  0:edit*"), row("4  1:pwsh*"));
+        assert!(s < w && w < p, "{all}");
+        assert!(t[s].contains("7  ops") && t[w].contains("5  1:logs") && t[p].contains("3  0:pwsh"), "{all}");
+        assert!(!all.contains("deploy") && !all.contains("6  0:pwsh"), "{all}");
+        assert!(t[s - 1].matches("┌ session ").count() == 2 && t[p - 1].matches("┌ pane ").count() == 2, "{all}");
+        assert!(t[s + 1].contains("2 windows · attached") && t[p + 1].contains("shell · %builder"), "{all}");
+        // Joins: the bar under the root spans both sessions, and every join
+        // lands on a box.
+        joins_land(&t).map_err(|e| format!("{e}\n{all}")).unwrap();
+        let bar = s - 2;
+        assert!(t[bar].contains('┌') && t[bar].contains('┐') && t[bar].contains('┴'), "{all}");
+        let col = |y: usize, c: char| t[y].chars().position(|x| x == c).unwrap();
+        assert_eq!(t[s - 1].chars().nth(col(bar, '┌')), Some('┴'), "{all}");
+        // Colours: nothing filled; the selected pane yellow and bold; the
+        // others in the terminal's own colours, the branch's names bold.
+        let cell = |y: usize, s: &str| g.get(t[y][..t[y].find(s).unwrap()].width() as u16, y as u16).clone();
+        assert!((0..24).all(|y| (0..80).all(|x| g.get(x, y).style.bg == Color::Default || y == 23)), "nothing filled");
+        let sel = cell(p, "4  1:pwsh*");
+        assert!(sel.style.fg == Color::Idx(3) && sel.style.bold, "{:?}", sel.style);
+        let dev = cell(s, "1  dev");
+        assert!(dev.style.fg == Color::Default && dev.style.bold, "on the branch: bold");
+        let ops = cell(s, "7  ops");
+        assert!(ops.style.fg == Color::Default && !ops.style.bold, "off it: plain");
         // The footer says where the cursor is and how to move.
-        assert!(t[17].starts_with("[5/10] ↑↓←→ move  Enter go"), "{:?}", t[17]);
+        assert!(t[23].starts_with("[5/10] hjkl ↑↓←→ move  Enter go"), "{:?}", t[23]);
     }
-
     /// Paired with other machines: a row of them under the root (`host`),
     /// and below, the sessions of the machine on the branch only.
     #[test]
@@ -2003,15 +2051,27 @@ mod tests {
         let t = chart_text(&g);
         let all = t.join("\n");
         eprintln!("{all}");
-        assert_eq!(t[3].matches("host").count(), 2, "{all}");
-        assert!(t[4].contains("1  DFINE") && t[4].contains("5  100.64.0.3:7681"), "{all}");
+        let hosts = t.iter().position(|r| r.contains("1  DFINE")).expect("the machines");
+        assert_eq!(t[hosts - 1].matches("┌ host ").count(), 2, "{all}");
+        assert!(t[hosts].contains("5  100.64.0.3:7681"), "{all}");
         assert!(
             all.contains("6  work") && !all.contains("2  dev"),
             "this machine's sessions are not on the branch: {all}"
         );
         assert!(all.contains("9  1:logs*") && all.contains("10  0:tail*") && !all.contains("8  0:vim*"), "{all}");
         let at = |y: usize, s: &str| t[y][..t[y].find(s).unwrap()].width() as u16;
-        assert_eq!(g.get(at(4, "5  100.64"), 4).style.bg, Color::Idx(2), "a host on the branch is green");
+        let other = g.get(at(hosts, "5  100.64"), hosts as u16).style;
+        assert!(other.bold && other.fg == Color::Default, "the machine on the branch: bold, in the terminal's colour");
+        // An 80x24 terminal leaves the chart 22 rows: the root gives up its
+        // box, the joins stay (one line each).
+        let mut g = Grid::new(80, 23);
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 23 }, &nodes, 6, "", "");
+        let t = chart_text(&g);
+        let all = t.join("\n");
+        assert!(t[0].contains("keepane") && !t[0].contains('┌'), "{all}");
+        assert!(t[1].contains('┌') && t[1].contains('┴'), "the bar under the root: {all}");
+        assert!(all.contains("10  0:tail*"), "{all}");
+        joins_land(&t).map_err(|e| format!("{e}\n{all}")).unwrap();
     }
 
     /// A row wider than the screen scrolls to keep the branch's block in
@@ -2030,30 +2090,36 @@ mod tests {
         for k in 0..30 {
             nodes.push(node("window", 2, format!("{}  {k}:window-{k}", k + 2), "1 pane"));
         }
-        let mut g = Grid::new(60, 12);
+        let mut g = Grid::new(60, 14);
         // The 21st window selected: it is on screen, with more either side.
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 12 }, &nodes, 22, "", "");
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 14 }, &nodes, 22, "", "");
         let t = chart_text(&g);
         eprintln!("{}", t.join("\n"));
         let y = t.iter().position(|r| r.contains("window-20")).expect("the selected window is drawn");
         assert!(t[y].starts_with('‹') && t[y].ends_with('›'), "{:?}", t[y]);
         let x = t[y][..t[y].find("22  20").unwrap()].width() as u16;
-        assert_eq!(g.get(x, y as u16).style.bg, Color::Idx(3), "the selection is the one in view");
+        assert_eq!(g.get(x, y as u16).style.fg, Color::Idx(3), "the selection is the one in view");
         // The first window: no ‹, it starts at the left edge.
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 12 }, &nodes, 2, "", "");
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 60, h: 14 }, &nodes, 2, "", "");
         let t = chart_text(&g);
         let row = t.iter().find(|r| r.contains("0:window-0")).unwrap();
         assert!(!row.starts_with('‹') && row.ends_with('›'), "{row:?}");
         // Short: one join line, then none; the selection's row still drawn.
         let nodes = chart_nodes();
-        for (h, joins) in [(14u16, 1usize), (11, 0)] {
+        for (h, joins) in [(19u16, 1usize), (16, 0)] {
             let mut g = Grid::new(80, h);
             draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h }, &nodes, 4, "", "");
             let t = chart_text(&g);
-            // root, then three rows of (joins, what, name, about): the panes'
-            // names.
-            let pane_row = 1 + 2 * (joins + 3) + joins + 1;
+            // The root's box (3), then three rows of joins and a box (4):
+            // the panes' names on the second line of the last.
+            let pane_row = 3 + 2 * (joins + 4) + joins + 1;
             assert!(t[pane_row].contains("4  1:pwsh*"), "h {h}: {}", t.join("\n"));
+            assert_eq!(
+                t.iter().filter(|r| r.contains('┌') && !r.contains("┌ ") && r.contains('┐')).count(),
+                1 + joins.min(1) * 3,
+                "h {h}: {}",
+                t.join("\n")
+            );
         }
         // Degenerate sizes, wide names: no panic.
         let mut nodes = chart_nodes();
@@ -2063,8 +2129,8 @@ mod tests {
             draw_chart(&mut g, Rect { x: 0, y: 0, w, h }, &nodes, 1, "Enter go", "[1 tagged]");
         }
         // A block longer than the widest a block gets is cut with `…`.
-        let mut g = Grid::new(80, 18);
-        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 18 }, &nodes, 1, "", "");
-        assert!(chart_text(&g)[4].contains('…'), "{}", chart_text(&g).join("\n"));
+        let mut g = Grid::new(80, 24);
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 1, "", "");
+        assert!(chart_text(&g).iter().any(|r| r.contains("1  会") && r.contains('…')), "{}", chart_text(&g).join("\n"));
     }
 }

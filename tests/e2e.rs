@@ -1326,7 +1326,7 @@ async fn choose_tree_as_a_tree_of_blocks() {
     c.wait_for("list", |s| s.contents().contains("[5/9] j/k move") && s.contents().contains("(0) - s: 2 windows"))
         .await;
     c.type_str("v").await;
-    c.wait_for("chart", |s| s.contents().contains("[6/10] ↑↓") && s.contents().contains("f filter  v tree")).await;
+    c.wait_for("chart", |s| s.contents().contains("[6/10] hjkl ↑↓") && s.contents().contains("f filter  v tree")).await;
     c.type_str("v").await;
     c.wait_for("tree again", |s| s.contents().contains("[6/10] ↑↓") && s.contents().contains("v list")).await;
     // Enter on a pane goes to it: s:0's first.
@@ -1375,14 +1375,15 @@ async fn choose_tree_as_a_chart() {
     // Items as in the tree: root, s, s:0, its 2 panes, s:1, its pane, t,
     // t:0, its pane; the cursor on s:0's second pane (5 of 10).
     c.prefix('w').await;
-    let at = |n: usize, of: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/{of}] ↑↓"));
+    let at = |n: usize, of: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/{of}] hjkl ↑↓"));
     c.wait_for("chart", at(5, 10)).await;
     assert!(!keepane::link::dir(&h.socket).join("key").exists(), "never paired, so no key pair made");
     let text = c.text();
     let rows: Vec<&str> = text.lines().collect();
     let find = |s: &str| rows.iter().position(|r| r.contains(s));
-    // The root on the first row, about the middle of 80 columns.
-    let root = rows[0].find("keepane").unwrap_or(0);
+    // The root in a box on top, about the middle of 80 columns.
+    let root = rows[1].find("keepane").unwrap_or(0);
+    assert!(rows[0].contains('┌') && rows[1].contains("│ keepane │"), "{text}");
     assert!((30..=42).contains(&root), "{text}");
     // Then the sessions, the windows of s, the panes of s:0, row under row.
     let (sessions, windows, panes) = (find("1  s").unwrap(), find("2  0:").unwrap(), find("3  0:").unwrap());
@@ -1392,7 +1393,7 @@ async fn choose_tree_as_a_chart() {
     assert!(sessions < windows && windows < panes, "{text}");
     assert!(rows[sessions + 1].contains("2 windows · attached"), "{text}");
     // The keys fit in 80 columns, down to `q quit`.
-    assert!(text.contains("↑↓←→ move  Enter go  x kill  t tag  f filter  v tree  q quit"), "{text}");
+    assert!(text.contains("hjkl ↑↓←→ move  Enter go  x kill  t tag  f filter  v tree  q quit"), "{text}");
     let key = |vk: u16| (vk, '\0');
     let (up, down, left, right) = (key(0x26), key(0x28), key(0x25), key(0x27));
     // Right along the panes, across windows and sessions: the rows above
@@ -1416,12 +1417,18 @@ async fn choose_tree_as_a_chart() {
         c.key(down.0, down.1, 0).await;
         c.wait_for("down", at(want, 10)).await;
     }
-    // Nothing folds in the chart: `-` leaves all 10.
+    // Nothing folds in the chart: `-` leaves all 10. h and l go along a
+    // row, k and j up to the parent and down to the current child, as the
+    // arrows do (not line by line, as in the tree).
     c.type_str("-").await;
-    c.type_str("j").await;
-    c.wait_for("not folded", at(6, 10)).await;
-    c.type_str("k").await;
-    c.wait_for("back", at(5, 10)).await;
+    c.type_str("h").await;
+    c.wait_for("not folded; h: the pane before", at(4, 10)).await;
+    c.type_str("l").await;
+    c.wait_for("l: back", at(5, 10)).await;
+    for (key, want) in [("k", 3), ("k", 2), ("k", 2), ("j", 3), ("j", 5)] {
+        c.type_str(key).await;
+        c.wait_for(key, at(want, 10)).await;
+    }
     // A fold made in the tree hides nothing in the chart.
     c.type_str("v").await;
     c.wait_for("tree", |s| s.contents().contains("v list")).await;
@@ -1443,30 +1450,31 @@ async fn choose_tree_as_a_chart() {
     assert_eq!(h.cli(&["display-message", "-p", "-t", "s", "#{window_index}.#{pane_index}"]).await.1.trim(), "0.0");
     // Sessions only (choose-tree -s): the root and the sessions.
     c.prefix('s').await;
-    c.wait_for("sessions", |s| s.contents().contains("[2/3] ↑↓") && s.contents().contains("2  t")).await;
+    c.wait_for("sessions", |s| s.contents().contains("[2/3] hjkl ↑↓") && s.contents().contains("2  t")).await;
     c.type_str("q").await;
     // Thirty windows in t on a small screen: the row of windows scrolls to
     // keep the selected one in view, `›` saying there is more.
     for _ in 0..29 {
         h.cli(&["new-window", "-d", "-t", "t"]).await;
     }
-    c.send(ClientMsg::Resize { cols: 40, rows: 10 }).await;
-    c.screen = vt100::Parser::new(10, 40, 0);
+    c.send(ClientMsg::Resize { cols: 40, rows: 14 }).await;
+    c.screen = vt100::Parser::new(14, 40, 0);
     c.prefix('w').await;
-    c.wait_for("small chart", |s| s.contents().contains("/68] ↑↓")).await;
+    c.wait_for("small chart", |s| s.contents().contains("/68] hjkl ↑↓")).await;
     for _ in 0..3 {
         c.key(right.0, right.1, 0).await;
     }
-    c.wait_for("along the panes to t:0's", |s| s.contents().contains("[10/68] ↑↓")).await;
+    c.wait_for("along the panes to t:0's", |s| s.contents().contains("[10/68] hjkl ↑↓")).await;
     c.key(up.0, up.1, 0).await;
-    c.wait_for("its window", |s| s.contents().contains("[9/68] ↑↓")).await;
+    c.wait_for("its window", |s| s.contents().contains("[9/68] hjkl ↑↓")).await;
     for _ in 0..20 {
         c.key(right.0, right.1, 0).await;
     }
     c.wait_for("t's 21st window, in view, more both sides", |s| {
         let rows: Vec<String> = s.rows(0, 40).collect();
         let at = rows.iter().find(|r| r.contains("20:"));
-        s.contents().contains("[49/68] ↑↓") && at.is_some_and(|r| r.starts_with('‹') && r.trim_end().ends_with('›'))
+        s.contents().contains("[49/68] hjkl ↑↓")
+            && at.is_some_and(|r| r.starts_with('‹') && r.trim_end().ends_with('›'))
     })
     .await;
     // Degenerate sizes: nothing panics, and it comes back.
@@ -1476,7 +1484,7 @@ async fn choose_tree_as_a_chart() {
     }
     c.send(ClientMsg::Resize { cols: COLS, rows: ROWS }).await;
     c.screen = vt100::Parser::new(ROWS, COLS, 0);
-    c.wait_for("back", |s| s.contents().contains("[49/68] ↑↓")).await;
+    c.wait_for("back", |s| s.contents().contains("[49/68] hjkl ↑↓")).await;
     c.type_str("q").await;
     // Seconds of an open chart later (the tick asks every second): still none.
     assert!(!keepane::link::dir(&h.socket).join("key").exists(), "never paired, so no key pair made");
@@ -4894,7 +4902,7 @@ async fn the_chart_shows_the_paired_machines() {
     // root, this machine, wa, wa:0, its pane; b, wb, wb:0 (edit), its two
     // panes: 10, the cursor on wa's pane (5).
     c.prefix('w').await;
-    let at = |n: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/10] ↑↓"));
+    let at = |n: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/10] hjkl ↑↓"));
     c.wait_for("the machines", |s| {
         let t = s.contents();
         at(5)(s)
@@ -4939,7 +4947,7 @@ async fn the_chart_shows_the_paired_machines() {
     c.enter().await;
     c.wait_for("filtered", |s| {
         let t = s.contents();
-        t.contains("[6/6] ↑↓") && t.contains("2  wb") && t.contains("3  0:edit*") && !t.contains("this machine")
+        t.contains("[6/6] hjkl ↑↓") && t.contains("2  wb") && t.contains("3  0:edit*") && !t.contains("this machine")
     })
     .await;
     // The other machine goes: said on its block, its panes as last heard.
