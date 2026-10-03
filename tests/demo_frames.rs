@@ -354,6 +354,68 @@ fn record_messages() {
     d.finish();
 }
 
+/// The sixth recording: `C-b w`, the chart of every session, window and
+/// pane, moved through with hjkl; `a` opens all of it, `v` turns it into
+/// the tree and the list.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_chart() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT6").unwrap_or_else(|_| "target/demo-frames-6".into());
+    let mut d = Demo::start("demo6", &out_dir, "");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+    let kp = |args: &[&str]| {
+        let out = std::process::Command::new(&d.exe).args(["-L", &socket]).args(args).output().expect("keepane");
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s dev -n edit"));
+    rec.wait_for("session", |s| s.contents().contains("0:edit*"), 30);
+    // Something to look at: a second pane with a name, a second window, two
+    // more sessions.
+    kp(&["split-window", "-h", "-t", "dev:edit"]);
+    kp(&["rename-pane", "-t", "dev:edit.1", "builder"]);
+    kp(&["set-work-mode", "-t", "dev:edit.1", "shell"]);
+    kp(&["new-window", "-d", "-t", "dev", "-n", "logs"]);
+    kp(&["new", "-d", "-s", "ops", "-n", "deploy"]);
+    kp(&["split-window", "-d", "-t", "ops:deploy"]);
+    kp(&["new", "-d", "-s", "notes", "-n", "todo"]);
+    rec.hold(3);
+    // C-b w: the chart, on the pane you are in.
+    rec.key("\x02w");
+    rec.wait_for("the chart", |s| s.contents().contains("hjkl move"), 10);
+    rec.hold(6);
+    rec.still("chart");
+    // h and l along the panes, k up to the window and the session, l to the
+    // next session (its rows come along), j down again.
+    for k in ["h", "l", "k", "k", "l", "j", "j", "h", "k", "k"] {
+        rec.key(k);
+        rec.hold(3);
+    }
+    rec.hold(2);
+    // a: every node at once.
+    rec.key("a");
+    rec.wait_for("all of it", |s| s.contents().contains("a branch"), 10);
+    rec.hold(8);
+    rec.still("chart-all");
+    rec.key("a");
+    rec.hold(3);
+    // v: the tree, the list, the chart again.
+    rec.key("v");
+    rec.wait_for("the tree", |s| s.contents().contains("v list"), 10);
+    rec.hold(6);
+    rec.key("v");
+    rec.wait_for("the list", |s| s.contents().contains("v chart"), 10);
+    rec.hold(6);
+    rec.key("v");
+    rec.wait_for("the chart again", |s| s.contents().contains("hjkl move"), 10);
+    rec.hold(4);
+    rec.key("q");
+    rec.hold(3);
+
+    d.finish();
+}
+
 /// The tour's terminal: room for four panes, and for the QR code.
 const TOUR_COLS: u16 = 100;
 const TOUR_ROWS: u16 = 30;
@@ -682,8 +744,11 @@ impl Demo {
         // The focus frame is slowed down so that the pictures, taken five
         // times a second, catch it moving (160 ms, the default, falls
         // between two of them).
-        let theme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/tokyo-night.conf"))
-            .expect("themes/tokyo-night.conf");
+        // The look: KEEPANE_DEMO_THEME names a theme file (tokyo-day for the light
+        // pictures), tokyo-night when it is not set.
+        let name = std::env::var("KEEPANE_DEMO_THEME").unwrap_or_else(|_| "tokyo-night".into());
+        let theme = std::fs::read_to_string(format!("{}/themes/{name}.conf", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("themes/{name}.conf: {e}"));
         std::fs::write(
             &conf,
             format!("set -g default-command \"{shell}\"\n{theme}\nset -g animation-time 600\n{extra_conf}"),

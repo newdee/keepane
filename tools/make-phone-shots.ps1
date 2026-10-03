@@ -14,7 +14,11 @@
   pwsh -File tools/make-phone-shots.ps1
 #>
 [CmdletBinding()]
-param([string]$Work = "target/phone-shots")
+param(
+    [string]$Work = "target/phone-shots",
+    # The page light: docs/img/phone-light.png and phone-zh-light.png.
+    [switch]$Light
+)
 
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
@@ -31,7 +35,8 @@ New-Item -ItemType Directory -Force $Work | Out-Null
 $tmp = (Resolve-Path $Work).Path
 $env:KEEPANE_SESSIONS_DIR = Join-Path $tmp "sessions"
 $env:KEEPANE_CONFIG = Join-Path $tmp "empty.conf"
-Set-Content $env:KEEPANE_CONFIG ""
+# The light pictures have the light terminal theme too.
+Set-Content $env:KEEPANE_CONFIG $(if ($Light) { "set -g theme tokyo-day" } else { "" })
 Remove-Item Env:KEEPANE -ErrorAction SilentlyContinue
 Remove-Item Env:KEEPANE_PANE -ErrorAction SilentlyContinue
 
@@ -101,6 +106,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "npm install puppeteer-core failed" }
     }
     Copy-Item tools/phone-shot.mjs $npm -Force
+    $env:KEEPANE_PHONE_MODE = if ($Light) { "light" } else { "dark" }
+    $suffix = if ($Light) { "-light" } else { "" }
     # The page in English for the README and the site, in Chinese for
     # README.zh-CN; each view drawn alone, then the two side by side on the
     # page's own background.
@@ -109,9 +116,14 @@ try {
             node (Join-Path $npm "phone-shot.mjs") $edge $shot.Url (Join-Path $tmp "$($shot.Name).png") $shot.View $lang.Code
             if ($LASTEXITCODE -ne 0) { throw "picture $($shot.Name) failed" }
         }
+        # Put side by side on the page's own background (its top-left pixel).
+        Add-Type -AssemblyName System.Drawing
+        $first = [System.Drawing.Bitmap]::FromFile((Join-Path $tmp "phone-list.png"))
+        $px = $first.GetPixel(2, $first.Height - 2); $first.Dispose()
+        $bg = "0x{0:x2}{1:x2}{2:x2}" -f $px.R, $px.G, $px.B
         ffmpeg -v error -y -i (Join-Path $tmp "phone-list.png") -i (Join-Path $tmp "phone-pane.png") -filter_complex `
-            "[0]pad=iw+60:ih:30:0:color=0x1a1b26[a];[1]pad=iw+30:ih:0:0:color=0x1a1b26[b];[a][b]hstack,scale=iw/2:-1:flags=lanczos" `
-            "docs/img/phone$($lang.Suffix).png"
+            "[0]pad=iw+60:ih:30:0:color=$bg[a];[1]pad=iw+30:ih:0:0:color=$bg[b];[a][b]hstack,scale=iw/2:-1:flags=lanczos" `
+            "docs/img/phone$($lang.Suffix)$suffix.png"
         if ($LASTEXITCODE -ne 0) { throw "combine failed" }
     }
 } finally {

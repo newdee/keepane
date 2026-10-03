@@ -8,8 +8,11 @@
 keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息，同一台电脑上可以，配过对的两台电脑之间也可以。常用的 tmux 按键、命令和配置文件可以继续使用。
 
 <p align="center">
-  <img src="docs/img/keepane-tour.gif" width="900"
-       alt="分四段的功能导览：名叫 lead、build、agent 的 pane，边框上写着各自的工作模式和收件箱；发给 build 的消息在那里作为命令执行，发给 agent 的消息在它的收件箱里等着。一个小的 MCP 客户端创建名叫 tests 的 pane 并给它发命令。dashboard 显示所有 pane、某个 pane 的事件和 agent 的收件箱。keepane web 打出二维码；手机上的列表显示所有 pane，在手机上输入的命令在电脑上的 build 里执行。">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-tour-light.gif">
+    <img src="docs/img/keepane-tour.gif" width="900"
+         alt="分四段的功能导览：名叫 lead、build、agent 的 pane，边框上写着各自的工作模式和收件箱；发给 build 的消息在那里作为命令执行，发给 agent 的消息在它的收件箱里等着。一个小的 MCP 客户端创建名叫 tests 的 pane 并给它发命令。dashboard 显示所有 pane、某个 pane 的事件和 agent 的收件箱。keepane web 打出二维码；手机上的列表显示所有 pane，在手机上输入的命令在电脑上的 build 里执行。">
+  </picture>
 </p>
 
 - 脱离后，pane 里的程序继续运行。重启电脑后用 `keepane resume` 恢复布局；误关的 pane 可在 10 秒内按 `C-b u` 找回。
@@ -27,8 +30,11 @@ keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程�
 每个 pane 都有收件箱，也可以设置名字。消息会排队等待，并按接收方的工作模式投递。
 
 <p align="center">
-  <img src="docs/img/keepane-messages.gif" width="880"
-       alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；分面板的 dashboard 显示 pane、一个 agent 的收件箱和任务，把一条消息置顶，并按字段展开看全文">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-messages-light.gif">
+    <img src="docs/img/keepane-messages.gif" width="880"
+         alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；分面板的 dashboard 显示 pane、一个 agent 的收件箱和任务，把一条消息置顶，并按字段展开看全文">
+  </picture>
 </p>
 
 ```powershell
@@ -148,13 +154,27 @@ pwsh -File installer/build-msi.ps1        # 产物在 target\keepane-<版本>-wi
 ## 日常用法
 
 <p align="center">
-  <img src="docs/img/keepane-demo.gif" width="880"
-       alt="把一个 shell 切成几块、用 set sync 一次输入到所有 pane、用 h/j/k/l 移动、全屏、pane 菜单、窗口选择器、脱离后再接回来">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-demo-light.gif">
+    <img src="docs/img/keepane-demo.gif" width="880"
+         alt="把一个 shell 切成几块、用 set sync 一次输入到所有 pane、用 h/j/k/l 移动、全屏、pane 菜单、窗口选择器、脱离后再接回来">
+  </picture>
 </p>
 
 <p align="center">
-  <img src="docs/img/keepane-alerts.gif" width="880"
-       alt="部署在没人看的窗口里跑完，状态栏出现 # 标记，prefix M-n 跳过去，失败的命令把 pane 和退出码留在原地，弹窗里显示窗口列表">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-alerts-light.gif">
+    <img src="docs/img/keepane-alerts.gif" width="880"
+         alt="部署在没人看的窗口里跑完，状态栏出现 # 标记，prefix M-n 跳过去，失败的命令把 pane 和退出码留在原地，弹窗里显示窗口列表">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-chart-light.gif">
+    <img src="docs/img/keepane-chart.gif" width="880"
+         alt="C-b w 打开结构图：最上面是 keepane，下面依次是 session、窗口和 pane，每个都是空心框；h j k l 移动，a 一次展开全部，v 切到树状视图和纯文字列表">
+  </picture>
 </p>
 
 Windows 上，keepane 以 Windows 原生的 win32-input-mode 转发键盘事件，支持 PSReadLine 组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法，以及 WSL 中的 vim 和 htop。可在 Windows Terminal、传统控制台、VS Code 终端和其他 Windows 控制台宿主中运行。Linux 和 macOS 上，它读取终端发来的按键序列（带修饰键的 xterm 按键、括号粘贴、SGR 鼠标），再像终端一样转给程序，所以任何兼容 xterm 的终端和 SSH 里都能用。
@@ -239,8 +259,11 @@ set -g hint-open "run-shell 'idea --line {line} {file}'"
 ## 命令时间和历史
 
 <p align="center">
-  <img src="docs/img/keepane-history.gif" width="880"
-       alt="每条命令行尾显示时间，其中一条失败；历史面板按 pane 位置和日期列出；在查看器里打开某一天；手滑关掉的 pane 按 C-b u 找回">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-history-light.gif">
+    <img src="docs/img/keepane-history.gif" width="880"
+         alt="每条命令行尾显示时间，其中一条失败；历史面板按 pane 位置和日期列出；在查看器里打开某一天；手滑关掉的 pane 按 C-b u 找回">
+  </picture>
 </p>
 
 PowerShell、bash、zsh 的 pane 会通过 keepane 启动时装上的提示符钩子报告每条命令的运行情况（钩子在你自己的 `~/.bashrc` 或 `.zshrc` 之后加载，不改你的提示符）。macOS 自带的 `/bin/bash`（3.2）不报告命令何时开始（`PS0` 是 4.4 才有的），keepane 就用回车进入 pane 的那一刻代替，所以那里的时间从按键算起，而不是从 shell 开始执行算起。按 `prefix C-t`（或 `set -g pane-timestamps on`），命令所在那一行的右端就会显示它什么时候开始、跑了多久、有没有失败：
@@ -396,8 +419,11 @@ keepane web
 同一个页面也能在电脑浏览器里用：宽屏时左边是 pane 列表，右边是 pane。右上角的按钮选页面自己的外观（日间、夜间或跟随系统，每台设备各自记住），也能选终端主题（`theme`，见“主题”一节）：终端主题是电脑上的，电脑的终端会跟着变，所有页面里的 pane 也都按它显示。同一个菜单还能选页面的语言：跟随系统（系统是中文就显示中文，否则英文）、中文或英文。旁边显示到电脑的往返时间（如 `23 ms`，100 ms 以下绿点，300 ms 以下黄点，再高或连不上是红点和“离线”），还有一个全屏按钮，在平板上把页面铺满整个屏幕（浏览器支持时才显示，iPhone 上没有）。（页面由 `web/` 构建，用 React 和 HeroUI，打包成一个文件编进 keepane。）
 
 <p align="center">
-  <img src="docs/img/phone-zh.png" width="620"
-       alt="手机上的 keepane web：左边是 pane 列表和各自在跑的程序，右边是一个 pane 的屏幕，显示彩色的 git log，左侧一栏是每条命令的时间，下方是一排按键和输入框">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/phone-zh-light.png">
+    <img src="docs/img/phone-zh.png" width="620"
+         alt="手机上的 keepane web：左边是 pane 列表和各自在跑的程序，右边是一个 pane 的屏幕，显示彩色的 git log，左侧一栏是每条命令的时间，下方是一排按键和输入框">
+  </picture>
 </p>
 
 二维码里是地址加一个密钥，密钥每次启动重新生成（128 位随机数）。除了页面本身，没有密钥什么都拿不到；手机只能看、往 pane 里输入、用那个 ⋯ 菜单，发不了任何自己的 keepane 命令。不启动就不开。启动以后由 keepane 的 server 在后台提供服务，运行 `keepane web` 的终端马上就空出来了；它会一直开着，直到你关掉它或者 server 退出：

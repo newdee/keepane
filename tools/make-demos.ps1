@@ -25,7 +25,10 @@ param(
     [int]$Width = 0,
     [string]$Work = "target/demos",
     # Only these demos (by name, such as keepane-messages); all when empty.
-    [string[]]$Only = @()
+    [string[]]$Only = @(),
+    # The light pictures: recorded with `theme tokyo-day`, the phone page
+    # light, drawn on a light window; written as <name>-light.*.
+    [switch]$Light
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,6 +40,7 @@ $takes = @(
     @{ Env = "KEEPANE_DEMO_OUT2"; Test = "record_alerts"; Name = "keepane-alerts" },
     @{ Env = "KEEPANE_DEMO_OUT3"; Test = "record_history"; Name = "keepane-history" },
     @{ Env = "KEEPANE_DEMO_OUT4"; Test = "record_messages"; Name = "keepane-messages" },
+    @{ Env = "KEEPANE_DEMO_OUT6"; Test = "record_chart"; Name = "keepane-chart" },
     # The tour: a panel beside the terminal, and the phone (Edge through
     # puppeteer-core, as tools/make-phone-shots.ps1 does).
     @{ Env = "KEEPANE_DEMO_OUT5"; Test = "record_tour"; Name = "keepane-tour"; Panel = 380 }
@@ -56,9 +60,18 @@ if ($takes.Name -contains "keepane-tour") {
     }
     $env:KEEPANE_PHONE_NPM = (Resolve-Path $npm).Path
 }
+$suffix = ""
+if ($Light) {
+    $env:KEEPANE_DEMO_THEME = "tokyo-day"
+    $env:KEEPANE_PHONE_MODE = "light"
+    $suffix = "-light"
+} else {
+    Remove-Item Env:KEEPANE_DEMO_THEME -ErrorAction SilentlyContinue
+    Remove-Item Env:KEEPANE_PHONE_MODE -ErrorAction SilentlyContinue
+}
 foreach ($t in $takes) {
-    $frames = Join-Path $Work "$($t.Name)-frames"
-    $png = Join-Path $Work "$($t.Name)-png"
+    $frames = Join-Path $Work "$($t.Name)$suffix-frames"
+    $png = Join-Path $Work "$($t.Name)$suffix-png"
     foreach ($d in $frames, $png) {
         if (Test-Path $d) { Remove-Item -Recurse -Force $d }
         New-Item -ItemType Directory -Force $d | Out-Null
@@ -67,19 +80,19 @@ foreach ($t in $takes) {
     cargo test --release --test demo_frames -- --ignored --exact $t.Test --nocapture
     if ($LASTEXITCODE -ne 0) { throw "recording $($t.Test) failed" }
     $panel = if ($t.Panel) { $t.Panel } else { 0 }
-    pwsh -NoProfile -File tools/render-frames.ps1 -In $frames -Out $png -Panel $panel
+    pwsh -NoProfile -File tools/render-frames.ps1 -In $frames -Out $png -Panel $panel -Light:$Light
     if ($LASTEXITCODE -ne 0) { throw "rendering $($t.Name) failed" }
 
     $pattern = Join-Path $png "f%04d.png"
     $scale = if ($Width -gt 0) { "scale=${Width}:-2:flags=lanczos" } else { "null" }
-    ffmpeg -v error -y -framerate 5 -i $pattern -vf "$scale,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" "docs/img/$($t.Name).gif"
+    ffmpeg -v error -y -framerate 5 -i $pattern -vf "$scale,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" "docs/img/$($t.Name)$suffix.gif"
     if ($LASTEXITCODE -ne 0) { throw "gif $($t.Name) failed" }
-    ffmpeg -v error -y -framerate 5 -i $pattern -vf $scale -c:v libx264 -pix_fmt yuv420p -crf 26 -movflags +faststart "docs/img/$($t.Name).mp4"
+    ffmpeg -v error -y -framerate 5 -i $pattern -vf $scale -c:v libx264 -pix_fmt yuv420p -crf 26 -movflags +faststart "docs/img/$($t.Name)$suffix.mp4"
     if ($LASTEXITCODE -ne 0) { throw "mp4 $($t.Name) failed" }
 
     foreach ($still in Get-ChildItem $png -Filter "still-*.png") {
         $name = $still.BaseName.Substring("still-".Length)
-        ffmpeg -v error -y -i $still.FullName -vf $scale "docs/img/$name.png"
+        ffmpeg -v error -y -i $still.FullName -vf $scale "docs/img/$name$suffix.png"
         if ($LASTEXITCODE -ne 0) { throw "still $name failed" }
     }
 }

@@ -25,7 +25,10 @@ param(
     [string]$Title = "keepane",
     # Width of a panel beside the terminal for frames that carry a `side`
     # (the tour: a chapter's title and lines, or the phone); 0: none.
-    [int]$Panel = 0
+    [int]$Panel = 0,
+    # Draw it light: the Tokyo Day palette and a light window, for frames
+    # recorded with `theme tokyo-day`.
+    [switch]$Light
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,6 +49,17 @@ $palette = @(
 $defaultFg = "#c0caf5"
 $defaultBg = "#1a1b26"
 $chromeBg = "#16161e"
+# The window's title, the side panel's accent, text and quieter text.
+$titleFg = "#565f89"; $accentFg = "#7aa2f7"; $sideFg = "#c0caf5"; $sideMuted = "#a9b1d6"
+if ($Light) {
+    # Tokyo Day, as themes/tokyo-day.conf sets the panes.
+    $palette = @(
+        "#e9e9ed", "#f52a65", "#587539", "#8c6c3e", "#2e7de9", "#9854f1", "#007197", "#6172b0",
+        "#a1a6c5", "#f52a65", "#587539", "#8c6c3e", "#2e7de9", "#9854f1", "#007197", "#3760bf"
+    )
+    $defaultFg = "#3760bf"; $defaultBg = "#e1e2e7"; $chromeBg = "#d0d5e3"
+    $titleFg = "#848cb5"; $accentFg = "#2e7de9"; $sideFg = "#3760bf"; $sideMuted = "#6172b0"
+}
 
 function To-Color([string]$spec, [string]$fallback) {
     if (-not $spec -or $spec -eq "default") { $spec = $fallback }
@@ -100,13 +114,13 @@ $phones = @{}
 function Draw-Side($g, $side) {
     $x0 = $termW + 26
     $w = $Panel - 48
-    $accent = [System.Drawing.ColorTranslator]::FromHtml("#7aa2f7")
-    $text = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#c0caf5"))
-    $muted = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#a9b1d6"))
+    $accent = [System.Drawing.ColorTranslator]::FromHtml($accentFg)
+    $text = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($sideFg))
+    $muted = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($sideMuted))
     # The chapter's number as a chip, then its title.
     $chip = New-Object System.Drawing.SolidBrush $accent
     $g.FillRectangle($chip, [float]$x0, [float]($barH + 22), 44, 26)
-    $dark = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#1a1b26"))
+    $dark = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($defaultBg))
     $g.DrawString(('{0:00}' -f [int]$side.n), $sideNum, $dark, [float]($x0 + 10), [float]($barH + 25))
     $g.DrawString($side.title, $sideTitle, $text, [float]($x0 - 2), [float]($barH + 56))
     $y = $barH + 108
@@ -154,7 +168,7 @@ foreach ($file in $frames) {
         $g.FillEllipse($b, $dot.x - 5, ($barH / 2) - 5, 10, 10)
         $b.Dispose()
     }
-    $titleBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml("#565f89"))
+    $titleBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($titleFg))
     $titleFont = New-Object System.Drawing.Font "Segoe UI", 12, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
     $titleSize = $g.MeasureString($Title, $titleFont)
     $g.DrawString($Title, $titleFont, $titleBrush, ($termW - $titleSize.Width) / 2, ($barH - $titleSize.Height) / 2)

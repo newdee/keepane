@@ -16,8 +16,9 @@ try {
     Object.defineProperty(navigator, "language", { get: () => l });
   }, lang);
   await page.evaluateOnNewDocument((on) => localStorage.setItem("keepane-detail", on ? "1" : "0"), view === "pane-detail");
-  // The page dark, as the background the two pictures are put on.
-  await page.evaluateOnNewDocument(() => localStorage.setItem("keepane-mode", "dark"));
+  // The page dark (or light: KEEPANE_PHONE_MODE), as the background the two
+  // pictures are put on.
+  await page.evaluateOnNewDocument((m) => localStorage.setItem("keepane-mode", m), process.env.KEEPANE_PHONE_MODE || "dark");
   await page.emulate({
     viewport: { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
     userAgent:
@@ -25,16 +26,21 @@ try {
   });
   await page.goto(url, { waitUntil: "load" });
   // Ready: the list has its panes, or the pane its text.
-  await page.waitForFunction(
-    (v) =>
-      v === "list"
-        ? document.querySelectorAll("[data-pane]").length > 0
-        : v === "pane-detail"
-          ? document.querySelectorAll(".stamp").length >= 2
-          : document.getElementById("screen").textContent.trim().length > 0,
-    { timeout: 15000 },
-    view,
-  );
+  try {
+    await page.waitForFunction(
+      (v) =>
+        v === "list"
+          ? document.querySelectorAll("[data-pane]").length > 0
+          : v === "pane-detail"
+            ? document.querySelectorAll(".stamp").length >= 2
+            : document.getElementById("screen").textContent.trim().length > 0,
+      { timeout: 15000 },
+      view,
+    );
+  } catch (e) {
+    console.error(JSON.stringify(await page.evaluate(() => ({ stamps: document.querySelectorAll('.stamp').length, detail: localStorage.getItem('keepane-detail'), mode: localStorage.getItem('keepane-mode'), screen: (document.getElementById('screen')?.textContent || '').slice(0, 400), body: document.body.innerText.slice(0, 300) }))));
+    throw e;
+  }
   await new Promise((r) => setTimeout(r, 700));
   const state = await page.evaluate(() => {
     const m = document.getElementById("main");

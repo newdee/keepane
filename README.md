@@ -11,8 +11,11 @@ messages to each other through inboxes, on one computer or across two you
 have paired. The usual tmux keys, commands and config file keep working.
 
 <p align="center">
-  <img src="docs/img/keepane-tour.gif" width="900"
-       alt="A tour in four parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. keepane web prints a QR code; on a phone the list shows every pane, and a command typed there runs in build on the computer.">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-tour-light.gif">
+    <img src="docs/img/keepane-tour.gif" width="900"
+         alt="A tour in four parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. keepane web prints a QR code; on a phone the list shows every pane, and a command typed there runs in build on the computer.">
+  </picture>
 </p>
 
 - After you detach, the programs in the panes keep running. After a reboot,
@@ -48,8 +51,11 @@ Every pane has an inbox and can be given a name. Messages queue up and are
 delivered according to the receiving pane's work mode.
 
 <p align="center">
-  <img src="docs/img/keepane-messages.gif" width="880"
-       alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows the panes, an agent's inbox and the tasks in panels, puts a message first and reads it field by field">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-messages-light.gif">
+    <img src="docs/img/keepane-messages.gif" width="880"
+         alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows the panes, an agent's inbox and the tasks in panels, puts a message first and reads it field by field">
+  </picture>
 </p>
 
 ```powershell
@@ -261,13 +267,27 @@ pwsh -File installer/build-msi.ps1        # target\keepane-<version>-windows-x86
 ## Everyday use
 
 <p align="center">
-  <img src="docs/img/keepane-demo.gif" width="880"
-       alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-demo-light.gif">
+    <img src="docs/img/keepane-demo.gif" width="880"
+         alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
+  </picture>
 </p>
 
 <p align="center">
-  <img src="docs/img/keepane-alerts.gif" width="880"
-       alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-alerts-light.gif">
+    <img src="docs/img/keepane-alerts.gif" width="880"
+         alt="A deploy finishes in a window nobody is looking at, the status line marks it with #, C-b M-n jumps there, a failing command leaves its pane and exit code behind, and a popup shows the window list">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-chart-light.gif">
+    <img src="docs/img/keepane-chart.gif" width="880"
+         alt="C-b w opens the chart: keepane on top, then the sessions, the windows and the panes in open boxes; h, j, k and l move through it, a opens every node at once, v turns it into the tree and the plain list">
+  </picture>
 </p>
 
 On Windows keepane passes keys on in Windows' own win32-input-mode, so
@@ -392,8 +412,11 @@ set -g hint-open "run-shell 'idea --line {line} {file}'"
 ## Command times and history
 
 <p align="center">
-  <img src="docs/img/keepane-history.gif" width="880"
-       alt="Command times at the end of each command's line, one failing; the history picker listing pane positions and days; a day opened in the pager; a pane closed by mistake coming back with C-b u">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-history-light.gif">
+    <img src="docs/img/keepane-history.gif" width="880"
+         alt="Command times at the end of each command's line, one failing; the history picker listing pane positions and days; a day opened in the pager; a pane closed by mistake coming back with C-b u">
+  </picture>
 </p>
 
 A PowerShell, bash or zsh pane reports each command it runs through the
@@ -732,8 +755,11 @@ for a tablet (where the browser can: not on an iPhone). (The page is
 built from `web/`, React and HeroUI, into one file keepane carries.)
 
 <p align="center">
-  <img src="docs/img/phone.png" width="620"
-       alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, a row of keys and a box to type in">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/phone-light.png">
+    <img src="docs/img/phone.png" width="620"
+         alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, a row of keys and a box to type in">
+  </picture>
 </p>
 
 The code carries the address and a key made fresh at each start (128 random

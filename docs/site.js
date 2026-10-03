@@ -44,7 +44,7 @@ const ZH = {
 
   "c2.title": "铺满屏幕、从列表里挑，或者弹个菜单",
   "c2.sub":
-    "<kbd>C-b z</kbd> 把当前 pane 放大到整个窗口，再按一次还原。<kbd>C-b w</kbd> 弹出 session 和窗口的树：<kbd>j</kbd> <kbd>k</kbd> 上下，<kbd>g</kbd> <kbd>G</kbd> 到头到尾，数字直接跳，<kbd>Enter</kbd> 进去。<kbd>C-b &gt;</kbd> 把 pane 相关的命令放进一个菜单，不用记快捷键。",
+    "<kbd>C-b z</kbd> 把当前 pane 放大到整个窗口，再按一次还原。<kbd>C-b w</kbd> 弹出所有 session、窗口和 pane 的结构图：<kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> 移动，<kbd>a</kbd> 一次展开全部，<kbd>v</kbd> 切到树或纯文字列表，数字直接跳，<kbd>Enter</kbd> 进去。<kbd>C-b &gt;</kbd> 把 pane 相关的命令放进一个菜单，不用记快捷键。",
 
   "c2.p1":
     "<kbd>C-b Space</kbd> 在五种布局之间切换：等宽列、等高行、主 pane 在左或在上，还有平铺。<kbd>C-b E</kbd> 把当前 pane 旁边那一排调成一样大。",
