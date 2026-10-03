@@ -146,6 +146,9 @@ enum PromptKind {
     Command { template: Option<String> },
     /// Boxed: a `Cmd` is many times the size of the other kinds.
     Confirm(Box<Cmd>),
+    /// `x` or `D` on picker lines with a session among them: on `y`, they
+    /// go (and with `forget`, the sessions' saves too).
+    ConfirmPicker { targets: Vec<ChooserItem>, forget: bool },
     /// `/` or `?` in copy mode: the input is a pattern, not a command.
     Search { back: bool },
     /// `f` in a picker: the input filters its lines as it is typed;
@@ -871,6 +874,15 @@ pub struct Server {
     events: mpsc::UnboundedSender<Event>,
     /// JSON of every session as last autosaved, to detect structural change.
     last_saved: HashMap<String, String>,
+    /// Sessions that ended by themselves (their last program exited) and
+    /// when: their saves are forgotten a little later, unless the machine
+    /// is shutting down (then it is the shutdown that ended them, and
+    /// `resume` is to bring them back).
+    forget_after: Vec<(String, Instant)>,
+    /// When shutdown, restart or logoff was last announced (`EndSession`):
+    /// for a while after, nothing is forgotten (and if it was called off,
+    /// forgetting goes on after that).
+    ending: Option<Instant>,
     /// Pane messages (docs/design/mailbox.md): the id the last one got.
     next_msg: actor::MsgId,
     /// What happened to every message, and the event log it is kept in.
@@ -1240,6 +1252,8 @@ impl Server {
             waits: HashMap::new(),
             events,
             last_saved: HashMap::new(),
+            forget_after: Vec::new(),
+            ending: None,
             next_msg: 0,
             observe: observe::Store::default(),
             msg_waits: Vec::new(),
@@ -1981,7 +1995,15 @@ impl Server {
                     self.note_message(&format!("pane %{id} ({command}) exited with {code}"));
                     return;
                 }
+                // Its last program gone, the session ends by itself: its
+                // save is to be forgotten (see `forget_due`).
+                let session = self.session_of_pane(id).and_then(|s| self.session(s)).map(|s| s.name.clone());
                 self.remove_pane(id, Some(code));
+                if let Some(name) = session
+                    && !self.sessions.iter().any(|s| s.name == name)
+                {
+                    self.forget_after.push((name, Instant::now()));
+                }
             }
             Event::Connected(id, tx) => {
                 self.clients.insert(
@@ -2071,6 +2093,9 @@ impl Server {
             }
             Event::EndSession(done) => {
                 log::info!("session ending: saving every session");
+                // The shells dying now are the shutdown's doing: keep their saves.
+                self.ending = Some(Instant::now());
+                self.forget_after.clear();
                 self.save_everything();
                 // And what the panes show goes to their history logs.
                 for w in self.sessions.iter_mut().flat_map(|s| s.windows.iter_mut()) {
@@ -2108,6 +2133,7 @@ impl Server {
                 self.public_ip_tick();
                 self.web_tick();
                 self.web_fit_tick();
+                self.forget_due();
                 // An open chart keeps the paired machines' panes fresh.
                 if self.a_chart_is_open() {
                     self.ask_remote_trees(false);
@@ -6286,6 +6312,16 @@ impl Server {
             p.hint = None; // Tab's candidates stay up for one key only
         }
         match &p.kind {
+            PromptKind::ConfirmPicker { .. } => {
+                let prompt = c.prompt.take().unwrap();
+                if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y'))
+                    && !k.ctrl
+                    && !k.alt
+                    && let PromptKind::ConfirmPicker { targets, forget } = prompt.kind
+                {
+                    self.picker_run(cid, targets, false, forget);
+                }
+            }
             PromptKind::Confirm(_) => {
                 let prompt = c.prompt.take().unwrap();
                 if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y'))
@@ -7037,57 +7073,21 @@ impl Server {
             }
             // The task board and the tree act on the tagged lines, else the
             // one under the cursor, and stay open (the list is live, so the
-            // rows change in place).
+            // rows change in place). A session asks first.
             (KeyCode::Char(key @ ('x' | 'r')), false, false)
                 if matches!(ch.kind, ChooserKind::Jobs)
                     || (key == 'x' && matches!(ch.kind, ChooserKind::Tree { .. })) =>
             {
                 let targets = ch.targets();
-                ch.tagged.clear();
-                // Each target is looked up by identity just before its
-                // command runs: killing one window renumbers the rest.
-                for item in targets {
-                    let cmd = match item {
-                        ChooserItem::Job(sid, wid, pid) => match self.pane_target(sid, wid, pid) {
-                            Some(target) if key == 'x' => Cmd::KillPane { target: Some(target), all_but: false },
-                            Some(target) => {
-                                Cmd::RespawnPane { target: Some(target), kill: true, argv: Vec::new(), window: false }
-                            }
-                            None => {
-                                self.message(cid, "pane is gone");
-                                continue;
-                            }
-                        },
-                        ChooserItem::Tree(sid, wid) => {
-                            let Some(s) = self.session(sid) else {
-                                self.message(cid, "session is gone");
-                                continue;
-                            };
-                            let mut target = Target { session: Some(s.name.clone()), ..Default::default() };
-                            match wid {
-                                None => Cmd::KillSession { target: Some(target), all_but: false },
-                                Some(w) => match s.windows.iter().position(|x| x.id == w) {
-                                    Some(i) => {
-                                        target.window = Some((i + self.opts.base_index).to_string());
-                                        Cmd::KillWindow { target: Some(target), all_but: false }
-                                    }
-                                    None => {
-                                        self.message(cid, "window is gone");
-                                        continue;
-                                    }
-                                },
-                            }
-                        }
-                        ChooserItem::Host(_) | ChooserItem::Remote(..) => {
-                            self.message(cid, "x closes what is on this machine only");
-                            continue;
-                        }
-                        _ => continue,
-                    };
-                    if let Outcome::Error(e) = self.exec(cmd, Some(cid)) {
-                        self.message(cid, &e);
-                    }
-                }
+                self.picker_act(cid, targets, key == 'r', false);
+            }
+            // `D` or Delete in the tree: killed, and a session's save
+            // forgotten, so that `resume` does not bring it back.
+            (KeyCode::Char('D'), false, false) | (KeyCode::DC, false, false)
+                if matches!(ch.kind, ChooserKind::Tree { .. }) =>
+            {
+                let targets = ch.targets();
+                self.picker_act(cid, targets, false, true);
             }
             // Past nine a line number takes more than one digit (`1` `2`).
             (KeyCode::Char(d @ '0'..='9'), false, false) => {
@@ -7170,6 +7170,129 @@ impl Server {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// `x` (or `r`, `D`) on picker lines: a session among them is asked
+    /// about first, since killing it cannot be undone; the rest goes at once.
+    fn picker_act(&mut self, cid: ClientId, targets: Vec<ChooserItem>, restart: bool, forget: bool) {
+        let names: Vec<String> = targets
+            .iter()
+            .filter_map(|t| match t {
+                ChooserItem::Tree(sid, None) => self.session(*sid).map(|s| s.name.clone()),
+                _ => None,
+            })
+            .collect();
+        if restart || names.is_empty() {
+            return self.picker_run(cid, targets, restart, forget);
+        }
+        let what = if forget {
+            format!(
+                "kill and forget {} {} (resume will not bring it back)? (y/n) ",
+                if names.len() == 1 { "session" } else { "sessions" },
+                names.join(", ")
+            )
+        } else {
+            format!("kill {} {}? (y/n) ", if names.len() == 1 { "session" } else { "sessions" }, names.join(", "))
+        };
+        if let Some(c) = self.clients.get_mut(&cid) {
+            c.prompt = Some(Prompt {
+                kind: PromptKind::ConfirmPicker { targets, forget },
+                label: what,
+                input: String::new(),
+                cursor: 0,
+                hint: None,
+            });
+        }
+    }
+
+    /// What `picker_act` does (after the question, for a session).
+    fn picker_run(&mut self, cid: ClientId, targets: Vec<ChooserItem>, restart: bool, forget: bool) {
+        if let Some(ch) = self.clients.get_mut(&cid).and_then(|c| c.chooser.as_mut()) {
+            ch.tagged.clear();
+        }
+        // Each target is looked up by identity just before its command
+        // runs: killing one window renumbers the rest.
+        for item in targets {
+            let mut forget_name = None;
+            let cmd = match item {
+                ChooserItem::Job(sid, wid, pid) => match self.pane_target(sid, wid, pid) {
+                    Some(target) if !restart => Cmd::KillPane { target: Some(target), all_but: false },
+                    Some(target) => {
+                        Cmd::RespawnPane { target: Some(target), kill: true, argv: Vec::new(), window: false }
+                    }
+                    None => {
+                        self.message(cid, "pane is gone");
+                        continue;
+                    }
+                },
+                ChooserItem::Tree(sid, wid) => {
+                    let Some(s) = self.session(sid) else {
+                        self.message(cid, "session is gone");
+                        continue;
+                    };
+                    let mut target = Target { session: Some(s.name.clone()), ..Default::default() };
+                    match wid {
+                        None => {
+                            forget_name = forget.then(|| s.name.clone());
+                            Cmd::KillSession { target: Some(target), all_but: false }
+                        }
+                        Some(w) => match s.windows.iter().position(|x| x.id == w) {
+                            Some(i) => {
+                                target.window = Some((i + self.opts.base_index).to_string());
+                                Cmd::KillWindow { target: Some(target), all_but: false }
+                            }
+                            None => {
+                                self.message(cid, "window is gone");
+                                continue;
+                            }
+                        },
+                    }
+                }
+                ChooserItem::Host(_) | ChooserItem::Remote(..) => {
+                    self.message(cid, "x closes what is on this machine only");
+                    continue;
+                }
+                _ => continue,
+            };
+            if let Outcome::Error(e) = self.exec(cmd, Some(cid)) {
+                self.message(cid, &e);
+                continue;
+            }
+            // Its save goes too (none there, say with autosave off: nothing to do).
+            if let Some(name) = forget_name {
+                self.forget_saved(&name);
+            }
+        }
+    }
+
+    /// The saves of sessions that ended by themselves `FORGET_AFTER` ago,
+    /// unless a shutdown was announced in the last `ENDING_HOLDS`, a session of that name runs
+    /// again, or autosave is off (a save made by hand is kept).
+    fn forget_due(&mut self) {
+        if self.ending.is_some_and(|t| t.elapsed() < ENDING_HOLDS) {
+            return;
+        }
+        let (due, wait): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.forget_after).into_iter().partition(|(_, at)| at.elapsed() >= FORGET_AFTER);
+        self.forget_after = wait;
+        for (name, _) in due {
+            if self.opts.autosave && !self.sessions.iter().any(|s| s.name == name) {
+                self.forget_saved(&name);
+            }
+        }
+    }
+
+    /// Remove a session's save file, so that `resume` does not bring it back.
+    fn forget_saved(&mut self, name: &str) {
+        if let Some(p) = crate::resurrect::find(&self.sessions_dir(), name) {
+            match std::fs::remove_file(&p) {
+                Ok(()) => {
+                    self.last_saved.remove(&p.to_string_lossy().into_owned());
+                    log::info!("forgot the save of session {name}");
+                }
+                Err(e) => log::warn!("forget {}: {e}", p.display()),
+            }
         }
     }
 
@@ -8210,13 +8333,13 @@ impl Server {
             let actions = match ch.kind {
                 ChooserKind::Jobs => "Enter go  x kill  r restart  t tag  f filter",
                 ChooserKind::Tree { style: TreeStyle::Chart, .. } if ch.all => {
-                    "Enter go  x kill  t tag  f filter  a branch  v tree"
+                    "x kill  D delete  t tag  f filter  a branch  v tree"
                 }
-                ChooserKind::Tree { style: TreeStyle::Chart, .. } => "Enter go  x kill  t tag  f filter  a all  v tree",
+                ChooserKind::Tree { style: TreeStyle::Chart, .. } => "x kill  D delete  t tag  f filter  a all  v tree",
                 ChooserKind::Tree { style: TreeStyle::Tree, .. } => {
-                    "Enter go  x kill  t tag  f filter  -/+ fold  v list"
+                    "x kill  D delete  t tag  f filter  -/+ fold  v list"
                 }
-                ChooserKind::Tree { .. } => "Enter select  x kill  t tag  f filter  v chart",
+                ChooserKind::Tree { .. } => "x kill  D delete  f filter  v chart",
                 ChooserKind::Clients => "Enter detach  f filter",
                 ChooserKind::Buffers => "Enter paste  f filter",
                 ChooserKind::History { .. } => "Enter open  + - fold",
@@ -8522,6 +8645,13 @@ fn chooser_filter(items: &[ChooserItem], lines: &[String], filter: &str) -> Vec<
     }
     keep
 }
+
+/// How long after a session ends by itself its save is forgotten: long
+/// enough for a shutdown that killed its shells to say so first.
+const FORGET_AFTER: Duration = Duration::from_secs(10);
+/// How long after a shutdown is announced nothing is forgotten: the
+/// machine is expected to be gone by then; if it is not, it was called off.
+const ENDING_HOLDS: Duration = Duration::from_secs(60);
 
 const STATUS_SHELL_TIMEOUT: Duration = Duration::from_secs(30);
 /// A `#(command)` run for a one-shot `display-message -p` or `jobs -F`

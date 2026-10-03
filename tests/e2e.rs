@@ -169,6 +169,13 @@ impl Harness {
         }
         let socket = format!("test-{name}-{}", std::process::id());
         let s = socket.clone();
+        // Process ids come round again, and with them the names below: what
+        // an earlier run left under them (saved sessions, link keys and
+        // permissions) must not leak into this one.
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir().join(format!("keepane-test-sessions-{}-{name}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(keepane::link::dir(&socket));
         // An empty config, not the machine's `~/.keepane.conf`: a theme there
         // changes the status line these tests read.
         let config = std::env::temp_dir().join(format!("keepane-test-empty-{}.conf", std::process::id()));
@@ -255,6 +262,18 @@ impl Harness {
                 return out;
             }
             assert!(Instant::now() < deadline, "timeout waiting for {what} in {target}:\n{out}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    /// Run a command until its (code, stdout) satisfy `ok` (10 s at most).
+    async fn wait_for_cli(&self, what: &str, argv: &[&str], ok: impl Fn(i32, &str) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (code, out, _) = self.cli(argv).await;
+            if ok(code, &out) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timeout waiting for {what}: {code} {out}");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -1393,7 +1412,7 @@ async fn choose_tree_as_a_chart() {
     assert!(sessions < windows && windows < panes, "{text}");
     assert!(rows[sessions + 1].contains("2 windows · attached"), "{text}");
     // The keys fit in 80 columns, down to `q quit`.
-    assert!(text.contains("hjkl move  Enter go  x kill  t tag  f filter  a all  v tree  q quit"), "{text}");
+    assert!(text.contains("hjkl move  x kill  D delete  t tag  f filter  a all  v tree  q quit"), "{text}");
     // a: every node, then the branch again.
     c.type_str("a").await;
     c.wait_for("all of it", |s| {
@@ -1501,6 +1520,115 @@ async fn choose_tree_as_a_chart() {
     h.cli(&["kill-server"]).await;
 }
 
+/// In `C-b w`, `x` kills and `D` (or Delete) kills and forgets: a session
+/// asks first, `n` leaves it; one killed with `x` can be resumed, one with
+/// `D` cannot; a window goes without a question. A session whose last
+/// program exits forgets its save a moment later; `kill-server` keeps them.
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_tree_kills_or_forgets_a_session() {
+    let h = Harness::start("forget").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "here"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    for s in ["keepme", "gone"] {
+        let (code, _, err) = h.cli(&["new", "-d", "-s", s]).await;
+        assert_eq!(code, 0, "{err}");
+    }
+    h.cli(&["new-window", "-d", "-t", "keepme"]).await;
+    h.cli(&["save-session", "-a"]).await;
+    let saved = async || h.cli(&["list-saved"]).await.1;
+    let names = |out: &str| out.lines().filter_map(|l| l.split(':').next()).map(str::to_string).collect::<Vec<_>>();
+    assert_eq!(names(&saved().await).len(), 3, "{}", saved().await);
+    h.cli(&["set", "-g", "choose-tree-style", "list"]).await;
+    // The picker on one session (filtered to it), then a key.
+    let pick = async |c: &mut Conn, name: &str| {
+        c.prefix('w').await;
+        c.wait_for("picker", |s| s.contents().contains("q quit")).await;
+        c.type_str("f").await;
+        c.type_str(name).await;
+        c.enter().await;
+        c.wait_for("filtered", |s| s.contents().contains(&format!("[filter: {name}]"))).await;
+        // The session: the first line.
+        c.type_str("g").await;
+        c.wait_for("on the session", |s| s.contents().contains("[1/")).await;
+    };
+    // x on a session: asked; n leaves it.
+    pick(&mut c, "keepme").await;
+    c.type_str("x").await;
+    c.wait_for("asked", |s| s.contents().contains("kill session keepme? (y/n)")).await;
+    c.type_str("n").await;
+    c.wait_for("not asked any more", |s| !s.contents().contains("(y/n)")).await;
+    assert_eq!(h.cli(&["has-session", "-t", "keepme"]).await.0, 0, "n kept it");
+    // y: gone, its save kept (resume brings it back).
+    c.type_str("x").await;
+    c.wait_for("asked again", |s| s.contents().contains("kill session keepme? (y/n)")).await;
+    c.type_str("y").await;
+    h.wait_for_cli("keepme killed", &["has-session", "-t", "keepme"], |code, _| code == 1).await;
+    assert!(names(&saved().await).contains(&"keepme".to_string()), "{}", saved().await);
+    c.type_str("q").await;
+    // D on a session: asked, then gone with its save.
+    pick(&mut c, "gone").await;
+    c.type_str("D").await;
+    c.wait_for("asked", |s| {
+        s.contents().contains("kill and forget session gone (resume will not bring it back)? (y/n)")
+    })
+    .await;
+    c.type_str("y").await;
+    h.wait_for_cli("gone killed", &["has-session", "-t", "gone"], |code, _| code == 1).await;
+    assert!(!names(&saved().await).contains(&"gone".to_string()), "{}", saved().await);
+    c.type_str("q").await;
+    // D (here the Delete key) on a window: no question, gone at once.
+    h.cli(&["new-window", "-d", "-t", "here", "-n", "spare"]).await;
+    c.prefix('w').await;
+    c.wait_for("picker", |s| s.contents().contains("q quit")).await;
+    c.type_str("f").await;
+    c.type_str("spare").await;
+    c.enter().await;
+    c.wait_for("filtered", |s| s.contents().contains("[filter: spare]")).await;
+    c.key(0x28, '\0', 0).await; // Down, from the session to its window
+    c.key(0x2E, '\0', 0).await; // Delete
+    h.wait_for_cli("window gone", &["list-windows", "-t", "here"], |_, out| !out.contains("spare")).await;
+    assert!(!c.text().contains("(y/n)"), "{}", c.text());
+    c.type_str("q").await;
+    // A session whose last program exits forgets its save, a moment later.
+    // (On Windows a test here that announces a shutdown reaches every
+    // server in this process, and a shutdown keeps the saves: an attempt
+    // with one in it does not count.)
+    #[cfg(windows)]
+    let shutdowns = keepane::shutdown::fired;
+    #[cfg(not(windows))]
+    let shutdowns = || 0usize;
+    let mut forgotten = false;
+    for attempt in 0..3 {
+        let name = format!("ends{attempt}");
+        h.cli(&["new", "-d", "-s", &name]).await;
+        h.cli(&["save-session", "-t", &name]).await;
+        let before = shutdowns();
+        h.cli(&["send-keys", "-t", &name, "exit", "Enter"]).await;
+        h.wait_for_cli("it ended", &["has-session", "-t", &name], |code, _| code == 1).await;
+        // Not at once (a shutdown may be what ended it): still there 3 s later.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(names(&saved().await).contains(&name), "not at once: a shutdown may be what ended it");
+        // 10 s; a shutdown announced in the last minute holds it a minute.
+        let wait = if shutdowns() > 0 { 80 } else { 25 };
+        let deadline = Instant::now() + Duration::from_secs(wait);
+        while names(&saved().await).contains(&name) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        if !names(&saved().await).contains(&name) {
+            forgotten = true;
+            break;
+        }
+        assert_ne!(shutdowns(), before, "the save of a session that ended stayed: {}", saved().await);
+    }
+    assert!(forgotten, "a shutdown came in every attempt"); // kill-server keeps every save: here and keepme come back.
+    h.cli(&["kill-server"]).await;
+    let out = std::fs::read_dir(&h.sessions_dir)
+        .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert!(out.iter().any(|f| f.starts_with("here")) && out.iter().any(|f| f.starts_with("keepme")), "{out:?}");
+    assert!(!out.iter().any(|f| f.starts_with("gone")), "{out:?}");
+}
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_tree_degenerate_sizes_and_wide_names() {
     let h = Harness::start("choose-edge").await;
@@ -5993,6 +6121,19 @@ async fn a_shutdown_saves_every_session_first() {
     assert_eq!(allowed, 1, "the shutdown may go on");
     let saved = file();
     assert!(saved.contains("typed-just-before-shutdown"), "saved on the way out: {saved}");
+    // A session whose shell ends now (the shutdown killing it) keeps its
+    // save: `resume` after the reboot is to bring it back.
+    h.cli(&["new", "-d", "-s", "dies"]).await;
+    h.cli(&["save-session", "-t", "dies"]).await;
+    let allowed = tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_QUERYENDSESSION, 0, 0) })
+        .await
+        .unwrap();
+    assert_eq!(allowed, 1);
+    h.cli(&["send-keys", "-t", "dies", "exit", "Enter"]).await;
+    h.wait_for_cli("dies ended", &["has-session", "-t", "dies"], |code, _| code == 1).await;
+    tokio::time::sleep(Duration::from_secs(13)).await;
+    let (_, out, _) = h.cli(&["list-saved"]).await;
+    assert!(out.lines().any(|l| l.starts_with("dies:")), "kept through the shutdown: {out}");
     // `autosave off` means off at shutdown too: nothing is written.
     h.cli(&["set", "-g", "autosave", "off"]).await;
     h.cli(&["send-keys", "-t", "bye:0", "echo after-autosave-off", "Enter"]).await;
@@ -6150,6 +6291,9 @@ async fn choose_tree_filters_and_tags() {
     })
     .await;
     c.key(b'X' as u16, 'x', 0).await;
+    // A session among them (gamma): asked first, and it says which.
+    c.wait_for("asked", |s| s.contents().contains("kill session gamma? (y/n)")).await;
+    c.type_str("y").await;
     c.wait_for("killed", |s| {
         let t = s.contents();
         t.contains("/3] j/k move") && !t.contains("beta") && !t.contains("gamma") && !t.contains("tagged]")
