@@ -735,19 +735,31 @@ pane or show its inbox (also a tap on a card's "queued" or "on #N" mark): the
 message it works on, each waiting one whole, to put first, up, down or delete
 (and undo), and the last few it finished. The view menu holds the rest: When
 each command ran adds a column with the time each command started (tap one for
-its date, how long it took and its exit code; see "Command times and
-history"). A tap on a session or window folds it (the device remembers); its
-right click or long press renames it or folds every window of a session at
-once. A pane wider than the phone wraps its long lines at the phone's edge
-(the view menu turns that off, for a full-screen program). Fit to this screen,
-in the same menu, sizes the pane to the phone: it fills its window and its
-session takes the phone's columns and rows, so a full-screen program (vim,
-htop, an agent's screen) draws for the phone. Meanwhile the computer and any
-other phone see that session at the phone's size too (a session has one size;
-the page and the status line say so); leaving the pane, going back to the list
-or putting the phone away gives it back its size, and so does keepane when no
-phone has shown it for 10 seconds. Everything runs on the computer; the phone
-only shows and types. "Add to Home Screen" makes it open like an app.
+its date, how long it took and its exit code, and to copy the command or what
+it printed; see "Command times and history"). A tap on a session or window
+folds it (the device remembers); its right click or long press renames it or
+folds every window of a session at once. A pane wider than the phone wraps its
+long lines at the phone's edge (the view menu turns that off, for a
+full-screen program). Fit to this screen, in the same menu, sizes the pane to
+the phone: it fills its window and its session takes the phone's columns and
+rows, so a full-screen program (vim, htop, an agent's screen) draws for the
+phone. Meanwhile the computer and any other phone see that session at the
+phone's size too (a session has one size; the page and the status line say
+so); leaving the pane, going back to the list or putting the phone away gives
+it back its size, and so does keepane when no phone has shown it for 10
+seconds. Everything runs on the computer; the phone only shows and types. "Add
+to Home Screen" makes it open like an app.
+
+On a shell or ai pane, the envelope beside the box sends what is in it as a
+message instead of typing it: into the pane's inbox, from the user, to wait
+its turn like any other (as `send-message` does). The ⋯ menu and a card's menu
+set what a pane does with the messages it gets: normal leaves them waiting,
+shell runs them at its prompt, ai hands them to its agent. The view menu also
+finds text in the output (the lines with it marked, ↑ ↓ between them), copies
+the screen's text, and sizes the text (pinching the screen does too; each
+device keeps its own). The + at the top starts a new session in your home
+directory. A pane whose program ended (with `remain-on-exit` on) says how it
+ended, and Run it again starts the program again.
 
 The same page works in a computer's browser: on a wide screen the list stays
 on the left and the pane fills the right. The button at the top left folds the

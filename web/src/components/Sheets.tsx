@@ -330,7 +330,7 @@ export function RenameDialog({
   ask,
   onDone,
 }: {
-  ask: { title: string; value: string } | null;
+  ask: { title: string; value: string; placeholder?: string; ok?: string } | null;
   onDone: (name: string | null) => void;
 }) {
   const [v, setV] = useState("");
@@ -355,6 +355,7 @@ export function RenameDialog({
                 autoFocus
                 fullWidth
                 value={v}
+                placeholder={ask?.placeholder}
                 onChange={(e) => setV(e.target.value)}
                 autoCapitalize="off"
                 autoComplete="off"
@@ -368,7 +369,7 @@ export function RenameDialog({
             <Button variant="secondary" onPress={() => onDone(null)}>
               {t("Cancel", "取消")}
             </Button>
-            <Button onPress={() => onDone(v.trim())}>{t("OK", "确定")}</Button>
+            <Button onPress={() => onDone(v.trim())}>{ask?.ok ?? t("OK", "确定")}</Button>
           </Modal.Footer>
         </Modal.Dialog>
       </Modal.Container>

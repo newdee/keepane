@@ -1,6 +1,8 @@
 import { Chip } from "@heroui/react";
 import {
   BellRing,
+  Bot,
+  Circle,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
@@ -10,9 +12,11 @@ import {
   Moon,
   PanelBottom,
   Plus,
+  RotateCcw,
   Rows2,
   SquareArrowOutUpRight,
   SquarePen,
+  SquareTerminal,
   Terminal,
   X,
 } from "lucide-react";
@@ -75,6 +79,18 @@ export function PaneList({ panes, current, readOnly, onOpen, onRename, onInbox, 
         { id: "rename-session", label: t("Rename its session", "重命名所在 session"), icon: <PanelBottom className="size-4" /> },
         { id: "kill-pane", label: t("Close this pane", "关闭这个 pane"), icon: <X className="size-4" />, danger: true },
       );
+    // Its program ended: run it again.
+    if (!readOnly && p.dead)
+      items.splice(1, 0, { id: "respawn", label: t("Run it again", "重新运行"), icon: <RotateCcw className="size-4" /> });
+    // What it does with the messages it gets.
+    if (!readOnly) {
+      const mode = p.mode || "normal";
+      items.push(
+        { id: "mode:normal", label: t("normal: leaves them waiting", "normal：消息留着等"), icon: <Circle className="size-4" />, section: t("Messages it gets", "收到的消息"), checked: mode === "normal" },
+        { id: "mode:shell", label: t("shell: runs them at its prompt", "shell：在提示符下执行"), icon: <SquareTerminal className="size-4" />, checked: mode === "shell" },
+        { id: "mode:ai", label: t("ai: hands them to its agent", "ai：交给 agent"), icon: <Bot className="size-4" />, checked: mode === "ai" },
+      );
+    }
     setMenu({
       x,
       y,

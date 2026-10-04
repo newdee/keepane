@@ -21,7 +21,11 @@ export type State = { tone: "success" | "warning" | "danger" | null; label: stri
 /** A pane's state, as the dashboard gives it: an agent or shell pane is free
  *  or busy; a normal pane is neither; a pane whose program ended has exited. */
 export function stateOf(p: Pane): State {
-  if (p.dead) return { tone: "danger", label: t("exited", "已退出") };
+  if (p.dead)
+    return {
+      tone: "danger",
+      label: p.exit != null ? t(`exited (exit ${p.exit})`, `已退出（退出码 ${p.exit}）`) : t("exited", "已退出"),
+    };
   if (!p.mode || p.mode === "normal") return { tone: null, label: "" };
   if (p.unheard) return { tone: "warning", label: t("never said it is free", "没报告过空闲") };
   return p.idle ? { tone: "success", label: t("free", "空闲") } : { tone: "warning", label: t("busy", "忙") };

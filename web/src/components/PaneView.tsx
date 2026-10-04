@@ -1,7 +1,17 @@
-import { Button, Dropdown, Header, Label, Separator, TextArea, toast, Tooltip } from "@heroui/react";
+import { Button, Dropdown, Header, Input, Label, Separator, TextArea, toast, Tooltip } from "@heroui/react";
 import {
   ArrowLeft,
+  Bot,
   Check,
+  ChevronUp,
+  Circle,
+  Copy,
+  Mail,
+  RotateCcw,
+  Search,
+  SquareTerminal,
+  ZoomIn,
+  ZoomOut,
   Fullscreen,
   SlidersHorizontal,
   Minimize,
@@ -27,6 +37,8 @@ import { ansiToHtml, blank } from "../ansi";
 import { bounced, headOf, stampDetail, stampText, under, where } from "../format";
 import { useScreen, useStored, useVisible } from "../hooks";
 import { t } from "../i18n";
+import { copyText, outputOf, plain } from "../copy";
+import { ContextMenu, type MenuAt } from "./ContextMenu";
 import { ConfirmClose, History, type Sent } from "./Sheets";
 
 // Buttons: what they show, what they send (a named key, `=` text, `@` the
@@ -48,6 +60,10 @@ const GUTTER = 6;
 // default), or keeps its width and scrolls sideways.
 const READABLE = 9;
 const WRAPPED = 12;
+// The screen's text size, as this device keeps it: a pinch, or A+ A−.
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 2;
+const zoomed = (z: number) => Math.round(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) * 100) / 100;
 
 type Props = {
   id: string;
@@ -77,6 +93,8 @@ export function PaneView(props: Props) {
   const [detail, setDetail] = useStored<boolean | number>("keepane-detail", false);
   // Enter in the box: types the text (a second Enter runs it), or types and runs.
   const [enterRuns, setEnterRuns] = useStored<boolean>("keepane-enter-runs", false);
+  const [zoomStored, setZoom] = useStored<number>("keepane-zoom", 1);
+  const zoom = typeof zoomStored === "number" && zoomStored > 0 ? zoomed(zoomStored) : 1;
   const [fitting, setFitting] = useState(false);
   const mainRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -105,7 +123,7 @@ export function PaneView(props: Props) {
   const cols = (p ? p.cols : 80) + (detail ? GUTTER : 0);
   const fit = (width - 24) / (cols * charRatio);
   const wrapping = !!wrap && fit < READABLE;
-  const fontSize = wrapping ? WRAPPED : Math.max(8, Math.min(15, fit));
+  const fontSize = (wrapping ? WRAPPED : Math.max(8, Math.min(15, fit))) * zoom;
   // Wrapping here, the lines the pane itself wrapped come joined, so that a
   // line breaks once, at this page's edge.
   const query = `pane=${q(id)}&history=300${wrapping ? "&join=1" : ""}`;
@@ -117,10 +135,10 @@ export function PaneView(props: Props) {
   const size = useCallback(() => {
     const m = mainRef.current!;
     return {
-      cols: Math.max(10, Math.floor((m.clientWidth - 24) / (WRAPPED * charRatio))),
-      rows: Math.max(3, Math.floor((m.clientHeight - 16) / (WRAPPED * 1.25))),
+      cols: Math.max(10, Math.floor((m.clientWidth - 24) / (WRAPPED * zoom * charRatio))),
+      rows: Math.max(3, Math.floor((m.clientHeight - 16) / (WRAPPED * zoom * 1.25))),
     };
-  }, [charRatio]);
+  }, [charRatio, zoom]);
   const fitNow = useCallback(
     async (say: boolean) => {
       if (readOnly) return;
@@ -169,10 +187,25 @@ export function PaneView(props: Props) {
 
   // ---- The screen
   const [stick, setStick] = useState(true);
+  // Looking for text: the words (null: not looking), the lines that have
+  // them, the one shown.
+  const [find, setFind] = useState<string | null>(null);
+  const [hit, setHit] = useState(0);
+  const lines = useMemo(() => {
+    const l = screen.text.split("\n");
+    while (l.length && blank(l[l.length - 1])) l.pop();
+    return l;
+  }, [screen.text]);
+  const hits = useMemo(() => {
+    const w = find?.trim().toLowerCase();
+    if (!w) return [];
+    return lines.flatMap((l, i) => (plain(l).toLowerCase().includes(w) ? [i] : []));
+  }, [lines, find]);
+  const now = hits.length ? hits[Math.min(hit, hits.length - 1)] : -1;
   const html = useMemo(() => {
-    const lines = screen.text.split("\n");
-    while (lines.length && blank(lines[lines.length - 1])) lines.pop();
-    if (!detail) return ansiToHtml(lines.join("\n"), theme.palette);
+    const mark = (i: number, h: string) => (hits.includes(i) ? `<span class="hit${i === now ? " now" : ""}">${h}</span>` : h);
+    if (!detail && !hits.length) return ansiToHtml(lines.join("\n"), theme.palette);
+    if (!detail) return lines.map((l, i) => mark(i, ansiToHtml(l, theme.palette))).join("\n");
     // capture-pane ends every coloured line with a reset, so each line can be
     // turned into HTML on its own.
     const at = new Map(screen.marks.map((m) => [m[0], m]));
@@ -182,14 +215,64 @@ export function PaneView(props: Props) {
         const g = m
           ? `<span class="stamp${m[3] ? " fail" : ""}" data-i="${i}">${stampText(m)}</span> `
           : " ".repeat(GUTTER);
-        return g + ansiToHtml(l, theme.palette);
+        return g + mark(i, ansiToHtml(l, theme.palette));
       })
       .join("\n");
-  }, [screen.text, screen.marks, detail, theme.palette]);
+  }, [lines, screen.marks, detail, theme.palette, hits, now]);
   useLayoutEffect(() => {
     const m = mainRef.current;
-    if (m && stick) m.scrollTop = m.scrollHeight;
-  }, [html, stick, fontSize]);
+    if (m && stick && find === null) m.scrollTop = m.scrollHeight;
+  }, [html, stick, fontSize, find]);
+  // The line found, in the middle of the screen.
+  useLayoutEffect(() => {
+    if (now >= 0) mainRef.current?.querySelector(".hit.now")?.scrollIntoView({ block: "center" });
+  }, [now, html]);
+  const step = (d: number) => hits.length && setHit((h) => (Math.min(h, hits.length - 1) + d + hits.length) % hits.length);
+
+  // ---- Two fingers on the screen: its text bigger or smaller, not the page.
+  // (The size as it is now, read through a ref: the listeners stay put for
+  // the whole pinch.)
+  const zoomNow = useRef(zoom);
+  zoomNow.current = zoom;
+  const setZoomNow = useRef(setZoom);
+  setZoomNow.current = setZoom;
+  useEffect(() => {
+    const m = mainRef.current;
+    if (!m) return;
+    let start: { d: number; z: number } | null = null;
+    const dist = (e: TouchEvent) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    const down = (e: TouchEvent) => {
+      if (e.touches.length === 2) start = { d: dist(e), z: zoomNow.current };
+    };
+    const move = (e: TouchEvent) => {
+      if (!start || e.touches.length !== 2) return;
+      e.preventDefault();
+      setZoomNow.current(zoomed((start.z * dist(e)) / Math.max(1, start.d)));
+    };
+    const up = (e: TouchEvent) => {
+      if (e.touches.length < 2) start = null;
+    };
+    // Safari's own pinch: not here.
+    const gesture = (e: Event) => e.preventDefault();
+    m.addEventListener("touchstart", down, { passive: true });
+    m.addEventListener("touchmove", move, { passive: false });
+    m.addEventListener("touchend", up);
+    m.addEventListener("gesturestart", gesture);
+    return () => {
+      m.removeEventListener("touchstart", down);
+      m.removeEventListener("touchmove", move);
+      m.removeEventListener("touchend", up);
+      m.removeEventListener("gesturestart", gesture);
+    };
+  }, []);
+
+  // ---- Copying: the whole screen (its history too), or what one command printed.
+  const copied = async (s: string) => {
+    if (!s) return void toast(t("Nothing to copy", "没有可复制的内容"), { timeout: 2000 });
+    if (await copyText(s)) toast.success(t("Copied", "已复制"), { timeout: 1500 });
+    else toast.danger(t("This browser would not copy", "这个浏览器不让复制"));
+  };
+  const [stampMenu, setStampMenu] = useState<MenuAt | null>(null);
   useEffect(() => setStick(true), [id]);
 
   // ---- Swiping across the pane: the next pane (to the left) or the one
@@ -249,6 +332,18 @@ export function PaneView(props: Props) {
     if (what === "rename-session") return props.onRename("session", p);
     if (what === "kill-pane") return setClosing(true);
     setActing(true);
+    if (what.startsWith("mode:")) {
+      try {
+        await post(`/api/action?pane=${q(id)}&do=mode&mode=${what.slice(5)}`);
+        await props.reloadPanes();
+        toast.success(t(`${what.slice(5)} mode`, `${what.slice(5)} 模式`), { timeout: 2000 });
+      } catch (e) {
+        toast.danger((e as Error).message);
+      } finally {
+        setActing(false);
+      }
+      return;
+    }
     try {
       const before = new Set(panes.map((x) => x.id));
       await post(`/api/action?pane=${q(id)}&do=${what}`);
@@ -288,6 +383,17 @@ export function PaneView(props: Props) {
       toggleDetail();
     } else if (k === "enter:type" || k === "enter:run") {
       setEnterRuns(k === "enter:run");
+    } else if (k === "copy") {
+      copied(lines.map((l) => plain(l).replace(/\s+$/, "")).join("\n"));
+    } else if (k === "find") {
+      setFind("");
+      setHit(0);
+      // Once the menu is gone (it gives the focus back to its button).
+      window.setTimeout(() => document.getElementById("find")?.focus());
+    } else if (k === "zoom-in" || k === "zoom-out" || k === "zoom-1") {
+      const z = k === "zoom-1" ? 1 : zoomed(zoom * (k === "zoom-in" ? 1.15 : 1 / 1.15));
+      setZoom(z);
+      toast(t(`Text ${Math.round(z * 100)}%`, `字号 ${Math.round(z * 100)}%`), { timeout: 1200 });
     }
   };
 
@@ -352,6 +458,19 @@ export function PaneView(props: Props) {
                 <Item id="detail" icon={<Clock className="size-4" />} checked={!!detail}>
                   {t("When each command ran", "每条命令的时间")}
                 </Item>
+                <Item id="find" icon={<Search className="size-4" />}>
+                  {t("Find in the output", "在输出里查找")}
+                </Item>
+                <Item id="copy" icon={<Copy className="size-4" />}>
+                  {t("Copy the screen's text", "复制屏幕文字")}
+                </Item>
+              </Dropdown.Section>
+              <Separator />
+              <Dropdown.Section>
+                <Header>{t(`Text size ${Math.round(zoom * 100)}% (or pinch)`, `字号 ${Math.round(zoom * 100)}%（也可以双指缩放）`)}</Header>
+                <Item id="zoom-in" icon={<ZoomIn className="size-4" />}>{t("Bigger", "放大")}</Item>
+                <Item id="zoom-out" icon={<ZoomOut className="size-4" />}>{t("Smaller", "缩小")}</Item>
+                {zoom !== 1 ? <Item id="zoom-1" icon={<RotateCcw className="size-4" />}>{t("Back to 100%", "恢复 100%")}</Item> : null}
               </Dropdown.Section>
               {readOnly ? null : <Separator />}
               {readOnly ? null : (
@@ -390,12 +509,69 @@ export function PaneView(props: Props) {
                 <Item id="rename-window" icon={<SquarePen className="size-4" />}>{t("Rename this window", "重命名这个窗口")}</Item>
                 <Item id="rename-session" icon={<PanelBottom className="size-4" />}>{t("Rename this session", "重命名这个 session")}</Item>
                 <Item id="kill-pane" danger icon={<X className="size-4" />}>{t("Close this pane", "关闭这个 pane")}</Item>
+                <Dropdown.Section>
+                  <Header>{t("Messages it gets", "收到的消息")}</Header>
+                  <Item id="mode:normal" icon={<Circle className="size-4" />} checked={!p?.mode || p.mode === "normal"}>{t("normal: leaves them waiting", "normal：消息留着等")}</Item>
+                  <Item id="mode:shell" icon={<SquareTerminal className="size-4" />} checked={p?.mode === "shell"}>{t("shell: runs them at its prompt", "shell：在提示符下执行")}</Item>
+                  <Item id="mode:ai" icon={<Bot className="size-4" />} checked={p?.mode === "ai"}>{t("ai: hands them to its agent", "ai：交给 agent")}</Item>
+                </Dropdown.Section>
               </Dropdown.Menu>
             </Dropdown.Popover>
           </Dropdown>
         )}
       </div>
       )}
+
+      {find !== null ? (
+        <div className="flex items-center gap-1 border-b border-separator px-2 py-1.5 sm:px-3">
+          <Search className="ml-1 size-4 shrink-0 text-muted" />
+          <Input
+            id="find"
+            autoFocus
+            value={find}
+            placeholder={t("Find in the output", "在输出里查找")}
+            className="min-w-0 flex-1"
+            autoCapitalize="off"
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="search"
+            onChange={(e) => {
+              setFind(e.target.value);
+              setHit(Number.MAX_SAFE_INTEGER);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") step(e.shiftKey ? 1 : -1);
+              else if (e.key === "Escape") setFind(null);
+            }}
+          />
+          <span id="find-count" className="shrink-0 px-1 text-xs text-muted tabular-nums">
+            {find.trim() ? (hits.length ? `${hits.indexOf(now) + 1}/${hits.length}` : t("none", "没有")) : ""}
+          </span>
+          <Tool id="find-up" label={t("The one before (higher up)", "上一个（更早）")} onPress={() => step(-1)}>
+            <ChevronUp className="size-4" />
+          </Tool>
+          <Tool id="find-down" label={t("The next one (lower down)", "下一个（更晚）")} onPress={() => step(1)}>
+            <ChevronDown className="size-4" />
+          </Tool>
+          <Tool id="find-close" label={t("Stop finding", "关闭查找")} onPress={() => setFind(null)}>
+            <X className="size-4" />
+          </Tool>
+        </div>
+      ) : null}
+      {p?.dead && !readOnly ? (
+        <div id="ended" className="flex items-center gap-2 border-b border-separator bg-danger-soft px-3 py-2 text-sm text-danger-soft-foreground">
+          <span className="min-w-0 flex-1">
+            {p.exit != null
+              ? t(`Its program ended (exit ${p.exit}).`, `程序已退出（退出码 ${p.exit}）。`)
+              : t("Its program ended.", "程序已退出。")}
+          </span>
+          <Button id="respawn" size="sm" variant="secondary" onPress={() => action("respawn")} isDisabled={acting}>
+            <RotateCcw className="size-4" />
+            {t("Run it again", "重新运行")}
+          </Button>
+        </div>
+      ) : null}
 
       {/* The screen, in the terminal's colours. */}
       <div
@@ -440,7 +616,17 @@ export function PaneView(props: Props) {
             onClick={(e) => {
               const s = (e.target as HTMLElement).closest(".stamp") as HTMLElement | null;
               const m = s && screen.marks.find((m) => m[0] === Number(s.dataset.i));
-              if (m) toast(stampDetail(m), { timeout: 4000 });
+              if (!m) return;
+              setStampMenu({
+                x: e.clientX,
+                y: e.clientY,
+                title: stampDetail(m),
+                items: [
+                  { id: "out", label: t("Copy what it printed", "复制这条命令的输出"), icon: <Copy className="size-4" />, now: true },
+                  { id: "cmd", label: t("Copy the command line", "复制这条命令"), icon: <SquareTerminal className="size-4" />, now: true },
+                ],
+                onPick: (k) => copied(k === "out" ? outputOf(lines, screen.marks, m[0]) : plain(lines[m[0]] ?? "").trim()),
+              });
             }}
             dangerouslySetInnerHTML={{ __html: html }}
           />
@@ -453,6 +639,7 @@ export function PaneView(props: Props) {
           onSent={() => !screen.streaming && setTimeout(screen.poll, 120)}
           enterRuns={enterRuns}
           title={props.focus && p ? `${headOf(p)} · ${where(p)}` : undefined}
+          tellTo={p && (p.mode === "shell" || p.mode === "ai") ? headOf(p) : undefined}
           exit={
             props.focus ? (
               <Button id="fullscreen-exit" isIconOnly variant="ghost" size="sm" className="mb-0.5" aria-label={t("Leave full screen", "退出全屏")}
@@ -464,6 +651,7 @@ export function PaneView(props: Props) {
         />
       )}
       <ConfirmClose open={closing} onDone={close} what={p ? `${headOf(p)} · ${where(p)}` : undefined} program={p?.command} />
+      <ContextMenu at={stampMenu} onClose={() => setStampMenu(null)} />
     </div>
   );
 }
@@ -512,6 +700,7 @@ function Composer({
   exit,
   enterRuns,
   title,
+  tellTo,
 }: {
   id: string;
   onSent: () => void;
@@ -520,8 +709,13 @@ function Composer({
   enterRuns: boolean;
   /** In full screen, which pane the box types into. */
   title?: string;
+  /** A pane that takes messages (shell, ai): its name, for the message switch. */
+  tellTo?: string;
 }) {
   const [text, setText] = useState("");
+  // The box as a message into the pane's inbox (it waits its turn), not typing.
+  const [telling, setTelling] = useState(false);
+  const tell = telling && !!tellTo;
   const [held, setHeld] = useState<"C" | "M" | null>(null);
   const [more, setMore] = useStored<boolean | number>("keepane-more-keys", false);
   const [sent, setSentState] = useStored<Sent[]>("keepane-sent", []);
@@ -559,6 +753,19 @@ function Composer({
   const submit = async (byKey = false) => {
     if (!byKey && bounced("send")) return;
     const s = text;
+    if (tell) {
+      if (!s.trim()) return;
+      setText("");
+      try {
+        const said = await (await post(`/api/tell?pane=${q(id)}`, s)).text();
+        remember(s);
+        toast.success(said || t("Queued", "已排队"), { timeout: 2500 });
+      } catch (e) {
+        setText((now) => now || s);
+        toast.danger((e as Error).message);
+      }
+      return;
+    }
     setText("");
     if (!s) return void send("&key=Enter");
     if (await send("", s)) {
@@ -583,7 +790,13 @@ function Composer({
   };
 
   // What Send does now, in a word: the button's text and its name.
-  const sendLabel = text ? (enterRuns ? t("Run", "执行") : t("Send", "发送")) : t("Enter", "回车");
+  const sendLabel = tell
+    ? t("Queue", "排队")
+    : text
+      ? enterRuns
+        ? t("Run", "执行")
+        : t("Send", "发送")
+      : t("Enter", "回车");
 
   const keyBtn = ([label, k]: [string, string]) => (
     <Button
@@ -618,15 +831,24 @@ function Composer({
           onPress={() => setMore(!more)}>
           <Ellipsis className="size-4.5" />
         </Button>
+        {tellTo ? (
+          <Button id="tell" isIconOnly variant={tell ? "primary" : "ghost"} size="sm" className="mb-0.5 pointer-coarse:size-11"
+            aria-label={t(`As a message to ${tellTo} (into its inbox)`, `作为消息发给 ${tellTo}（进收件箱排队）`)} aria-pressed={tell}
+            onPress={() => setTelling(!tell)}>
+            <Mail className="size-4.5" />
+          </Button>
+        ) : null}
         <TextArea
           id="text"
           ref={box}
           rows={1}
           value={text}
           placeholder={
-            enterRuns
-              ? t("Enter runs", "回车执行")
-              : t("Enter types", "回车填入")
+            tell
+              ? t(`Message to ${tellTo}`, `消息给 ${tellTo}`)
+              : enterRuns
+                ? t("Enter runs", "回车执行")
+                : t("Enter types", "回车填入")
           }
           className="max-h-32 min-h-10 flex-1 resize-none font-term text-base"
           autoCapitalize="off"
@@ -662,7 +884,7 @@ function Composer({
           }}
         />
         <Button id="send" className="mb-0.5 shrink-0 pointer-coarse:h-11" onPress={() => submit()} aria-label={sendLabel}>
-          {text ? <SendHorizontal className="size-4" /> : <CornerDownLeft className="size-4" />}
+          {tell ? <Mail className="size-4" /> : text ? <SendHorizontal className="size-4" /> : <CornerDownLeft className="size-4" />}
           <span className="hidden sm:inline">{sendLabel}</span>
         </Button>
       </div>

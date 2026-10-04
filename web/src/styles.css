@@ -61,6 +61,18 @@ input {
 .term .stamp.fail {
   color: var(--danger);
 }
+/* Lines with what is looked for; the one shown stronger. */
+.term .hit {
+  background: color-mix(in oklab, var(--warning) 22%, transparent);
+}
+.term .hit.now {
+  background: color-mix(in oklab, var(--warning) 55%, transparent);
+  outline: 1px solid var(--warning);
+}
+/* Two fingers on the screen size its text (PaneView), never the page. */
+#main {
+  touch-action: pan-x pan-y;
+}
 
 /* Scrollbars that stay out of the way. */
 .thin-scroll {

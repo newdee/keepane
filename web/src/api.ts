@@ -35,6 +35,8 @@ export type Pane = {
   cols: number;
   rows: number;
   dead: boolean;
+  /** How its program ended, once it has. */
+  exit: number | null;
   attached: boolean;
   activity: boolean;
   bell: boolean;

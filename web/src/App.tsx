@@ -1,5 +1,5 @@
 import { Button, Chip, Dropdown, Header, Label, Separator, Toast, toast } from "@heroui/react";
-import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Sun, Terminal } from "lucide-react";
+import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Plus, Sun, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, keptPane, post, q, startPane, type DoneItem, type Info, type Pane } from "./api";
 import {
@@ -61,7 +61,14 @@ export default function App() {
   }, [current]);
   const [switcher, setSwitcher] = useState(false);
   const [inbox, setInbox] = useState<string | null>(null);
-  const [ask, setAsk] = useState<{ title: string; value: string; kind: "session" | "window"; pane: string } | null>(null);
+  const [ask, setAsk] = useState<{
+    title: string;
+    value: string;
+    kind: "session" | "window" | "new";
+    pane: string;
+    placeholder?: string;
+    ok?: string;
+  } | null>(null);
   const [done, setDone] = useState<{ item: DoneItem; more: number } | null>(null);
   const unseen = useRef(0);
 
@@ -154,6 +161,7 @@ export default function App() {
   const renamed = async (name: string | null) => {
     const a = ask;
     setAsk(null);
+    if (a?.kind === "new" && name !== null) return made("/api/new-session", name);
     if (!a || name === null || name === a.value || !name) return;
     try {
       await post(`/api/action?pane=${q(a.pane)}&do=rename-${a.kind}`, name);
@@ -172,18 +180,43 @@ export default function App() {
   // What the dialog names, kept while it fades out after the answer.
   const named = useRef<Pane | null>(null);
   if (closing) named.current = closing;
-  const paneAction = async (p: Pane, what: string) => {
-    if (what === "kill-pane") return setClosing(p);
+  // Something that makes a pane (a window, a split, a session): done, the
+  // new pane is opened.
+  const made = async (url: string, body?: string) => {
     try {
       const before = new Set(list.map((x) => x.id));
-      await post(`/api/action?pane=${q(p.id)}&do=${what}`);
+      await post(url, body);
       const now = await getJson<Pane[]>("/api/panes");
       await reload();
-      const made = now.find((x) => !before.has(x.id));
-      if (made) (wide && current ? go : open)(made.id);
+      const p = now.find((x) => !before.has(x.id));
+      if (p) (wide && current ? go : open)(p.id);
     } catch (e) {
       toast.danger((e as Error).message);
     }
+  };
+  const newSession = () =>
+    setAsk({
+      kind: "new",
+      pane: "",
+      value: "",
+      title: t("New session", "新 session"),
+      placeholder: t("Its name (may be left empty)", "名字（可以不填）"),
+      ok: t("Start", "新建"),
+    });
+  const paneAction = async (p: Pane, what: string) => {
+    if (what === "kill-pane") return setClosing(p);
+    if (what.startsWith("mode:")) {
+      const m = what.slice(5);
+      try {
+        await post(`/api/action?pane=${q(p.id)}&do=mode&mode=${m}`);
+        await reload();
+        toast.success(t(`${headOf(p)}: ${m} mode`, `${headOf(p)}：${m} 模式`), { timeout: 2000 });
+      } catch (e) {
+        toast.danger((e as Error).message);
+      }
+      return;
+    }
+    return made(`/api/action?pane=${q(p.id)}&do=${what}`);
   };
   const closed = async (yes: boolean) => {
     const p = closing;
@@ -220,6 +253,13 @@ export default function App() {
     else if (dx > 0 && rail && (s.onList || s.x < 32)) setRail(false);
   };
   const message = fatal || error;
+  // The list column has its own menus (right click, long press): not the
+  // system's, nor its text selection and copy bar. Only the error stays
+  // copyable.
+  const noSystemMenu = (e: React.MouseEvent) => {
+    if (!(e.target as HTMLElement).closest("[data-copy]")) e.preventDefault();
+  };
+  const listCol = "thin-scroll min-h-0 overflow-y-auto select-none [-webkit-touch-callout:none] ";
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
@@ -252,6 +292,11 @@ export default function App() {
               {t("read-only", "只读")}
             </Chip>
           ) : null}
+          {info && !info.readOnly ? (
+            <Button id="new-session" isIconOnly variant="ghost" size="sm" className="pointer-coarse:size-11" aria-label={t("New session", "新 session")} onPress={newSession}>
+              <Plus className="size-4.5" />
+            </Button>
+          ) : null}
           {status}
           <Settings
             lang={lang}
@@ -279,13 +324,21 @@ export default function App() {
 
       <div className="flex min-h-0 flex-1" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {showList && rail ? (
-          <aside className="thin-scroll min-h-0 w-14 shrink-0 overflow-y-auto border-r border-separator">
+          <aside className={listCol + "w-14 shrink-0 border-r border-separator"} onContextMenu={noSystemMenu}>
             <PaneRail panes={list} current={current} onOpen={(id) => (current ? go(id) : open(id))} />
           </aside>
         ) : showList ? (
-          <aside className={"thin-scroll min-h-0 overflow-y-auto " + (wide ? "w-[360px] shrink-0 border-r border-separator" : "flex-1")}>
+          <aside
+            className={listCol + (wide ? "w-[360px] shrink-0 border-r border-separator" : "flex-1")}
+            onContextMenu={noSystemMenu}
+          >
             {message ? (
-              <p className="m-4 rounded-xl bg-danger-soft p-3 text-sm text-danger-soft-foreground">{message}</p>
+              <p
+                data-copy
+                className="m-4 rounded-xl bg-danger-soft p-3 text-sm text-danger-soft-foreground select-text [-webkit-touch-callout:default]"
+              >
+                {message}
+              </p>
             ) : null}
             {panes ? (
               <PaneList

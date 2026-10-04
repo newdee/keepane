@@ -1171,10 +1171,13 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, all
     }
     // How tall it is: the root's box three lines (one when short of room),
     // the others' four; one line each smaller; between rows, two lines of
-    // joins, else one, else none.
+    // joins, else one, else none. Counted for the whole tree's depth, not the
+    // branch shown: a shorter branch takes the same size and place, so the
+    // chart does not jump as the cursor moves.
+    let depth = depths.iter().copied().max().unwrap_or(0) + 1;
     let need = |level: ChartLevel, root: usize, links: usize| {
         let h = if matches!(level, ChartLevel::Box(_)) { 4 } else { 1 };
-        root + (rows.len() - 1) * (h + links)
+        root + (depth - 1) * (h + links)
     };
     let gap = |level: ChartLevel| if matches!(level, ChartLevel::Box(_)) { CHART_GAP } else { 1 };
     // The whole tree, laid out at a size: each block's x and width.
@@ -1294,8 +1297,9 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, all
             Style { bold: name && path.contains(&i), ..Style::colors(Color::Default, Color::Default) }
         }
     };
+    // Up and down in the middle too, when it fits; else from the top.
     let (top, bottom) = (area.y as usize, area.y as usize + body_h);
-    let mut y = top;
+    let mut y = top + body_h.saturating_sub(need(level, root_h, links)) / 2;
     for (r, row) in rows.iter().enumerate() {
         // The joins from the row above: down from each parent, then across.
         let shown: Vec<usize> = if r + 1 < rows.len() { rows[r + 1].clone() } else { Vec::new() };
@@ -2138,8 +2142,9 @@ mod tests {
         eprintln!("{all}");
         let row = |s: &str| t.iter().position(|r| r.contains(s)).unwrap_or_else(|| panic!("no {s}: {all}"));
         // The root, centred, in a box.
-        let root = t[1].find("keepane").unwrap();
-        assert!((34..=40).contains(&root) && t[0].contains('┌') && t[2].contains('┬'), "{all}");
+        let r0 = row("keepane");
+        let root = t[r0].find("keepane").unwrap();
+        assert!((34..=40).contains(&root) && t[r0 - 1].contains('┌') && t[r0 + 1].contains('┬'), "{all}");
         // The sessions, dev's windows, edit's panes (not logs', not ops').
         let (s, w, p) = (row("1  dev"), row("2  0:edit*"), row("4  1:pwsh*"));
         assert!(s < w && w < p, "{all}");
@@ -2323,6 +2328,27 @@ mod tests {
         assert!(t[1].contains('┌') && t[1].contains('┴'), "the bar under the root: {all}");
         assert!(all.contains("10  0:tail*"), "{all}");
         joins_land(&t).map_err(|e| format!("{e}\n{all}")).unwrap();
+
+        // Up and down in the middle of a tall screen; a branch shorter than
+        // the tree (a machine with no sessions) keeps the same place.
+        let mut nodes = nodes;
+        nodes.push(n("host", 1, "11  10.0.0.9:7681", false));
+        let at = |sel: usize| {
+            let mut g = Grid::new(100, 60);
+            draw_chart(&mut g, Rect { x: 0, y: 0, w: 100, h: 60 }, &nodes, sel, false, "", "");
+            chart_text(&g)
+        };
+        let (deep, short) = (at(4), at(11));
+        let used: Vec<usize> = (0..59).filter(|&y| !deep[y].is_empty()).collect();
+        let (first, last) = (used[0], *used.last().unwrap());
+        assert!(first.abs_diff(58 - last) <= 1, "{first} blank above, {} below: {}", 58 - last, deep.join("\n"));
+        let root = |t: &[String]| t.iter().position(|r| r.contains("keepane")).unwrap();
+        assert_eq!(root(&deep), root(&short), "{}\n----\n{}", deep.join("\n"), short.join("\n"));
+        assert!(!short.join("\n").contains("┌ session"), "the bare machine's branch stops at it");
+        // Too tall for the screen: from the top, as before.
+        let mut g = Grid::new(80, 16);
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 16 }, &nodes, 4, false, "", "");
+        assert!(chart_text(&g)[0].contains("keepane"), "{}", chart_text(&g).join("\n"));
     }
 
     /// A row wider than the screen scrolls to keep the branch's block in

@@ -1625,7 +1625,7 @@ impl Pane {
             let (offset, row) = if abs < total { (total - abs, 0usize) } else { (0, abs - total) };
             s.set_scrollback(offset);
             let mut text = if escapes {
-                String::from_utf8_lossy(&s.rows_formatted(0, cols).nth(row).unwrap_or_default()).into_owned()
+                forward_as_spaces(&String::from_utf8_lossy(&s.rows_formatted(0, cols).nth(row).unwrap_or_default()))
             } else {
                 s.rows(0, cols).nth(row).unwrap_or_default()
             };
@@ -1668,6 +1668,30 @@ impl Pane {
     }
 }
 
+/// A captured line's cursor-forwards (`ESC[nC`: cells never written, as
+/// vt100 gives them) as the blanks they stand for. A captured line is text
+/// to read, as the plain capture has it: without this, whatever strips the
+/// colours (the page, its marks, a copy) loses those columns.
+fn forward_as_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find("\x1b[") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        if after.as_bytes().get(digits) == Some(&b'C') {
+            let n = after[..digits].parse::<usize>().unwrap_or(1).max(1);
+            out.extend(std::iter::repeat_n(' ', n));
+            rest = &after[digits + 1..];
+        } else {
+            out.push_str("\x1b[");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 impl Drop for Pane {
     fn drop(&mut self) {
         // What it still shows goes to its history log, with anything held.
@@ -1687,6 +1711,17 @@ impl Drop for Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_captured_line_has_blanks_not_cursor_moves() {
+        assert_eq!(forward_as_spaces("\x1b[C\x1b[32m<# x\x1b[0m"), " \x1b[32m<# x\x1b[0m");
+        assert_eq!(forward_as_spaces("a\x1b[3Cb"), "a   b");
+        assert_eq!(forward_as_spaces("a\x1b[0Cb"), "a b", "0 is 1, as a terminal reads it");
+        // Anything else stays as it was.
+        for s in ["\x1b[93mx\x1b[0m", "\x1b[12;3H", "\x1b[?25l", "\x1b[", "plain", "\x1b[3", "\x1b[3;4C"] {
+            assert_eq!(forward_as_spaces(s), s);
+        }
+    }
 
     /// A shell whose prompt is `>`: cmd, or sh.
     fn prompt_shell() -> Vec<String> {

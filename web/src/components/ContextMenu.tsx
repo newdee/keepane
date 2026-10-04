@@ -1,7 +1,19 @@
-import { Button, Dropdown, Header, Label } from "@heroui/react";
-import { useRef, type ReactNode } from "react";
+import { Button, Dropdown, Header, Label, Separator } from "@heroui/react";
+import { Check } from "lucide-react";
+import { Fragment, useRef, type ReactNode } from "react";
 
-export type MenuEntry = { id: string; label: string; icon: ReactNode; danger?: boolean };
+export type MenuEntry = {
+  id: string;
+  label: string;
+  icon: ReactNode;
+  danger?: boolean;
+  /** A tick: the one chosen of a few. */
+  checked?: boolean;
+  /** A new group starts here, under this heading. */
+  section?: string;
+  /** Runs inside the tap itself (copying to the clipboard must). */
+  now?: boolean;
+};
 
 /** A menu opened at a point: where the right click or the long press was. */
 export type MenuAt = {
@@ -27,25 +39,43 @@ export function ContextMenu({ at, onClose }: { at: MenuAt | null; onClose: () =>
           aria-label={at.title}
           autoFocus="first"
           onAction={(k) => {
+            const id = String(k);
+            if (at.items.find((e) => e.id === id)?.now) at.onPick(id);
             onClose();
             // Once the menu is gone and the focus is back where it was: a
             // dialog the pick opens then returns the focus there too.
-            window.setTimeout(() => at.onPick(String(k)));
+            if (!at.items.find((e) => e.id === id)?.now) window.setTimeout(() => at.onPick(id));
           }}
         >
-          <Dropdown.Section>
-            <Header className="max-w-64 truncate">{at.title}</Header>
-            {at.items.map((e) => (
-              <Dropdown.Item key={e.id} id={e.id} textValue={e.label} variant={e.danger ? "danger" : "default"}>
-                {e.icon}
-                <Label>{e.label}</Label>
-              </Dropdown.Item>
-            ))}
-          </Dropdown.Section>
+          {groups(at).map((g, n) => (
+            <Fragment key={n}>
+              {n > 0 ? <Separator /> : null}
+              <Dropdown.Section>
+                <Header className="max-w-64 truncate">{g.title}</Header>
+                {g.items.map((e) => (
+                  <Dropdown.Item key={e.id} id={e.id} textValue={e.label} variant={e.danger ? "danger" : "default"}>
+                    {e.icon}
+                    <Label>{e.label}</Label>
+                    {e.checked ? <Check className="ml-auto size-4 text-accent" /> : null}
+                  </Dropdown.Item>
+                ))}
+              </Dropdown.Section>
+            </Fragment>
+          ))}
         </Dropdown.Menu>
       </Dropdown.Popover>
     </Dropdown>
   );
+}
+
+/** The entries in their groups: the first under the menu's title. */
+function groups(at: MenuAt) {
+  const out: { title: string; items: MenuEntry[] }[] = [{ title: at.title, items: [] }];
+  for (const e of at.items) {
+    if (e.section && out[out.length - 1].items.length) out.push({ title: e.section, items: [] });
+    out[out.length - 1].items.push(e);
+  }
+  return out;
 }
 
 /** Right click, or a long press on a touch screen (500 ms, not moving),

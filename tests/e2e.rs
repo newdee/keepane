@@ -4514,6 +4514,102 @@ async fn the_phone_renames_sessions_windows_and_panes() {
     h.cli(&["kill-server"]).await;
 }
 
+/// The phone sends a message into a pane's inbox (from the user, queued as
+/// any other), sets what a pane does with its messages, starts a session in
+/// the home directory, and runs again a pane whose program ended (the list
+/// says how it ended). Read-only, none of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_phone_sends_messages_sets_modes_starts_sessions_and_runs_again() {
+    let h = Harness::start("webmore").await;
+    h.cli(&["new", "-d", "-s", "m"]).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let key = "more-key";
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, key, false))));
+    let p = pane_id(&h, "m:0.0").await;
+    let t = format!("%{p}");
+    let mode = async || h.cli(&["display", "-p", "-t", &t, "#{pane_work_mode}"]).await.1.trim().to_string();
+
+    // Modes.
+    let (code, err) = http(addr, "POST", &format!("/api/action?pane=%25{p}&do=mode&mode=ai"), key, "").await;
+    assert_eq!(code, 200, "{err}");
+    assert_eq!(mode().await, "ai");
+    assert_eq!(http(addr, "POST", &format!("/api/action?pane=%25{p}&do=mode&mode=root"), key, "").await.0, 400);
+    assert_eq!(http(addr, "POST", &format!("/api/action?pane=%25{p}&do=mode"), key, "").await.0, 400);
+    assert_eq!(mode().await, "ai", "unchanged by the bad ones");
+
+    // A message: queued in its inbox, from the user.
+    let (code, said) = http(addr, "POST", &format!("/api/tell?pane=%25{p}"), key, "look at the logs").await;
+    assert_eq!(code, 200, "{said}");
+    let id = said.trim_start_matches('#').split(|c: char| !c.is_ascii_digit()).next().unwrap().to_string();
+    assert!(!id.is_empty(), "the answer names the message: {said}");
+    let trace = h.cli(&["trace-message", &id]).await.1;
+    assert!(trace.contains("from=user") && trace.contains("look at the logs"), "{trace}");
+    assert_eq!(http(addr, "POST", &format!("/api/tell?pane=%25{p}"), key, "  ").await.0, 400, "nothing to send");
+    assert_eq!(http(addr, "POST", "/api/tell?pane=%25999", key, "x").await.0, 400, "no such pane");
+
+    // A session of its own, named or not, in the home directory.
+    let (code, err) = http(addr, "POST", "/api/new-session", key, "fromphone").await;
+    assert_eq!(code, 200, "{err}");
+    assert!(h.cli(&["ls"]).await.1.contains("fromphone:"));
+    let home = dirs::home_dir().unwrap().to_string_lossy().to_lowercase();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let dir = h.cli(&["display", "-p", "-t", "fromphone:0.0", "#{pane_current_path}"]).await.1;
+        if dir.trim().to_lowercase().trim_end_matches(['/', '\\']) == home.trim_end_matches(['/', '\\']) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "started in {dir:?}, not {home:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let before = h.cli(&["ls"]).await.1.lines().count();
+    assert_eq!(http(addr, "POST", "/api/new-session", key, "").await.0, 200, "keepane names it");
+    assert_eq!(h.cli(&["ls"]).await.1.lines().count(), before + 1);
+    assert_eq!(http(addr, "POST", "/api/new-session", key, "two\nlines").await.0, 400);
+    assert_eq!(http(addr, "POST", "/api/new-session", key, "fromphone").await.0, 400, "taken");
+
+    // A program that ended: the list says how; run again.
+    h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
+    let ends: &[&str] = if cfg!(windows) { &["cmd", "/c", "exit 3"] } else { &["sh", "-c", "exit 3"] };
+    let (code, _, err) = h.cli(&[&["new-window", "-d", "-t", "m", "-n", "ends"], ends].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let dead = pane_id(&h, "m:ends.0").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let entry = loop {
+        let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
+        let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == format!("%{dead}")).cloned().unwrap();
+        if e["dead"] == true {
+            break e;
+        }
+        assert!(Instant::now() < deadline, "never ended: {e}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(entry["exit"], 3, "{entry}");
+    let alive = |e: &serde_json::Value| e["exit"].is_null() && e["dead"] == false;
+    let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
+    let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+    assert!(v.as_array().unwrap().iter().any(|e| e["id"] == t && alive(e)), "a live pane: exit null: {list}");
+    let pid = async || h.cli(&["display", "-p", "-t", &format!("%{dead}"), "#{pane_pid}"]).await.1.trim().to_string();
+    let first = pid().await;
+    let (code, err) = http(addr, "POST", &format!("/api/action?pane=%25{dead}&do=respawn"), key, "").await;
+    assert_eq!(code, 200, "{err}");
+    assert_ne!(pid().await, first, "a new program");
+    let (code, err) = http(addr, "POST", &format!("/api/action?pane=%25{p}&do=respawn"), key, "").await;
+    assert_eq!(code, 400, "a pane still running is not run again: {err}");
+
+    // Read-only: none of it.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ro = listener.local_addr().unwrap();
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, key, true))));
+    assert_eq!(http(ro, "POST", &format!("/api/tell?pane=%25{p}"), key, "x").await.0, 403);
+    assert_eq!(http(ro, "POST", "/api/new-session", key, "ro").await.0, 403);
+    assert_eq!(http(ro, "POST", &format!("/api/action?pane=%25{p}&do=mode&mode=shell"), key, "").await.0, 403);
+    assert_eq!(http(ro, "POST", &format!("/api/action?pane=%25{dead}&do=respawn"), key, "").await.0, 403);
+    assert_eq!(mode().await, "ai");
+    h.cli(&["kill-server"]).await;
+}
+
 /// Ctrl+C stops what a pane runs. On Windows the server's own process group
 /// ignores Ctrl+C and its children inherited that, so a `ping` in a pane ran
 /// on through every Ctrl+C (from a key, `send-keys C-c` or the phone).
