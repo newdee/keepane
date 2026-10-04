@@ -3451,3 +3451,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 全量回归 | Feat 54、Layout 51、Enter 20、Check 56、New 22、Edge 18，0 FAIL；fmt、clippy 通过；Windows 319/10/108，Linux 296/108 | 干净（1/3） |
 | 2 | 机制通路存活（15 条变异） | 页面 9 条、Rust 6 条全部被抓（W1 第一次因文件被占用没改成，重跑后被抓） | 干净（2/3） |
 | 3 | 可复现性 + 静态一致性 | 6 个检查各跑 2 次，每次共 221 条 PASS、0 FAIL；Windows、Linux 构建的 index.html.gz 都是 sha256 53d28d48…7f0a；README、网站的说法逐条对代码；只读时新控件都不显示，服务器都回 403（e2e） | 干净（3/3） |
+| 4 | 真机三平台（CI run 37219806795，提交 9b639e4） | windows、ubuntu、macos、web（构建结果与提交的一致）全部通过 | 验收通过 |
