@@ -3405,3 +3405,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | 机制通路存活（10 条变异） | 9 条被抓；"去掉 alive 保护"存活（onBack 已经检查 history.state，等价）；另外两条存活暴露冗余代码：Shift+F10 的按键处理（浏览器本身发右键，还会打开两次）和焦点回填代码（延后执行已足够） | **有问题**：删掉冗余代码，新增"菜单开在卡片处"断言；重跑的变异全部被抓（不计数） |
 | 4 | 可复现性 + 回归 | 5 个浏览器检查各跑 2 次：每次 Check 56、New 23、Edge 18、Enter 20、Layout 37 条 PASS，0 FAIL，0 条意外错误（New 里的 ERR_CONNECTION_REFUSED 是检查自己停掉 server）；网页在 Windows 和 Linux 构建的 index.html.gz 都是 sha256 6a95d053…8edf | 干净（1/3） |
 | 5 | 静态一致性 + 两平台全量 | tsc strict（noUnusedLocals/Parameters）通过；README、网站、man 页的说法逐条对代码；fmt、clippy 通过；Windows 318/10/107，Linux 295/107 | 干净（2/3） |
+| 6 | 真机三平台（CI run 37174533522，提交 5579464） | windows、ubuntu、macos、web（构建结果与提交的一致）全部通过 | 干净（3/3），验收通过 |
