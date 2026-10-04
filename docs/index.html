@@ -164,7 +164,7 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
           <figure class="shot"><img src="img/viewer.png" alt="A day of history in the pager popup, each command after a grey line with its time" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="ch.p1">The time goes in the blank end of the line. The pane keeps its width and nothing is added to what the program printed. On the phone, the clock button puts the times in a column of their own.</li>
+          <li data-i18n="ch.p1">The time goes in the blank end of the line. The pane keeps its width and nothing is added to what the program printed. On the phone, When each command ran, in the view menu, puts the times in a column of their own.</li>
           <li data-i18n="ch.p2">What scrolls off a pane is written to a file for that pane and day, kept for 30 days, with a line of times before each command. In the pager, <kbd>[</kbd> and <kbd>]</kbd> jump from command to command and <kbd>/</kbd> searches.</li>
           <li data-i18n="ch.p3">Closed the wrong pane or window? It is kept for 10 seconds with its program still running, and <kbd>C-b u</kbd> puts it back where it was.</li>
         </ul>
@@ -257,8 +257,8 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
         </figure>
         <ul class="points">
           <li data-i18n="cw.p1">keepane sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it.</li>
-          <li data-i18n="cw.p2">A row above the text box has the keys a phone keyboard lacks: Ctrl, Alt, Esc, Tab, the arrows, Enter and Ctrl+C, with Shift+Tab, y, n, 1, 2, 3 and a few more under the ⋯ beside the box. The ⋯ menu in the pane's bar splits the pane, opens a window, renames, shows the inbox or closes the pane.</li>
-          <li data-i18n="cw.p5">Each pane shows under its name: a dot for free or busy, how many messages wait in its inbox, and the last thing it printed. The ⤢ button sizes a pane to the phone for a full-screen program, and gives it back when you leave.</li>
+          <li data-i18n="cw.p2">A row above the text box has the keys a phone keyboard lacks: Ctrl, Alt, Esc, Tab, the arrows, with Ctrl+C and Enter kept in view at its end, and Shift+Tab, y, n, 1, 2, 3 and a few more under the ⋯ beside the box. The ⋯ menu in the pane's bar, or a right click (a long press on a phone) on a pane in the list, splits the pane, opens a window, renames, shows the inbox or closes the pane.</li>
+          <li data-i18n="cw.p5">Each pane shows under its name: a dot for free or busy, how many messages wait in its inbox, and the last thing it printed. Fit to this screen, in the view menu, sizes a pane to the phone for a full-screen program, and gives it back when you leave.</li>
           <li data-i18n="cw.p6">When a pane is done (a long command ended, an agent finished its turn) the page says so: a banner to tap, a sound, a buzz. For a locked phone, keepane posts to ntfy, Feishu, WeCom, DingTalk, Slack or Discord (<code>done-webhook</code>), or runs a hook of yours.</li>
           <li data-i18n="cw.p7">The same page works in a computer's browser, with the list on the left and the pane on the right. The page has its own light and dark look and speaks Chinese or English (the system's, or picked), and from it you can switch the terminal's theme too (Tokyo Night or Tokyo Day), which changes it on the computer as well. The top right shows the delay to the computer, and full screen leaves only the pane's screen and the input box.</li>
           <li data-i18n="cw.p3">Commands run on the computer. The phone can read panes, type into them and use that menu, nothing more; <code>--read-only</code> leaves out the typing.</li>

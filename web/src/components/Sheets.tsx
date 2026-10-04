@@ -377,7 +377,18 @@ export function RenameDialog({
 }
 
 /** Closing a pane: what runs in it stops, so it is asked first. */
-export function ConfirmClose({ open, onDone }: { open: boolean; onDone: (yes: boolean) => void }) {
+/** Closing a pane: says which, and what runs in it. */
+export function ConfirmClose({
+  open,
+  onDone,
+  what,
+  program,
+}: {
+  open: boolean;
+  onDone: (yes: boolean) => void;
+  what?: string;
+  program?: string;
+}) {
   const inside = useFocusInside<HTMLParagraphElement>(open);
   return (
     <AlertDialog.Backdrop isOpen={open} onOpenChange={(o) => !o && onDone(false)} isKeyboardDismissDisabled={false}>
@@ -385,10 +396,16 @@ export function ConfirmClose({ open, onDone }: { open: boolean; onDone: (yes: bo
         <AlertDialog.Dialog>
           <AlertDialog.Header>
             <AlertDialog.Icon status="danger" />
-            <AlertDialog.Heading>{t("Close this pane?", "关闭这个 pane？")}</AlertDialog.Heading>
+            <AlertDialog.Heading>
+              {what ? t(`Close ${what}?`, `关闭 ${what}？`) : t("Close this pane?", "关闭这个 pane？")}
+            </AlertDialog.Heading>
           </AlertDialog.Header>
           <AlertDialog.Body>
-            <p ref={inside}>{t("What runs in it stops.", "里面运行的程序会被结束。")}</p>
+            <p ref={inside}>
+              {program
+                ? t(`${program} in it stops.`, `里面运行的 ${program} 会被结束。`)
+                : t("What runs in it stops.", "里面运行的程序会被结束。")}
+            </p>
           </AlertDialog.Body>
           <AlertDialog.Footer>
             <Button variant="secondary" onPress={() => onDone(false)}>

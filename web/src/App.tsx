@@ -1,13 +1,25 @@
 import { Button, Chip, Dropdown, Header, Label, Separator, Toast, toast } from "@heroui/react";
-import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, Sun, Terminal } from "lucide-react";
+import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Sun, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, post, q, startPane, type DoneItem, type Info, type Pane } from "./api";
-import { useDone, useFullscreen, useLatency, useMedia, usePageMode, usePanes, useTermTheme, useViewportHeight, type Mode } from "./hooks";
+import {
+  useDone,
+  useFullscreen,
+  useLatency,
+  useMedia,
+  usePageMode,
+  usePanes,
+  useStored,
+  useTermTheme,
+  useViewportHeight,
+  type Mode,
+} from "./hooks";
+import { headOf, where } from "./format";
 import { lang as currentLang, setLang, t, type Lang } from "./i18n";
 import { Latency } from "./components/Status";
-import { PaneList } from "./components/PaneList";
+import { PaneList, PaneRail } from "./components/PaneList";
 import { PaneView } from "./components/PaneView";
-import { InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
+import { ConfirmClose, InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
 
 const THEME_NAMES: Record<string, string> = { "tokyo-night": "Tokyo Night", "tokyo-day": "Tokyo Day" };
 
@@ -151,6 +163,59 @@ export default function App() {
 
   const list = panes ?? [];
   const showList = (wide || !current) && !(focus && current);
+
+  // A pane's menu entries that act on the computer (from the list).
+  const [closing, setClosing] = useState<Pane | null>(null);
+  // What the dialog names, kept while it fades out after the answer.
+  const named = useRef<Pane | null>(null);
+  if (closing) named.current = closing;
+  const paneAction = async (p: Pane, what: string) => {
+    if (what === "kill-pane") return setClosing(p);
+    try {
+      const before = new Set(list.map((x) => x.id));
+      await post(`/api/action?pane=${q(p.id)}&do=${what}`);
+      const now = await getJson<Pane[]>("/api/panes");
+      await reload();
+      const made = now.find((x) => !before.has(x.id));
+      if (made) (wide && current ? go : open)(made.id);
+    } catch (e) {
+      toast.danger((e as Error).message);
+    }
+  };
+  const closed = async (yes: boolean) => {
+    const p = closing;
+    setClosing(null);
+    if (!yes || !p) return;
+    try {
+      await post(`/api/action?pane=${q(p.id)}&do=kill-pane`);
+      await reload();
+      if (current === p.id) history.state && history.state.pane ? history.back() : setCurrent(null);
+    } catch (e) {
+      toast.danger((e as Error).message);
+    }
+  };
+
+  // On a wide screen the list folds down to a strip (kept on this device):
+  // its button, a swipe left on the list, a swipe right on the strip.
+  const [railStored, setRail] = useStored<boolean>("keepane-rail", false);
+  const rail = wide && !!railStored;
+  const swipe = useRef<{ x: number; y: number; at: number; onList: boolean } | null>(null);
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (!wide || e.touches.length !== 1) return void (swipe.current = null);
+    const t0 = e.touches[0];
+    const onList = !!(e.target as HTMLElement).closest("aside");
+    swipe.current = { x: t0.clientX, y: t0.clientY, at: Date.now(), onList };
+  };
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const s = swipe.current;
+    swipe.current = null;
+    if (!s) return;
+    const dx = e.changedTouches[0].clientX - s.x;
+    const dy = e.changedTouches[0].clientY - s.y;
+    if (Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * 0.6 || Date.now() - s.at > 800) return;
+    if (dx < 0 && s.onList && !rail) setRail(true);
+    else if (dx > 0 && rail && (s.onList || s.x < 32)) setRail(false);
+  };
   const message = fatal || error;
 
   return (
@@ -158,6 +223,20 @@ export default function App() {
       <Toast.Provider placement={wide ? "bottom end" : "top"} />
       {(showList || wide) && !(focus && current) ? (
         <header className="flex items-center gap-2 border-b border-separator px-3 pt-[calc(env(safe-area-inset-top)+8px)] pb-2">
+          {wide ? (
+            <Button
+              id="sidebar-toggle"
+              isIconOnly
+              variant="ghost"
+              size="sm"
+              className="pointer-coarse:size-11"
+              aria-label={rail ? t("Show the list", "展开列表") : t("Fold the list away", "收起列表")}
+              aria-expanded={!rail}
+              onPress={() => setRail(!rail)}
+            >
+              {rail ? <PanelLeftOpen className="size-4.5" /> : <PanelLeftClose className="size-4.5" />}
+            </Button>
+          ) : null}
           <span className="grid size-8 place-items-center rounded-xl bg-accent text-accent-foreground shadow-sm">
             <Terminal className="size-4.5" />
           </span>
@@ -195,8 +274,12 @@ export default function App() {
         </header>
       ) : null}
 
-      <div className="flex min-h-0 flex-1">
-        {showList ? (
+      <div className="flex min-h-0 flex-1" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        {showList && rail ? (
+          <aside className="thin-scroll min-h-0 w-14 shrink-0 overflow-y-auto border-r border-separator">
+            <PaneRail panes={list} current={current} onOpen={(id) => (current ? go(id) : open(id))} />
+          </aside>
+        ) : showList ? (
           <aside className={"thin-scroll min-h-0 overflow-y-auto " + (wide ? "w-[360px] shrink-0 border-r border-separator" : "flex-1")}>
             {message ? (
               <p className="m-4 rounded-xl bg-danger-soft p-3 text-sm text-danger-soft-foreground">{message}</p>
@@ -209,6 +292,7 @@ export default function App() {
                 onOpen={(id) => (wide && current ? go(id) : open(id))}
                 onRename={rename}
                 onInbox={setInbox}
+                onAction={paneAction}
               />
             ) : !message ? (
               <div className="flex flex-col gap-2 p-4">
@@ -276,6 +360,12 @@ export default function App() {
       <Switcher open={switcher} onClose={() => setSwitcher(false)} panes={list} current={current} onPick={go} />
       <InboxSheet pane={inbox} onClose={() => setInbox(null)} panes={list} readOnly={!!info?.readOnly} />
       <RenameDialog ask={ask} onDone={renamed} />
+      <ConfirmClose
+        open={!!closing}
+        onDone={closed}
+        what={named.current ? `${headOf(named.current)} · ${where(named.current)}` : undefined}
+        program={named.current?.command}
+      />
     </div>
   );
 }
@@ -302,7 +392,7 @@ function Settings({
   const Icon = mode === "light" ? Sun : mode === "dark" ? Moon : Laptop;
   return (
     <Dropdown>
-      <Button isIconOnly variant="ghost" size="sm" aria-label={t("Appearance", "外观")}>
+      <Button isIconOnly variant="ghost" size="sm" className="pointer-coarse:size-11" aria-label={t("Appearance", "外观")}>
         <Icon className="size-4.5" />
       </Button>
       <Dropdown.Popover placement="bottom end" className="min-w-56">

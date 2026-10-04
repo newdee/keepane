@@ -437,7 +437,7 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 The time goes in the blank end of the line and changes neither the pane's
 width nor what the program printed; copy mode and `capture-pane` do not
 include it. A line without room for it goes without. `keepane list-marks`
-prints the same for a script. On the phone, the clock button shows the times
+prints the same for a script. On the phone, When each command ran (in the view menu) shows the times
 in a column to the left.
 
 Knowing where each command starts and ends, `C-b y` (`copy-output`) copies
@@ -721,20 +721,25 @@ line (`#` printed, `!` bell, `~` silent, with `monitor-activity` and friends
 on), so you can see which job finished without opening it. Tap one to see its
 screen, colours and all; keepane sends it again whenever it changes, so there
 is no refresh to wait for. Swipe across it for the next pane, or tap its title
-to pick one. Send sends what is in the box at the bottom, with no Enter after
-it; Send again (the box empty) is the Enter. The history button beside the box brings back
+to pick one; swipe in from the left edge to go back to the list. Send sends
+what is in the box at the bottom, with no Enter after it; Send again (the box
+empty) is the Enter. The view menu (the sliders in the pane's bar) can make
+Enter and Send run what was typed instead, for this device. The history button beside the box brings back
 what you sent before (☆ keeps one at the top). The keys the phone keyboard
-lacks are in a row above it (Esc, Tab, arrows, Enter, Ctrl+C, more under ⋯);
+lacks are in a row above it (Esc, Tab, arrows, more under ⋯; Ctrl+C and
+Enter stay in view at its end);
 Ctrl or Alt, then a letter typed, sends Ctrl or Alt with it. The ⋯
-menu in the pane's bar splits the pane, opens a window, renames, closes the pane or shows its inbox
+menu in the pane's bar, and a right click (a long press on a phone) on a
+pane in the list, split the pane, open a window, rename, close the pane or show its inbox
 (also a tap on a card's "queued" or "on #N" mark): the message it works on,
 each waiting one whole, to put first, up, down or delete (and undo), and the
-last few it finished; the clock button adds
+last few it finished. The view menu holds the rest: When each command ran adds
 a column with the time each command started (tap one for its date, how long
 it took and its exit code; see "Command times and history"). A tap on a session or
-window folds it (the device remembers), and the pencil beside it renames it. A pane wider than the
-phone wraps its long lines at the phone's edge (the wrap button turns that off, for
-a full-screen program). The fit button sizes the pane to the phone: it fills
+window folds it (the device remembers); its right click or long press renames it
+or folds every window of a session at once. A pane wider than the
+phone wraps its long lines at the phone's edge (the view menu turns that off, for
+a full-screen program). Fit to this screen, in the same menu, sizes the pane to the phone: it fills
 its window and its session takes the phone's columns and rows, so a
 full-screen program (vim, htop, an agent's screen) draws for the phone.
 Meanwhile the computer and any other phone see that session at the phone's
@@ -746,7 +751,9 @@ on the computer; the phone only shows and types. "Add to Home Screen" makes
 it open like an app.
 
 The same page works in a computer's browser: on a wide screen the list stays
-on the left and the pane fills the right. The button at the top right picks
+on the left and the pane fills the right. The button at the top left folds the
+list down to a strip of one button per pane (and back); on a touch screen a
+swipe left on the list folds it, a swipe right on the strip opens it. The button at the top right picks
 the page's own look, light, dark or the system's (each device keeps its own),
 and the terminal's theme (`theme`, see Themes): that one is the computer's, so
 its terminal changes too, and every page shows the panes in it. The same menu

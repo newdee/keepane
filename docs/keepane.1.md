@@ -152,7 +152,7 @@ address (empty while it is off) and `#{web_clients}` how many are on it; the
 default status line shows `web` and that number while it serves, and a phone
 connecting, or a wrong key, is said on the status line.
 
-The page's ⤢ button sizes the pane shown to the phone (`web-fit`): `web-fit -t pane -x
+The page's Fit to this screen (in the pane's view menu) sizes the pane shown to the phone (`web-fit`): `web-fit -t pane -x
 cols -y rows` zooms the pane in its window and gives its session the phone's
 columns and rows, so a full-screen program draws for the phone. A session has
 one size, so meanwhile the computer and any other phone see that session at

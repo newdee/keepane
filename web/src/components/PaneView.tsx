@@ -1,7 +1,9 @@
-import { Button, Dropdown, Label, TextArea, toast, Tooltip } from "@heroui/react";
+import { Button, Dropdown, Header, Label, Separator, TextArea, toast, Tooltip } from "@heroui/react";
 import {
   ArrowLeft,
+  Check,
   Fullscreen,
+  SlidersHorizontal,
   Minimize,
   ChevronDown,
   Clock,
@@ -37,6 +39,8 @@ const MORE_KEYS: [string, string][] = [
   ["⇧Tab", "BTab"], ["^D", "C-d"], ["^Z", "C-z"], ["^L", "C-l"], ["⌫", "BSpace"], ["Home", "Home"], ["End", "End"],
   ["PgUp", "PPage"], ["PgDn", "NPage"], ["y", "=y"], ["n", "=n"], ["1", "=1"], ["2", "=2"], ["3", "=3"],
 ];
+// The keys kept in view at the end of the row (the others scroll).
+const PINNED = ["C-c", "Enter"];
 const HISTORY_MAX = 50;
 // The left column of command times, in characters.
 const GUTTER = 6;
@@ -71,6 +75,8 @@ export function PaneView(props: Props) {
   const visible = useVisible();
   const [wrap, setWrap] = useStored<boolean | number>("keepane-wrap", true);
   const [detail, setDetail] = useStored<boolean | number>("keepane-detail", false);
+  // Enter in the box: types the text (a second Enter runs it), or types and runs.
+  const [enterRuns, setEnterRuns] = useStored<boolean>("keepane-enter-runs", false);
   const [fitting, setFitting] = useState(false);
   const mainRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -190,6 +196,14 @@ export function PaneView(props: Props) {
   // before (to the right), in the list's order; not while the screen itself
   // can still scroll that way.
   const swipe = useRef<{ x: number; y: number; at: number; left: number; room: number } | null>(null);
+  // Still on screen (an edge swipe waits to see whether the system went back).
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const onTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length !== 1) return void (swipe.current = null);
     const m = mainRef.current!;
@@ -202,6 +216,18 @@ export function PaneView(props: Props) {
     const dx = e.changedTouches[0].clientX - s.x;
     const dy = e.changedTouches[0].clientY - s.y;
     if (Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * 0.6 || Date.now() - s.at > 800) return;
+    // From the left edge: not to the next pane. On a phone it goes back to
+    // the list, unless the system's own edge gesture already did (it goes
+    // back in the history too; twice would leave the page). On a wide screen
+    // the page itself opens the list (App).
+    if (s.x < 32) {
+      if (dx > 0 && !props.wide) {
+        window.setTimeout(() => {
+          if (alive.current) props.onBack();
+        }, 350);
+      }
+      return;
+    }
     if (dx < 0 && s.room > 1 && s.left < s.room - 1) return;
     if (dx > 0 && s.room > 1 && s.left > 1) return;
     const ids = panes.map((x) => x.id);
@@ -248,6 +274,23 @@ export function PaneView(props: Props) {
     }
   };
 
+  // The View menu's entries.
+  const viewAction = (k: string) => {
+    if (k === "fit") {
+      if (bounced("fit")) return;
+      if (fitting) toast(t("Back to its size", "已恢复原来的大小"), { timeout: 2000 });
+      else fitNow(true);
+      setFitting(!fitting);
+    } else if (k === "wrap") {
+      setWrap(!wrap);
+      toast(!wrap ? t("Long lines wrap", "长行自动换行") : t("Long lines scroll sideways", "长行左右滑动"), { timeout: 2000 });
+    } else if (k === "detail") {
+      toggleDetail();
+    } else if (k === "enter:type" || k === "enter:run") {
+      setEnterRuns(k === "enter:run");
+    }
+  };
+
   const toggleDetail = () => {
     const on = !detail;
     setDetail(on);
@@ -267,7 +310,7 @@ export function PaneView(props: Props) {
       {props.focus ? null : (
       <div className="flex items-center gap-1 border-b border-separator px-2 py-1.5 sm:px-3">
         {!props.wide ? (
-          <Button id="back" isIconOnly variant="ghost" size="sm" aria-label={t("Back", "返回")} onPress={props.onBack}>
+          <Button id="back" isIconOnly variant="ghost" size="sm" className="pointer-coarse:size-11" aria-label={t("Back", "返回")} onPress={props.onBack}>
             <ArrowLeft className="size-5" />
           </Button>
         ) : null}
@@ -282,29 +325,49 @@ export function PaneView(props: Props) {
           </span>
           <span className="max-w-full truncate text-xs text-muted">{p ? [...under(p), where(p)].join(" · ") : ""}</span>
         </button>
-        {readOnly ? null : (
-          <Tool label={t("Fit to this screen", "适配这块屏幕")} on={fitting} onPress={() => {
-            if (bounced("fit")) return;
-            if (fitting) toast(t("Back to its size", "已恢复原来的大小"), { timeout: 2000 });
-            else fitNow(true);
-            setFitting(!fitting);
-          }}>
-            <Maximize2 className="size-4" />
-          </Tool>
-        )}
-        <Tool
-          label={t("Wrap long lines", "长行换行")}
-          on={!!wrap}
-          onPress={() => {
-            setWrap(!wrap);
-            toast(!wrap ? t("Long lines wrap", "长行自动换行") : t("Long lines scroll sideways", "长行左右滑动"), { timeout: 2000 });
-          }}
-        >
-          <WrapText className="size-4" />
-        </Tool>
-        <Tool label={t("When each command ran", "每条命令的时间")} on={!!detail} onPress={toggleDetail}>
-          <Clock className="size-4" />
-        </Tool>
+        {/* How the screen is shown, and what Enter does: one menu. */}
+        <Dropdown>
+          <Button
+            id="view"
+            isIconOnly
+            size="sm"
+            variant={fitting ? "secondary" : "ghost"}
+            className={(fitting ? "text-accent " : "") + "pointer-coarse:size-11"}
+            aria-label={t("View", "视图")}
+          >
+            <SlidersHorizontal className="size-4" />
+          </Button>
+          <Dropdown.Popover placement="bottom end" className="min-w-60">
+            <Dropdown.Menu onAction={(k) => viewAction(String(k))}>
+              <Dropdown.Section>
+                <Header>{t("Screen", "屏幕")}</Header>
+                {readOnly ? null : (
+                  <Item id="fit" icon={<Maximize2 className="size-4" />} checked={fitting}>
+                    {t("Fit to this screen", "适配这块屏幕")}
+                  </Item>
+                )}
+                <Item id="wrap" icon={<WrapText className="size-4" />} checked={!!wrap}>
+                  {t("Wrap long lines", "长行换行")}
+                </Item>
+                <Item id="detail" icon={<Clock className="size-4" />} checked={!!detail}>
+                  {t("When each command ran", "每条命令的时间")}
+                </Item>
+              </Dropdown.Section>
+              {readOnly ? null : <Separator />}
+              {readOnly ? null : (
+                <Dropdown.Section>
+                  <Header>{t("Enter in the box", "输入框里的回车")}</Header>
+                  <Item id="enter:type" icon={<CornerDownLeft className="size-4" />} checked={!enterRuns}>
+                    {t("Type only (Enter again runs)", "只填入（再回车执行）")}
+                  </Item>
+                  <Item id="enter:run" icon={<SendHorizontal className="size-4" />} checked={enterRuns}>
+                    {t("Type and run", "填入并执行")}
+                  </Item>
+                </Dropdown.Section>
+              )}
+            </Dropdown.Menu>
+          </Dropdown.Popover>
+        </Dropdown>
         {props.status}
         <Tool id="fullscreen" label={t("Full screen: the screen and the box only", "全屏：只留屏幕和输入框")} onPress={() => props.onFocus(true)}>
           <Fullscreen className="size-4" />
@@ -315,7 +378,7 @@ export function PaneView(props: Props) {
           </Tool>
         ) : (
           <Dropdown>
-            <Button isIconOnly variant="ghost" size="sm" aria-label={t("More", "更多")} isDisabled={acting}>
+            <Button isIconOnly variant="ghost" size="sm" className="pointer-coarse:size-11" aria-label={t("More", "更多")} isDisabled={acting}>
               <Ellipsis className="size-4" />
             </Button>
             <Dropdown.Popover placement="bottom end">
@@ -388,6 +451,8 @@ export function PaneView(props: Props) {
         <Composer
           id={id}
           onSent={() => !screen.streaming && setTimeout(screen.poll, 120)}
+          enterRuns={enterRuns}
+          title={props.focus && p ? `${headOf(p)} · ${where(p)}` : undefined}
           exit={
             props.focus ? (
               <Button id="fullscreen-exit" isIconOnly variant="ghost" size="sm" className="mb-0.5" aria-label={t("Leave full screen", "退出全屏")}
@@ -398,7 +463,7 @@ export function PaneView(props: Props) {
           }
         />
       )}
-      <ConfirmClose open={closing} onDone={close} />
+      <ConfirmClose open={closing} onDone={close} what={p ? `${headOf(p)} · ${where(p)}` : undefined} program={p?.command} />
     </div>
   );
 }
@@ -407,7 +472,7 @@ function Tool({ id, label, on, onPress, children }: { id?: string; label: string
   return (
     <Tooltip delay={500}>
       <Button id={id} isIconOnly size="sm" variant={on ? "secondary" : "ghost"} aria-label={label} aria-pressed={on} onPress={onPress}
-        className={on ? "text-accent" : ""}>
+        className={(on ? "text-accent " : "") + "pointer-coarse:size-11"}>
         {children}
       </Button>
       <Tooltip.Content>{label}</Tooltip.Content>
@@ -415,11 +480,24 @@ function Tool({ id, label, on, onPress, children }: { id?: string; label: string
   );
 }
 
-function Item({ id, icon, danger, children }: { id: string; icon: ReactNode; danger?: boolean; children: ReactNode }) {
+function Item({
+  id,
+  icon,
+  danger,
+  checked,
+  children,
+}: {
+  id: string;
+  icon: ReactNode;
+  danger?: boolean;
+  checked?: boolean;
+  children: ReactNode;
+}) {
   return (
     <Dropdown.Item id={id} textValue={String(children)} variant={danger ? "danger" : "default"}>
       {icon}
       <Label>{children}</Label>
+      {checked ? <Check className="ml-auto size-4 text-accent" /> : null}
     </Dropdown.Item>
   );
 }
@@ -428,7 +506,21 @@ function Item({ id, icon, danger, children }: { id: string; icon: ReactNode; dan
  *  tapped. Send sends what is in the box, no Enter after it: Send again with
  *  the box empty (or ⏎ among the keys) is the Enter. Ctrl and Alt stay down
  *  for the next character typed in the box. */
-function Composer({ id, onSent, exit }: { id: string; onSent: () => void; exit?: ReactNode }) {
+function Composer({
+  id,
+  onSent,
+  exit,
+  enterRuns,
+  title,
+}: {
+  id: string;
+  onSent: () => void;
+  exit?: ReactNode;
+  /** Enter (and Send) run what was typed, not only type it. */
+  enterRuns: boolean;
+  /** In full screen, which pane the box types into. */
+  title?: string;
+}) {
   const [text, setText] = useState("");
   const [held, setHeld] = useState<"C" | "M" | null>(null);
   const [more, setMore] = useStored<boolean | number>("keepane-more-keys", false);
@@ -469,8 +561,10 @@ function Composer({ id, onSent, exit }: { id: string; onSent: () => void; exit?:
     const s = text;
     setText("");
     if (!s) return void send("&key=Enter");
-    if (await send("", s)) remember(s);
-    else setText((now) => now || s);
+    if (await send("", s)) {
+      remember(s);
+      if (enterRuns) send("&key=Enter");
+    } else setText((now) => now || s);
   };
   const onKey = (k: string) => {
     if (bounced("key " + k)) return;
@@ -488,12 +582,15 @@ function Composer({ id, onSent, exit }: { id: string; onSent: () => void; exit?:
     sendKey(k);
   };
 
+  // What Send does now, in a word: the button's text and its name.
+  const sendLabel = text ? (enterRuns ? t("Run", "执行") : t("Send", "发送")) : t("Enter", "回车");
+
   const keyBtn = ([label, k]: [string, string]) => (
     <Button
       key={k}
       size="sm"
       variant={(k === "@ctrl" && held === "C") || (k === "@alt" && held === "M") ? "primary" : "tertiary"}
-      className="h-8 min-w-9 shrink-0 px-2 font-term text-[13px]"
+      className="h-8 min-w-9 shrink-0 px-2 font-term text-[13px] pointer-coarse:h-10 pointer-coarse:min-w-11"
       onPress={() => onKey(k)}
     >
       {label}
@@ -502,15 +599,22 @@ function Composer({ id, onSent, exit }: { id: string; onSent: () => void; exit?:
 
   return (
     <div className="border-t border-separator bg-background/80 px-2 pt-2 pb-[calc(env(safe-area-inset-bottom)+8px)] backdrop-blur sm:px-3">
-      <div className="no-scrollbar flex gap-1 overflow-x-auto pb-1.5">{KEYS.map(keyBtn)}</div>
+      {title ? (
+        <div className="truncate px-1 pb-1.5 text-xs text-muted">{t(`Typing into ${title}`, `输入到 ${title}`)}</div>
+      ) : null}
+      {/* The keys; ^C and ⏎ stay in view at the end, the rest scroll. */}
+      <div className="flex gap-1 pb-1.5">
+        <div className="no-scrollbar flex min-w-0 flex-1 gap-1 overflow-x-auto">{KEYS.filter(([, k]) => !PINNED.includes(k)).map(keyBtn)}</div>
+        <div className="flex shrink-0 gap-1">{KEYS.filter(([, k]) => PINNED.includes(k)).map(keyBtn)}</div>
+      </div>
       {more ? <div className="flex flex-wrap gap-1 pb-1.5">{MORE_KEYS.map(keyBtn)}</div> : null}
       <div className="flex items-end gap-1.5">
         {exit}
-        <Button isIconOnly variant="ghost" size="sm" className="mb-0.5" aria-label={t("Sent before", "发过的命令")}
+        <Button isIconOnly variant="ghost" size="sm" className="mb-0.5 pointer-coarse:size-11" aria-label={t("Sent before", "发过的命令")}
           onPress={() => !bounced("hist") && setHistOpen(true)}>
           <HistoryIcon className="size-4.5" />
         </Button>
-        <Button isIconOnly variant={more ? "secondary" : "ghost"} size="sm" className="mb-0.5" aria-label={t("More keys", "更多按键")}
+        <Button isIconOnly variant={more ? "secondary" : "ghost"} size="sm" className="mb-0.5 pointer-coarse:size-11" aria-label={t("More keys", "更多按键")}
           onPress={() => setMore(!more)}>
           <Ellipsis className="size-4.5" />
         </Button>
@@ -519,7 +623,11 @@ function Composer({ id, onSent, exit }: { id: string; onSent: () => void; exit?:
           ref={box}
           rows={1}
           value={text}
-          placeholder={t("Type a command…", "输入命令…")}
+          placeholder={
+            enterRuns
+              ? t("Enter runs", "回车执行")
+              : t("Enter types", "回车填入")
+          }
           className="max-h-32 min-h-10 flex-1 resize-none font-term text-base"
           autoCapitalize="off"
           autoComplete="off"
@@ -553,10 +661,9 @@ function Composer({ id, onSent, exit }: { id: string; onSent: () => void; exit?:
             }
           }}
         />
-        <Button id="send" className="mb-0.5 shrink-0" onPress={() => submit()}
-          aria-label={t("Send sends the text, with no Enter; Send again (the box empty) is the Enter", "点发送只发文字，不带回车；输入框空着时再点一次就是回车")}>
+        <Button id="send" className="mb-0.5 shrink-0 pointer-coarse:h-11" onPress={() => submit()} aria-label={sendLabel}>
           {text ? <SendHorizontal className="size-4" /> : <CornerDownLeft className="size-4" />}
-          <span className="hidden sm:inline">{text ? t("Send", "发送") : t("Enter", "回车")}</span>
+          <span className="hidden sm:inline">{sendLabel}</span>
         </Button>
       </div>
       <History open={histOpen} onClose={() => setHistOpen(false)} sent={sent} setSent={setSentState} onPick={(s) => {
