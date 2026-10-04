@@ -17,6 +17,10 @@ export const key = (() => {
     return m ? m[1] : "";
   }
 })();
+// A reload keeps the history entry: the pane that was open stays open (the
+// entry before it is the list, so Back still goes there).
+export const keptPane: string | null =
+  !startPane && history.state && typeof history.state.pane === "string" ? history.state.pane : null;
 
 /** One pane, as `/api/panes` gives it. */
 export type Pane = {

@@ -714,56 +714,55 @@ network) and the browser opens a page that lists every pane, under its session
 and window (the directory most of a session's panes are in beside its name):
 its name large (else the title its program set, else the program), then the
 program under it and its directory when it is elsewhere, the last thing it
-printed (not a prompt) and how long it has been quiet; a dot for its state
-(an agent or shell pane free green or busy yellow, exited red), the messages
-waiting in its inbox, and the window's alert marks from the status
-line (`#` printed, `!` bell, `~` silent, with `monitor-activity` and friends
-on), so you can see which job finished without opening it. Tap one to see its
-screen, colours and all; keepane sends it again whenever it changes, so there
-is no refresh to wait for. Swipe across it for the next pane, or tap its title
-to pick one; swipe in from the left edge to go back to the list. Send sends
-what is in the box at the bottom, with no Enter after it; Send again (the box
-empty) is the Enter. The view menu (the sliders in the pane's bar) can make
-Enter and Send run what was typed instead, for this device. The history button beside the box brings back
+printed (not a prompt) and how long it has been quiet; a dot for its state (an
+agent or shell pane free green or busy yellow, exited red), the messages
+waiting in its inbox, and the window's alert marks from the status line (`#`
+printed, `!` bell, `~` silent, with `monitor-activity` and friends on), so you
+can see which job finished without opening it. Tap one to see its screen,
+colours and all; keepane sends it again whenever it changes, so there is no
+refresh to wait for. Swipe across it for the next pane, or tap its title to
+pick one; swipe in from the left edge to go back to the list. A reload of the
+page keeps the pane that was open. Send sends what is in the box at the
+bottom, with no Enter after it; Send again (the box empty) is the Enter. The
+view menu (the sliders in the pane's bar) can make Enter and Send run what was
+typed instead, for this device. The history button beside the box brings back
 what you sent before (☆ keeps one at the top). The keys the phone keyboard
-lacks are in a row above it (Esc, Tab, arrows, more under ⋯; Ctrl+C and
-Enter stay in view at its end);
-Ctrl or Alt, then a letter typed, sends Ctrl or Alt with it. The ⋯
-menu in the pane's bar, and a right click (a long press on a phone) on a
-pane in the list, split the pane, open a window, rename, close the pane or show its inbox
-(also a tap on a card's "queued" or "on #N" mark): the message it works on,
-each waiting one whole, to put first, up, down or delete (and undo), and the
-last few it finished. The view menu holds the rest: When each command ran adds
-a column with the time each command started (tap one for its date, how long
-it took and its exit code; see "Command times and history"). A tap on a session or
-window folds it (the device remembers); its right click or long press renames it
-or folds every window of a session at once. A pane wider than the
-phone wraps its long lines at the phone's edge (the view menu turns that off, for
-a full-screen program). Fit to this screen, in the same menu, sizes the pane to the phone: it fills
-its window and its session takes the phone's columns and rows, so a
-full-screen program (vim, htop, an agent's screen) draws for the phone.
-Meanwhile the computer and any other phone see that session at the phone's
-size too (a session has one size; the page and the status line say so);
-leaving the pane, going back to the list or putting the phone away gives it
-back its size, and so does keepane when no phone has shown it for 10
-seconds. Everything runs
-on the computer; the phone only shows and types. "Add to Home Screen" makes
-it open like an app.
+lacks are in a row above it (Esc, Tab, arrows, more under ⋯; Ctrl+C and Enter
+stay in view at its end); Ctrl or Alt, then a letter typed, sends Ctrl or Alt
+with it. The ⋯ menu in the pane's bar, and a right click (a long press on a
+phone) on a pane in the list, split the pane, open a window, rename, close the
+pane or show its inbox (also a tap on a card's "queued" or "on #N" mark): the
+message it works on, each waiting one whole, to put first, up, down or delete
+(and undo), and the last few it finished. The view menu holds the rest: When
+each command ran adds a column with the time each command started (tap one for
+its date, how long it took and its exit code; see "Command times and
+history"). A tap on a session or window folds it (the device remembers); its
+right click or long press renames it or folds every window of a session at
+once. A pane wider than the phone wraps its long lines at the phone's edge
+(the view menu turns that off, for a full-screen program). Fit to this screen,
+in the same menu, sizes the pane to the phone: it fills its window and its
+session takes the phone's columns and rows, so a full-screen program (vim,
+htop, an agent's screen) draws for the phone. Meanwhile the computer and any
+other phone see that session at the phone's size too (a session has one size;
+the page and the status line say so); leaving the pane, going back to the list
+or putting the phone away gives it back its size, and so does keepane when no
+phone has shown it for 10 seconds. Everything runs on the computer; the phone
+only shows and types. "Add to Home Screen" makes it open like an app.
 
 The same page works in a computer's browser: on a wide screen the list stays
 on the left and the pane fills the right. The button at the top left folds the
 list down to a strip of one button per pane (and back); on a touch screen a
-swipe left on the list folds it, a swipe right on the strip opens it. The button at the top right picks
-the page's own look, light, dark or the system's (each device keeps its own),
-and the terminal's theme (`theme`, see Themes): that one is the computer's, so
-its terminal changes too, and every page shows the panes in it. The same menu
-picks the page's language: the system's (Chinese on a Chinese system, else
-English), Chinese or English. Beside it, the time a request takes to the
-computer and back (`23 ms`, a green dot under 100 ms, yellow under 300, red
-above or `offline`). The full-screen button in a pane's bar leaves only its
-screen and the input box, over the whole screen where the browser can (on an
-iPhone, over the whole page); the button beside the box, or the browser's own
-way out, brings the rest back. (The page is
+swipe left on the list folds it, a swipe right on the strip opens it. The
+button at the top right picks the page's own look, light, dark or the system's
+(each device keeps its own), and the terminal's theme (`theme`, see Themes):
+that one is the computer's, so its terminal changes too, and every page shows
+the panes in it. The same menu picks the page's language: the system's
+(Chinese on a Chinese system, else English), Chinese or English. Beside it,
+the time a request takes to the computer and back (`23 ms`, a green dot under
+100 ms, yellow under 300, red above or `offline`). The full-screen button in a
+pane's bar leaves only its screen and the input box, over the whole screen
+where the browser can (on an iPhone, over the whole page); the button beside
+the box, or the browser's own way out, brings the rest back. (The page is
 built from `web/`, React and HeroUI, into one file keepane carries.)
 
 <p align="center">

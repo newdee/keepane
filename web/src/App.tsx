@@ -1,7 +1,7 @@
 import { Button, Chip, Dropdown, Header, Label, Separator, Toast, toast } from "@heroui/react";
 import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Sun, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getJson, post, q, startPane, type DoneItem, type Info, type Pane } from "./api";
+import { getJson, keptPane, post, q, startPane, type DoneItem, type Info, type Pane } from "./api";
 import {
   useDone,
   useFullscreen,
@@ -86,8 +86,11 @@ export default function App() {
         const i = await getJson<Info>("/api/info");
         setInfo(i);
         document.title = `keepane · ${i.host}`;
-        history.replaceState({}, "");
-        if (startPane) open(startPane);
+        if (keptPane) setCurrent(keptPane);
+        else {
+          history.replaceState({}, "");
+          if (startPane) open(startPane);
+        }
       } catch (e) {
         setFatal((e as Error).message);
       }
