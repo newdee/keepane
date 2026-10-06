@@ -3452,3 +3452,28 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 2 | 机制通路存活（15 条变异） | 页面 9 条、Rust 6 条全部被抓（W1 第一次因文件被占用没改成，重跑后被抓） | 干净（2/3） |
 | 3 | 可复现性 + 静态一致性 | 6 个检查各跑 2 次，每次共 221 条 PASS、0 FAIL；Windows、Linux 构建的 index.html.gz 都是 sha256 53d28d48…7f0a；README、网站的说法逐条对代码；只读时新控件都不显示，服务器都回 403（e2e） | 干净（3/3） |
 | 4 | 真机三平台（CI run 37219806795，提交 9b639e4） | windows、ubuntu、macos、web（构建结果与提交的一致）全部通过 | 验收通过 |
+
+## 103. Codex、pi 的历史；全屏程序的滚动交给程序；`C-b v` 的消息与任务排版显示、跟随光标
+
+用户：Codex 和 pi 在手机网页上、电脑终端里都往上翻不到历史；`C-b v` 看信箱和任务时是一段文本，太难看，应该排好版，而且移动到条目上就显示，不用回车。选定：写文档 + 全屏程序的滚动交给程序（1 和 3）。
+
+- 原因（实测，不是 keepane 的缺陷）：Codex 0.160、pi 1.0 默认在备用屏幕（alternate screen）里画界面（原始输出里有 `ESC[?1049h`；pi 的 `tuiMode` 默认 `fullscreen`）。备用屏幕在任何终端里都不留滚动历史。内联的 pi 在尺寸变化时会清屏清历史再整篇重画，keepane 在 Windows、Linux 上都完整重建了历史（80/80 行）。内联开关：Codex `[tui] alternate_screen = "never"`（字符串；`false` 被拒）或 `--no-alt-screen`；pi `"tuiMode": "regular"`。
+- 实现：
+  - 文档：README 中英文写明原因和两个开关。
+  - 全屏程序的滚动：电脑上的滚轮原本就交给程序（要鼠标的发滚轮事件，否则发 3 个方向键），规则收到一个函数 `input::wheel`；`send-keys WheelUp`/`WheelDown` 用同一规则（普通屏幕上什么也不发）；新增格式 `#{alternate_on}`、`#{mouse_any_flag}`（原来输出空）；`/api/panes` 加 `alt`；网页上全屏程序的屏幕：竖向拖动每 36 px、桌面滚轮每 60 单位发一步，横向手势照旧切 pane，标题栏注明"全屏程序：滑动交给它滚动"。
+  - `C-b v`：`trace-message -J`、`show-task -J` 输出 JSON（`list-messages -J` 同一做法），dashboard 读它排版：状态色块、谁发给谁（有名字的 pane 显示名字）、每一步的时间、正文与输出分开；任务按时间连成一列，每步一行事实和正文前三行、输出第一行。在 `[2]`、`[3]` 移动光标时右边立刻显示，回到 `[1]` 恢复原来的标签，手动切过的标签不动；Enter 进到右边滚动。
+- 定性：dashboard 原来按文本解析 `trace-message`，正文里有一行 `output:` 就会切错（结构缺陷），所以改成 JSON；滚轮规则原本写了两份，收成一份。
+- Windows 的 ConPTY 不把程序的鼠标模式请求（`?1000h`）转给 keepane，那里全屏程序收到的是方向键；macOS、Linux 收到滚轮事件。两种都按"步"计数验证。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 开发中 | 实机 dashboard、alt-check | 旧二进制占用导致复制失败（工具）；Windows 鼠标模式不经 ConPTY（检查改为按步计数）；e2e 里 `powershell` 解析成同名目录（改 `.exe`） | 修 |
+| 1 | 全量回归 | fmt、clippy 通过；Windows 323/10/109，Linux 300/109；浏览器 Alt 8、Feat 54、Layout 51、Enter 20、Check 56、New 22、Edge 18，0 FAIL | 干净（1/3） |
+| 2 | 机制通路存活（17 条变异） | 发现 `trace-message -J`/`show-task -J` 的真实输出没有测试（dashboard 测试用手写 JSON）；横滑检查太弱（竖向只偏 10 px）；一条变异锚点被 fmt 改掉 | **有问题**：加 e2e `a_message_and_its_task_as_json`，横滑改成斜滑 50 px；17/17 被抓（不计数，清零） |
+| 3 | 代码评审 | 逻辑无误；README 说 `send-keys WheelUp` 与滚轮"一样"，普通屏幕上不一样 | **有问题**：改中英文 README、man（不计数，清零） |
+| 4 | 全量回归 | `cargo fmt --check` 不过（新测试未格式化） | **有问题**（不计数，清零） |
+| 5 | 全量回归 | fmt、clippy 通过；Windows 323/10/110，Linux 300/110；浏览器共 229 条 PASS | 干净（1/3） |
+| 6 | 可复现性 + 静态 | 两平台 index.html.gz 都是 sha256 57f35817…e54d，检查第二遍数字相同；但 dashboard.md 仍写"Enter 打开 Detail"，mailbox.md 旧流程，演示录制脚本等 `text:` | **有问题**：改文档和录制脚本（不计数，清零） |
+| 7 | 静态一致性（旧措辞清扫） | 演示动图的说明（README、网站中英）、测试注释仍写"按字段展开/读全文" | **有问题**：改（不计数，清零） |
+| 8 | 静态一致性（再扫） | 剩 3 处"read in full"，内容属实 | 干净（1/3） |
+| 9 | 回归 + 实机录制 | clippy 通过；Windows 323/10/110，Linux 300/110；浏览器 229 条 PASS；`record_messages` 实机跑通（157 帧），截图是新排版 | 干净（2/3） |
