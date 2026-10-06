@@ -344,6 +344,12 @@ pub struct Board {
     /// What the main panel's tab shows, as its query gave it.
     pub main: Vec<String>,
     pub detail: Option<Detail>,
+    /// Detail shown because the cursor is on a message or task ([2], [3]):
+    /// the tab to go back to on leaving, and what was followed last (a
+    /// tab changed by hand stays changed until the cursor moves).
+    tab_before: Tab,
+    followed: bool,
+    last_follow: Option<(Panel, Option<Detail>)>,
     /// Lines the main panel is scrolled by, away from where it is read from.
     pub scroll: usize,
     pub filter: String,
@@ -473,6 +479,9 @@ impl Board {
             task_pick: 0,
             main: Vec::new(),
             detail: None,
+            tab_before: Tab::Screen,
+            followed: false,
+            last_follow: None,
             scroll: 0,
             filter: String::new(),
             input: None,
@@ -514,12 +523,14 @@ impl Board {
     pub fn set_inbox(&mut self, lines: &[String]) {
         self.inbox = lines.iter().filter_map(|l| Queued::parse(l)).collect();
         self.inbox_pick = self.inbox_pick.min(self.inbox.len().saturating_sub(1));
+        self.follow();
     }
 
     /// The tasks, as `list-tasks` gives them (its heading left out).
     pub fn set_tasks(&mut self, lines: &[String]) {
         self.tasks = TaskRow::parse_all(lines);
         self.task_pick = self.task_pick.min(self.tasks.len().saturating_sub(1));
+        self.follow();
     }
 
     /// `web-status`'s first line: `serving <url> · ... · N connected`, or off.
@@ -555,8 +566,8 @@ impl Board {
     pub fn main_query(&self) -> Option<Vec<String>> {
         if self.tab == Tab::Detail {
             return match &self.detail {
-                Some(Detail::Message(m)) => Some(owned(&["trace-message", m])),
-                Some(Detail::Task(t)) => Some(owned(&["show-task", t])),
+                Some(Detail::Message(m)) => Some(owned(&["trace-message", m, "-J"])),
+                Some(Detail::Task(t)) => Some(owned(&["show-task", t, "-J"])),
                 None => None,
             };
         }
@@ -604,6 +615,8 @@ impl Board {
         let at = TABS.iter().position(|t| *t == self.tab).unwrap_or(0) as isize;
         self.tab = TABS[(at + by).rem_euclid(TABS.len() as isize) as usize];
         self.scroll = 0;
+        // Chosen by hand: it stays when the cursor leaves the list.
+        self.followed = false;
     }
 
     fn scroll_by(&mut self, up: isize) {
@@ -631,7 +644,51 @@ impl Board {
         }
     }
 
+    /// The cursor on a message ([2]) or a task ([3]): it is shown on the
+    /// right at once, no Enter. Back on the panes, the tab that was there.
+    fn follow(&mut self) {
+        let want = match self.focus {
+            Panel::Inbox => self.picked_message().map(|m| Detail::Message(m.id.clone())),
+            Panel::Tasks => {
+                self.tasks.get(self.task_pick).filter(|t| !t.id.is_empty()).map(|t| Detail::Task(t.id.clone()))
+            }
+            Panel::Panes => {
+                if self.followed {
+                    self.followed = false;
+                    self.tab = self.tab_before;
+                    self.scroll = 0;
+                }
+                self.last_follow = None;
+                return;
+            }
+            Panel::Main => return,
+        };
+        let now = Some((self.focus, want.clone()));
+        if self.last_follow == now {
+            return;
+        }
+        self.last_follow = now;
+        if want.is_none() {
+            return;
+        }
+        if self.tab != Tab::Detail {
+            self.tab_before = self.tab;
+            self.followed = true;
+            self.tab = Tab::Detail;
+        }
+        if self.detail != want {
+            self.detail = want;
+            self.scroll = 0;
+        }
+    }
+
     pub fn key(&mut self, k: Key) -> Action {
+        let a = self.key_inner(k);
+        self.follow();
+        a
+    }
+
+    fn key_inner(&mut self, k: Key) -> Action {
         self.note = None;
         if let Some(d) = self.dialog.take() {
             return self.answer(d, k);
@@ -886,6 +943,12 @@ impl Board {
     /// A mouse event: a click focuses a panel and picks the row under it,
     /// the wheel scrolls the panel under the pointer.
     pub fn mouse(&mut self, m: &MouseRecord) -> Action {
+        let a = self.mouse_inner(m);
+        self.follow();
+        a
+    }
+
+    fn mouse_inner(&mut self, m: &MouseRecord) -> Action {
         const MOVED: u32 = 0x1;
         const WHEELED: u32 = 0x4;
         let (x, y) = (m.x.max(0) as usize, m.y.max(0) as usize);
@@ -1097,24 +1160,21 @@ impl Board {
             None => ("[0] no panes".to_string(), Vec::new()),
         };
         if self.tab == Tab::Detail {
+            // The view has its own heading.
             head = match &self.detail {
-                Some(Detail::Message(m)) => vec![format!("message #{m}")],
-                Some(Detail::Task(t)) => vec![format!("task #{t}")],
-                None => vec!["Enter on a message ([2]) or a task ([3]) shows it here".into()],
+                Some(_) => Vec::new(),
+                None => vec!["\x1b[2mPick a message ([2]) or a task ([3]): it shows here\x1b[0m".into()],
             };
         }
-        head.push(format!("\x1b[2m{}\x1b[0m", "─".repeat(r.inner_w())));
+        if !(self.tab == Tab::Detail && self.detail.is_some()) {
+            head.push(format!("\x1b[2m{}\x1b[0m", "─".repeat(r.inner_w())));
+        }
         let room = r.inner_h().saturating_sub(head.len());
         let body: Vec<String> = match (&self.dialog, self.tab) {
             (Some(Dialog::Help), _) => help_lines(),
             (_, Tab::Events) => self.main.iter().map(|l| event_line(l)).collect(),
-            // Read in full: the envelope as its fields, long lines wrapped.
-            (_, Tab::Detail) => self
-                .main
-                .iter()
-                .flat_map(|l| envelope_fields(l).unwrap_or_else(|| vec![l.clone()]))
-                .flat_map(|l| if width_of(&l) > r.inner_w() { wrap(&strip(&l), r.inner_w()) } else { vec![l] })
-                .collect(),
+            // Read in full, laid out: a message's life, a task's steps.
+            (_, Tab::Detail) => self.detail_view(r.inner_w()),
             _ => self.main.clone(),
         };
         let shown: Vec<String> = if matches!(self.dialog, Some(Dialog::Help)) || !self.tab.read_up() {
@@ -1162,8 +1222,8 @@ impl Board {
         }
         let keys = match self.focus {
             Panel::Panes => "j/k pane  Enter screen  s send  r rename  m mode  R ready  o go there  x close",
-            Panel::Inbox => "j/k pick  Enter read  d delete  K/J move  t to top  u undo delete",
-            Panel::Tasks => "j/k pick  Enter steps",
+            Panel::Inbox => "j/k pick (shown right)  Enter scroll it  d delete  K/J move  t to top  u undo delete",
+            Panel::Tasks => "j/k pick (shown right)  Enter scroll it",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
         format!(" {keys}  \x1b[2m│ Tab/1230 panel  / filter  ? keys  q quit\x1b[0m")
@@ -1199,6 +1259,205 @@ impl Board {
         }
         s
     }
+}
+
+impl Board {
+    /// Where an address is, by the pane's name when it has one:
+    /// `worker %4` (the name bold), else the address.
+    fn who(&self, address: &str) -> String {
+        if address == "user" {
+            return "\x1b[36muser\x1b[0m".into();
+        }
+        match self.rows.iter().find(|r| r.address == address) {
+            Some(r) if !r.name.is_empty() => format!("\x1b[1m{}\x1b[0m \x1b[2m{}\x1b[0m", r.name, r.id),
+            Some(r) => format!("\x1b[1m{}\x1b[0m", r.id),
+            None => address.to_string(),
+        }
+    }
+
+    /// The Detail tab: the record (`-J`) laid out; anything else (an
+    /// error) as it came.
+    fn detail_view(&self, width: usize) -> Vec<String> {
+        let raw = self.main.join("\n");
+        let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok();
+        match (&self.detail, parsed) {
+            (Some(Detail::Message(_)), Some(v)) if v.is_object() => message_view(&v, width, &|a| self.who(a)),
+            (Some(Detail::Task(id)), Some(serde_json::Value::Array(steps))) => {
+                let row = self.tasks.iter().find(|t| &t.id == id);
+                task_view(&steps, row, width, &|a| self.who(a))
+            }
+            _ => self
+                .main
+                .iter()
+                .flat_map(|l| envelope_fields(l).unwrap_or_else(|| vec![l.clone()]))
+                .flat_map(|l| if width_of(&l) > width { wrap(&strip(&l), width) } else { vec![l] })
+                .collect(),
+        }
+    }
+}
+
+/// A stage's or status's colour (an SGR number): done green, failed red,
+/// on its way yellow, handed on cyan, waiting grey.
+fn tone(word: &str) -> &'static str {
+    match word {
+        "done" => "32",
+        "failed" | "rejected" | "dropped" | "abandoned" => "31",
+        "running" | "delivered" | "read" => "33",
+        "forwarded" => "36",
+        _ => "90",
+    }
+}
+
+/// The word on its colour: ` done ` black on green.
+fn badge(word: &str) -> String {
+    let bg = match tone(word) {
+        "32" => "42",
+        "31" => "41",
+        "33" => "43",
+        "36" => "46",
+        _ => "100",
+    };
+    format!("\x1b[1;30;{bg}m {word} \x1b[0m")
+}
+
+/// A section's heading, ruled to the width: `Text ─────`.
+fn section(title: &str, width: usize) -> String {
+    format!("\x1b[1m{title}\x1b[0m \x1b[2m{}\x1b[0m", "─".repeat(width.saturating_sub(width_of(title) + 1)))
+}
+
+/// Text in a block: each line wrapped, set in by two columns.
+fn block(text: &str, width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec!["  \x1b[2m(nothing)\x1b[0m".into()];
+    }
+    text.lines().flat_map(|l| wrap(l, width.saturating_sub(2).max(1))).map(|l| format!("  {l}")).collect()
+}
+
+/// A message's life (`trace-message -J`): its number and stage, who sent
+/// it where, when each step came, then what it said and what came of it.
+fn message_view(v: &serde_json::Value, width: usize, who: &dyn Fn(&str) -> String) -> Vec<String> {
+    let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+    let stage = s("stage");
+    let mut out = Vec::new();
+    let re = v["re"].as_u64().map(|r| format!(" · answers #{r}")).unwrap_or_default();
+    out.push(format!(
+        "\x1b[1mMessage #{}\x1b[0m  {}  \x1b[2mtask #{} · hop {}{re}\x1b[0m",
+        v["id"],
+        badge(&stage),
+        v["task"],
+        v["hop"]
+    ));
+    let from = match v["name"].as_str() {
+        Some(n) if s("from") != "user" => format!("{} \x1b[2m({n})\x1b[0m", who(&s("from"))),
+        _ => who(&s("from")),
+    };
+    out.push(format!("\x1b[2mfrom\x1b[0m  {from}"));
+    out.push(format!("\x1b[2mto  \x1b[0m  {}  \x1b[2mvia {}\x1b[0m", who(&s("to")), s("via")));
+    out.push(String::new());
+    // The steps it went through, the last in its colour.
+    let mut steps: Vec<(String, String, String)> = vec![("sent".into(), s("sent"), String::new())];
+    if let Some(d) = v["delivered"].as_str() {
+        let how = if v["read"].as_bool() == Some(true) { "read" } else { "delivered" };
+        steps.push((how.into(), d.into(), format!("queued {}", s("queued"))));
+    }
+    if let Some(e) = v["ended"].as_str() {
+        let mut note = v["took"].as_str().map(|t| format!("took {t}")).unwrap_or_default();
+        match v["ok"].as_bool() {
+            Some(true) => note.push_str("  \x1b[32m✓ ok\x1b[0m"),
+            Some(false) => note.push_str("  \x1b[31m✗ not ok\x1b[0m"),
+            None => {}
+        }
+        steps.push((stage.clone(), e.into(), note));
+    }
+    let last = steps.len() - 1;
+    for (i, (what, at, note)) in steps.iter().enumerate() {
+        let dot = if i == last { format!("\x1b[{}m●\x1b[0m", tone(what)) } else { "\x1b[2m●\x1b[0m".into() };
+        let word = if i == last { format!("\x1b[1m{what:<10}\x1b[0m") } else { format!("{what:<10}") };
+        out.push(format!(" {dot} {word} {at}  \x1b[2m{note}\x1b[0m"));
+    }
+    if let Some(why) = v["why"].as_str() {
+        out.push(format!("   \x1b[31mwhy\x1b[0m  {why}"));
+    }
+    out.push(String::new());
+    out.push(section("Text", width));
+    out.extend(block(&s("text"), width));
+    if let Some(o) = v["output"].as_str() {
+        out.push(String::new());
+        let cut = if v["cut"].as_bool() == Some(true) { " (cut)" } else { "" };
+        out.push(section(&format!("Output{cut}"), width));
+        out.extend(block(o, width));
+    }
+    out
+}
+
+/// A task's steps (`show-task -J`), each message on a line of its own
+/// with what came of it, joined down the left.
+fn task_view(
+    steps: &[serde_json::Value],
+    row: Option<&TaskRow>,
+    width: usize,
+    who: &dyn Fn(&str) -> String,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let task = steps.first().map(|v| v["task"].to_string()).unwrap_or_default();
+    let (status, took) = row.map(|r| (r.status.clone(), r.took.clone())).unwrap_or_default();
+    out.push(format!(
+        "\x1b[1mTask #{task}\x1b[0m  {}  \x1b[2m{} step{} · {took}\x1b[0m",
+        badge(if status.is_empty() { "?" } else { &status }),
+        steps.len(),
+        if steps.len() == 1 { "" } else { "s" }
+    ));
+    if let Some(title) = row.map(|r| r.title.as_str()).filter(|t| !t.is_empty()) {
+        out.extend(wrap(title, width).into_iter().map(|l| format!("\x1b[1m{l}\x1b[0m")));
+    }
+    out.push(String::new());
+    for (i, v) in steps.iter().enumerate() {
+        let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        let stage = s("stage");
+        let bar = if i + 1 < steps.len() { "\x1b[2m│\x1b[0m" } else { " " };
+        out.push(format!(
+            "\x1b[{}m●\x1b[0m {}  \x1b[1m#{}\x1b[0m  {} → {}  {}",
+            tone(&stage),
+            s("sent"),
+            v["id"],
+            who(&s("from")),
+            who(&s("to")),
+            badge(&stage)
+        ));
+        let mut facts: Vec<String> = Vec::new();
+        if let Some(q) = v["queued"].as_str() {
+            facts.push(format!("queued {q}"));
+        }
+        if let Some(t) = v["took"].as_str() {
+            facts.push(format!("took {t}"));
+        }
+        match v["ok"].as_bool() {
+            Some(true) => facts.push("\x1b[32m✓\x1b[0m\x1b[2m".into()),
+            Some(false) => facts.push("\x1b[31m✗\x1b[0m\x1b[2m".into()),
+            None => {}
+        }
+        facts.push(format!("via {}", s("via")));
+        out.push(format!("{bar} \x1b[2m{}\x1b[0m", facts.join(" · ")));
+        let room = width.saturating_sub(4).max(1);
+        let text = s("text");
+        for l in text.lines().take(3).flat_map(|l| wrap(l, room)).take(3) {
+            out.push(format!("{bar}   {l}"));
+        }
+        if text.lines().count() > 3 {
+            out.push(format!("{bar}   \x1b[2m…\x1b[0m"));
+        }
+        if let Some(o) = v["output"].as_str().filter(|o| !o.trim().is_empty()) {
+            let first = o.lines().find(|l| !l.trim().is_empty()).unwrap_or_default();
+            out.push(format!("{bar}   \x1b[2m→ {}\x1b[0m", clip(first, room.saturating_sub(2)).0));
+        }
+        if let Some(why) = v["why"].as_str() {
+            out.push(format!("{bar}   \x1b[31m{why}\x1b[0m"));
+        }
+        if i + 1 < steps.len() {
+            out.push(bar.to_string());
+        }
+    }
+    out
 }
 
 /// A message's header, in either of its forms (`[keepane id=3 from=… …]`,
@@ -1346,11 +1605,11 @@ fn help_lines() -> Vec<String> {
         "  o          go there                x       close it (asks; prefix u undoes)",
         "",
         "[2] Inbox (the chosen pane's queued messages)",
-        "  j / k      pick one                Enter   read it in full",
+        "  j / k      pick one (shown right)  Enter   scroll it",
         "  d          delete it (asks)        u       bring the last deleted back",
         "  K / J      move it up / down       t       put it first",
         "",
-        "[3] Tasks    j / k pick, Enter shows every step",
+        "[3] Tasks    j / k pick (its steps shown right), Enter scroll them",
         "",
         "[0] The chosen pane: Screen, Scrollback, Events, Detail",
         "  j / k      scroll                  g / G   top / bottom",
@@ -1731,16 +1990,129 @@ mod tests {
         assert_eq!(b.key(Key::ch('d')), Action::Redraw);
         assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["drop-message", "6"])));
         assert_eq!(b.key(Key::ch('u')), Action::Run(owned(&["drop-message", "-u"])));
-        // Enter reads it in full on the right.
+        // On it: shown on the right; Enter goes there, to scroll it.
         b.inbox_pick = 0;
         b.key(Key::plain(KeyCode::Enter));
         assert_eq!((b.focus, b.tab), (Panel::Main, Tab::Detail));
-        assert_eq!(b.main_query().unwrap(), owned(&["trace-message", "5"]));
+        assert_eq!(b.main_query().unwrap(), owned(&["trace-message", "5", "-J"]));
         // A task likewise.
         b.set_tasks(&["TASK  STATUS   AT".into(), "#12   running  $1:@1.%2 (ai)  2s  2  run".into()]);
         b.key(Key::ch('3'));
         b.key(Key::plain(KeyCode::Enter));
-        assert_eq!(b.main_query().unwrap(), owned(&["show-task", "12"]));
+        assert_eq!(b.main_query().unwrap(), owned(&["show-task", "12", "-J"]));
+    }
+
+    /// The cursor on a message or a task shows it on the right at once;
+    /// back on the panes, the tab that was there. A tab picked by hand stays.
+    #[test]
+    fn the_cursor_shows_its_message_or_task_on_the_right() {
+        let mut b = board();
+        b.key(Key::ch('j'));
+        inbox(&mut b);
+        assert_eq!(b.tab, Tab::Screen);
+        b.key(Key::ch('2'));
+        assert_eq!((b.focus, b.tab), (Panel::Inbox, Tab::Detail), "no Enter needed");
+        assert_eq!(b.main_query().unwrap(), owned(&["trace-message", "5", "-J"]));
+        b.key(Key::ch('j'));
+        assert_eq!(b.main_query().unwrap(), owned(&["trace-message", "6", "-J"]), "it follows the cursor");
+        b.key(Key::ch('1'));
+        assert_eq!((b.focus, b.tab), (Panel::Panes, Tab::Screen), "back to the screen");
+        // A tab changed by hand while on the list stays.
+        b.key(Key::ch('2'));
+        assert_eq!(b.tab, Tab::Detail);
+        b.key(Key::ch(']'));
+        b.key(Key::ch(']'));
+        assert_eq!(b.tab, Tab::Scrollback);
+        b.key(Key::ch('1'));
+        assert_eq!(b.tab, Tab::Scrollback);
+        // Tasks likewise.
+        b.set_tasks(&[
+            "TASK  STATUS   AT".into(),
+            "#12   running  $1:@1.%2 (ai)  2s  2  run".into(),
+            "#9    done     -  1s  1  ls".into(),
+        ]);
+        b.key(Key::ch('3'));
+        assert_eq!(b.main_query().unwrap(), owned(&["show-task", "12", "-J"]));
+        b.key(Key::ch('j'));
+        assert_eq!(b.main_query().unwrap(), owned(&["show-task", "9", "-J"]));
+        // An inbox emptied under the cursor: nothing to follow, nothing breaks.
+        b.key(Key::ch('2'));
+        b.set_inbox(&[]);
+        assert!(strip(&b.frame()).contains("nothing queued"));
+    }
+
+    /// The Detail tab lays a record out: a message's stage, who to whom, its
+    /// steps, then Text and Output apart (a line `output:` in the text stays
+    /// text); a task's steps, joined.
+    #[test]
+    fn a_message_and_a_task_read_as_laid_out() {
+        let mut b = board();
+        b.key(Key::ch('j'));
+        inbox(&mut b);
+        b.key(Key::ch('2'));
+        let msg = serde_json::json!({
+            "id": 5, "task": 5, "hop": 0, "stage": "done", "from": "user", "name": null,
+            "to": "$1:@1.%2", "via": "shell", "re": null, "sent": "12:00:01", "delivered": "12:00:02",
+            "read": false, "ended": "12:00:03", "queued": "1s", "took": "1s", "ok": true, "why": null,
+            "text": "echo one\noutput:\necho two", "output": "one\ntwo", "cut": false
+        });
+        b.set_main(vec![msg.to_string()]);
+        let screen = strip(&b.frame());
+        for want in [
+            "Message #5",
+            " done ",
+            "task #5",
+            "from  user",
+            "tester %2",
+            "via shell",
+            "● sent",
+            "● delivered",
+            "● done",
+            "took 1s",
+            "✓ ok",
+            "Text ─",
+            "Output ─",
+        ] {
+            assert!(screen.contains(want), "{want}:\n{screen}");
+        }
+        let text_at = screen.find("Text ─").unwrap();
+        let out_at = screen.find("Output ─").unwrap();
+        let inside = &screen[text_at..out_at];
+        assert!(inside.contains("output:") && inside.contains("echo two"), "the text whole, before Output:\n{screen}");
+        assert!(screen[out_at..].contains("two"));
+        // Colour: the stage on green, nothing raw left.
+        assert!(b.frame().contains("\x1b[1;30;42m done "));
+        assert!(!screen.contains("{\"id\""), "no JSON shown");
+        // A task.
+        b.set_tasks(&["TASK  STATUS   AT".into(), "#12   failed   -  2s  2  review it".into()]);
+        b.key(Key::ch('3'));
+        let step = |id: u64, stage: &str, ok: bool| {
+            serde_json::json!({
+                "id": id, "task": 12, "hop": 0, "stage": stage, "from": "user", "name": null, "to": "$1:@1.%2",
+                "via": "shell", "re": null, "sent": "12:00:01", "delivered": "12:00:01", "read": false,
+                "ended": "12:00:02", "queued": "0ms", "took": "1s", "ok": ok, "why": null,
+                "text": format!("step {id}"), "output": "first line\nsecond", "cut": false
+            })
+        };
+        b.set_main(vec![serde_json::Value::Array(vec![step(12, "done", true), step(13, "failed", false)]).to_string()]);
+        let screen = strip(&b.frame());
+        for want in [
+            "Task #12",
+            " failed ",
+            "2 steps",
+            "review it",
+            "#12",
+            "#13",
+            "user → tester %2",
+            "step 12",
+            "→ first line",
+            "✗",
+        ] {
+            assert!(screen.contains(want), "{want}:\n{screen}");
+        }
+        // An error instead of a record: shown as it came.
+        b.set_main(vec!["no task #99".into()]);
+        assert!(strip(&b.frame()).contains("no task #99"));
     }
 
     #[test]

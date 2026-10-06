@@ -46,8 +46,23 @@ const MANIFEST: &str = r##"{"name":"keepane","short_name":"keepane","start_url":
 
 /// Named keys the page's buttons send; anything else is typed as text.
 const KEYS: &[&str] = &[
-    "Enter", "Escape", "Tab", "BTab", "BSpace", "Space", "Up", "Down", "Left", "Right", "Home", "End", "PPage",
-    "NPage", "DC",
+    "Enter",
+    "Escape",
+    "Tab",
+    "BTab",
+    "BSpace",
+    "Space",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Home",
+    "End",
+    "PPage",
+    "NPage",
+    "DC",
+    "WheelUp",
+    "WheelDown",
 ];
 
 /// What the page's ⋯ menu and its names can do, and nothing else.
@@ -804,7 +819,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                                   #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}\t\
                                   #{pane_name}\t#{pane_work_mode}\t#{pane_current_path_short}\t\
                                   #{pane_activity}\t#{pane_last_line}\t#{pane_idle}\t#{pane_inbox}\t#{pane_unheard}\t#{pane_message}\t\
-                                  #{pane_dead_status}\t#{pane_title}";
+                                  #{pane_dead_status}\t#{alternate_on}\t#{pane_title}";
             match q(vec!["list-panes".into(), "-a".into(), "-F".into(), FIELDS.into()]).await {
                 Ok((0, out, _)) => Response::json(panes_json(&out)),
                 Ok((_, _, err)) => Response::text(500, err.trim()),
@@ -1110,12 +1125,12 @@ fn panes_json_at(out: &str, now: u64) -> String {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() < 26 {
+            if f.len() < 27 {
                 return None;
             }
             // The title the program set (last: one with a tab in it is still
             // whole, the tab a space).
-            let title = f[25..].join(" ");
+            let title = f[26..].join(" ");
             let num = |s: &str| s.parse::<u64>().unwrap_or(0);
             // The window's alerts, as the status line marks them: it printed
             // (#), rang (!), or went quiet (~) while nobody looked.
@@ -1123,7 +1138,7 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
                  \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
                  \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{},\"path\":{},\"quiet\":{},\"last\":{},\
-                 \"idle\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"exit\":{},\"title\":{}}}",
+                 \"idle\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"exit\":{},\"alt\":{},\"title\":{}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -1156,6 +1171,9 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 num(f[23]),
                 // How its program ended, once it has (else null).
                 f[24].parse::<u32>().map_or("null".to_string(), |c| c.to_string()),
+                // A full-screen program (no scrollback): the page scrolls it
+                // with the wheel instead.
+                f[25] == "1",
                 json_str(&title)
             ))
         })
@@ -1385,13 +1403,13 @@ mod tests {
         let qr = qr_text("http://192.168.1.23:7681/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert!(qr.lines().count() > 10 && qr.contains('█'), "{qr}");
         let json = panes_json_at(
-            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t7\t\t✳ fix\tthe login\n\
-             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t1\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\t2\t\nshort line\n",
+            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t7\t\t0\t✳ fix\tthe login\n\
+             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t1\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\t2\t1\t\nshort line\n",
             1060,
         );
         assert_eq!(
             json,
-            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"unheard":false,"working":7,"exit":null,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":true,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"inbox":3,"unheard":true,"working":0,"exit":2,"title":""}]"#
+            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"unheard":false,"working":7,"exit":null,"alt":false,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":true,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"inbox":3,"unheard":true,"working":0,"exit":2,"alt":true,"title":""}]"#
         );
         assert_eq!(panes_json(""), "[]");
         // The keys the page sends: named ones, Ctrl with a letter, Alt with

@@ -52,8 +52,8 @@ Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   rename-pane [-t pane] name   (then -t %name finds it; a full address $1:@3.%7 works too)   whoami
   set-work-mode [-t pane] normal|shell|ai   (shell: runs what it gets; ai: its agent says pane-ready; from a pane, only that pane)
   send-message [--to pane] [-r | --re id] [--task id] [-w secs] text   read-message [-w secs]   list-messages [-t pane] [-a]
-  trace-message id [-w secs]   drop-message id | -u   move-message id up|down|top   pane-status [text]
-  list-tasks [-t session]   show-task id   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
+  trace-message id [-w secs] [-J]   drop-message id | -u   move-message id up|down|top   pane-status [text]
+  list-tasks [-t session]   show-task id [-J]   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
   create-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
   dashboard (prefix v: panes, inboxes, tasks and the chosen pane's screen; act on them; ? keys)   setup [claude|codex|gemini|cursor|opencode] [--install]
 Panes on other machines (both run `keepane web`; docs/design/link.md):

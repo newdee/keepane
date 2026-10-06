@@ -2174,6 +2174,59 @@ async fn display_panes_takes_numbers_past_nine() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `trace-message -J` and `show-task -J` (the dashboard's form): the record
+/// as JSON, the text and what the shell printed whole and apart, the steps'
+/// times and how it ended.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_and_its_task_as_json() {
+    let h = Harness::start("tracej").await;
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "j"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let p = pane_id(&h, "j:0.0").await;
+    let t = format!("%{p}");
+    h.cli(&["rename-pane", "-t", &t, "runner"]).await;
+    h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    let cmd = if cfg!(windows) { "Write-Output kpJ1 kpJ2" } else { "printf '%s\\n' kpJ1 kpJ2" };
+    let (code, said, err) = h.cli(&["send-message", "-t", &t, cmd]).await;
+    assert_eq!(code, 0, "{err}");
+    let id: u64 = said.trim_start_matches('#').split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let v = loop {
+        let (code, out, err) = h.cli(&["trace-message", &id.to_string(), "-J"]).await;
+        assert_eq!(code, 0, "{err}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+        if v["stage"] == "done" {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "never done: {v}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!((v["id"].as_u64(), v["task"].as_u64(), v["hop"].as_u64()), (Some(id), Some(id), Some(0)), "{v}");
+    assert_eq!((v["from"].as_str(), v["via"].as_str(), v["text"].as_str()), (Some("user"), Some("shell"), Some(cmd)));
+    assert!(v["to"].as_str().is_some_and(|to| to.ends_with(&t)), "{v}");
+    assert_eq!(
+        v["output"].as_str().map(|o| o.lines().map(str::trim).collect::<Vec<_>>()),
+        Some(vec!["kpJ1", "kpJ2"]),
+        "{v}"
+    );
+    assert_eq!((v["ok"].as_bool(), v["cut"].as_bool(), v["read"].as_bool()), (Some(true), Some(false), Some(false)));
+    for k in ["sent", "delivered", "ended", "queued", "took"] {
+        assert!(v[k].as_str().is_some_and(|s| !s.is_empty()), "{k}: {v}");
+    }
+    assert!(v["why"].is_null() && v["re"].is_null(), "{v}");
+    // The task: its one step, the same record.
+    let (code, out, err) = h.cli(&["show-task", &id.to_string(), "-J"]).await;
+    assert_eq!(code, 0, "{err}");
+    let steps: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(steps.as_array().map(Vec::len), Some(1), "{steps}");
+    assert_eq!(steps[0], v);
+    // Unknown: an error, as without -J.
+    assert_ne!(h.cli(&["trace-message", "999", "-J"]).await.0, 0);
+    assert_ne!(h.cli(&["show-task", "999", "-J"]).await.0, 0);
+    h.cli(&["kill-server"]).await;
+}
+
 /// `copy-output` (prefix y) takes what the last command printed, and copy
 /// mode's `[` / `]` step from one command to the next.
 #[tokio::test(flavor = "multi_thread")]
@@ -4511,6 +4564,60 @@ async fn the_phone_renames_sessions_windows_and_panes() {
     // A pane is not renamed from the phone.
     let (code, err) = http(addr, "POST", &at("pane"), key, "from_phone").await;
     assert_eq!(code, 400, "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
+/// A full-screen program (the alternate screen) keeps no history: the
+/// wheel, from `send-keys WheelUp` or the phone, reaches it instead, as a
+/// terminal sends it (arrow keys to one that did not ask for the mouse);
+/// `#{alternate_on}` and the page's list say it is full screen.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_wheel_reaches_a_full_screen_program() {
+    let h = Harness::start("wheel").await;
+    h.cli(&["new", "-d", "-s", "wh"]).await;
+    // A program that goes full screen and says the three keys it reads.
+    let reader: &[&str] = if cfg!(windows) {
+        &[
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "[Console]::Write([char]27 + '[?1049h'); $k = 1..3 | % { [Console]::ReadKey($true).Key }; 'got ' + ($k -join ','); Start-Sleep 30",
+        ]
+    } else {
+        &[
+            "sh",
+            "-c",
+            "printf '\\033[?1049h'; stty raw -echo; k=$(dd bs=1 count=9 2>/dev/null | od -An -c | tr -s ' '); stty sane; echo got $k; sleep 30",
+        ]
+    };
+    let (code, _, err) = h.cli(&[&["new-window", "-d", "-t", "wh", "-n", "full"], reader].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let alt = async |t: &str| h.cli(&["display", "-p", "-t", t, "#{alternate_on}"]).await.1.trim().to_string();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while alt("wh:full").await != "1" {
+        assert!(Instant::now() < deadline, "never went full screen");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(alt("wh:0").await, "0", "a shell at its prompt");
+    tokio::time::sleep(Duration::from_millis(1500)).await; // the reader's start-up
+    // The page's list says which is which.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, "wk", false))));
+    let (_, list) = http(addr, "GET", "/api/panes", "wk", "").await;
+    let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+    let full = pane_id(&h, "wh:full.0").await;
+    let by = |id: u32| v.as_array().unwrap().iter().find(|e| e["id"] == format!("%{id}")).cloned().unwrap();
+    assert_eq!(by(full)["alt"], true, "{list}");
+    assert_eq!(by(pane_id(&h, "wh:0.0").await)["alt"], false, "{list}");
+    // One wheel step up, from the page: three Up keys reach the program.
+    let (code, err) = http(addr, "POST", &format!("/api/send?pane=%25{full}&key=WheelUp"), "wk", "").await;
+    assert_eq!(code, 200, "{err}");
+    let want = if cfg!(windows) { "got UpArrow,UpArrow,UpArrow" } else { "got 033 [ A 033 [ A 033 [ A" };
+    h.wait_capture("wh:full", "the program got the wheel as Up keys", |t| t.contains(want)).await;
+    // The same word from the command line; on a normal screen it is nothing
+    // (keepane's history is what scrolls there).
+    assert_eq!(h.cli(&["send-keys", "-t", "wh:0", "WheelUp"]).await.0, 0);
     h.cli(&["kill-server"]).await;
 }
 

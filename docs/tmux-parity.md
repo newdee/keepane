@@ -215,7 +215,7 @@ The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `window_bell_flag` `window_activity_flag` `window_silence_flag`
 `window_flags`), the pane (`pane_index` `pane_id` `pane_title`
 `pane_current_command` `pane_start_command` `pane_current_path`
-`pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status`
+`pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `alternate_on` `mouse_any_flag`
 `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time`
 `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom`
 `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`), the session and window

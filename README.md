@@ -54,7 +54,7 @@ delivered according to the receiving pane's work mode.
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-messages-light.gif">
     <img src="docs/img/keepane-messages.gif" width="880"
-         alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows the panes, an agent's inbox and the tasks in panels, puts a message first and reads it field by field">
+         alt="A command sent to the pane named builder runs there with its envelope as a comment; trace-message shows it done with its output; the dashboard shows the panes, an agent's inbox and the tasks in panels, puts a message first and shows its record laid out beside the list">
   </picture>
 </p>
 
@@ -141,22 +141,24 @@ processes of the same user from each other.
 
 ## The dashboard
 
-`C-b v` (a popup) or `keepane dashboard` (any terminal) lays everything out
-in panels, lazygit style. On the left: `[1]` every pane, grouped by
-session, with its work mode, whether it is free, its inbox, how long it
-has been quiet and its program; `[2]` the chosen pane's inbox; `[3]` the
-tasks. On the right, `[0]` the chosen pane: its address, directory, pid,
-how long it has run, what it says it is doing, and then its screen live
-(with its colours), its scrollback, its events, or one message or task in
-full. Tab, `1 2 3 0` and `h`/`l` move between panels, `j`/`k` within one,
-`[`/`]` change what the right side shows; the mouse clicks and scrolls;
-`?` lists every key.
+`C-b v` (a popup) or `keepane dashboard` (any terminal) lays everything out in
+panels, lazygit style. On the left: `[1]` every pane, grouped by session, with
+its work mode, whether it is free, its inbox, how long it has been quiet and
+its program; `[2]` the chosen pane's inbox; `[3]` the tasks. On the right,
+`[0]` the chosen pane: its address, directory, pid, how long it has run, what
+it says it is doing, and then its screen live (with its colours), its
+scrollback, its events, or the message or task under the cursor: moving onto
+one in `[2]` or `[3]` shows it at once, laid out (its stage on its colour, who
+sent it to whom, when each step came, then its text and what it printed; a
+task, its messages joined down the left). Tab, `1 2 3 0` and `h`/`l` move
+between panels, `j`/`k` within one, `[`/`]` change what the right side shows;
+the mouse clicks and scrolls; `?` lists every key.
 
 It also acts. On a pane: `s` sends it a message, `r` renames it, `m`
 changes its work mode, `R` marks it ready (unsticks it), `o` goes there
 (and closes the popup), `x` closes it. In the inbox: `d` deletes a queued
 message (`u` brings it back), `K`/`J` move it, `t` puts it first, Enter
-reads it in full. Closing a pane, deleting a message and switching a pane
+moves into it to scroll. Closing a pane, deleting a message and switching a pane
 to `shell` (where what it gets is run) ask first. The design:
 [docs/design/dashboard.md](docs/design/dashboard.md).
 
@@ -384,9 +386,11 @@ names.
 The mouse selects a pane, drags a border to resize, and switches windows
 from the status line. The wheel enters copy mode and scrolls back on the
 normal screen, sends arrow keys to full-screen programs, and is passed
-through to programs that ask for mouse events. Drag to select text; it is
-copied to the Windows clipboard on release, and a right click pastes the
-clipboard into the pane, as the terminal itself would.
+through to programs that ask for mouse events; `send-keys WheelUp` (or
+`WheelDown`) sends a program what the wheel would, from a script (nothing on
+the normal screen, where the wheel scrolls keepane's own history). Drag to
+select text; it is copied to the Windows clipboard on release, and a right
+click pastes the clipboard into the pane, as the terminal itself would.
 
 `C-b F` (`hints`) puts a label of one or two letters on every path, web
 address and git hash in the panes on screen: a compiler's
@@ -676,6 +680,15 @@ followed by arguments is a syntax error. Any other agent works the same way
 if it can run a command at the end of each turn and use an MCP server over
 stdio; run `keepane set-work-mode ai` in its pane before starting it.
 
+Codex (0.160 and later) and pi (1.0 and later) draw in the alternate screen by
+default, as vim does: what they print never reaches the scrollback, in
+keepane, in tmux or in any terminal, so there is no history to scroll back to.
+The wheel (and a drag on the phone) still scrolls them, through their own
+view. To keep their history in the pane instead, run them inline: for Codex,
+`alternate_screen = "never"` under `[tui]` in `~/.codex/config.toml` (or
+`codex --no-alt-screen`); for pi, `"tuiMode": "regular"` in
+`~/.pi/agent/settings.json`.
+
 A message for an `ai` pane whose agent has never said it is free (since it
 started) would wait for ever, so `send-message` says so, with the `setup`
 that adds the hook; the dashboard and the phone page say it too
@@ -759,7 +772,10 @@ finds text in the output (the lines with it marked, ↑ ↓ between them), copie
 the screen's text, and sizes the text (pinching the screen does too; each
 device keeps its own). The + at the top starts a new session in your home
 directory. A pane whose program ended (with `remain-on-exit` on) says how it
-ended, and Run it again starts the program again.
+ended, and Run it again starts the program again. A full-screen program (Codex
+or pi as they come, vim) keeps no history: a drag up or down on its screen
+scrolls it instead, as the wheel does on the computer, and the pane's bar says
+so.
 
 The same page works in a computer's browser: on a wide screen the list stays
 on the left and the pane fills the right. The button at the top left folds the
@@ -1097,7 +1113,7 @@ The variables, by kind:
 
 - session: `session_name` `session_id` `session_windows` `session_attached` `session_created`
 - window: `window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`
-- pane: `pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
+- pane: `pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `alternate_on` `mouse_any_flag` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
 - client: `client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`
 - server: `host` `host_short` `socket_path` `version` `pid`. Also `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`.
 

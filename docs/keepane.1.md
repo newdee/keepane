@@ -70,7 +70,7 @@ the config file take. `keepane list-commands` lists them, and
 `next-layout`, `previous-layout`, `split-window` (`splitw`), `kill-pane`,
 `select-pane`, `last-pane`, `resize-pane`, `swap-pane`, `break-pane`,
 `join-pane`, `move-pane`, `respawn-pane`, `list-panes`, `display-panes`,
-`capture-pane`, `send-keys`, `send-prefix`, `pipe-pane`, `clear-history`,
+`capture-pane`, `send-keys` (`WheelUp`, `WheelDown`: what the wheel sends a full-screen or mouse-reading program; nothing otherwise), `send-prefix`, `pipe-pane`, `clear-history`,
 `record` (the pane's output as an asciinema file), `focus-pane`,
 `undo-kill` (the pane or window killed in the last `undo-kill-time`
 seconds comes back).
@@ -99,8 +99,8 @@ chosen pane's screen, to act on).
 
 `rename-pane` (then `-t %name` finds it), `whoami`, `set-work-mode`
 (`normal`, `shell` or `ai`), `send-message` (`--to` a pane, `--re` a message,
-`--task`), `read-message`, `list-messages`, `trace-message`, `drop-message`,
-`move-message`, `pane-ready`, `pane-status`, `list-tasks`, `show-task`,
+`--task`), `read-message`, `list-messages`, `trace-message` (`-J`: as JSON), `drop-message`,
+`move-message`, `pane-ready`, `pane-status`, `list-tasks`, `show-task` (`-J`),
 `list-events`, `create-pane`, `mcp` (MCP for an agent in a pane), `setup`
 (`setup` alone lists the agents and what each lacks; `setup claude`, `codex`,
 `gemini`, `cursor` or `opencode` with `--install` adds the hook that says when

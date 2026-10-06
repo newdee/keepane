@@ -401,6 +401,35 @@ impl Store {
         Some(out.join("\n"))
     }
 
+    /// A record as JSON (`trace-message -J`, `show-task -J`): what
+    /// `trace` says, each part a field, the times as the clock shows them.
+    pub fn record_json(r: &Record) -> serde_json::Value {
+        let m = &r.msg;
+        let t = |x: Time| x.format("%H:%M:%S").to_string();
+        serde_json::json!({
+            "id": m.id,
+            "task": m.task,
+            "hop": m.hop,
+            "stage": r.stage.as_str(),
+            "from": m.from.from_field(),
+            "name": m.from.name(),
+            "to": m.to,
+            "via": m.via.as_str(),
+            "re": m.re,
+            "sent": t(m.at),
+            "delivered": r.delivered.map(t),
+            "read": r.stage == Stage::Read,
+            "ended": r.ended.map(t),
+            "queued": r.delivered.map(|d| since(m.at, d)),
+            "took": r.delivered.zip(r.ended).map(|(d, e)| since(d, e)),
+            "ok": r.ok,
+            "why": r.why,
+            "text": m.text,
+            "output": r.output,
+            "cut": r.cut,
+        })
+    }
+
     /// Every task (a chain of messages), newest first: (task, stage word,
     /// where it is now, how long, how many messages, its title).
     pub fn tasks(&self) -> Vec<TaskSummary> {

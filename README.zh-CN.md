@@ -33,7 +33,7 @@ keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程�
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-messages-light.gif">
     <img src="docs/img/keepane-messages.gif" width="880"
-         alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；分面板的 dashboard 显示 pane、一个 agent 的收件箱和任务，把一条消息置顶，并按字段展开看全文">
+         alt="发给名叫 builder 的 pane 的命令在那里执行，信封写在注释里；trace-message 显示已完成和输出；分面板的 dashboard 显示 pane、一个 agent 的收件箱和任务，把一条消息置顶，右边排好版显示它的记录">
   </picture>
 </p>
 
@@ -83,9 +83,9 @@ keepane send-message --to %lead --task 12 "还有一件事"
 
 ## dashboard
 
-按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组，列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[0]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件，或某条消息、某个任务的全文。Tab、`1 2 3 0`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。
+按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组，列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[0]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件，或光标所在的消息、任务：在 `[2]`、`[3]` 里移到哪一条，右边立刻排好版显示它（状态用颜色标出，谁发给谁，每一步的时间，然后是正文和执行输出；任务则把每条消息按时间连成一列）。Tab、`1 2 3 0`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。
 
-也能直接操作。对 pane：`s` 发消息、`r` 改名、`m` 改工作模式、`R` 标记就绪（解卡）、`o` 跳过去（顺带关掉弹窗）、`x` 关掉。对收件箱：`d` 删除排队消息（`u` 撤销）、`K`/`J` 上下移、`t` 放到最前、Enter 看全文。关 pane、删消息、把 pane 切到 `shell`（从此收到的文字会被当命令执行）这三样会先确认。设计见 [docs/design/dashboard.md](docs/design/dashboard.md)。
+也能直接操作。对 pane：`s` 发消息、`r` 改名、`m` 改工作模式、`R` 标记就绪（解卡）、`o` 跳过去（顺带关掉弹窗）、`x` 关掉。对收件箱：`d` 删除排队消息（`u` 撤销）、`K`/`J` 上下移、`t` 放到最前、Enter 进到右边滚动阅读。关 pane、删消息、把 pane 切到 `shell`（从此收到的文字会被当命令执行）这三样会先确认。设计见 [docs/design/dashboard.md](docs/design/dashboard.md)。
 
 消息及 pane 状态变化会写入事件日志：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停止时，未投递的消息会被丢弃，并留下日志记录。pane 名字和工作模式随 session 保存。设计细节见 [docs/design/mailbox.md](docs/design/mailbox.md)。
 
@@ -245,7 +245,7 @@ copy mode 的常用操作：
 
 脚本可用 `send-keys -X <命令名>` 执行对应操作，命令名与 tmux 相同。
 
-鼠标可用于选择 pane、拖动边框调整大小，以及点击状态栏切换窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去。拖选一段文字，松手就复制到 Windows 剪贴板了；右键把剪贴板贴进 pane，和终端本身的右键一样。
+鼠标可用于选择 pane、拖动边框调整大小，以及点击状态栏切换窗口。滚轮在普通界面上会进 copy mode 往回翻，在全屏程序里变成方向键，程序自己要鼠标事件的话就原样转过去；脚本里用 `send-keys WheelUp`（或 `WheelDown`）给程序发同样的滚轮输入（普通界面上什么也不发，那里滚轮翻的是 keepane 自己的历史）。拖选一段文字，松手就复制到 Windows 剪贴板了；右键把剪贴板贴进 pane，和终端本身的右键一样。
 
 `C-b F`（`hints`）给屏幕上各个 pane 里的路径、网址和 git hash 都标上一两个字母：编译器给的 `src/main.rs:12:5` 或 `App.cs(12,5)`、`https://…`、`af9af7e`。按标签字母就把它复制到粘贴缓冲区和剪贴板（路径不带行号）；按大写字母就打开：网址用浏览器开；路径在 PATH 里有 `code` 时用 VS Code 跳到那一行，没有就在新窗口里用 `$VISUAL` 或 `$EDITOR` 打开（`vim +12 src/main.rs`），再没有就交给系统默认程序。相对路径按那个 pane 的当前目录算。按 Esc 收起标签。没有斜杠也没有行号的单个名字（`notes.txt`）只在文件确实存在时才算，所以普通文字不会被标上；被终端折到下一行的内容找不到。
 
@@ -390,6 +390,8 @@ pane 里的 agent 收发的是和别人一样的消息。要让它顺畅，需�
 
 hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。Codex 的 `notify` 只能填一个程序，keepane 不碰它；Codex 的新 hook 要你在 Codex 里用 `/hooks` 确认信任一次才会运行。不是纯 JSON 的文件（比如带注释）不会被改，`setup` 会告诉你手工加什么。这些都按各家的文档写，端到端实测过的只有 Claude Code。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 agent 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。别的 agent 只要能在每轮结束时运行一条命令、能用 stdio 上的 MCP 服务端，也一样能接；启动它之前在它的 pane 里运行 `keepane set-work-mode ai`。
 
+Codex（0.160 起）和 pi（1.0 起）默认在备用屏幕里画界面，和 vim 一样：它们输出的内容不会进滚动历史，在 keepane、tmux 或任何终端里都一样，所以往上翻不到历史。滚轮（以及手机上的滑动）仍然能翻，翻的是它们自己的界面。想让历史留在 pane 里，就让它们用内联模式：Codex 在 `~/.codex/config.toml` 的 `[tui]` 下写 `alternate_screen = "never"`（或者用 `codex --no-alt-screen` 启动）；pi 在 `~/.pi/agent/settings.json` 里写 `"tuiMode": "regular"`。
+
 发给 `ai` 模式 pane 的消息，如果这个 pane 的 agent 启动以来从没报告过空闲，消息就会一直排队。所以 `send-message` 会直接说明，并给出补上 hook 的 `setup` 命令；dashboard 和手机页上也会提示（`#{pane_unheard}`）。
 
 24 个工具：
@@ -416,7 +418,7 @@ keepane web
 
 终端里会打出一个二维码。手机连同一个网络，用相机扫一下，浏览器就打开一个页面：按 session、窗口分组列出所有 pane（session 名字旁边是它多数 pane 所在的目录）：每个 pane 的名字（大字显示；没起名字就显示程序自己设的标题，再没有就显示程序名），下面一行是在跑的程序，目录和 session 的不同时也写出来；最后输出的一行（不算提示符）、多久没有新输出；一个表示状态的小圆点（ai、shell 模式的 pane 空闲绿、忙黄，已退出红）、收件箱里排队的消息数，以及状态栏上那几个提醒标记（开了 `monitor-activity` 这类选项时：`#` 有输出，`!` 响铃，`~` 太久没动静），不用点进去就知道哪个任务跑完了。点进一个，就能看到它的屏幕，颜色都在；屏幕一有变化 keepane 就把新内容推过来，不用等刷新。在屏幕上左右滑动可以切到上一个、下一个 pane，点标题可以直接选一个；从屏幕左边缘向右滑回到列表。刷新页面后仍停在原来打开的 pane。点"发送"只发输入框里的文字，不带回车；输入框空着时再点一次"发送"就是回车。在视图菜单（pane 标题栏里的滑块图标）里可以改成回车和发送直接执行，每台设备各自记住。输入框左边的历史按钮可以调出发过的命令（☆ 设为常用，固定在最上面）。上面一排是手机键盘上没有的键（Esc、Tab、方向键，更多的在 ⋯ 里；Ctrl+C 和回车固定在这一排的最右边，不会被滚走）；先点 Ctrl 或 Alt，再输入一个字母，就是 Ctrl 或 Alt 加这个字母。pane 标题栏右边的 ⋯ 菜单，以及在列表里对 pane 右键（手机上长按），可以分屏、开新窗口、重命名、关掉 pane、打开它的收件箱（点卡片上的"排队 N 条"或"处理中 #N"也能打开）：正在处理的消息、排队中每条消息的全文（可以置顶、上移、下移、删除，删了能撤销），以及最近完成的几条。其余的在视图菜单里：“每条命令的时间”在左边加一栏，显示每条命令开始的时间（点一下看日期、耗时和退出码，还可以复制这条命令或它的输出，见“命令时间和历史”一节）。点 session 或窗口可以折叠、展开（设备会记住）；对它右键或长按可以重命名，session 还能一次折叠、展开所有窗口。比手机屏幕宽的 pane，长行会在手机屏幕边缘自动换行（视图菜单里可以关掉，适合全屏程序）。视图菜单里的“适配这块屏幕”把 pane 适配到手机：它占满所在窗口，整个会话变成手机的行列数，vim、htop、agent 这类全屏程序就按手机的大小重画。适配期间，电脑和其他连着的手机看这个会话也是手机的大小（一个会话只有一个大小，页面和状态栏都会提示）；离开这个 pane、回到列表或者锁屏，就恢复原来的大小，没有手机看它 10 秒后 keepane 也会自动恢复。命令都在电脑上执行，手机只负责看和输入。“添加到主屏幕”之后，它打开起来就像一个 App。
 
-在 shell 或 ai 模式的 pane 里，输入框旁边的信封按钮让发送变成发消息：内容进这个 pane 的收件箱，发送者是 user，和别的消息一样排队（同 `send-message`）。⋯ 菜单和卡片的菜单可以设置 pane 怎么处理收到的消息：normal 留着等，shell 在提示符下执行，ai 交给 agent。视图菜单里还能在输出里查找（含查找内容的行会标出来，用 ↑ ↓ 切换）、复制屏幕文字、调整字号（也可以双指缩放屏幕，每台设备各自记住）。顶部的 + 在你的主目录开一个新 session。程序已经退出的 pane（开了 `remain-on-exit`）会写出退出码，点“重新运行”再启动一次。
+在 shell 或 ai 模式的 pane 里，输入框旁边的信封按钮让发送变成发消息：内容进这个 pane 的收件箱，发送者是 user，和别的消息一样排队（同 `send-message`）。⋯ 菜单和卡片的菜单可以设置 pane 怎么处理收到的消息：normal 留着等，shell 在提示符下执行，ai 交给 agent。视图菜单里还能在输出里查找（含查找内容的行会标出来，用 ↑ ↓ 切换）、复制屏幕文字、调整字号（也可以双指缩放屏幕，每台设备各自记住）。顶部的 + 在你的主目录开一个新 session。程序已经退出的 pane（开了 `remain-on-exit`）会写出退出码，点“重新运行”再启动一次。全屏程序（默认设置下的 Codex、pi，还有 vim）不留历史：在它的屏幕上上下滑动，会像电脑上的滚轮一样让它自己滚动，pane 标题栏会注明。
 
 同一个页面也能在电脑浏览器里用：宽屏时左边是 pane 列表，右边是 pane。左上角的按钮把列表收成一条窄栏（每个 pane 一个按钮），再按一次展开；触屏上在列表上左滑收起，在窄栏上右滑展开。右上角的按钮选页面自己的外观（日间、夜间或跟随系统，每台设备各自记住），也能选终端主题（`theme`，见“主题”一节）：终端主题是电脑上的，电脑的终端会跟着变，所有页面里的 pane 也都按它显示。同一个菜单还能选页面的语言：跟随系统（系统是中文就显示中文，否则英文）、中文或英文。旁边显示到电脑的往返时间（如 `23 ms`，100 ms 以下绿点，300 ms 以下黄点，再高或连不上是红点和“离线”），pane 工具栏里的全屏按钮只留下屏幕和输入框，浏览器支持时铺满整个屏幕（iPhone 上铺满整个页面）；输入框旁边的按钮或浏览器自己的退出全屏都能回来。（页面由 `web/` 构建，用 React 和 HeroUI，打包成一个文件编进 keepane。）
 
@@ -621,7 +623,7 @@ set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm
 
 - session：`session_name` `session_id` `session_windows` `session_attached` `session_created`
 - window：`window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`
-- pane：`pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
+- pane：`pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `alternate_on` `mouse_any_flag` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
 - client：`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`
 - server：`host` `host_short` `socket_path` `version` `pid`。另外还有 `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`。
 

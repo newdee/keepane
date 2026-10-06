@@ -164,6 +164,23 @@ pub fn encode_mouse_sgr(
 }
 
 /// Text paste, wrapped in bracketed-paste markers if the pane asked for them.
+/// What the mouse wheel over a pane at (`x`, `y`) sends its program: a
+/// wheel event when it asked for the mouse; in the alternate screen
+/// without that, three arrow keys (a full-screen program scrolls its own
+/// view; there is no scrollback there). None on the normal screen: the
+/// wheel scrolls keepane's history then, not the program.
+pub fn wheel(s: &vt100::Screen, up: bool, x: u16, y: u16, (shift, alt, ctrl): (bool, bool, bool)) -> Option<Vec<u8>> {
+    if s.mouse_protocol_mode() != vt100::MouseProtocolMode::None {
+        let b = if up { MouseButton::WheelUp } else { MouseButton::WheelDown };
+        return Some(encode_mouse_sgr(b, false, false, shift, alt, ctrl, x, y));
+    }
+    if !s.alternate_screen() {
+        return None;
+    }
+    let k = if up { KeyCode::Up } else { KeyCode::Down };
+    Some((0..3).flat_map(|_| encode_key(Key::plain(k), s.application_cursor())).collect())
+}
+
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     let body = text.replace("\r\n", "\r").replace('\n', "\r");
     if bracketed { format!("\x1b[200~{body}\x1b[201~").into_bytes() } else { body.into_bytes() }
@@ -215,6 +232,31 @@ mod tests {
         assert_eq!(encode_mouse_sgr(MouseButton::Left, false, true, false, false, false, 9, 4), b"\x1b[<0;10;5m");
         assert_eq!(encode_mouse_sgr(MouseButton::WheelUp, false, false, false, false, true, 0, 0), b"\x1b[<80;1;1M");
         assert_eq!(encode_mouse_sgr(MouseButton::None, true, false, false, false, false, 2, 2), b"\x1b[<35;3;3M");
+    }
+
+    /// The wheel: to a program that asked for the mouse as a wheel event;
+    /// to a full-screen one that did not as arrow keys (its cursor mode
+    /// kept); on the normal screen, nothing (keepane's history scrolls).
+    #[test]
+    fn the_wheel_goes_where_a_terminal_sends_it() {
+        let screen = |bytes: &str| {
+            let mut p = vt100::Parser::new(24, 80, 100);
+            p.process(bytes.as_bytes());
+            p
+        };
+        let none = (false, false, false);
+        assert_eq!(wheel(screen("").screen(), true, 4, 5, none), None, "the normal screen");
+        assert_eq!(wheel(screen("\x1b[?1049h").screen(), true, 4, 5, none), Some(b"\x1b[A\x1b[A\x1b[A".to_vec()));
+        assert_eq!(wheel(screen("\x1b[?1049h").screen(), false, 4, 5, none), Some(b"\x1b[B\x1b[B\x1b[B".to_vec()));
+        assert_eq!(
+            wheel(screen("\x1b[?1049h\x1b[?1h").screen(), true, 0, 0, none),
+            Some(b"\x1bOA\x1bOA\x1bOA".to_vec())
+        );
+        let mouse = screen("\x1b[?1049h\x1b[?1000h\x1b[?1006h");
+        assert_eq!(wheel(mouse.screen(), true, 4, 5, none), Some(b"\x1b[<64;5;6M".to_vec()));
+        assert_eq!(wheel(mouse.screen(), false, 4, 5, none), Some(b"\x1b[<65;5;6M".to_vec()));
+        // Asked for the mouse on the normal screen too: the wheel is its.
+        assert_eq!(wheel(screen("\x1b[?1000h").screen(), true, 0, 0, none), Some(b"\x1b[<64;1;1M".to_vec()));
     }
 
     #[test]

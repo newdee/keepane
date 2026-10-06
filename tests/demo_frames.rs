@@ -345,7 +345,7 @@ fn record_messages() {
     rec.hold(4);
     // Read in full on the right.
     rec.key("\r");
-    rec.wait_for("its record", |s| s.contents().contains("text:"), 10);
+    rec.wait_for("its record", |s| s.contents().contains("Text ─"), 10);
     rec.hold(6);
     rec.still("dashboard");
     rec.key("q");

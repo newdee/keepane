@@ -37,6 +37,9 @@ export type Pane = {
   dead: boolean;
   /** How its program ended, once it has. */
   exit: number | null;
+  /** A full-screen program (the alternate screen): no history to scroll; the
+   *  wheel goes to the program. */
+  alt: boolean;
   attached: boolean;
   activity: boolean;
   bell: boolean;

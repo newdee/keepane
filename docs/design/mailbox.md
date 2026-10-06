@@ -278,7 +278,7 @@ $1:@3.%4 tester (ai, busy) · 2 queued · working on #12
   #16  from user  waiting 12s  have a look at lint too
 ```
 
-- Enter 打开选中的那条（`trace-message`：完整信封、正文、经过、shell 的输出），再按 Enter 返回；`a` 切换为所有窗格收件箱的合并视图。最近收发过的消息在事件视图里看。
+- Enter 打开选中的那条（`trace-message`：完整信封、正文、经过、shell 的输出），再按 Enter 返回（后来改成光标移到哪条右边就显示哪条，排好版，见 [dashboard.md](dashboard.md)）；`a` 切换为所有窗格收件箱的合并视图。最近收发过的消息在事件视图里看。
 - 查看不取出：与 `read-message` 不同，dashboard 看收件箱不取走消息。
 - 管理模式下管理排队的消息：`d` 删除、`K`/`J` 上移/下移、`g` 置顶（下一条投递）、`u` 撤销上一次删除（`undo-kill-time` 秒内，与 `undo-kill` 同一时限）。删除不弹确认：模式切换加撤销两道兜底。
 - 已投递（正在处理）的消息不能删：它已经打进窗格了。

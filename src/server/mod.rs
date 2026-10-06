@@ -4663,6 +4663,11 @@ impl Server {
                 for k in &keys {
                     if literal {
                         bytes.extend_from_slice(k.as_bytes());
+                    } else if let Some(up) = wheel_word(k) {
+                        // The wheel over the pane's middle: to a full-screen
+                        // program (its own scrolling); nothing otherwise.
+                        let (x, y) = (p.cols / 2, p.rows / 2);
+                        bytes.extend(input::wheel(p.screen(), up, x, y, (false, false, false)).unwrap_or_default());
                     } else {
                         bytes.extend(input::encode_send_key(k, app));
                     }
@@ -5857,6 +5862,8 @@ impl Server {
             ctx.pane_height = p.rows;
             ctx.pane_dead = p.exit_code.is_some();
             ctx.pane_dead_status = p.exit_code;
+            ctx.alternate_on = p.screen().alternate_screen();
+            ctx.mouse_any_flag = p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
             ctx.pane_in_mode = p.copy.is_some();
             ctx.pane_pid = p.pid;
             ctx.pane_start_time = unix(p.spawned_at);
@@ -7759,16 +7766,7 @@ impl Server {
             };
             let mut out = Vec::new();
             if let Some(up) = wheel {
-                out.extend(input::encode_mouse_sgr(
-                    if up { MouseButton::WheelUp } else { MouseButton::WheelDown },
-                    false,
-                    false,
-                    shift,
-                    alt,
-                    ctrl,
-                    px,
-                    py,
-                ));
+                out.extend(input::wheel(pane.screen(), up, px, py, (shift, alt, ctrl)).unwrap_or_default());
             } else if pressed != 0 {
                 out.extend(input::encode_mouse_sgr(btn_of(pressed), false, false, shift, alt, ctrl, px, py));
             } else if released != 0 {
@@ -7797,14 +7795,9 @@ impl Server {
 
         if let Some(up) = wheel {
             if pane.screen().alternate_screen() && !in_copy {
-                // Full-screen app without mouse support: scroll with arrow keys.
-                let k = if up { KeyCode::Up } else { KeyCode::Down };
-                let app = pane.screen().application_cursor();
-                let mut b = Vec::new();
-                for _ in 0..3 {
-                    b.extend(input::encode_key(Key::plain(k), app));
+                if let Some(b) = input::wheel(pane.screen(), up, px, py, (shift, alt, ctrl)) {
+                    pane.write_input(&b);
                 }
-                pane.write_input(&b);
             } else {
                 if !in_copy {
                     enter_copy_mode(pane);
@@ -8733,6 +8726,15 @@ fn border_owner(rects: &[(PaneId, Rect)], x: u16, y: u16) -> Option<(PaneId, boo
         }
     }
     None
+}
+
+/// `WheelUp` / `WheelDown` among `send-keys`' words: which way.
+fn wheel_word(k: &str) -> Option<bool> {
+    match k {
+        "WheelUp" => Some(true),
+        "WheelDown" => Some(false),
+        _ => None,
+    }
 }
 
 fn enter_copy_mode(p: &mut Pane) {

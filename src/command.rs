@@ -237,6 +237,8 @@ pub enum Cmd {
     TraceMessage {
         id: u64,
         wait: Option<u64>,
+        /// `-J`: as JSON, the record here (the dashboard's form).
+        json: bool,
     },
     /// `drop-message id` / `drop-message -u`: delete a queued message, or
     /// bring back the one deleted last.
@@ -283,9 +285,11 @@ pub enum Cmd {
     ListTasks {
         target: Option<Target>,
     },
-    /// `show-task id`: a task's messages, step by step.
+    /// `show-task id [-J]`: a task's messages, step by step (-J: as JSON,
+    /// each whole).
     ShowTask {
         id: u64,
+        json: bool,
     },
     /// `list-events [-t target] [-S duration] [-n lines]`: the event log's
     /// lines; -n takes the last ones from memory, without reading the files.
@@ -996,10 +1000,13 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::TraceMessage { id, wait } => {
+            Cmd::TraceMessage { id, wait, json } => {
                 write!(f, "trace-message {id}")?;
                 if let Some(w) = wait {
                     write!(f, " -w {w}")?;
+                }
+                if *json {
+                    f.write_str(" -J")?;
                 }
                 Ok(())
             }
@@ -1068,7 +1075,7 @@ impl fmt::Display for Cmd {
                 f.write_str("list-tasks")?;
                 fmt_target(f, target)
             }
-            Cmd::ShowTask { id } => write!(f, "show-task {id}"),
+            Cmd::ShowTask { id, json } => write!(f, "show-task {id}{}", if *json { " -J" } else { "" }),
             Cmd::ListEvents { target, since, last } => {
                 f.write_str("list-events")?;
                 fmt_target(f, target)?;
@@ -2201,7 +2208,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("send-message", &["-t", "-r", "-w", "--to", "--re", "--task"]),
     ("read-message", &["-t", "-w"]),
     ("list-messages", &["-t", "-a", "-J"]),
-    ("trace-message", &["-w"]),
+    ("trace-message", &["-w", "-J"]),
     ("drop-message", &["-u"]),
     ("move-message", &[]),
     ("pane-ready", &["-q", "-t"]),
@@ -2212,7 +2219,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-tasks", &["-t"]),
     ("dashboard", &[]),
     ("create-pane", &["-k", "-t", "-s", "-h", "-c", "-n", "-m", "-M"]),
-    ("show-task", &[]),
+    ("show-task", &["-J"]),
     ("list-events", &["-t", "-S", "-n"]),
     ("list-panes", &["-a", "-s", "-t", "-F"]),
     ("list-plugins", &[]),
@@ -2711,11 +2718,12 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ListMessages { target, all, json }
         }
         "trace-message" => {
-            let (mut id, mut wait) = (None, None);
+            let (mut id, mut wait, mut json) = (None, None, false);
             while a.peek().is_some() {
                 if a.is_flag() {
                     match a.next().unwrap() {
                         "-w" => wait = Some(seconds(n, a.value("-w")?)?),
+                        "-J" => json = true,
                         f => return Err(bad_flag(n, f)),
                     }
                 } else if id.is_none() {
@@ -2724,7 +2732,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     a.none_left(n)?;
                 }
             }
-            Cmd::TraceMessage { id: id.ok_or_else(|| format!("{n}: message id required"))?, wait }
+            Cmd::TraceMessage { id: id.ok_or_else(|| format!("{n}: message id required"))?, wait, json }
         }
         "drop-message" => {
             let mut undo = false;
@@ -2853,10 +2861,20 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ListTasks { target }
         }
         "show-task" => {
-            a.none_flags(n)?;
-            let id = message_id(n, a.next().ok_or_else(|| format!("{n}: task id required"))?)?;
-            a.none_left(n)?;
-            Cmd::ShowTask { id }
+            let (mut id, mut json) = (None, false);
+            while a.peek().is_some() {
+                if a.is_flag() {
+                    match a.next().unwrap() {
+                        "-J" => json = true,
+                        f => return Err(bad_flag(n, f)),
+                    }
+                } else if id.is_none() {
+                    id = Some(message_id(n, a.next().unwrap())?);
+                } else {
+                    a.none_left(n)?;
+                }
+            }
+            Cmd::ShowTask { id: id.ok_or_else(|| format!("{n}: task id required"))?, json }
         }
         "list-events" => {
             let (mut target, mut since, mut last) = (None, None, None);
@@ -4221,6 +4239,23 @@ mod tests {
         assert!(positional_args(&["-g", "-s"]).is_empty());
         assert_eq!(positional_args(&["-g", "-t", "work", "mouse"]), vec!["mouse"]);
         assert_eq!(positional_args(&["-gq", "status", "on"]), vec!["status", "on"]);
+    }
+
+    /// `-J` on trace-message and show-task: the record as JSON (the
+    /// dashboard's form), in any place among the words, and back as written.
+    #[test]
+    fn records_as_json() {
+        assert_eq!(p("trace-message 5 -J"), Cmd::TraceMessage { id: 5, wait: None, json: true });
+        assert_eq!(p("trace-message -J 5"), Cmd::TraceMessage { id: 5, wait: None, json: true });
+        assert_eq!(p("trace-message 5 -w 3"), Cmd::TraceMessage { id: 5, wait: Some(3), json: false });
+        assert_eq!(p("show-task 12 -J"), Cmd::ShowTask { id: 12, json: true });
+        assert_eq!(p("show-task -J 12"), Cmd::ShowTask { id: 12, json: true });
+        assert_eq!(p("show-task 12"), Cmd::ShowTask { id: 12, json: false });
+        for s in ["trace-message 5 -w 3 -J", "show-task 12 -J", "show-task 12"] {
+            assert_eq!(p(&p(s).to_string()), p(s), "{s}");
+        }
+        assert!(parse_line("show-task 12 -x").unwrap_err().contains("unknown flag"));
+        assert!(parse_line("show-task -J").unwrap_err().contains("task id required"));
     }
 
     fn p(s: &str) -> Cmd {

@@ -48,6 +48,10 @@ pub struct Context {
     pub pane_active: bool,
     /// The pane's program has exited (`remain-on-exit`), with this code.
     pub pane_dead: bool,
+    /// Its program draws in the alternate screen (a full-screen program:
+    /// no scrollback while it does), and it asked for the mouse.
+    pub alternate_on: bool,
+    pub mouse_any_flag: bool,
     pub pane_dead_status: Option<u32>,
     pub pane_synchronized: bool,
     /// In copy mode.
@@ -260,6 +264,8 @@ impl Context {
             "pane_height" => self.pane_height.to_string(),
             "pane_active" => flag(self.pane_active),
             "pane_dead" => flag(self.pane_dead),
+            "alternate_on" => flag(self.alternate_on),
+            "mouse_any_flag" => flag(self.mouse_any_flag),
             "pane_dead_status" => self.pane_dead_status.map(|c| c.to_string()).unwrap_or_default(),
             "pane_synchronized" => flag(self.pane_synchronized),
             "pane_in_mode" => flag(self.pane_in_mode),
@@ -676,6 +682,7 @@ mod tests {
         c.window_panes = 2;
         c.pane_active = true;
         c.pane_dead_status = Some(3);
+        c.alternate_on = true;
         c.pane_pid = Some(4242);
         c.client_width = 120;
         c.pane_path = r"C:\Users\me\src\keepane".into();
@@ -684,6 +691,7 @@ mod tests {
         assert_eq!(t("#{session_id} #{window_id} #{pane_id} #D", &c), "$3 @7 %12 %12");
         assert_eq!(t("#{window_panes}/#{pane_active}/#{pane_dead}", &c), "2/1/0");
         assert_eq!(t("#{pane_dead_status} #{pane_pid} #{client_width}", &c), "3 4242 120");
+        assert_eq!(t("#{alternate_on} #{mouse_any_flag}", &c), "1 0");
         assert_eq!(t("#{host_short} #h", &c), "box box");
         assert_eq!(t("#{version}", &c), env!("CARGO_PKG_VERSION"));
         // Modifiers, nested and in conditionals.

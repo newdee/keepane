@@ -190,7 +190,11 @@ impl Server {
             }
             Cmd::ReadMessage { target, wait } => self.read_message(cid, target.as_ref(), wait),
             Cmd::ListMessages { target, all, json } => self.list_messages(cid, target.as_ref(), all, json),
-            Cmd::TraceMessage { id, wait } => match self.observe.trace(id, self.opts.message_envelope) {
+            Cmd::TraceMessage { id, json: true, .. } => match self.observe.get(id) {
+                Some(r) => Outcome::Text(super::observe::Store::record_json(r).to_string()),
+                None => Outcome::Error(format!("no message #{id}")),
+            },
+            Cmd::TraceMessage { id, wait, json: false } => match self.observe.trace(id, self.opts.message_envelope) {
                 None => Outcome::Error(format!("no message #{id}")),
                 // Handed to another machine: what became of it there, asked.
                 Some(t)
@@ -219,7 +223,7 @@ impl Server {
             },
             Cmd::CreatePane(c) => self.create_pane(cid, *c),
             Cmd::ListTasks { target } => self.list_tasks(cid, target.as_ref()),
-            Cmd::ShowTask { id } => self.show_task(id),
+            Cmd::ShowTask { id, json } => self.show_task(id, json),
             Cmd::ListEvents { target, since, last } => self.list_events(cid, target.as_ref(), since, last),
             other => Outcome::Error(format!("not a message command: {other}")),
         };
@@ -999,10 +1003,14 @@ impl Server {
         Outcome::Text(super::align_columns(&rows).join("\n"))
     }
 
-    fn show_task(&self, task: MsgId) -> Outcome {
+    fn show_task(&self, task: MsgId, json: bool) -> Outcome {
         let steps = self.observe.task(task);
         if steps.is_empty() {
             return Outcome::Error(format!("no task #{task}"));
+        }
+        if json {
+            let all: Vec<serde_json::Value> = steps.iter().map(|r| super::observe::Store::record_json(r)).collect();
+            return Outcome::Text(serde_json::Value::Array(all).to_string());
         }
         let who = |s: &Sender| match s {
             Sender::User => "user".to_string(),

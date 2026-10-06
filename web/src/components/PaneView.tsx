@@ -236,21 +236,75 @@ export function PaneView(props: Props) {
   zoomNow.current = zoom;
   const setZoomNow = useRef(setZoom);
   setZoomNow.current = setZoom;
+  // A full-screen program keeps no history here: a drag up or down on the
+  // screen, or the wheel, scrolls it instead (its own view), one wheel step
+  // for so much travel; in order, never too far behind.
+  const altNow = useRef(false);
+  altNow.current = !!p?.alt && !readOnly;
+  const wheelQ = useRef({ chain: Promise.resolve(), waiting: 0 });
+  const wheel = useCallback(
+    (up: boolean) => {
+      const w = wheelQ.current;
+      if (w.waiting > 6) return;
+      w.waiting++;
+      w.chain = w.chain
+        .then(() => post(`/api/send?pane=${q(id)}&key=${up ? "WheelUp" : "WheelDown"}`))
+        .then(
+          () => void w.waiting--,
+          () => void w.waiting--,
+        );
+    },
+    [id],
+  );
+  const wheelNow = useRef(wheel);
+  wheelNow.current = wheel;
   useEffect(() => {
     const m = mainRef.current;
     if (!m) return;
     let start: { d: number; z: number } | null = null;
+    // One finger on a full-screen program's screen: where it was last turned
+    // into a wheel step.
+    let dragY: number | null = null;
+    let from = { x: 0, y: 0 };
+    const STEP = 36;
+    const drag = (e: TouchEvent) => {
+      if (dragY === null || e.touches.length !== 1 || !altNow.current) return;
+      const { clientX: x, clientY: y } = e.touches[0];
+      // Mostly sideways: a swipe to the next pane, or the screen sideways.
+      if (Math.abs(x - from.x) > Math.abs(y - from.y)) return;
+      e.preventDefault();
+      while (Math.abs(y - dragY) >= STEP) {
+        // The finger down: what is above comes into view.
+        const up = y > dragY;
+        wheelNow.current(up);
+        dragY += up ? STEP : -STEP;
+      }
+    };
+    let spun = 0;
+    const spin = (e: WheelEvent) => {
+      if (!altNow.current) return;
+      e.preventDefault();
+      spun += e.deltaY;
+      while (Math.abs(spun) >= 60) {
+        wheelNow.current(spun < 0);
+        spun += spun < 0 ? 60 : -60;
+      }
+    };
     const dist = (e: TouchEvent) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
     const down = (e: TouchEvent) => {
       if (e.touches.length === 2) start = { d: dist(e), z: zoomNow.current };
+      dragY = e.touches.length === 1 ? e.touches[0].clientY : null;
+      if (e.touches.length === 1) from = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     };
     const move = (e: TouchEvent) => {
+      drag(e);
       if (!start || e.touches.length !== 2) return;
       e.preventDefault();
       setZoomNow.current(zoomed((start.z * dist(e)) / Math.max(1, start.d)));
     };
     const up = (e: TouchEvent) => {
       if (e.touches.length < 2) start = null;
+      if (e.touches.length === 0) dragY = null;
     };
     // Safari's own pinch: not here.
     const gesture = (e: Event) => e.preventDefault();
@@ -258,7 +312,9 @@ export function PaneView(props: Props) {
     m.addEventListener("touchmove", move, { passive: false });
     m.addEventListener("touchend", up);
     m.addEventListener("gesturestart", gesture);
+    m.addEventListener("wheel", spin, { passive: false });
     return () => {
+      m.removeEventListener("wheel", spin);
       m.removeEventListener("touchstart", down);
       m.removeEventListener("touchmove", move);
       m.removeEventListener("touchend", up);
@@ -429,7 +485,9 @@ export function PaneView(props: Props) {
             <span className="truncate">{p ? headOf(p) : id}</span>
             <ChevronDown className="size-3.5 shrink-0 text-muted" />
           </span>
-          <span className="max-w-full truncate text-xs text-muted">{p ? [...under(p), where(p)].join(" · ") : ""}</span>
+          <span className="max-w-full truncate text-xs text-muted">
+            {p ? [...under(p), where(p), p.alt ? t("full screen: scroll it", "全屏程序：滑动交给它滚动") : ""].filter(Boolean).join(" · ") : ""}
+          </span>
         </button>
         {/* How the screen is shown, and what Enter does: one menu. */}
         <Dropdown>
