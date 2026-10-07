@@ -1,6 +1,6 @@
 [package]
 name = "keepane"
-version = "0.32.0"
+version = "0.33.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A terminal multiplexer whose panes keep running after you detach and can pass messages to each other, with tmux's keys and commands."
