@@ -742,34 +742,36 @@ can see which job finished without opening it. Tap one to see its screen,
 colours and all; keepane sends it again whenever it changes, so there is no
 refresh to wait for. Swipe across it for the next pane, or tap its title to
 pick one; swipe in from the left edge to go back to the list. A reload of the
-page keeps the pane that was open. Send sends what is in the box at the
-bottom, with no Enter after it; Send again (the box empty) is the Enter. The
-view menu (the sliders in the pane's bar) can make Enter and Send run what was
-typed instead, for this device. The history button beside the box brings back
-what you sent before (☆ keeps one at the top). The keys the phone keyboard
-lacks are in a row above it (Esc, Tab, arrows, more under ⋯; Ctrl+C and Enter
-stay in view at its end); Ctrl, Alt or Shift (any of them together), then a
-key of the row or a letter typed, sends it with them (Shift then → is
-Shift+Right). The ⋯ menu in the pane's bar, and a right click (a long press on
-a phone) on a pane in the list, split the pane, open a window, rename, close
-the pane or show its inbox (also a tap on a card's "queued" or "on #N" mark):
-the message it works on, each waiting one whole, to put first, up, down or
-delete (and undo), and the last few it finished. The view menu holds the rest:
-When each command ran adds a column with the time each command started (tap
-one for its date, how long it took and its exit code, and to copy the command
-or what it printed; see "Command times and history"). A tap on a session or
-window folds it (the device remembers); its right click or long press renames
-it or folds every window of a session at once. A pane wider than the phone
-wraps its long lines at the phone's edge (the view menu turns that off, for a
-full-screen program). Fit to this screen, in the same menu, sizes the pane to
-the phone: it fills its window and its session takes the phone's columns and
-rows, so a full-screen program (vim, htop, an agent's screen) draws for the
-phone. Meanwhile the computer and any other phone see that session at the
-phone's size too (a session has one size; the page and the status line say
-so); leaving the pane, going back to the list or putting the phone away gives
-it back its size, and so does keepane when no phone has shown it for 10
-seconds. Everything runs on the computer; the phone only shows and types. "Add
-to Home Screen" makes it open like an app.
+page keeps the pane that was open. What you type in the box at the bottom goes
+to the pane as you type it (deleting in the box deletes there too; an input
+method's word goes once it is chosen), and Enter is the Enter. The view menu
+(the sliders in the pane's bar) can make the box wait for Enter instead, for
+this device: Send then types what is in it, with no Enter after it (Send
+again, the box empty, is the Enter), or types and runs it. The history button
+beside the box brings back what you sent before (☆ keeps one at the top). The
+keys the phone keyboard lacks are in a row above it (Esc, Tab, arrows, more
+under ⋯; Ctrl+C and Enter stay in view at its end); Ctrl, Alt or Shift (any of
+them together), then a key of the row or a letter typed, sends it with them
+(Shift then → is Shift+Right). The ⋯ menu in the pane's bar, and a right click
+(a long press on a phone) on a pane in the list, split the pane, open a
+window, rename, close the pane or show its inbox (also a tap on a card's
+"queued" or "on #N" mark): the message it works on, each waiting one whole, to
+put first, up, down or delete (and undo), and the last few it finished. The
+view menu holds the rest: When each command ran adds a column with the time
+each command started (tap one for its date, how long it took and its exit
+code, and to copy the command or what it printed; see "Command times and
+history"). A tap on a session or window folds it (the device remembers); its
+right click or long press renames it or folds every window of a session at
+once. A pane wider than the phone wraps its long lines at the phone's edge
+(the view menu turns that off, for a full-screen program). Fit to this screen,
+in the same menu, sizes the pane to the phone: it fills its window and its
+session takes the phone's columns and rows, so a full-screen program (vim,
+htop, an agent's screen) draws for the phone. Meanwhile the computer and any
+other phone see that session at the phone's size too (a session has one size;
+the page and the status line say so); leaving the pane, going back to the list
+or putting the phone away gives it back its size, and so does keepane when no
+phone has shown it for 10 seconds. Everything runs on the computer; the phone
+only shows and types. "Add to Home Screen" makes it open like an app.
 
 On a shell or ai pane, the envelope beside the box sends what is in it as a
 message instead of typing it: into the pane's inbox, from the user, to wait

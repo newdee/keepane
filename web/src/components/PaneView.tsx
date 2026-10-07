@@ -1,6 +1,7 @@
 import { Button, Dropdown, Header, Input, Label, Separator, TextArea, toast, Tooltip } from "@heroui/react";
 import {
   ArrowLeft,
+  Keyboard,
   LayoutList,
   Bot,
   Check,
@@ -52,6 +53,17 @@ const MORE_KEYS: [string, string][] = [
   ["⇧Tab", "BTab"], ["^D", "C-d"], ["^Z", "C-z"], ["^L", "C-l"], ["⌫", "BSpace"], ["Home", "Home"], ["End", "End"],
   ["PgUp", "PPage"], ["PgDn", "NPage"], ["y", "=y"], ["n", "=n"], ["1", "=1"], ["2", "=2"], ["3", "=3"],
 ];
+/** The box: live (sent as typed), typed on Enter, or typed and run. */
+type InputMode = "live" | "type" | "run";
+/** A device that chose before live typing came keeps its choice. */
+function choseBefore(): InputMode {
+  try {
+    const old = localStorage.getItem("keepane-enter-runs");
+    return old === null ? "live" : old === "true" ? "run" : "type";
+  } catch {
+    return "live";
+  }
+}
 // The page's own keys that are held for the next one: their letters.
 const MODS: Record<string, string> = { "@ctrl": "C", "@alt": "M", "@shift": "S" };
 // The keys kept in view at the end of the row (the others scroll).
@@ -94,8 +106,9 @@ export function PaneView(props: Props) {
   const visible = useVisible();
   const [wrap, setWrap] = useStored<boolean | number>("keepane-wrap", true);
   const [detail, setDetail] = useStored<boolean | number>("keepane-detail", false);
-  // Enter in the box: types the text (a second Enter runs it), or types and runs.
-  const [enterRuns, setEnterRuns] = useStored<boolean>("keepane-enter-runs", false);
+  // What the box does with what is typed: sends it as it is typed (live),
+  // types it on Enter (a second Enter runs it), or types and runs it.
+  const [inputMode, setInputMode] = useStored<InputMode>("keepane-input", choseBefore());
   const [zoomStored, setZoom] = useStored<number>("keepane-zoom", 1);
   const zoom = typeof zoomStored === "number" && zoomStored > 0 ? zoomed(zoomStored) : 1;
   const [fitting, setFitting] = useState(false);
@@ -440,8 +453,8 @@ export function PaneView(props: Props) {
       toast(!wrap ? t("Long lines wrap", "长行自动换行") : t("Long lines scroll sideways", "长行左右滑动"), { timeout: 2000 });
     } else if (k === "detail") {
       toggleDetail();
-    } else if (k === "enter:type" || k === "enter:run") {
-      setEnterRuns(k === "enter:run");
+    } else if (k === "enter:live" || k === "enter:type" || k === "enter:run") {
+      setInputMode(k.slice(6) as InputMode);
     } else if (k === "copy") {
       copied(lines.map((l) => plain(l).replace(/\s+$/, "")).join("\n"));
     } else if (k === "find") {
@@ -536,11 +549,14 @@ export function PaneView(props: Props) {
               {readOnly ? null : <Separator />}
               {readOnly ? null : (
                 <Dropdown.Section>
-                  <Header>{t("Enter in the box", "输入框里的回车")}</Header>
-                  <Item id="enter:type" icon={<CornerDownLeft className="size-4" />} checked={!enterRuns}>
+                  <Header>{t("The box", "输入框")}</Header>
+                  <Item id="enter:live" icon={<Keyboard className="size-4" />} checked={inputMode === "live"}>
+                    {t("Live: sent as typed", "实时输入（边打边发）")}
+                  </Item>
+                  <Item id="enter:type" icon={<CornerDownLeft className="size-4" />} checked={inputMode === "type"}>
                     {t("Type only (Enter again runs)", "只填入（再回车执行）")}
                   </Item>
-                  <Item id="enter:run" icon={<SendHorizontal className="size-4" />} checked={enterRuns}>
+                  <Item id="enter:run" icon={<SendHorizontal className="size-4" />} checked={inputMode === "run"}>
                     {t("Type and run", "填入并执行")}
                   </Item>
                 </Dropdown.Section>
@@ -698,7 +714,7 @@ export function PaneView(props: Props) {
         <Composer
           id={id}
           onSent={() => !screen.streaming && setTimeout(screen.poll, 120)}
-          enterRuns={enterRuns}
+          mode={inputMode}
           title={props.focus && p ? `${headOf(p)} · ${where(p)}` : undefined}
           tellTo={p && (p.mode === "shell" || p.mode === "ai") ? headOf(p) : undefined}
           exit={
@@ -759,22 +775,23 @@ function Item({
 }
 
 /** The keys and the box. Everything typed goes out in the order it was
- *  tapped. Send sends what is in the box, no Enter after it: Send again with
- *  the box empty (or ⏎ among the keys) is the Enter. Ctrl and Alt stay down
- *  for the next character typed in the box. */
+ *  tapped. Live (the default), what is typed goes out as it is typed and
+ *  Enter is the Enter; else Send sends what is in the box, no Enter after it
+ *  (Send again with the box empty, or ⏎ among the keys, is the Enter), or
+ *  with it. Ctrl, Alt and Shift stay down for the next key. */
 function Composer({
   id,
   onSent,
   exit,
-  enterRuns,
+  mode,
   title,
   tellTo,
 }: {
   id: string;
   onSent: () => void;
   exit?: ReactNode;
-  /** Enter (and Send) run what was typed, not only type it. */
-  enterRuns: boolean;
+  /** Live, or typed on Enter, or typed and run on Enter. */
+  mode: InputMode;
   /** In full screen, which pane the box types into. */
   title?: string;
   /** A pane that takes messages (shell, ai): its name, for the message switch. */
@@ -784,6 +801,13 @@ function Composer({
   // The box as a message into the pane's inbox (it waits its turn), not typing.
   const [telling, setTelling] = useState(false);
   const tell = telling && !!tellTo;
+  const enterRuns = mode === "run";
+  // Live: what of the box has gone out (since the last Enter or key), and
+  // the box as it is now, sent a moment later (a burst of typing goes as one).
+  const live = mode === "live" && !tell;
+  const wentOut = useRef("");
+  const latest = useRef<string | null>(null);
+  const timer = useRef<number | undefined>(undefined);
   // Ctrl, Alt, Shift held for the next key (button or typed): their letters.
   const [held, setHeld] = useState("");
   const [more, setMore] = useStored<boolean | number>("keepane-more-keys", false);
@@ -810,6 +834,41 @@ function Composer({
     [id, onSent],
   );
   const sendKey = (k: string) => (k.startsWith("=") ? send("", k.slice(1)) : send(`&key=${q(k)}`));
+  // The box against what went out: from the first character that differs,
+  // that many backspaces, then the rest typed. The program's line ends up as
+  // the box whatever was edited where (an autocorrected word, a middle edit).
+  const syncNow = () => {
+    clearTimeout(timer.current);
+    const now = latest.current;
+    latest.current = null;
+    if (now === null) return;
+    const was = Array.from(wentOut.current);
+    const is = Array.from(now);
+    let same = 0;
+    while (same < was.length && same < is.length && was[same] === is[same]) same++;
+    const out = "\x7f".repeat(was.length - same) + is.slice(same).join("");
+    wentOut.current = now;
+    if (out) send("", out);
+  };
+  const later = (v: string) => {
+    latest.current = v;
+    clearTimeout(timer.current);
+    timer.current = window.setTimeout(syncNow, 30);
+  };
+  // A fresh box: after Enter, or a key the box cannot follow (Tab, an arrow).
+  const fresh = () => {
+    latest.current = null;
+    clearTimeout(timer.current);
+    wentOut.current = "";
+    setText("");
+    // The box itself too: its own change, coming after, reads it back.
+    if (box.current) {
+      box.current.value = "";
+      box.current.style.height = "";
+    }
+  };
+  // Live on or off (the mode, or the message switch): the box starts afresh.
+  useEffect(() => fresh(), [live]); // eslint-disable-line react-hooks/exhaustive-deps
   const remember = (s: string) => {
     const had = sent.find((x) => x.t === s);
     let loose = 0;
@@ -835,6 +894,12 @@ function Composer({
       }
       return;
     }
+    if (live) {
+      syncNow();
+      if (s.trim()) remember(s);
+      fresh();
+      return void send("&key=Enter");
+    }
     setText("");
     if (!s) return void send("&key=Enter");
     if (await send("", s)) {
@@ -855,13 +920,19 @@ function Composer({
     // (y, n, 1…) are text.
     const withHeld = held && !k.startsWith("=") ? (held === "S" && k === "Tab" ? "BTab" : [...held].map((m) => m + "-").join("") + k) : k;
     setHeld("");
+    if (live) {
+      syncNow();
+      fresh();
+    }
     sendKey(withHeld);
   };
 
   // What Send does now, in a word: the button's text and its name.
   const sendLabel = tell
     ? t("Queue", "排队")
-    : text
+    : live
+      ? t("Enter", "回车")
+      : text
       ? enterRuns
         ? t("Run", "执行")
         : t("Send", "发送")
@@ -916,9 +987,11 @@ function Composer({
           placeholder={
             tell
               ? t(`Message to ${tellTo}`, `消息给 ${tellTo}`)
-              : enterRuns
-                ? t("Enter runs", "回车执行")
-                : t("Enter types", "回车填入")
+              : live
+                ? t("Live: Enter is Enter", "实时输入，回车即回车")
+                : enterRuns
+                  ? t("Enter runs", "回车执行")
+                  : t("Enter types", "回车填入")
           }
           className="max-h-32 min-h-10 flex-1 resize-none font-term text-base"
           autoCapitalize="off"
@@ -935,7 +1008,11 @@ function Composer({
             // Ctrl or Alt held: the character typed is the key, not text;
             // Shift alone: the character, in capitals.
             const ne = e.nativeEvent as InputEvent;
-            if (!held || !ne.data || ne.data.length !== 1 || ne.isComposing) return;
+            if (!held || !ne.data || ne.data.length !== 1 || ne.isComposing) {
+              // Live: out it goes (not while an input method is still composing).
+              if (live && !ne.isComposing) later(e.currentTarget.value);
+              return;
+            }
             const el = e.currentTarget;
             const at = el.selectionStart;
             if (held === "S") {
@@ -944,6 +1021,7 @@ function Composer({
               el.setSelectionRange(at, at);
               setText(upper);
               setHeld("");
+              if (live) later(upper);
               return;
             }
             const without = el.value.slice(0, at - 1) + el.value.slice(at);
@@ -952,23 +1030,34 @@ function Composer({
             const c = ne.data.toLowerCase();
             const mod = held.includes("C") ? "C" : "M";
             setHeld("");
+            // A key the box cannot follow (C-a moves the line's cursor): afresh.
+            if (live) {
+              syncNow();
+              fresh();
+            }
             if (mod === "C" ? /[a-z]/.test(c) : /[a-z0-9]/.test(c)) sendKey(`${mod}-${c}`);
             else toast(t("Ctrl goes with a letter, Alt with a letter or digit", "Ctrl 只能配字母，Alt 只能配字母或数字"));
           }}
+          onCompositionEnd={(e) => live && later(e.currentTarget.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               submit(true);
+            } else if (live && e.key === "Backspace" && !text && !e.nativeEvent.isComposing) {
+              // Nothing in the box to take back: a backspace for the program.
+              e.preventDefault();
+              send("&key=BSpace");
             }
           }}
         />
         <Button id="send" className="mb-0.5 shrink-0 pointer-coarse:h-11" onPress={() => submit()} aria-label={sendLabel}>
-          {tell ? <Mail className="size-4" /> : text ? <SendHorizontal className="size-4" /> : <CornerDownLeft className="size-4" />}
+          {tell ? <Mail className="size-4" /> : text && !live ? <SendHorizontal className="size-4" /> : <CornerDownLeft className="size-4" />}
           <span className="hidden sm:inline">{sendLabel}</span>
         </Button>
       </div>
       <History open={histOpen} onClose={() => setHistOpen(false)} sent={sent} setSent={setSentState} onPick={(s) => {
         setText(s);
+        if (live) later(s);
         setTimeout(() => box.current?.focus(), 50);
       }} />
     </div>
