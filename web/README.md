@@ -23,3 +23,35 @@ and Linux).
 The page talks to keepane over the `/api/*` routes in `src/web.rs`; each
 request carries the key from the address the QR code gave
 (`X-Keepane-Key`).
+
+## Browser tests
+
+`tests/*.e2e.ts` drive the page in Chromium with
+[e2e](https://github.com/tester-army/e2e) and check each step against
+keepane itself, through its CLI. Windows only for now: the panes run
+PowerShell.
+
+```sh
+npm run build                         # the page into dist/,
+cargo build                           # then into keepane (in the repository root)
+npx @e2e-dev/web install chromium     # once
+npm run test:e2e                      # or: npx e2e run tests/live.e2e.ts
+```
+
+Node 22.22.3 or newer (or 24.8). `e2e/serve.ts` starts the app under test:
+a copy of `target/debug/keepane` (`KEEPANE_BIN` names another) with a
+server of its own (socket `e2e-web`, folder `%TEMP%\keepane-e2e`), a few
+sessions, and the page on a free port. It refuses a binary older than
+`dist/`. Tests take turns (`workers: 1`): they share that server, so each
+puts back what it changes and looks only for text it typed itself. The
+server stops with the run; a run killed with its whole process tree leaves
+it running until the next run, which stops it first.
+
+A phone is a touch screen. The web engine has no touch emulation yet, so
+`e2e/phone.ts` starts the browser itself, with a DevTools port, turns touch
+on for the test's page and gives the test fingers: taps, long presses,
+swipes, a pinch. The rest is e2e's own: `screen`, `browser`, `expect`.
+
+A failed test leaves its screen, a screenshot and a Playwright trace under
+`.e2e/artifacts/`. The run sends e2e's anonymous usage figures unless
+`E2E_TELEMETRY_DISABLED=1`.

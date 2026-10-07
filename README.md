@@ -1334,6 +1334,9 @@ cargo test              # unit + end-to-end tests (spawns cmd.exe panes on Windo
 cargo clippy --all-targets
 ```
 
+The web page has browser tests of its own (`web/tests`, run with
+[e2e](https://github.com/tester-army/e2e)): see `web/README.md`.
+
 CI runs both on Windows, Linux and macOS. The platform's own code lives in
 `src/platform/windows` and `src/platform/unix`, each with the same modules
 (see `docs/design/platform.md`). On Windows the `tests/console.rs` suite
