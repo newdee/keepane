@@ -230,11 +230,15 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
           <figure class="shot"><img src="img/chart.png" alt="The C-b w chart: keepane on top, then the sessions, the windows of the current one and its panes, each in an open box, the selected pane highlighted" loading="lazy" /></figure>
         </div>
         <div class="pair">
+          <figure class="shot"><img src="img/keys.png" alt="The panel after C-b and a pause: what each key does, by group: panes, windows, sessions, tools" loading="lazy" /></figure>
           <figure class="shot"><img src="img/menu.png" alt="The pane menu: split, swap, break out, zoom, respawn, kill, each with a letter" loading="lazy" /></figure>
+        </div>
+        <div class="pair">
           <figure class="shot"><img src="img/popup.png" alt="A popup box over the window running a command, with the pane behind it still visible" loading="lazy" /></figure>
         </div>
         <ul class="points">
           <li data-i18n="c2.p1"><kbd>C-b Space</kbd> cycles through five layouts: even columns, even rows, a main pane beside or above the rest, and a tiled grid. <kbd>C-b E</kbd> evens out the panes next to the current one.</li>
+          <li data-i18n="c2.p6">Unsure of a key? Press <kbd>C-b</kbd> and wait: after half a second a panel says what the keys do, by group, read from your own bindings. The key then works as ever.</li>
           <li data-i18n="c2.p2"><kbd>C-b q</kbd> draws a number on every pane; press the number to jump there.</li>
           <li data-i18n="c2.p5">Zooming grows the pane itself, each of its corners heading for the window's, and unzooming shrinks it back; when the focus moves to another pane or window, a frame flies there. Programs are resized once, so nothing waits for it; <code>set -g animation off</code> turns it off. A zoomed window stays zoomed as you move between its panes, until <kbd>C-b z</kbd>.</li>
           <li data-i18n="c2.p3">In copy mode, <kbd>/</kbd> searches forward and <kbd>?</kbd> backward, <kbd>n</kbd> and <kbd>N</kbd> repeat the search, and the match is scrolled to the middle of the screen.</li>

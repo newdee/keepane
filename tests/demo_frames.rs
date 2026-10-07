@@ -92,8 +92,13 @@ fn record_demo() {
     rec.key("\x02z");
     rec.hold(3);
 
-    // The pane menu: every pane command behind one key, no cheat sheet.
-    rec.key("\x02>");
+    // Unsure of a key: the prefix, a pause, and a panel says what they do.
+    rec.key("\x02");
+    rec.wait_for("the key panel", |s| s.contents().contains("split side by side"), 10);
+    rec.hold(6);
+    rec.still("keys");
+    // The pane menu, from there: every pane command behind one key.
+    rec.key(">");
     rec.hold(5);
     rec.still("menu");
     rec.key("\x1b");
@@ -249,6 +254,13 @@ fn record_history() {
         20,
     );
     rec.hold(4);
+    // What scrolled off reaches today's file on the server's next tick (once
+    // a second): there before the picker looks for it.
+    let file = history.join("dev").join("0.0").join(format!("{}.log", today.format("%Y-%m-%d")));
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !file.exists() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // C-b /: the pane positions with history, and their days.
     rec.key("\x02/");
