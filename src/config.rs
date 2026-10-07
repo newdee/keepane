@@ -51,6 +51,10 @@ pub struct Options {
     /// How long after a `bind -r` key another one counts without the prefix
     /// (tmux `repeat-time`); 0 turns repeating off.
     pub repeat_time_ms: u64,
+    /// After the prefix, a panel of what the next key does, once the next
+    /// key is `prefix_hint_delay_ms` late (0: at once).
+    pub prefix_hint: bool,
+    pub prefix_hint_delay_ms: u64,
     pub pane_border_active_fg: Color,
     /// `display-panes`: the other panes' numbers, and the active pane's.
     pub display_panes_colour: Color,
@@ -323,6 +327,8 @@ pub const SHOWABLE: &[&str] = &[
     "pane-base-index",
     "display-time",
     "repeat-time",
+    "prefix-hint",
+    "prefix-hint-delay",
     "plugin-path",
     "autosave",
     "restore-on-start",
@@ -390,6 +396,8 @@ impl Default for Options {
             pane_base_index: 0,
             display_time_ms: 1500,
             repeat_time_ms: 500,
+            prefix_hint: true,
+            prefix_hint_delay_ms: 500,
             // Quiet borders, the active pane outlined in blue.
             pane_border_active_fg: Color::Rgb(0x7a, 0xa2, 0xf7),
             // tmux's defaults.
@@ -581,6 +589,8 @@ pub const KNOWN: &[&str] = &[
     "pane-timestamps",
     "plugin-path",
     "prefix",
+    "prefix-hint",
+    "prefix-hint-delay",
     "remain-on-exit",
     "repeat-time",
     "restore-on-start",
@@ -643,6 +653,7 @@ const BOOLEAN: &[&str] = &[
     "pane-timestamps",
     "monitor-bell",
     "mouse",
+    "prefix-hint",
     "remain-on-exit",
     "restore-on-start",
     "status",
@@ -862,6 +873,13 @@ impl Options {
             "log-history" => self.log_history = parse_bool(value)?,
             "keep-zoom" => self.keep_zoom = parse_bool(value)?,
             "animation" => self.animation = parse_bool(value)?,
+            "prefix-hint" => self.prefix_hint = parse_bool(value)?,
+            "prefix-hint-delay" => {
+                self.prefix_hint_delay_ms = match value.trim().parse::<u64>() {
+                    Ok(ms) if ms <= 10_000 => ms,
+                    _ => return Err(format!("bad prefix-hint-delay '{value}' (milliseconds, 0 to 10000)")),
+                }
+            }
             // An animation that never ends would redraw for ever.
             "animation-time" => {
                 self.animation_time = match value.trim().parse::<u64>() {
@@ -1016,6 +1034,8 @@ impl Options {
             "pane-base-index" => self.pane_base_index.to_string(),
             "display-time" => self.display_time_ms.to_string(),
             "repeat-time" => self.repeat_time_ms.to_string(),
+            "prefix-hint" => onoff(self.prefix_hint),
+            "prefix-hint-delay" => self.prefix_hint_delay_ms.to_string(),
             "plugin-path" => self.plugin_path.clone(),
             "autosave" => onoff(self.autosave),
             "restore-on-start" => onoff(self.restore_on_start),
@@ -1316,6 +1336,20 @@ mod tests {
         assert!(o.set("history-limit", "").is_err(), "a number still needs a value");
         assert!(o.set("nonsense", "1").is_err());
         assert!(o.set("mouse", "maybe").is_err());
+        // The prefix's panel: on, half a second; its delay 0 to ten seconds;
+        // the new names leave `prefix` itself as it was.
+        let d = Options::default();
+        assert!(d.prefix_hint);
+        assert_eq!(d.get("prefix-hint-delay").as_deref(), Some("500"));
+        assert_eq!(resolve_name("prefix").unwrap(), "prefix");
+        assert_eq!(resolve_name("prefix-hint").unwrap(), "prefix-hint");
+        assert_eq!(resolve_name("pre-h-d").unwrap(), "prefix-hint-delay");
+        assert!(o.set("prefix-hint-delay", "0").is_ok() && o.set("prefix-hint-delay", "10000").is_ok());
+        for bad in ["10001", "-1", "soon"] {
+            assert!(o.set("prefix-hint-delay", bad).unwrap_err().contains("0 to 10000"), "{bad}");
+        }
+        o.set("prefix-hint", "").unwrap();
+        assert_eq!(o.get("prefix-hint").as_deref(), Some("off"), "on/off: no value flips it");
         // An animation has an end: at most ten seconds.
         assert!(o.set("animation-time", "10000").is_ok() && o.set("animation-time", "0").is_ok());
         for bad in ["10001", "18446744073709551615", "-1", "fast"] {

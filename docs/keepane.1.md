@@ -220,7 +220,10 @@ the server, which holds the keys.
 ## KEYS
 
 Keys are pressed after the prefix, `C-b` (`set -g prefix C-a` changes it).
-`C-b ?` lists every binding. The defaults:
+`C-b ?` lists every binding. A key not pressed within half a second of the
+prefix brings up a panel of what the keys do, by group, read from the
+bindings as they are; the key then works as ever (`prefix-hint off` hides
+it, `prefix-hint-delay` sets the wait in milliseconds). The defaults:
 
 | Key | Does |
 |---|---|

@@ -571,6 +571,103 @@ pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
     g.put_str(area.x, area.y + area.h - 1, &hint, hint_style, area.w);
 }
 
+/// The prefix's panel (`prefix-hint`): what the next key does, a column a
+/// group, at the bottom of `area` and centred. Groups that do not fit side
+/// by side go below; rows that do not fit are left out. `title` goes in the
+/// top border (the prefix), `footer` in the bottom one.
+pub fn draw_key_hint(
+    g: &mut Grid,
+    area: Rect,
+    title: &str,
+    groups: &[(&str, Vec<super::keyhint::Entry>)],
+    footer: &str,
+) {
+    let w = |s: &str| UnicodeWidthStr::width(s) as u16;
+    // Each group: its keys' column width, and its own width.
+    let cols: Vec<(u16, u16)> = groups
+        .iter()
+        .map(|(name, entries)| {
+            let kw = entries.iter().map(|e| w(&e.keys)).max().unwrap_or(0);
+            let lw = entries.iter().map(|e| w(&e.label)).max().unwrap_or(0);
+            (kw, w(name).max(kw + 2 + lw))
+        })
+        .collect();
+    const GAP: u16 = 3;
+    let room = area.w.saturating_sub(4);
+    // A group cut short says less than none: too narrow, no panel.
+    if cols.iter().any(|&(_, cw)| cw > room) {
+        return;
+    }
+    // A grid: as many columns as fit across, the groups in order, a column
+    // as wide as its widest group, so the rows of groups line up.
+    let width_of = |n: usize| -> (Vec<u16>, u16) {
+        let mut ws = vec![0u16; n];
+        for (i, &(_, cw)) in cols.iter().enumerate() {
+            ws[i % n] = ws[i % n].max(cw);
+        }
+        let total = ws.iter().sum::<u16>() + GAP * (n as u16).saturating_sub(1);
+        (ws, total)
+    };
+    let n = (1..=groups.len().max(1)).rev().find(|&n| width_of(n).1 <= room).unwrap_or(1);
+    let (col_w, grid_w) = width_of(n);
+    let bands: Vec<Vec<usize>> = (0..groups.len()).collect::<Vec<_>>().chunks(n).map(|c| c.to_vec()).collect();
+    let band_h = |b: &Vec<usize>| b.iter().map(|&i| groups[i].1.len() as u16 + 1).max().unwrap_or(0);
+    let inner_w = grid_w.max(w(title) + 2).max(w(footer) + 2).min(room);
+    let inner_h = bands.iter().map(band_h).sum::<u16>() + (bands.len() as u16).saturating_sub(1);
+    let (bw, bh) = (inner_w + 4, (inner_h + 2).min(area.h));
+    if bw > area.w || bh < 3 {
+        return;
+    }
+    let rect = Rect { x: area.x + (area.w - bw) / 2, y: area.y + area.h - bh, w: bw, h: bh };
+    let border = Style::colors(Color::Idx(3), Color::Default);
+    let plain = Style::default();
+    g.fill(rect, plain);
+    let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w - 1, rect.y + rect.h - 1);
+    let line = |s: &str| Cell::new(s, false, border);
+    for x in x0 + 1..x1 {
+        g.set(x, y0, line("─"));
+        g.set(x, y1, line("─"));
+    }
+    for y in y0 + 1..y1 {
+        g.set(x0, y, line("│"));
+        g.set(x1, y, line("│"));
+    }
+    g.set(x0, y0, line("┌"));
+    g.set(x1, y0, line("┐"));
+    g.set(x0, y1, line("└"));
+    g.set(x1, y1, line("┘"));
+    g.put_str(x0 + 2, y0, &format!(" {title} "), Style { bold: true, ..border }, bw.saturating_sub(4));
+    if !footer.is_empty() {
+        g.put_str(x0 + 2, y1, &format!(" {footer} "), border, bw.saturating_sub(4));
+    }
+    let head = Style { bold: true, ..plain };
+    let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) };
+    let bottom = y1; // rows from here on are the border's
+    let mut y = y0 + 1;
+    for b in &bands {
+        let mut x = x0 + 2;
+        for (pos, &i) in b.iter().enumerate() {
+            let (kw, _) = cols[i];
+            let cw = col_w[pos];
+            let (name, entries) = &groups[i];
+            let limit = |row: u16| row < bottom;
+            if limit(y) {
+                g.put_str(x, y, name, head, cw);
+            }
+            for (n, e) in entries.iter().enumerate() {
+                let row = y + 1 + n as u16;
+                if !limit(row) {
+                    break;
+                }
+                g.put_str(x, row, &e.keys, key, kw);
+                g.put_str(x + kw + 2, row, &e.label, plain, cw.saturating_sub(kw + 2));
+            }
+            x += cw + GAP;
+        }
+        y += band_h(b) + 1;
+    }
+}
+
 /// `display-popup`: a box with a program inside it, drawn over everything
 /// else. Returns where the cursor sits, or None when the popup has no room
 /// for one. `hint` replaces the bottom border text once the command is done.
@@ -1530,6 +1627,52 @@ mod tests {
         draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines[..1]);
         assert_eq!(row(&g, 2).trim_end(), "press any key");
         assert_eq!(row(&g, 1).trim_end(), "");
+    }
+
+    #[test]
+    fn the_prefix_panel_sits_at_the_bottom_a_column_a_group() {
+        use super::super::keyhint::Entry;
+        let e = |k: &str, l: &str| Entry { keys: k.into(), label: l.into() };
+        let groups = vec![
+            ("Panes", vec![e("%", "split side by side"), e("hjkl", "go to a pane")]),
+            ("Windows", vec![e("c", "new window")]),
+        ];
+        let rows = |g: &Grid, w: u16, h: u16| -> Vec<String> {
+            (0..h).map(|y| (0..w).map(|x| g.get(x, y).text()).collect::<String>().trim_end().to_string()).collect()
+        };
+        // Wide enough: side by side, at the bottom, centred, in a box.
+        let mut g = Grid::new(80, 10);
+        g.put_str(0, 0, "the pane", Style::default(), 80);
+        draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 80, h: 10 }, "C-b", &groups, "? every key");
+        let r = rows(&g, 80, 10);
+        assert_eq!(r[0], "the pane", "above the box, the pane as it was");
+        assert!(r[5].trim_start().starts_with("┌─ C-b ─"), "{r:?}");
+        assert!(r[6].contains("│ Panes") && r[6].contains("Windows"), "{r:?}");
+        assert!(r[7].contains("%     split side by side") && r[7].contains("c  new window"), "{r:?}");
+        assert!(r[8].contains("hjkl  go to a pane"), "{r:?}");
+        assert!(r[9].trim_start().starts_with("└─ ? every key ─"), "{r:?}");
+        let left = r[6].find('│').unwrap();
+        assert_eq!(left, 80 - r[6].trim_start().chars().count() - left, "centred");
+        assert_eq!(g.get(left as u16 + 2, 7).style.fg, Color::Idx(3), "the keys stand out");
+        // Narrow: the second group below the first.
+        let mut g = Grid::new(30, 12);
+        draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 30, h: 12 }, "C-b", &groups, "? every key");
+        let r = rows(&g, 30, 12);
+        let at = |s: &str| r.iter().position(|l| l.contains(s)).unwrap();
+        assert!(at("Windows") > at("hjkl"), "{r:?}");
+        // Too low for all of it: the rows that fit; too narrow: nothing.
+        let mut g = Grid::new(80, 4);
+        draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 80, h: 4 }, "C-b", &groups, "? every key");
+        let r = rows(&g, 80, 4);
+        assert!(r[0].contains("┌") && r[3].contains("└") && r[2].contains("split side by side"), "{r:?}");
+        let mut g = Grid::new(8, 6);
+        draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 8, h: 6 }, "C-b", &groups, "? every key");
+        assert!(rows(&g, 8, 6).iter().all(|l| l.is_empty()));
+        // No groups (every key unbound), and an area of nothing: no box, no panic.
+        let mut g = Grid::new(80, 10);
+        draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 80, h: 10 }, "C-b", &[], "? every key");
+        assert!(rows(&g, 80, 10).iter().all(|l| l.is_empty()));
+        draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 0, h: 0 }, "C-b", &groups, "? every key");
     }
 
     fn screen(cols: u16, rows: u16, input: &[u8]) -> vt100::Parser {

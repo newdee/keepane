@@ -7,6 +7,7 @@ mod done;
 mod hints;
 pub mod import;
 pub mod input;
+mod keyhint;
 pub mod layout;
 mod link_in;
 mod link_out;
@@ -99,6 +100,10 @@ enum Event {
     /// keepane's prompt came back in a pane a moment ago, and what the
     /// command printed has been drawn by now (see `PROMPT_SETTLE`).
     PromptSettled(PaneId),
+    /// A prefix may have waited for its next key long enough for its panel
+    /// (`prefix-hint`): only a frame, which draws the panel if so (the
+    /// drawing checks the time, so a prefix answered since draws nothing).
+    PrefixHintDue,
     /// The daily look for a newer keepane came back (`newer`).
     NewerChecked(Option<String>),
     /// The address the internet sees this machine at came back (`public_ip`).
@@ -467,6 +472,9 @@ struct Client {
     last_grid: Option<Grid>,
     last_cursor: Option<(u16, u16)>,
     prefix: bool,
+    /// When the prefix was pressed, while it waits for its next key: the
+    /// panel of what each key does shows from `prefix-hint-delay` after.
+    prefix_at: Option<Instant>,
     /// A `bind -r` key ran; until this instant its table answers bare keys.
     repeat_until: Option<Instant>,
     /// `display-panes` is showing the pane numbers until this instant.
@@ -2021,6 +2029,7 @@ impl Server {
                         last_grid: None,
                         last_cursor: None,
                         prefix: false,
+                        prefix_at: None,
                         repeat_until: None,
                         panes_until: None,
                         panes_typed: None,
@@ -2117,6 +2126,8 @@ impl Server {
                 log::warn!("done-webhook: {why}");
                 self.note_message(&format!("done-webhook: {why}"));
             }
+            // The frame after every event draws it.
+            Event::PrefixHintDue => {}
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -2242,6 +2253,7 @@ impl Server {
                 c.last_grid = None;
                 c.last_cursor = None;
                 c.prefix = false;
+                c.prefix_at = None;
                 c.repeat_until = None;
                 c.prompt = None;
                 c.overlay = config_errors;
@@ -6162,6 +6174,7 @@ impl Server {
             let c = self.clients.get_mut(&cid).unwrap();
             if c.prefix {
                 c.prefix = false;
+                c.prefix_at = None;
                 c.swallow_up.insert(rec.vk);
                 if k == self.opts.prefix {
                     // Send the prefix key itself to the pane, or to the popup
@@ -6222,6 +6235,16 @@ impl Server {
             if k == self.opts.prefix {
                 c.prefix = true;
                 c.swallow_up.insert(rec.vk);
+                c.prefix_at = Some(Instant::now());
+                // Woken when the panel is due: no key may come to draw it.
+                let delay = self.opts.prefix_hint_delay_ms;
+                if self.opts.prefix_hint && delay > 0 {
+                    let tx = self.events.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        let _ = tx.send(Event::PrefixHintDue);
+                    });
+                }
                 return;
             }
             // A popup takes every key but the prefix, so `prefix d` still
@@ -8431,6 +8454,18 @@ impl Server {
             let hint = p.finished.then_some("press any key");
             cursor = render::draw_popup(&mut grid, p.rect, p.pane.screen(), active_fg, hint);
         }
+        // The prefix waits for its next key, `prefix-hint-delay` already: what
+        // each key does. Last, over a popup too: the next key is keepane's.
+        if self.opts.prefix_hint
+            && c.prefix
+            && c.prefix_at.is_some_and(|t| t.elapsed() >= Duration::from_millis(self.opts.prefix_hint_delay_ms))
+        {
+            static DEFAULTS: std::sync::OnceLock<HashMap<Key, Binding>> = std::sync::OnceLock::new();
+            let groups = keyhint::groups(&self.prefix_binds, DEFAULTS.get_or_init(default_bindings));
+            let footer = keyhint::footer(&self.prefix_binds);
+            render::draw_key_hint(&mut grid, area, &self.opts.prefix.to_string(), &groups, &footer);
+            cursor = None;
+        }
         // The theme's colours, over everything drawn.
         let bar = (opts_status && rows > 1).then(|| if status_top { 0 } else { rows - 1 });
         render::recolor(&mut grid, bar, self.opts.window_fg, self.opts.window_bg, &self.opts.pane_colours);
@@ -9200,6 +9235,7 @@ mod tests {
             last_grid: Some(Grid::new(10, 2)),
             last_cursor: Some((0, 0)),
             prefix: false,
+            prefix_at: None,
             repeat_until: None,
             panes_until: None,
             panes_typed: None,

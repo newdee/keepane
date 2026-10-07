@@ -2700,6 +2700,70 @@ async fn pane_base_index_shifts_every_pane_number() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `prefix-hint`: when the key after the prefix is late, a panel says what
+/// each key does; the key then does it as ever and the panel goes. A key in
+/// time never shows it, and `prefix-hint off` never does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_key_after_the_prefix_gets_a_panel() {
+    let h = Harness::start("keyhint").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "k"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let panel = |s: &vt100::Screen| s.contents().contains("split side by side");
+    // The prefix alone: after half a second, the panel, with the prefix on it.
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+    c.wait_for("the panel", |s| panel(s) && s.contents().contains("C-b") && s.contents().contains("? every key")).await;
+    // Its key does what it always did, and the panel goes.
+    c.type_str("c").await;
+    c.wait_for("the panel gone", |s| !panel(s)).await;
+    h.wait_for_cli("a second window", &["list-windows", "-t", "k"], |_, out| out.lines().count() == 2).await;
+
+    // On time: never before the delay, and two of three soon after it. The
+    // server's second-long tick would draw it too, but only next to a tick:
+    // three tries a third of a second apart cannot have two there, and one
+    // slow frame under load is not a late panel.
+    h.cli(&["set", "-g", "prefix-hint-delay", "200"]).await;
+    let mut took = Vec::new();
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(333)).await;
+        let t = Instant::now();
+        c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+        c.wait_for("the panel", panel).await;
+        took.push(t.elapsed());
+        c.type_str("r").await;
+        c.wait_for("the panel gone", |s| !panel(s)).await;
+    }
+    assert!(took.iter().all(|t| *t >= Duration::from_millis(180)), "a panel before the delay: {took:?}");
+    let on_time = took.iter().filter(|t| **t < Duration::from_millis(360)).count();
+    assert!(on_time >= 2, "the panel late: {took:?}");
+
+    // A key in time: no panel, not even later. What the screen shows once a
+    // change made after the delay arrived has every frame before it.
+    let seen = |c: &Conn| panel(c.screen.screen());
+    h.cli(&["set", "-g", "prefix-hint-delay", "300"]).await;
+    c.prefix('p').await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    h.cli(&["rename-window", "-t", "k:1", "after-in-time"]).await;
+    c.wait_for("the new name", |s| s.contents().contains("after-in-time")).await;
+    assert!(!seen(&c), "a key in time showed the panel:\n{}", c.text());
+
+    // Off: the prefix waits, and no panel comes.
+    h.cli(&["set", "-g", "prefix-hint", "off"]).await;
+    h.cli(&["set", "-g", "prefix-hint-delay", "0"]).await;
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    h.cli(&["rename-window", "-t", "k:1", "after-off"]).await;
+    c.wait_for("the new name", |s| s.contents().contains("after-off")).await;
+    assert!(!seen(&c), "off showed the panel:\n{}", c.text());
+    // The prefix still waited: its key works.
+    c.type_str("n").await;
+    h.wait_for_cli("the next window after the prefix", &["list-windows", "-t", "k"], |_, out| {
+        out.lines().any(|l| l.starts_with("1:") && l.contains("*"))
+    })
+    .await;
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn repeatable_keys_chain_without_the_prefix() {
     let h = Harness::start("repeat").await;
