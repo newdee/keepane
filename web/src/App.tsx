@@ -35,21 +35,16 @@ export default function App() {
   // The language is kept in i18n; this state only redraws the page when it changes.
   const [lang, setLangState] = useState<Lang>(currentLang);
   const latency = useLatency(!!info);
-  const fs = useFullscreen();
-  const status = <Latency ms={latency} />;
   // Full screen: only the pane's screen and its input are left, over the
   // whole screen where the browser can (elsewhere, over the whole page).
   const [focus, setFocus] = useState(false);
+  // Leaving the browser's full screen (its Escape, a swipe) leaves it too.
+  const fs = useFullscreen(() => setFocus(false));
+  const status = <Latency ms={latency} />;
   const setFocused = (on: boolean) => {
     setFocus(on);
     if (fs.can && fs.on !== on) fs.toggle();
   };
-  // Leaving the browser's full screen (its Escape, a swipe) leaves it too.
-  const wasFull = useRef(false);
-  useEffect(() => {
-    if (wasFull.current && !fs.on) setFocus(false);
-    wasFull.current = fs.on;
-  }, [fs.on]);
   // Back to the list: out of it.
   useEffect(() => {
     if (!current) {

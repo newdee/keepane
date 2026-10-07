@@ -59,8 +59,11 @@ export type Pane = {
 /** The terminal's theme: what a pane's text is drawn in. */
 export type Theme = { name: string; names: string[]; fg: string; bg: string; palette: string[] };
 
-/** A command's time on its line: [line, start ms, end ms, exit]. */
-export type Mark = [number, number | null, number | null, number | null];
+/** A command on its line: [line, start ms, end ms, exit, last, stop,
+ *  command]. What was typed runs to line `last` (it may wrap), what it
+ *  printed from there to before line `stop` (where the next prompt starts,
+ *  which may be a line above that prompt's own line). */
+export type Mark = [number, number | null, number | null, number | null, number, number, string];
 export type Screen = { text: string; marks: Mark[] };
 
 export type Msg = { id: number; from: string; text: string; waited?: number; for?: string };

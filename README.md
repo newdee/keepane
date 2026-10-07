@@ -442,7 +442,9 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 The time goes in the blank end of the line and changes neither the pane's
 width nor what the program printed; copy mode and `capture-pane` do not
 include it. A line without room for it goes without. `keepane list-marks`
-prints the same for a script. On the phone, When each command ran (in the view menu) shows the times
+prints the same for a script; `list-marks -J` as JSON, with the lines each
+command takes (what was typed may wrap, a prompt may take two lines) and
+the command itself. On the phone, When each command ran (in the view menu) shows the times
 in a column to the left.
 
 Knowing where each command starts and ends, `C-b y` (`copy-output`) copies

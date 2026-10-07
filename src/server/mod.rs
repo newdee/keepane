@@ -5589,12 +5589,15 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::ListDone { after, json } => Outcome::Text(self.list_done(after, json)),
-            Cmd::ListMarks { target } => {
+            Cmd::ListMarks { target, json } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
                 let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
+                if json {
+                    return Outcome::Text(marks_json(p).to_string());
+                }
                 // Nothing to list prints nothing, not an empty line.
                 match list_marks(p) {
                     lines if lines.is_empty() => Outcome::Ok,
@@ -9039,6 +9042,35 @@ fn list_marks(p: &mut Pane) -> Vec<String> {
         ));
     }
     out
+}
+
+/// `list-marks -J`: the same marks as `list_marks`, as JSON, each with the
+/// lines it covers, counted as `row` is (0 = the screen's first line,
+/// negative in the scrollback): `last`, where what was typed ends (it may
+/// wrap), and `stop`, the line what it printed stops before (the next
+/// prompt's first, which may be above that prompt's own `row`); and
+/// `command`, all of what was typed, the prompt left out.
+fn marks_json(p: &mut Pane) -> serde_json::Value {
+    let top = p.screen().scrolled_total() as i64;
+    let marks: Vec<pane::Mark> = p.marks.iter().filter(|m| m.end.is_some()).cloned().collect();
+    let ms = |t: Option<chrono::DateTime<chrono::Local>>| t.map(|t| t.timestamp_millis());
+    let mut out = Vec::new();
+    for m in marks {
+        let Some(now) = p.text_at(m.line).filter(|now| pane::still_reads(now, &m.text, p.cols)) else { continue };
+        let (last, stop) = p.span_of(&m);
+        let command = p.command_at(&m, last);
+        out.push(serde_json::json!({
+            "row": m.line as i64 - top,
+            "start": ms(m.start),
+            "end": ms(m.end),
+            "exit": m.exit,
+            "last": last as i64 - top,
+            "stop": stop as i64 - top,
+            "text": now,
+            "command": command,
+        }));
+    }
+    serde_json::Value::Array(out)
 }
 
 /// The most of a command's output `copy-output` takes.

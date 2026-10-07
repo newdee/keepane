@@ -176,10 +176,13 @@ pub enum Cmd {
     ListWindows {
         target: Option<Target>,
     },
-    /// `list-marks [-t pane]`: the commands the pane's shell ran that are
-    /// still on screen or in its scrollback.
+    /// `list-marks [-J] [-t pane]`: the commands the pane's shell ran that
+    /// are still on screen or in its scrollback.
     ListMarks {
         target: Option<Target>,
+        /// `-J`: as JSON, with each command's lines: where what was typed
+        /// ends, where what it printed stops, and the command itself.
+        json: bool,
     },
     /// `copy-output [-p] [-t pane]`: what the pane's last command printed,
     /// to a paste buffer and the clipboard; `-p` prints it instead.
@@ -929,8 +932,11 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::ListSessions => f.write_str("list-sessions"),
-            Cmd::ListMarks { target } => {
+            Cmd::ListMarks { target, json } => {
                 f.write_str("list-marks")?;
+                if *json {
+                    f.write_str(" -J")?;
+                }
                 fmt_target(f, target)
             }
             Cmd::CopyOutput { target, print } => {
@@ -2200,7 +2206,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-clients", &[]),
     ("list-commands", &[]),
     ("list-keys", &[]),
-    ("list-marks", &["-t"]),
+    ("list-marks", &["-J", "-t"]),
     ("copy-output", &["-p", "-t"]),
     ("hints", &[]),
     ("shell-history", &["-c", "-m", "-n", "-t"]),
@@ -2598,15 +2604,16 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ListSessions
         }
         "list-marks" => {
-            let mut target = None;
+            let (mut target, mut json) = (None, false);
             while a.is_flag() {
                 match a.next().unwrap() {
+                    "-J" => json = true,
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
-            Cmd::ListMarks { target }
+            Cmd::ListMarks { target, json }
         }
         "copy-output" => {
             let (mut target, mut print) = (None, false);
@@ -4266,7 +4273,9 @@ mod tests {
         assert_eq!(p("show-task 12 -J"), Cmd::ShowTask { id: 12, json: true });
         assert_eq!(p("show-task -J 12"), Cmd::ShowTask { id: 12, json: true });
         assert_eq!(p("show-task 12"), Cmd::ShowTask { id: 12, json: false });
-        for s in ["trace-message 5 -w 3 -J", "show-task 12 -J", "show-task 12"] {
+        assert_eq!(p("list-marks -J -t %3"), Cmd::ListMarks { target: Some(Target::parse("%3")), json: true });
+        assert_eq!(p("list-marks"), Cmd::ListMarks { target: None, json: false });
+        for s in ["trace-message 5 -w 3 -J", "show-task 12 -J", "show-task 12", "list-marks -J -t %3", "list-marks"] {
             assert_eq!(p(&p(s).to_string()), p(s), "{s}");
         }
         assert!(parse_line("show-task 12 -x").unwrap_err().contains("unknown flag"));

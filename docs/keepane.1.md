@@ -89,7 +89,7 @@ in capitals, open one; `hint-open`).
 
 `jobs` and `choose-jobs` (every pane: running or exited, for how long),
 `find-text` (search what every pane printed), `choose-history` and `view`
-(what panes printed, a file a day), `list-marks` (the commands a pane ran),
+(what panes printed, a file a day), `list-marks` (the commands a pane ran; `-J` as JSON, with the lines each takes),
 `shell-history` (a pane's own shell history, the messages delivered to it
 marked; `-c` the commands only, `-m` every message sent to it),
 `list-done` (when panes were done: `done-events`, told to the phone, `notify`,

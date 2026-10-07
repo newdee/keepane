@@ -274,7 +274,7 @@ PS C:\src> cargo build                                     14:03:22 41s ✓
 PS C:\src> cargo test                                      14:04:10 12s ✗
 ```
 
-时间信息显示在行尾空白处，不改变 pane 宽度或程序输出；copy mode 和 `capture-pane` 不会包含这段信息。如果行尾空间不足，就不显示。脚本要用的话，`keepane list-marks` 打印同样的信息。手机上在视图菜单里打开“每条命令的时间”，时间显示在左边一栏。
+时间信息显示在行尾空白处，不改变 pane 宽度或程序输出；copy mode 和 `capture-pane` 不会包含这段信息。如果行尾空间不足，就不显示。脚本要用的话，`keepane list-marks` 打印同样的信息；`list-marks -J` 输出 JSON，还带上每条命令占的行（命令可能折行，提示符可能占两行）和命令本身。手机上在视图菜单里打开“每条命令的时间”，时间显示在左边一栏。
 
 既然知道每条命令从哪开始、到哪结束，`C-b y`（`copy-output`）就把上一条命令的输出（它和下一个提示符之间的行，最多 4 MB）复制到粘贴缓冲区和剪贴板：测试失败的输出，直接贴进 issue 或者发给 agent。`keepane copy-output -p -t %3` 改成打印出来，给脚本用。copy mode 里 `[` `]` 在命令之间跳。
 

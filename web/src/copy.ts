@@ -41,15 +41,10 @@ export async function copyText(s: string): Promise<boolean> {
   return ok;
 }
 
-/** What a command printed: the lines after its own, up to the next
- *  command's; for the last one, to the end, less the prompt that came back
- *  once it ended. `lines` are the screen's, `at` the command's line. */
-export function outputOf(lines: string[], marks: Mark[], at: number): string {
-  const next = marks.map((m) => m[0]).filter((l) => l > at).sort((a, b) => a - b)[0];
-  let out = lines.slice(at + 1, next ?? lines.length).map(plain);
-  while (out.length && !out[out.length - 1].trim()) out.pop();
-  const mark = marks.find((m) => m[0] === at);
-  if (next == null && mark && mark[2] != null && out.length) out = out.slice(0, -1);
-  while (out.length && !out[out.length - 1].trim()) out.pop();
-  return out.map((l) => l.replace(/\s+$/, "")).join("\n");
+/** What a command printed: the screen's lines between what was typed and
+ *  the next prompt, as keepane placed them (the mark's `last` and `stop`). */
+export function outputOf(lines: string[], m: Mark): string {
+  const out = lines.slice(m[4] + 1, m[5]).map((l) => plain(l).replace(/\s+$/, ""));
+  while (out.length && !out[out.length - 1]) out.pop();
+  return out.join("\n");
 }

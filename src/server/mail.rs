@@ -478,7 +478,8 @@ impl Server {
                 .filter(|k| k.line >= typed)
                 .and_then(|k| k.exit)
                 .map(|c| c == 0);
-            let to = p.cursor_line();
+            // Up to the prompt that came back, all of it.
+            let to = p.prompt_start();
             // Where the command ended, read off the screen when it can be;
             // counted from the cursor at delivery otherwise.
             let text = p.delivered_text.take();

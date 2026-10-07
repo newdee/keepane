@@ -119,17 +119,19 @@ for (const secure of [true, false]) {
     await expect.poll(() => lastCopy(browser), { message: "what it printed: just its two lines" }).toBe(`${o1}\n${o2}`);
     await tapStamp(browser, finger, line);
     await finger.tap(entry(screen, "复制这条命令"));
-    await expect.poll(() => lastCopy(browser), { message: "the command's line" }).toMatch(new RegExp(`${command}$`));
+    await expect.poll(() => lastCopy(browser), { message: "the command, the prompt left out" }).toBe(command);
     await expect.poll(() => pageText(browser)).toContain("已复制");
     await finger.close();
   });
 }
 
+// Long lines wrapped here or not: the page reads the pane's rows, or its
+// lines joined (`capture-pane -J`), and the marks are placed on those. It
+// wraps (the default) when the pane is too wide to read at this width: a
+// screen narrower than a phone's, for this narrow pane.
+for (const wrap of [false, true])
 test(
-  "copying under a prompt and a command wider than the pane",
-  {
-    skip: "known bug (docs/acceptance.md, entry 106): a mark keeps only the row its prompt ends on, so a prompt of two rows or more is copied as output, and the command line copies the prompt's first row",
-  },
+  `copying under a prompt and a command wider than the pane${wrap ? ", long lines wrapped" : ""}`,
   async ({ app, browser, screen }) => {
     await recordCopies(browser, true);
     // A narrow pane of its own (work's are wide).
@@ -146,9 +148,11 @@ test(
       kp("send-keys", "-t", narrow, "Write-Output kpW3", "Enter");
       await expect.poll(() => capture(narrow)).toMatch(/\nkpW3/);
       await app.open(page(portOf(app.baseUrl), narrow.replace("%", "")));
-      const finger = await phone(browser);
+      const finger = await phone(browser, { width: wrap ? 240 : 390, height: 844 });
       await expect(browser.locator("#screen")).toContainText("kpW3");
       await stampsOn(finger, browser, screen);
+      const wrapped = () => browser.evaluate(() => document.querySelector("#screen")!.classList.contains("wrap"));
+      await expect.poll(wrapped, { message: wrap ? "wrapped here" : "rows as the pane has them" }).toBe(wrap);
       await expect.poll(() => browser.locator(".stamp").count()).toBeGreaterThanOrEqual(2);
       const [long, last] = (await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>(".stamp")].slice(-2).map((s) => s.dataset.i ?? ""))).map(Number);
       await tapStamp(browser, finger, long);

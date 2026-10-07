@@ -571,10 +571,12 @@ async fn watch(stream: &mut TcpStream, state: &State, pane: &str, history: u32, 
 /// A pane's screen as the page reads it: `{"text": ..., "marks": [...]}`,
 /// the text `capture-pane -e` gives (the last `history` lines of the
 /// scrollback first) and, for each command the pane's shell ran on one of
-/// those lines, `[line, start, end, exit]` (`list-marks`, its times in Unix
-/// milliseconds, null where unknown). `join`: lines the pane wrapped come
-/// as one (`capture-pane -J`), for a phone that wraps them at its own
-/// width; each mark then goes on the joined line its row is part of.
+/// those lines, `[line, start, end, exit, last, stop, command]` (`list-marks
+/// -J`, its times in Unix milliseconds, null where unknown): what was typed
+/// runs to line `last`, what it printed from there to before line `stop`.
+/// `join`: lines the pane wrapped come as one (`capture-pane -J`), for a
+/// phone that wraps them at its own width; each mark then goes on the
+/// joined line its row is part of.
 async fn screen_json(socket: &str, pane: &str, history: u32, join: bool) -> Result<String, (u16, String)> {
     let q = |argv: Vec<String>| async move {
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
@@ -599,7 +601,7 @@ async fn screen_json(socket: &str, pane: &str, history: u32, join: bool) -> Resu
     // The rows as the pane has them: the marks are placed on those.
     let rows = capture(false).await?;
     let text = if join { capture(true).await? } else { rows.clone() };
-    let marks = q(vec!["list-marks".into(), "-t".into(), pane.into()]).await;
+    let marks = q(vec!["list-marks".into(), "-J".into(), "-t".into(), pane.into()]).await;
     let size = q(vec![
         "display-message".into(),
         "-p".into(),
@@ -617,13 +619,7 @@ async fn screen_json(socket: &str, pane: &str, history: u32, join: bool) -> Resu
                 // Row to joined line; a count that does not add up (output
                 // arrived between the captures) places none.
                 match joined_rows(&text, rows.split('\n').count(), cols) {
-                    Some(line_of) => {
-                        let mut seen = std::collections::HashSet::new();
-                        let placed = placed
-                            .into_iter()
-                            .filter_map(|(i, rest)| line_of.get(i).filter(|j| seen.insert(**j)).map(|j| (*j, rest)));
-                        marks_list(placed)
-                    }
+                    Some(line_of) => marks_list(on_joined(placed, &line_of, text.split('\n').count())),
                     None => "[]".into(),
                 }
             } else {
@@ -651,33 +647,69 @@ fn joined_rows(joined: &str, rows: usize, cols: usize) -> Option<Vec<usize>> {
     (out.len() == rows).then_some(out)
 }
 
-/// `list-marks` lines placed on the lines of `text`, a capture holding the
-/// last `history` of `scrollback` lines above the screen: the line, and
-/// `start,end,exit`. A mark whose line does not read as it did (output
-/// arrived between the two questions) is left out rather than put against
-/// the wrong line.
-fn marks_placed(text: &str, marks: &str, history: u32, scrollback: usize) -> Vec<(usize, String)> {
+/// A command placed on the lines of a capture: the line it was typed on,
+/// the last line of what was typed, the line what it printed stops before,
+/// its times and exit code (`start,end,exit`, JSON), and the command.
+#[derive(Debug, PartialEq)]
+struct Placed {
+    line: usize,
+    last: usize,
+    stop: usize,
+    times: String,
+    command: String,
+}
+
+/// `list-marks -J` placed on the lines of `text`, a capture holding the
+/// last `history` of `scrollback` lines above the screen. A mark whose line
+/// does not read as it did (output arrived between the two questions) is
+/// left out rather than put against the wrong line.
+fn marks_placed(text: &str, marks: &str, history: u32, scrollback: usize) -> Vec<Placed> {
     let lines: Vec<&str> = text.split('\n').collect();
     let above = i64::from(history).min(scrollback as i64);
-    let num = |s: &str| if s.parse::<i64>().is_ok() { s.to_string() } else { "null".to_string() };
+    let Ok(serde_json::Value::Array(marks)) = serde_json::from_str::<serde_json::Value>(marks) else {
+        return Vec::new();
+    };
+    let num = |v: &serde_json::Value| v.as_i64().map_or("null".to_string(), |n| n.to_string());
+    let at = |v: &serde_json::Value| v.as_i64().map(|r| r + above).filter(|i| *i >= 0).map(|i| i as usize);
     let mut out = Vec::new();
-    for m in marks.lines() {
-        let mut f = m.splitn(5, ' ');
-        let (Some(row), Some(start), Some(end), Some(exit)) = (f.next(), f.next(), f.next(), f.next()) else {
-            continue;
-        };
-        let said = f.next().unwrap_or("");
-        let Some(i) = row.parse::<i64>().ok().map(|r| r + above).filter(|i| *i >= 0) else { continue };
-        if lines.get(i as usize).is_some_and(|l| without_escapes(l).trim_end() == said) {
-            out.push((i as usize, format!("{},{},{}", num(start), num(end), num(exit))));
+    for m in &marks {
+        let (Some(line), Some(last), Some(stop)) = (at(&m["row"]), at(&m["last"]), at(&m["stop"])) else { continue };
+        let said = m["text"].as_str().unwrap_or("");
+        if lines.get(line).is_some_and(|l| without_escapes(l).trim_end() == said) {
+            let last = last.clamp(line, lines.len() - 1);
+            out.push(Placed {
+                line,
+                last,
+                stop: stop.clamp(last + 1, lines.len().max(last + 1)),
+                times: format!("{},{},{}", num(&m["start"]), num(&m["end"]), num(&m["exit"])),
+                command: m["command"].as_str().unwrap_or("").to_string(),
+            });
         }
     }
     out
 }
 
-/// `[[line, start, end, exit], ...]`.
-fn marks_list(placed: impl IntoIterator<Item = (usize, String)>) -> String {
-    let items: Vec<String> = placed.into_iter().map(|(i, rest)| format!("[{i},{rest}]")).collect();
+/// Marks placed on rows, moved onto the joined lines those rows are part of
+/// (`line_of`, from `joined_rows`; `lines` joined lines in all): one mark a
+/// line, and a stop past the last row stops at the end.
+fn on_joined(placed: Vec<Placed>, line_of: &[usize], lines: usize) -> Vec<Placed> {
+    let to = |r: usize| line_of.get(r).copied().unwrap_or(lines);
+    let mut seen = std::collections::HashSet::new();
+    placed
+        .into_iter()
+        .filter_map(|p| {
+            let line = *line_of.get(p.line)?;
+            seen.insert(line).then(|| Placed { line, last: to(p.last), stop: to(p.stop), ..p })
+        })
+        .collect()
+}
+
+/// `[[line, start, end, exit, last, stop, command], ...]`.
+fn marks_list(placed: impl IntoIterator<Item = Placed>) -> String {
+    let items: Vec<String> = placed
+        .into_iter()
+        .map(|p| format!("[{},{},{},{},{}]", p.line, p.times, p.last, p.stop, json_str(&p.command)))
+        .collect();
     format!("[{}]", items.join(","))
 }
 
@@ -1403,15 +1435,45 @@ mod tests {
 
     #[test]
     fn marks_land_on_the_captured_lines_that_still_read_so() {
+        let mark = |row: i64, times: (i64, i64, i64), last: i64, stop: i64, text: &str, command: &str| {
+            serde_json::json!({"row": row, "start": times.0, "end": times.1, "exit": times.2,
+                "last": last, "stop": stop, "text": text, "command": command})
+        };
         // Two lines of scrollback above a three-line screen, all captured.
         let text = "PS> ls\nfile\n\x1b[32mPS> \x1b[0mbad\x1b[0m\nerr\nPS>";
-        let marks = "-2 1000 1500 0 PS> ls\n0 2000 2100 1 PS> bad\n1 3000 3100 0 PS> gone";
-        assert_eq!(marks_list(marks_placed(text, marks, 300, 2)), "[[0,1000,1500,0],[2,2000,2100,1]]");
+        let marks = serde_json::json!([
+            mark(-2, (1000, 1500, 0), -2, 0, "PS> ls", "ls"),
+            mark(0, (2000, 2100, 1), 0, 2, "PS> bad", "bad"),
+            mark(1, (3000, 3100, 0), 1, 2, "PS> gone", "gone"),
+        ])
+        .to_string();
+        assert_eq!(
+            marks_list(marks_placed(text, &marks, 300, 2)),
+            r#"[[0,1000,1500,0,0,2,"ls"],[2,2000,2100,1,2,4,"bad"]]"#
+        );
         // With less history asked for than there is, lines shift with it.
-        assert_eq!(marks_list(marks_placed("PS> \x1b[1mbad\nerr\nPS>", marks, 0, 2)), "[[0,2000,2100,1]]");
-        // Unknown times and codes are null; a torn line is skipped.
-        assert_eq!(marks_list(marks_placed("PS> x", "0 - 5 - PS> x\nnonsense", 0, 0)), "[[0,null,5,null]]");
+        assert_eq!(
+            marks_list(marks_placed("PS> \x1b[1mbad\nerr\nPS>", &marks, 0, 2)),
+            r#"[[0,2000,2100,1,0,2,"bad"]]"#
+        );
+        // Unknown times and codes are null; one not JSON is no marks; a stop
+        // past the capture ends with it.
+        let unknown = r#"[{"row":0,"start":null,"end":5,"exit":null,"last":0,"stop":9,"text":"PS> x","command":"x"}]"#;
+        assert_eq!(marks_list(marks_placed("PS> x\ny", unknown, 0, 0)), r#"[[0,null,5,null,0,2,"x"]]"#);
+        assert!(marks_placed("PS> x", "nonsense", 0, 0).is_empty());
         assert_eq!(without_escapes("\x1b[38;2;1;2;3ma\x1b[0mb"), "ab");
+    }
+
+    #[test]
+    fn marks_go_onto_the_joined_lines_with_their_spans() {
+        let p = |line, last, stop| Placed { line, last, stop, times: "1,2,0".into(), command: "c".into() };
+        // Rows: a prompt of two (0, 1), a command typed over two (1, 2),
+        // two printed (3, 4), the next prompt (5, 6). Joined: the prompt and
+        // command are one line, each printed line one, the prompt one.
+        let line_of = [0, 0, 0, 1, 2, 3, 3];
+        assert_eq!(on_joined(vec![p(1, 2, 5)], &line_of, 4), vec![p(0, 0, 3)]);
+        // A stop past the rows: the end; two marks on one joined line: the first.
+        assert_eq!(on_joined(vec![p(3, 3, 7), p(4, 4, 7)], &[0, 0, 0, 1, 1], 2), vec![p(1, 1, 2)]);
     }
 
     #[test]

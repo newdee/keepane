@@ -313,14 +313,22 @@ type FsDoc = Document & { webkitFullscreenEnabled?: boolean; webkitFullscreenEle
 type FsEl = HTMLElement & { webkitRequestFullscreen?: () => void };
 
 /** The page over the whole screen, where the browser can (not an iPhone's
- *  Safari): whether it can, whether it is, and the switch. */
-export function useFullscreen() {
+ *  Safari): whether it can, whether it is, and the switch. `onLeave` runs
+ *  when the browser leaves it (its Escape, a swipe), told by the browser's
+ *  own event: however quickly it went in and out again. */
+export function useFullscreen(onLeave?: () => void) {
   const d = document as FsDoc;
   const can = !!(d.fullscreenEnabled || d.webkitFullscreenEnabled);
   const now = () => !!(d.fullscreenElement || d.webkitFullscreenElement);
   const [on, setOn] = useState(now);
+  const leave = useRef(onLeave);
+  leave.current = onLeave;
   useEffect(() => {
-    const changed = () => setOn(now());
+    const changed = () => {
+      const full = now();
+      setOn(full);
+      if (!full) leave.current?.();
+    };
     document.addEventListener("fullscreenchange", changed);
     document.addEventListener("webkitfullscreenchange", changed);
     return () => {

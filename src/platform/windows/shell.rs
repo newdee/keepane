@@ -59,8 +59,10 @@ pub fn shared_history() -> Option<PathBuf> {
 ///
 /// It also says when the last command ran and whether it failed (`OSC
 /// 7777;keepane-cmd;start;end;ok`, the times from the shell's own history,
-/// once per history entry), before the prompt, and where the prompt ends
-/// (`OSC 133;B`), after it: `pane-timestamps` and `list-marks` read them.
+/// once per history entry), before the prompt; where the prompt starts
+/// (`OSC 133;A`, after that report: the report closes the command before)
+/// and where it ends (`OSC 133;B`), after it: `pane-timestamps`,
+/// `list-marks` and `copy-output` read them (a prompt can take two lines).
 /// Last, at every prompt, keepane's own word that the shell is at it
 /// (`OSC 7777;keepane-prompt`): what a pane in `shell` work mode waits for
 /// before the next message goes in, and which a remote shell never sends.
@@ -76,7 +78,7 @@ pub const POWERSHELL_PROMPT_HOOK: &str = "if ($env:KEEPANE_SHELL_HISTORY -and (G
      $__c = [char]27 + ']7777;keepane-cmd;' + ([DateTimeOffset]$__h.StartExecutionTime).ToUnixTimeMilliseconds() + ';' \
      + ([DateTimeOffset]$__h.EndExecutionTime).ToUnixTimeMilliseconds() + ';' + [int]$__ok + [char]27 + '\\' }; \
      $__p = if ($global:__keepane_prompt) { & $global:__keepane_prompt } else { 'PS ' + $PWD.Path + '> ' }; \
-     $__c + \"$__p\" + [char]27 + ']9;9;' + $PWD.ProviderPath + [char]27 + '\\' + [char]27 + ']133;B' + [char]27 + '\\' \
+     $__c + [char]27 + ']133;A' + [char]27 + '\\' + \"$__p\" + [char]27 + ']9;9;' + $PWD.ProviderPath + [char]27 + '\\' + [char]27 + ']133;B' + [char]27 + '\\' \
      + [char]27 + ']7777;keepane-prompt' + [char]27 + '\\' }";
 
 /// `argv` with keepane's shell integration added where it applies: an

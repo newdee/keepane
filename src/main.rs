@@ -44,7 +44,7 @@ Upgrading:  version (this keepane and the server's)   update [--check]   restart
   migrate   (from wmux, keepane's old name: sessions, saved data, logon start, Windows Terminal profile)
 On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
 History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
-  list-marks [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines)
+  list-marks [-J] [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines; -J as JSON, with each one's lines)
   copy-output [-p] [-t pane]   (what the last command printed, to a buffer and the clipboard; -p prints it; prefix y)
   hints   (prefix F: label paths, addresses and hashes on screen; a label copies, in capitals opens; hint-open)
   shell-history [-t pane] [-c | -m] [-n count]   (a pane's own shell history, messages marked; -c commands only, -m every message sent to it)

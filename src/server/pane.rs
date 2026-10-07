@@ -52,8 +52,10 @@ pub struct Callbacks {
 #[derive(Clone, Debug, PartialEq)]
 pub enum MarkEvent {
     /// A prompt is on the line `line` (`scrolled_total() + row`), what is
-    /// typed at it starting in column `col`.
-    Prompt(u64, u16),
+    /// typed at it starting in column `col`. `starts`: where it starts (OSC
+    /// 133;A, before it is drawn), not where it ends (133;B): a prompt can
+    /// take more than one line.
+    Prompt { line: u64, col: u16, starts: bool },
     /// The command typed at it started.
     Start(chrono::DateTime<chrono::Local>),
     /// It finished, with this exit code when the shell gave one.
@@ -106,8 +108,15 @@ pub fn prompt_of(line: &str, col: u16) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
     /// The prompt's line, as `scrolled_total() + row`: it keeps naming the
-    /// same line however far it scrolls.
+    /// same line however far it scrolls. The prompt's last line, where the
+    /// command is typed.
     pub line: u64,
+    /// The prompt's first line: `line`, or above it for a prompt of more
+    /// than one line (a long path, two lines of its own). What the command
+    /// before it printed ends above this.
+    pub top: u64,
+    /// The prompt's start was told and its end not yet: `top` stays.
+    pub drawing: bool,
     /// The column its command starts in: where the prompt ends.
     pub col: u16,
     /// When Enter first went into the pane at this prompt: the command's
@@ -321,7 +330,8 @@ impl vt100::Callbacks for Callbacks {
                 match *kind {
                     b"A" | b"B" => {
                         let (row, col) = screen.cursor_position();
-                        self.marks.push(MarkEvent::Prompt(screen.scrolled_total() + u64::from(row), col));
+                        let line = screen.scrolled_total() + u64::from(row);
+                        self.marks.push(MarkEvent::Prompt { line, col, starts: *kind == b"A" });
                     }
                     b"C" => self.marks.push(MarkEvent::Start(now())),
                     b"D" => {
@@ -979,14 +989,30 @@ impl Pane {
     pub fn apply_marks(&mut self, events: Vec<MarkEvent>) {
         for e in events {
             match e {
-                MarkEvent::Prompt(line, col) => {
+                MarkEvent::Prompt { line, col, starts } => {
                     // A prompt with nothing run at it yet is the same prompt
                     // again (133;A then B, an empty Enter): it moves rather
                     // than piling up.
                     let mut mark = match self.marks.back() {
                         Some(m) if m.start.is_none() && m.end.is_none() => self.marks.pop_back().unwrap(),
-                        _ => Mark { line, col, entered: None, start: None, end: None, exit: None, text: String::new() },
+                        _ => Mark {
+                            line,
+                            top: line,
+                            drawing: false,
+                            col,
+                            entered: None,
+                            start: None,
+                            end: None,
+                            exit: None,
+                            text: String::new(),
+                        },
                     };
+                    // Its first line: where it was said to start; else (a
+                    // shell that says only where it ends) this line.
+                    if starts || !mark.drawing {
+                        mark.top = line;
+                    }
+                    mark.drawing = starts;
                     mark.line = line;
                     mark.col = col;
                     mark.entered = None;
@@ -1272,25 +1298,40 @@ impl Pane {
     /// or to the cursor for the last one; at most `max` bytes, and whether
     /// that was cut.
     pub fn output_of(&mut self, m: &Mark, max: usize) -> (String, String, bool) {
-        let cursor = self.cursor_line();
-        let mut next =
-            self.marks.iter().map(|n| n.line).filter(|&l| l > m.line).min().unwrap_or(cursor + 1).min(cursor + 1);
-        let end = self.line_end(m.line, next);
-        let (typed, _) = self.text_between(m.line, end + 1, 64 * 1024);
-        let command = command_of(typed.lines().next().unwrap_or(""), m.col);
-        // An empty Enter's prompt has no mark (it moved down to the next):
-        // it is the same prompt again, and the output ends there.
-        let prompt = prompt_of(&m.text, m.col);
-        if !prompt.is_empty()
-            && let Some(again) = (end + 1..next).find(|&l| self.text_at(l).is_some_and(|t| t.trim_end() == prompt))
-        {
-            next = again;
-        }
+        let (end, next) = self.span_of(m);
+        let command = self.command_at(m, end);
         if end + 1 >= next {
             return (command, String::new(), false);
         }
         let (text, cut) = self.text_between(end + 1, next, max);
         (command, text, cut)
+    }
+
+    /// What was typed at `m`'s prompt, all of it (it may wrap onto lines
+    /// down to `end`), the prompt left out.
+    pub fn command_at(&mut self, m: &Mark, end: u64) -> String {
+        let (typed, _) = self.text_between(m.line, end + 1, 64 * 1024);
+        command_of(typed.lines().next().unwrap_or(""), m.col)
+    }
+
+    /// Where command `m` is on the screen: the last line of what was typed
+    /// (it may wrap), and the line its output stops before: the first line
+    /// of the next prompt, or the cursor's next line for the last command.
+    pub fn span_of(&mut self, m: &Mark) -> (u64, u64) {
+        let cursor = self.cursor_line();
+        let mut next = self.marks.iter().filter(|n| n.line > m.line).map(|n| n.top).min().unwrap_or(cursor + 1);
+        next = next.min(cursor + 1).max(m.line + 1);
+        let end = self.line_end(m.line, next);
+        // An empty Enter's prompt has no mark (it moved down to the next):
+        // it is the same prompt again, as tall, and the output ends where
+        // it starts.
+        let prompt = prompt_of(&m.text, m.col);
+        if !prompt.is_empty()
+            && let Some(again) = (end + 1..next).find(|&l| self.text_at(l).is_some_and(|t| t.trim_end() == prompt))
+        {
+            next = again.saturating_sub(m.line - m.top).max(end + 1);
+        }
+        (end, next)
     }
 
     /// The last row of the line that starts at row `line`, before `limit`:
@@ -1399,18 +1440,38 @@ impl Pane {
         let (row, _) = s.cursor_position();
         let top = s.scrolled_total();
         let rows: Vec<String> = s.rows(0, s.size().1).take(usize::from(row) + 1).collect();
-        // The prompts' lines on the screen (marks run oldest first).
-        let prompts: Vec<u64> = self.marks.iter().rev().map(|m| m.line).take_while(|&l| l >= top).collect();
-        let marked = |i: usize| prompts.contains(&(top + i as u64));
+        // The prompts' lines on the screen, all of each (marks run oldest
+        // first; a prompt can take more than one line).
+        let prompts: Vec<(u64, u64)> =
+            self.marks.iter().rev().take_while(|m| m.line >= top).map(|m| (m.top, m.line)).collect();
+        let at = |i: usize| top + i as u64;
+        let marked = |i: usize| prompts.iter().any(|&(first, last)| (first..=last).contains(&at(i)));
+        // The first line of the prompt waiting at the cursor: its lines are
+        // neither output nor the command's prompt.
+        let now = prompts.iter().find(|&&(_, last)| last == at(usize::from(row))).map(|&(first, _)| first);
         // An empty Enter's prompt is left unmarked (its mark moved down to
         // the next): it reads as the prompt waiting at the cursor now, with
         // what was typed at that since after a blank.
+        // A prompt of more lines repeats those above its last as they were.
         let waiting = rows.last().filter(|_| marked(usize::from(row))).map(|l| l.trim());
+        let above: Vec<&str> = match now {
+            Some(first) => rows[(first.saturating_sub(top) as usize).min(usize::from(row))..usize::from(row)]
+                .iter()
+                .map(|l| l.trim())
+                .collect(),
+            None => Vec::new(),
+        };
         let empty_enter = |l: &str| {
-            waiting.and_then(|w| w.strip_prefix(l.trim())).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+            above.contains(&l.trim())
+                || waiting
+                    .and_then(|w| w.strip_prefix(l.trim()))
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
         };
         let mut out = Vec::new();
         for (i, l) in rows[..usize::from(row)].iter().enumerate().rev() {
+            if now.is_some_and(|first| at(i) >= first) {
+                continue;
+            }
             if out.len() >= n || (own && marked(i)) {
                 break;
             }
@@ -1447,6 +1508,14 @@ impl Pane {
             }
         }
         None
+    }
+
+    /// Where what was printed last stops: the first line of the prompt
+    /// waiting at the cursor (it can take more than one line), else the
+    /// cursor's line.
+    pub fn prompt_start(&self) -> u64 {
+        let cursor = self.cursor_line();
+        self.marks.back().filter(|m| m.end.is_none() && m.line == cursor).map_or(cursor, |m| m.top.min(cursor))
     }
 
     pub fn cursor_line(&self) -> u64 {
@@ -2212,6 +2281,53 @@ mod tests {
         let mut p = quiet_pane(30, 8, 100);
         p.process_output(format!("user@host:~$ {B}whoami\r\nuser\r\n{}user@host:~$ {B}", ran(1, 2, true)).as_bytes());
         assert_eq!(p.last_line(), "user");
+    }
+
+    /// A prompt of more than one line (a path wider than the pane, a prompt
+    /// of two lines of its own): what a command printed stops where the next
+    /// prompt starts (133;A), not where it ends (133;B, where the next command
+    /// is typed); the command is all of what was typed, the prompt left out.
+    #[test]
+    fn output_stops_where_the_next_prompt_starts() {
+        const A: &str = "\x1b]133;A\x1b\\";
+        // The PowerShell hook's order: the last command's report, the
+        // prompt's start, the prompt, its end.
+        let long = "PS C:\\Users\\someone\\long\\path> ";
+        let mut p = quiet_pane(30, 12, 100);
+        p.process_output(format!("{A}{long}{B}").as_bytes());
+        p.process_output(b"echo a\r\nout-1\r\nout-2\r\n");
+        p.process_output(format!("{}{A}{long}{B}", ran(1, 2, true)).as_bytes());
+        let first = p.marks.iter().find(|m| m.end.is_some()).cloned().unwrap();
+        assert_eq!(first.line - first.top, 1, "the prompt took two lines");
+        assert_eq!(p.last_output(1000).unwrap(), ("echo a".to_string(), "out-1\nout-2".to_string(), false));
+        // Not the last any more: it stops at the next prompt's first line too.
+        p.process_output(b"echo b\r\nout-3\r\n");
+        p.process_output(format!("{}{A}{long}{B}", ran(3, 4, true)).as_bytes());
+        let (_, out, _) = p.output_of(&first, 1000);
+        assert_eq!(out, "out-1\nout-2");
+        assert_eq!(p.last_output(1000).unwrap().1, "out-3");
+
+        // A prompt of two lines of its own; an empty Enter at it repeats it whole.
+        let two = "user@host ~/src\r\n> ";
+        let mut p = quiet_pane(40, 12, 100);
+        p.process_output(format!("{A}{two}{B}").as_bytes());
+        p.process_output(b"make\r\nbuilt\r\n");
+        p.process_output(format!("{}{A}{two}{B}", ran(1, 2, true)).as_bytes());
+        let want = ("make".to_string(), "built".to_string(), false);
+        assert_eq!(p.last_output(1000).unwrap(), want);
+        p.process_output(format!("\r\n{A}{two}{B}").as_bytes());
+        assert_eq!(p.last_output(1000).unwrap(), want, "the repeated prompt's first line is no output");
+        // Nor is it what was printed last, nor where a message's reply ends.
+        assert_eq!(p.last_line(), "built");
+        assert_eq!(p.last_lines(5, true), ["built"], "the command's own, up to its prompt");
+        assert_eq!(p.cursor_line() - p.prompt_start(), 1, "the reply stops above the prompt's first line");
+
+        // A shell that says only where its prompt ends: as before, one line.
+        let mut p = quiet_pane(30, 8, 100);
+        p.process_output(format!("PS C:\\> {B}echo a\r\nout\r\n{}PS C:\\> {B}", ran(1, 2, true)).as_bytes());
+        let m = p.marks.front().cloned().unwrap();
+        assert_eq!(m.top, m.line);
+        assert_eq!(p.last_output(1000).unwrap().1, "out");
     }
 
     /// `copy-output`: the last command's own lines, between the command as

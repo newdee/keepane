@@ -700,9 +700,9 @@ export function PaneView(props: Props) {
                 title: stampDetail(m),
                 items: [
                   { id: "out", label: t("Copy what it printed", "复制这条命令的输出"), icon: <Copy className="size-4" />, now: true },
-                  { id: "cmd", label: t("Copy the command line", "复制这条命令"), icon: <SquareTerminal className="size-4" />, now: true },
+                  { id: "cmd", label: t("Copy the command", "复制这条命令"), icon: <SquareTerminal className="size-4" />, now: true },
                 ],
-                onPick: (k) => copied(k === "out" ? outputOf(lines, screen.marks, m[0]) : plain(lines[m[0]] ?? "").trim()),
+                onPick: (k) => copied(k === "out" ? outputOf(lines, m) : m[6]),
               });
             }}
             dangerouslySetInnerHTML={{ __html: html }}
