@@ -301,7 +301,8 @@ modifiers, bracketed paste, SGR mouse) and passes it on as a terminal
 would, so it runs in any xterm-compatible terminal and over SSH.
 
 ```bash
-keepane                      # new session, attached
+keepane                      # the session used last; else resume; else new
+keepane new                  # always a new session
 keepane new -s work          # named session
 keepane new -d -s bg htop    # detached session running htop
 keepane ls                   # list sessions
@@ -333,7 +334,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `Shift`+arrows | when the window is bigger than this terminal (`window-size` took another client's), pan this client's view by 5 rows / 10 columns; the view follows the cursor again at the next key |
 | (moving, resizing, `n` / `p` and `{` / `}` repeat: after the prefix, keep pressing the key for half a second, `repeat-time`) | |
 | `S` | toggle `synchronize-panes` (type into every pane of the window; `S` flag on the status line) |
-| `C-s` / `C-r` | save the session / restore saved sessions (see Resume) |
+| `C-s` / `C-r` | save every session, each into its own file / restore saved sessions (see Resume) |
 | `z` | zoom (toggle) the current pane; moving to another pane of the window (`h` `j` `k` `l`, `q` and a number, `;`) keeps the zoom and takes it there, until `z` again (`set -g keep-zoom off` unzooms instead, as tmux does) |
 | `x` | kill the current pane |
 | `u` | bring back the pane or window killed in the last 10 seconds (`undo-kill`) |
@@ -503,8 +504,14 @@ keepane resume              # bring back every saved session, attach to the firs
 keepane resume work         # bring back (or just attach to) the session "work"
 keepane list-saved          # what can be resumed, newest first
 keepane delete-saved old    # forget one
-keepane save-session -a     # save everything right now (prefix C-s saves the current one)
+keepane save-session -a     # save each session to its own file now (prefix C-s)
 ```
+
+A bare `keepane` resumes too: with sessions running it goes into the one
+used last, with none running it brings back every saved one and goes into
+the one saved last, and only with nothing at all does it start a new one
+(`keepane new` always does). So starting keepane again and again does not
+pile up empty sessions that come back on the next resume.
 
 Resuming recreates the pane tree, puts back the last `save-history` lines
 each pane had on screen (500 by default; `set -g save-history all` keeps
@@ -741,18 +748,19 @@ view menu (the sliders in the pane's bar) can make Enter and Send run what was
 typed instead, for this device. The history button beside the box brings back
 what you sent before (☆ keeps one at the top). The keys the phone keyboard
 lacks are in a row above it (Esc, Tab, arrows, more under ⋯; Ctrl+C and Enter
-stay in view at its end); Ctrl or Alt, then a letter typed, sends Ctrl or Alt
-with it. The ⋯ menu in the pane's bar, and a right click (a long press on a
-phone) on a pane in the list, split the pane, open a window, rename, close the
-pane or show its inbox (also a tap on a card's "queued" or "on #N" mark): the
-message it works on, each waiting one whole, to put first, up, down or delete
-(and undo), and the last few it finished. The view menu holds the rest: When
-each command ran adds a column with the time each command started (tap one for
-its date, how long it took and its exit code, and to copy the command or what
-it printed; see "Command times and history"). A tap on a session or window
-folds it (the device remembers); its right click or long press renames it or
-folds every window of a session at once. A pane wider than the phone wraps its
-long lines at the phone's edge (the view menu turns that off, for a
+stay in view at its end); Ctrl, Alt or Shift (any of them together), then a
+key of the row or a letter typed, sends it with them (Shift then → is
+Shift+Right). The ⋯ menu in the pane's bar, and a right click (a long press on
+a phone) on a pane in the list, split the pane, open a window, rename, close
+the pane or show its inbox (also a tap on a card's "queued" or "on #N" mark):
+the message it works on, each waiting one whole, to put first, up, down or
+delete (and undo), and the last few it finished. The view menu holds the rest:
+When each command ran adds a column with the time each command started (tap
+one for its date, how long it took and its exit code, and to copy the command
+or what it printed; see "Command times and history"). A tap on a session or
+window folds it (the device remembers); its right click or long press renames
+it or folds every window of a session at once. A pane wider than the phone
+wraps its long lines at the phone's edge (the view menu turns that off, for a
 full-screen program). Fit to this screen, in the same menu, sizes the pane to
 the phone: it fills its window and its session takes the phone's columns and
 rows, so a full-screen program (vim, htop, an agent's screen) draws for the
@@ -790,7 +798,8 @@ the time a request takes to the computer and back (`23 ms`, a green dot under
 100 ms, yellow under 300, red above or `offline`). The full-screen button in a
 pane's bar leaves only its screen and the input box, over the whole screen
 where the browser can (on an iPhone, over the whole page); the button beside
-the box, or the browser's own way out, brings the rest back. (The page is
+the box, or the browser's own way out, brings the rest back, and the list
+button beside it picks another pane without leaving full screen. (The page is
 built from `web/`, React and HeroUI, into one file keepane carries.)
 
 <p align="center">

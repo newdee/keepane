@@ -1112,6 +1112,22 @@ fn is_named_key(k: &str) -> bool {
     KEYS.contains(&k)
         || with("C-", u8::is_ascii_lowercase)
         || with("M-", |b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        || held_with_a_button(k)
+}
+
+/// A button's key with the page's Ctrl, Alt and Shift held (`S-Left`,
+/// `C-S-Right`): each at most once, then a key the page has (not the wheel).
+fn held_with_a_button(k: &str) -> bool {
+    let mut rest = k;
+    let mut seen = String::new();
+    while let Some((m, after)) = rest.split_once('-').filter(|(m, _)| matches!(*m, "C" | "M" | "S")) {
+        if seen.contains(m) {
+            return false;
+        }
+        seen.push_str(m);
+        rest = after;
+    }
+    !seen.is_empty() && KEYS.contains(&rest) && !rest.starts_with("Wheel")
 }
 
 /// The list-panes lines (tab-separated, in FIELDS order) as a JSON array.
@@ -1417,7 +1433,13 @@ mod tests {
         for k in ["Enter", "C-c", "C-x", "M-x", "M-1"] {
             assert!(is_named_key(k), "{k}");
         }
-        for k in ["C-X", "M-X", "M-", "C-cc", "x", "send-keys", "C-Left"] {
+        // Shift (and Ctrl, Alt) held for a button: Shift with an arrow.
+        for k in ["S-Left", "S-Right", "C-S-Right", "M-Up", "C-Left", "S-Tab", "C-M-S-End"] {
+            assert!(is_named_key(k), "{k}");
+        }
+        for k in
+            ["C-X", "M-X", "M-", "C-cc", "x", "send-keys", "S-x", "S-S-Left", "X-Left", "S-WheelUp", "S-", "Left-S"]
+        {
             assert!(!is_named_key(k), "{k}");
         }
     }

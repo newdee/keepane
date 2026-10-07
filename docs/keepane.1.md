@@ -24,8 +24,10 @@ a pane waits in its inbox until the pane is free, then goes in; a pane in
 AI agent in a pane in *ai* work mode reads it and answers. Everything a
 message does is in an event log.
 
-With no command, `keepane` starts a new session (`new-session`) and attaches
-to it. A command name can be cut to any unambiguous prefix (`keepane att`,
+With no command, `keepane` goes into what is there (`new-session -A` with no
+name): the session used last; with none running, every saved session back
+and the one saved last; with nothing at all, a new session. `keepane new`
+always starts a new one. A command name can be cut to any unambiguous prefix (`keepane att`,
 `keepane splitw -h`). Run inside a pane, a command goes to the server that
 pane belongs to, as tmux's do with `$TMUX`.
 

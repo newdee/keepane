@@ -1186,7 +1186,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
              Kill x kill-window",
         ),
         ("i", "display-message \"#S:#W.#P #T\""),
-        ("C-s", "save-session"),
+        ("C-s", "save-session -a"),
         ("C-r", "restore-session"),
         ("S", "set-option -w synchronize-panes"),
         ("C-t", "set-option -g pane-timestamps"),
@@ -3377,6 +3377,21 @@ impl Server {
                 if inside && !detached && interactive {
                     return Outcome::Error("sessions should be nested with care, unset KEEPANE to force".into());
                 }
+                // `new -A` with no name (a bare `keepane`): into what is there
+                // rather than one more session: the one used last; else the
+                // saved ones back, into the one saved last; else a new one.
+                if attach_existing && name.is_none() && !detached && interactive {
+                    if !self.sessions.is_empty() {
+                        return self.exec(Cmd::AttachSession { target: None, detach_others: false }, cid);
+                    }
+                    let (created, problems) = self.restore_all(Some((cols, rows)));
+                    for p in &problems {
+                        log::warn!("resume: {p}");
+                    }
+                    if let Some(&sid) = created.first() {
+                        return Outcome::Attach(sid);
+                    }
+                }
                 if attach_existing
                     && let Some(n) = &name
                     && self.sessions.iter().any(|s| s.name == *n)
@@ -3667,11 +3682,22 @@ impl Server {
                     }
                 };
                 let mut lines = Vec::new();
+                let mut names = Vec::new();
                 for sid in ids {
                     match self.save_session_file(sid) {
                         Ok(p) => lines.push(format!("saved {}", p.display())),
                         Err(e) => return Outcome::Error(e),
                     }
+                    names.extend(self.session(sid).map(|s| s.name.clone()));
+                }
+                // Every session (prefix C-s): one line, what was saved, each
+                // into its own file.
+                if all {
+                    return Outcome::Text(format!(
+                        "saved {}: {}",
+                        crate::format::count(names.len(), "session"),
+                        names.join(", ")
+                    ));
                 }
                 Outcome::Text(lines.join("\n"))
             }

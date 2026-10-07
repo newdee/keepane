@@ -1,6 +1,7 @@
 import { Button, Dropdown, Header, Input, Label, Separator, TextArea, toast, Tooltip } from "@heroui/react";
 import {
   ArrowLeft,
+  LayoutList,
   Bot,
   Check,
   ChevronUp,
@@ -44,13 +45,15 @@ import { ConfirmClose, History, type Sent } from "./Sheets";
 // Buttons: what they show, what they send (a named key, `=` text, `@` the
 // page's own: Ctrl, Alt). The usual ones, then the rest.
 const KEYS: [string, string][] = [
-  ["Ctrl", "@ctrl"], ["Alt", "@alt"], ["Esc", "Escape"], ["Tab", "Tab"], ["↑", "Up"], ["↓", "Down"],
+  ["Ctrl", "@ctrl"], ["Alt", "@alt"], ["Shift", "@shift"], ["Esc", "Escape"], ["Tab", "Tab"], ["↑", "Up"], ["↓", "Down"],
   ["←", "Left"], ["→", "Right"], ["⏎", "Enter"], ["^C", "C-c"],
 ];
 const MORE_KEYS: [string, string][] = [
   ["⇧Tab", "BTab"], ["^D", "C-d"], ["^Z", "C-z"], ["^L", "C-l"], ["⌫", "BSpace"], ["Home", "Home"], ["End", "End"],
   ["PgUp", "PPage"], ["PgDn", "NPage"], ["y", "=y"], ["n", "=n"], ["1", "=1"], ["2", "=2"], ["3", "=3"],
 ];
+// The page's own keys that are held for the next one: their letters.
+const MODS: Record<string, string> = { "@ctrl": "C", "@alt": "M", "@shift": "S" };
 // The keys kept in view at the end of the row (the others scroll).
 const PINNED = ["C-c", "Enter"];
 const HISTORY_MAX = 50;
@@ -636,19 +639,19 @@ export function PaneView(props: Props) {
         className={"relative min-h-0 flex-1 p-0" + (props.focus ? "" : " sm:p-3")}
         style={props.focus ? { paddingTop: "env(safe-area-inset-top)", background: theme.bg } : undefined}
       >
-        {/* Read-only, there is no input row to hold the way out: over the screen. */}
+        {/* Read-only, there is no input row to hold the ways out: over the screen. */}
         {props.focus && readOnly ? (
-          <Button
-            id="fullscreen-exit"
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={t("Leave full screen", "退出全屏")}
-            onPress={() => props.onFocus(false)}
-            className="absolute top-[calc(env(safe-area-inset-top)+6px)] right-2 z-10 rounded-full bg-black/35 text-white opacity-70 hover:opacity-100"
-          >
-            <Minimize className="size-4" />
-          </Button>
+          <div className="absolute top-[calc(env(safe-area-inset-top)+6px)] right-2 z-10 flex gap-1.5">
+            {[
+              { id: "fullscreen-switch", label: t("Another pane", "切换 pane"), icon: <LayoutList className="size-4" />, go: () => !bounced("switch") && props.onSwitcher() },
+              { id: "fullscreen-exit", label: t("Leave full screen", "退出全屏"), icon: <Minimize className="size-4" />, go: () => props.onFocus(false) },
+            ].map((b) => (
+              <Button key={b.id} id={b.id} isIconOnly size="sm" variant="ghost" aria-label={b.label} onPress={b.go}
+                className="rounded-full bg-black/35 text-white opacity-70 hover:opacity-100 pointer-coarse:size-11">
+                {b.icon}
+              </Button>
+            ))}
+          </div>
         ) : null}
         <div
           id="main"
@@ -700,10 +703,17 @@ export function PaneView(props: Props) {
           tellTo={p && (p.mode === "shell" || p.mode === "ai") ? headOf(p) : undefined}
           exit={
             props.focus ? (
-              <Button id="fullscreen-exit" isIconOnly variant="ghost" size="sm" className="mb-0.5" aria-label={t("Leave full screen", "退出全屏")}
-                onPress={() => props.onFocus(false)}>
-                <Minimize className="size-4.5" />
-              </Button>
+              <>
+                <Button id="fullscreen-exit" isIconOnly variant="ghost" size="sm" className="mb-0.5 pointer-coarse:size-11" aria-label={t("Leave full screen", "退出全屏")}
+                  onPress={() => props.onFocus(false)}>
+                  <Minimize className="size-4.5" />
+                </Button>
+                {/* The pane bar is gone in full screen: its list of panes here. */}
+                <Button id="fullscreen-switch" isIconOnly variant="ghost" size="sm" className="mb-0.5 pointer-coarse:size-11" aria-label={t("Another pane", "切换 pane")}
+                  onPress={() => !bounced("switch") && props.onSwitcher()}>
+                  <LayoutList className="size-4.5" />
+                </Button>
+              </>
             ) : null
           }
         />
@@ -774,7 +784,8 @@ function Composer({
   // The box as a message into the pane's inbox (it waits its turn), not typing.
   const [telling, setTelling] = useState(false);
   const tell = telling && !!tellTo;
-  const [held, setHeld] = useState<"C" | "M" | null>(null);
+  // Ctrl, Alt, Shift held for the next key (button or typed): their letters.
+  const [held, setHeld] = useState("");
   const [more, setMore] = useStored<boolean | number>("keepane-more-keys", false);
   const [sent, setSentState] = useStored<Sent[]>("keepane-sent", []);
   const [histOpen, setHistOpen] = useState(false);
@@ -833,18 +844,18 @@ function Composer({
   };
   const onKey = (k: string) => {
     if (bounced("key " + k)) return;
-    if (k === "@ctrl" || k === "@alt") {
-      const want = k === "@ctrl" ? "C" : "M";
-      const next = held === want ? null : want;
+    const mod = MODS[k];
+    if (mod) {
+      const next = held.includes(mod) ? held.replace(mod, "") : [...held + mod].sort((a, b) => "CMS".indexOf(a) - "CMS".indexOf(b)).join("");
       setHeld(next);
-      if (next) {
-        box.current?.focus();
-        toast(t("Now type a key", "现在输入一个键"), { timeout: 1500 });
-      }
+      if (next) toast(t("Now a key, or type one", "现在按一个键，或打一个字"), { timeout: 1500 });
       return;
     }
-    setHeld(null);
-    sendKey(k);
+    // Held keys go with a button's key (Shift with → is S-Right); text keys
+    // (y, n, 1…) are text.
+    const withHeld = held && !k.startsWith("=") ? (held === "S" && k === "Tab" ? "BTab" : [...held].map((m) => m + "-").join("") + k) : k;
+    setHeld("");
+    sendKey(withHeld);
   };
 
   // What Send does now, in a word: the button's text and its name.
@@ -860,7 +871,8 @@ function Composer({
     <Button
       key={k}
       size="sm"
-      variant={(k === "@ctrl" && held === "C") || (k === "@alt" && held === "M") ? "primary" : "tertiary"}
+      variant={MODS[k] && held.includes(MODS[k]) ? "primary" : "tertiary"}
+      aria-pressed={MODS[k] ? held.includes(MODS[k]) : undefined}
       className="h-8 min-w-9 shrink-0 px-2 font-term text-[13px] pointer-coarse:h-10 pointer-coarse:min-w-11"
       onPress={() => onKey(k)}
     >
@@ -920,17 +932,26 @@ function Composer({
             setText(el.value);
           }}
           onInput={(e) => {
-            // Ctrl or Alt held: the character typed is the key, not text.
+            // Ctrl or Alt held: the character typed is the key, not text;
+            // Shift alone: the character, in capitals.
             const ne = e.nativeEvent as InputEvent;
             if (!held || !ne.data || ne.data.length !== 1 || ne.isComposing) return;
             const el = e.currentTarget;
             const at = el.selectionStart;
+            if (held === "S") {
+              const upper = el.value.slice(0, at - 1) + ne.data.toUpperCase() + el.value.slice(at);
+              el.value = upper;
+              el.setSelectionRange(at, at);
+              setText(upper);
+              setHeld("");
+              return;
+            }
             const without = el.value.slice(0, at - 1) + el.value.slice(at);
             el.value = without;
             setText(without);
             const c = ne.data.toLowerCase();
-            const mod = held;
-            setHeld(null);
+            const mod = held.includes("C") ? "C" : "M";
+            setHeld("");
             if (mod === "C" ? /[a-z]/.test(c) : /[a-z0-9]/.test(c)) sendKey(`${mod}-${c}`);
             else toast(t("Ctrl goes with a letter, Alt with a letter or digit", "Ctrl 只能配字母，Alt 只能配字母或数字"));
           }}

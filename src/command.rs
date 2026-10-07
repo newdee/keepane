@@ -4199,6 +4199,12 @@ pub fn parse_line(line: &str) -> Result<Option<Cmd>, String> {
     parse(&words).map(Some)
 }
 
+/// What a bare `keepane` runs: `new -A` with no name, which goes into the
+/// session used last, else brings the saved ones back, else makes one.
+pub fn bare_start() -> Vec<String> {
+    vec!["new-session".into(), "-A".into()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4239,6 +4245,15 @@ mod tests {
         assert!(positional_args(&["-g", "-s"]).is_empty());
         assert_eq!(positional_args(&["-g", "-t", "work", "mouse"]), vec!["mouse"]);
         assert_eq!(positional_args(&["-gq", "status", "on"]), vec!["status", "on"]);
+    }
+
+    /// A bare `keepane`: `new -A`, no name, attached (not a new session each time).
+    #[test]
+    fn a_bare_start_goes_into_what_is_there() {
+        assert!(matches!(
+            parse(&bare_start()),
+            Ok(Cmd::NewSession { attach_existing: true, name: None, detached: false, .. })
+        ));
     }
 
     /// `-J` on trace-message and show-task: the record as JSON (the

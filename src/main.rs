@@ -5,9 +5,10 @@ use keepane::{client, logger, server};
 
 const USAGE: &str = "\
 usage: keepane [-L socket-name] [command [flags]]
+  (no command: into the session used last, else the saved ones back, else a new one)
 
 Sessions:
-  new-session   (new)     [-s name] [-n window] [-c dir] [-d [-x cols] [-y rows]] [command...]
+  new-session   (new)     [-A] [-s name] [-n window] [-c dir] [-d [-x cols] [-y rows]] [command...]
   attach-session (attach) [-t target] [-d]
   list-sessions (ls)
   kill-session  [-t target]      kill-server      has-session -t target
@@ -177,8 +178,10 @@ fn main() {
             }
         }
     }
+    // Bare: into the session used last, else the saved ones back, else a
+    // new one (`new -A` with no name); `keepane new` always makes one.
     if args.is_empty() {
-        args.push("new-session".into());
+        args = keepane::command::bare_start();
     }
     // Up from wmux (keepane's old name): its data directory moves here the
     // first time, unless a wmux server still uses it (`migrate` then).

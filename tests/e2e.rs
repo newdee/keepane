@@ -735,6 +735,41 @@ async fn mouse_selects_pane_and_copy_mode_scrolls() {
     h.cli(&["kill-server"]).await;
 }
 
+/// A drag over a shell's text selects it and copies it on release (the
+/// paste buffer gets it); a plain click selects nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_drag_in_a_shell_copies_what_it_covers() {
+    let h = Harness::start("dragcopy").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "d"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    c.type_str(&prints("dragme-1234")).await;
+    c.enter().await;
+    c.wait_for("the text", |s| s.contents().matches("dragme-1234").count() >= 2).await;
+    // The row with the text, and where it starts.
+    let (row, col) = (0..24u16)
+        .find_map(|r| {
+            let line: String = c.screen.screen().rows(0, COLS).nth(r as usize).unwrap_or_default();
+            line.find("dragme-1234").map(|i| (r, line[..i].chars().count() as u16))
+        })
+        .expect("the text on screen");
+    let m = |x: u16, buttons: u32, flags: u32| MouseRecord { x: x as i16, y: row as i16, buttons, ctrl: 0, flags };
+    c.send(ClientMsg::Mouse(m(col, 1, 0))).await;
+    c.send(ClientMsg::Mouse(m(col + 5, 1, 1))).await;
+    c.send(ClientMsg::Mouse(m(col + 10, 1, 1))).await;
+    c.send(ClientMsg::Mouse(m(col + 10, 0, 0))).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, out, _) = h.cli(&["show-buffer"]).await;
+        if code == 0 && out.contains("dragme-1234") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "nothing copied: {out:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn resize_and_two_clients() {
     let h = Harness::start("resize").await;
@@ -848,6 +883,71 @@ async fn plugins_hooks_status_formats_and_run_shell() {
     assert!(out.contains("1: hooked*"), "{out}");
     h.cli(&["kill-server"]).await;
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A bare `keepane` (`new -A` with no name) goes into what is there rather
+/// than adding one more session each time: a new one only when there is
+/// nothing; the session used last when some run; the saved ones back (into
+/// the one saved last) when none run. prefix C-s saves every session, each
+/// into its own file. Starting again and again does not pile sessions up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bare_keepane_goes_into_what_is_there() {
+    let dir = std::env::temp_dir().join(format!("keepane-bare-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let files = || std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
+    let names = async |h: &Harness| {
+        let mut v: Vec<String> =
+            h.cli(&["ls"]).await.1.lines().map(|l| l.split(':').next().unwrap().to_string()).collect();
+        v.sort();
+        v
+    };
+    let h = Harness::start("bare").await;
+    h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
+    // Nothing at all: a new session.
+    let mut c = h.connect().await;
+    assert_eq!(c.attach(&["new-session", "-A"]).await, "0");
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    // Sessions running: into the one used last, none added.
+    h.cli(&["new", "-d", "-s", "work"]).await;
+    h.cli(&["new", "-d", "-s", "notes"]).await;
+    let mut c2 = h.connect().await;
+    assert_eq!(c2.attach(&["new-session", "-A"]).await, "notes", "used last (made last), as `attach` picks");
+    assert_eq!(names(&h).await, ["0", "notes", "work"]);
+    // prefix C-s: every session, each into its own file, said in one line.
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+    c.key(b'S' as u16, '\x13', LEFT_CTRL_PRESSED).await;
+    c.wait_for("saved, all three", |s| s.contents().contains("saved 3 sessions: ")).await;
+    assert_eq!(files(), 3);
+    // notes saved last.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    h.cli(&["save-session", "-t", "notes"]).await;
+    h.cli(&["kill-server"]).await;
+
+    // A new server: nothing runs, three are saved: all back, into notes.
+    for round in 0..2 {
+        let h = Harness::start(&format!("bare{round}")).await;
+        h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
+        let mut c = h.connect().await;
+        let into = c.attach(&["new-session", "-A"]).await;
+        assert_eq!(names(&h).await, ["0", "notes", "work"], "round {round}: none added");
+        if round == 0 {
+            assert_eq!(into, "notes", "the one saved last");
+        }
+        // And a second start meanwhile: into the one in use, still three.
+        let mut c2 = h.connect().await;
+        c2.attach(&["new-session", "-A"]).await;
+        assert_eq!(names(&h).await, ["0", "notes", "work"]);
+        assert_eq!(files(), 3, "round {round}: no more saved sessions");
+        h.cli(&["save-session", "-a"]).await;
+        h.cli(&["kill-server"]).await;
+    }
+    // `new` still makes one when asked.
+    let h = Harness::start("bare-new").await;
+    h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
+    let mut c = h.connect().await;
+    assert_eq!(c.attach(&["new-session", "-s", "fresh"]).await, "fresh");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread")]

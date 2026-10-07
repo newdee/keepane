@@ -145,7 +145,7 @@ tmux's table, with what keepane does today.
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 keepane adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
-(save / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed) and `F` (hints: pick a path, address or hash on screen) on top of that table.
+(save every session / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed) and `F` (hints: pick a path, address or hash on screen) on top of that table.
 
 ## Copy mode
 
