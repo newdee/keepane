@@ -3667,3 +3667,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 机制通路（读录下的帧） | 深浅各一套：fix 的最后一帧测试通过、之前失败，agent 只修了 1 次；resume 的画面有 `No commits yet`、`Finished release in 41s`、`GET /api/v1 200`、状态栏 `W:\logs`；agents 的 dashboard 3 行都带花费和上下文，标题有总数，`list-agents` 3 行。用户的 server 仍只有 daily、0-wmux、x | 干净（1/3） |
 | 2 | 全量回归（三平台） | fmt、clippy 干净；Windows 352 + 10 + 114；Linux 329 + 114；浏览器 33/33；18 段录屏（9 段 × 深浅）全部录成 | 干净（2/3） |
 | 3 | 静态一致性 | README（中英）和站点引用的图 35 张，缺 0；9 个 GIF 都有浅色版；站点 97 个 i18n 键都有中文、没有多余的中文；make-demos 的 9 项与 9 个录屏函数一一对应；左栏宽度代码 `(w / 2).clamp(30, 64)` 与设计文档一致 | 干净（3/3），验收通过 |
+
+发布 0.35.0 时 CI 在 Linux、macOS 上失败：`src/platform/unix/sysinfo.rs` 的进程表缓存类型触发 `clippy::type_complexity`。Windows 上的 clippy 不编译 `cfg(unix)` 的代码，WSL 里只跑了测试没跑 clippy，所以两边都没抓到。改为与 Windows 一样起名 `type Proc`；WSL 的检查脚本改为依次跑 fmt、clippy、测试（fmt ok，clippy 0 警告，329 + 114 通过）。Release 流程等 CI 通过才构建，所以旧标签没有产出任何发布；标签 `v0.35.0` 移到修好的提交上。
