@@ -91,6 +91,13 @@
           <figure class="shot"><img src="img/messages.png" alt="Left, the command running with its envelope as a comment; right, trace-message showing it delivered, done and its output" loading="lazy" /></figure>
           <figure class="shot"><img src="img/dashboard.png" alt="The dashboard: panes, an agent's inbox and the tasks on the left, a message read in full, field by field, on the right" loading="lazy" /></figure>
         </div>
+        <figure class="stage">
+          <img src="img/keepane-agents.gif" width="880" loading="lazy" alt="Three agents at work in three panes, each border showing its model, cost so far and how full its context is; the dashboard listing them with cost and context and the total in its title; keepane list-agents printing the same" />
+          <figcaption data-i18n="cm.caption2">
+            Three agents at work: each pane's border says its model, what it has cost and how full its context is;
+            the dashboard lists them with the total; <code>keepane list-agents</code> prints the same. (The agents are stand-ins that write real transcripts.)
+          </figcaption>
+        </figure>
         <ul class="points">
           <li data-i18n="cm.p1">Every message says where it came from in one line of JSON. A chain of messages is one task, with how long each step waited and took; one that goes round more than eight times is refused.</li>
           <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup</code> sets up the hook and the registration for Claude Code, Codex, Gemini CLI, Cursor CLI or opencode, so the agent is handed its next message when a turn ends; a message for an agent that never says it is free tells you which setup it lacks.</li>
@@ -133,6 +140,13 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
             picks the session up again, from any terminal window.
           </p>
         </header>
+        <figure class="stage">
+          <img src="img/keepane-resume.gif" width="880" loading="lazy" alt="A session of three panes is saved, the server stops as a reboot stops it, keepane list-saved shows the session, and keepane resume brings back the panes, their names and folders and what they showed" />
+          <figcaption data-i18n="c3.caption">
+            Three panes at work, saved with <kbd>C-b C-s</kbd>; the server gone as a reboot takes it; <code>keepane resume</code>
+            brings back the panes, their names and folders, and what they showed.
+          </figcaption>
+        </figure>
         <div class="pair">
           <figure class="shot"><img src="img/detach.png" alt="Back at a plain shell after detaching" loading="lazy" /></figure>
           <figure class="shot"><img src="img/attach.png" alt="The same layout after attaching again" loading="lazy" /></figure>
@@ -168,7 +182,14 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
           <li data-i18n="ch.p1">The time goes in the blank end of the line. The pane keeps its width and nothing is added to what the program printed. On the phone, When each command ran, in the view menu, puts the times in a column of their own.</li>
           <li data-i18n="ch.p2">What scrolls off a pane is written to a file for that pane and day, kept for 30 days, with a line of times before each command. In the pager, <kbd>[</kbd> and <kbd>]</kbd> jump from command to command and <kbd>/</kbd> searches.</li>
           <li data-i18n="ch.p3">Closed the wrong pane or window? It is kept for 10 seconds with its program still running, and <kbd>C-b u</kbd> puts it back where it was.</li>
+          <li data-i18n="ch.p4"><kbd>C-b y</kbd> copies what the last command printed, and nothing else: a failing test's output, ready for an issue or an agent.</li>
         </ul>
+        <figure class="stage">
+          <img src="img/keepane-fix.gif" width="880" loading="lazy" alt="A test fails; C-b y copies what it printed; send-message hands it to the agent pane beside it, which fixes the code and says it is free; the test then passes" />
+          <figcaption data-i18n="ch.caption2">
+            A test fails; <kbd>C-b y</kbd> takes what it printed; one message hands it to the agent beside it, which fixes it; the test passes.
+          </figcaption>
+        </figure>
       </section>
 
       <section class="chapter">

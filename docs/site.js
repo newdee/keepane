@@ -60,6 +60,8 @@ const ZH = {
 
   "c3.title": "关掉终端，程序照常运行",
   "c3.sub": "<kbd>C-b d</kbd> 脱离，里面的程序照常跑。换个终端窗口敲 <code>keepane attach</code> 就接回来了。",
+  "c3.caption":
+    "三个 pane 在干活，用 <kbd>C-b C-s</kbd> 保存；server 像重启时那样没了；<code>keepane resume</code> 把各个 pane、它们的名字和目录、原来显示的内容都带回来。",
   "c3.p1":
     "重启电脑之后也能恢复。每个 session 的布局一有变化就存到它自己的文件里，<code>keepane resume</code> 会恢复窗口、分屏布局，以及每个 pane 的命令和目录。",
   "c3.p2":
@@ -88,6 +90,9 @@ const ZH = {
   "ch.p2":
     "从 pane 顶上滚出去的内容写进这个 pane 当天的文件，留 30 天，每条命令前面有一行它的时间。查看器里 <kbd>[</kbd> <kbd>]</kbd> 在命令之间跳，<kbd>/</kbd> 搜索。",
   "ch.p3": "关错了 pane 或窗口？它会保留 10 秒，程序还在跑，按 <kbd>C-b u</kbd> 放回原处。",
+  "ch.p4": "<kbd>C-b y</kbd> 只复制上一条命令的输出：测试失败的那段，直接贴进 issue 或交给 agent。",
+  "ch.caption2":
+    "测试失败；<kbd>C-b y</kbd> 取下它的输出；一条消息交给旁边的 agent，agent 改好了；测试通过。",
 
   "cl.title": "另一台电脑上的 pane",
   "cl.sub":
@@ -106,6 +111,8 @@ const ZH = {
     "给 pane 起个名字、设个工作模式，就能给它发消息：shell 在提示符下执行，agent 在空闲时收到。<kbd>C-b v</kbd> 看所有 pane 和它们的收件箱。",
   "cm.caption":
     "发给名叫 builder 的 pane 的命令在那里执行，来源写在一段注释里；它的记录显示已完成，并保存了输出。然后是分面板的 dashboard：pane、一个 agent 的收件箱、任务，把一条消息置顶，右边排好版显示它的记录。",
+  "cm.caption2":
+    "三个 agent 在干活：每块的边框写着模型、已花费用、上下文占比；dashboard 把它们列在一起并给出总数；<code>keepane list-agents</code> 打印同样的内容。（agent 是写真实格式会话记录的替身。）",
   "cm.p1":
     "每条消息都用一行 JSON 写明来源。一串消息是一个任务，每一步等了多久、做了多久都有记录；来回超过八手的会被拒收。",
   "cm.p2":

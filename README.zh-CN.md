@@ -83,11 +83,21 @@ keepane send-message --to %lead --task 12 "还有一件事"
 
 ## dashboard
 
-按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组，列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[0]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件，或光标所在的消息、任务：在 `[2]`、`[3]` 里移到哪一条，右边立刻排好版显示它（状态用颜色标出，谁发给谁，每一步的时间，然后是正文和执行输出；任务则把每条消息按时间连成一列）。Tab、`1 2 3 0`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。
+按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组，列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序（跑 agent 的写 agent 的花费和上下文，标题里是总花费）；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[0]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件，或光标所在的消息、任务：在 `[2]`、`[3]` 里移到哪一条，右边立刻排好版显示它（状态用颜色标出，谁发给谁，每一步的时间，然后是正文和执行输出；任务则把每条消息按时间连成一列）。Tab、`1 2 3 0`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。
 
 也能直接操作。对 pane：`s` 发消息、`r` 改名、`m` 改工作模式、`R` 标记就绪（解卡）、`o` 跳过去（顺带关掉弹窗）、`x` 关掉。对收件箱：`d` 删除排队消息（`u` 撤销）、`K`/`J` 上下移、`t` 放到最前、Enter 进到右边滚动阅读。关 pane、删消息、把 pane 切到 `shell`（从此收到的文字会被当命令执行）这三样会先确认。设计见 [docs/design/dashboard.md](docs/design/dashboard.md)。
 
 ### agent 用了多少、花了多少
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-agents-light.gif">
+    <img src="docs/img/keepane-agents.gif" width="880"
+         alt="三个 pane 里三个 agent 在干活，每块的边框上写着模型、已花费用和上下文占比；dashboard 把它们列在一起，标题里是总花费；keepane list-agents 给脚本打印同样的内容">
+  </picture>
+</p>
+
+（录屏里的 agent 是替身，按 Claude Code 和 Codex 的格式写会话记录；keepane 读真的 agent 也是一样。）
 
 keepane 认得 pane 里跑的 agent：Claude Code、Codex 和 pi（看程序名，或看 `node` 跑的是什么）。每个 agent 都会为它的工作目录写一份会话记录（`~/.claude/projects`、`~/.codex/sessions`、`~/.pi/agent/sessions`；也认 server 启动时的 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`）。keepane 每 2 秒读一次，只读上次之后新写的部分，从中得到模型、用掉的 token、调用工具的次数、回复的次数、上下文占了多少；再从进程表读 agent 及其子进程的 CPU 和内存。Claude Code 的 subagent 算在它的 pane 上。
 
@@ -294,6 +304,16 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 
 既然知道每条命令从哪开始、到哪结束，`C-b y`（`copy-output`）就把上一条命令的输出（它和下一个提示符之间的行，最多 4 MB）复制到粘贴缓冲区和剪贴板：测试失败的输出，直接贴进 issue 或者发给 agent。`keepane copy-output -p -t %3` 改成打印出来，给脚本用。copy mode 里 `[` `]` 在命令之间跳。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-fix-light.gif">
+    <img src="docs/img/keepane-fix.gif" width="880"
+         alt="左边 pane 里测试失败；C-b y 复制它的输出；send-message 交给右边的 agent，agent 改好代码、报告空闲；测试随后通过">
+  </picture>
+</p>
+
+测试失败；`C-b y` 取下它的输出；一条消息交给旁边的 agent（`keepane send-message --to %claude "fix this: $(keepane show-buffer)"`），它空闲时就收到。（录屏里的 agent 是写会话记录的替身；用 `keepane setup` 装好的 agent 也一样。）
+
 带脚本或命令启动的 shell（`pwsh -File`、`bash -c`）keepane 不去动它，也就没有 hook；可以在那个脚本里自己装上：PowerShell 里写 `Invoke-Expression (keepane __shell-hook | Out-String)`，bash 里写 `eval "$(keepane __shell-hook)"`。
 
 别的 shell 用 Windows Terminal 和 VS Code 也认的那套序列（OSC 133）报告命令。WSL 里的 bash，或者 SSH 到别的机器上的 bash：
@@ -309,6 +329,14 @@ pane 的输出也可保存到磁盘（`log-history`，默认开）：每个 pane
 用 `kill-pane` 或 `kill-window` 关掉的 pane 或窗口（`prefix x`、`prefix &`）会保留 10 秒，里面的程序继续跑。这期间按 `prefix u`（`undo-kill`）就放回原处。过了 10 秒就和以前一样彻底没了。秒数用 `undo-kill-time` 改；设成 0 就立刻结束，关程序是为了释放端口或文件的时候就该这样。一个 session 的最后一个 pane 不保留，因为 session 会跟着它一起结束。
 
 ## 重启之后接着用
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-resume-light.gif">
+    <img src="docs/img/keepane-resume.gif" width="880"
+         alt="一个三块的 session：git status、名为 builder 的编译、服务器日志；C-b C-s 保存；server 像重启时那样停掉；keepane list-saved 列出这个 session，keepane resume 把各块、它们的名字和目录、原来显示的内容都带回来">
+  </picture>
+</p>
 
 每个 session 的结构（有哪些窗口、每个窗口怎么分的、每块里跑的是什么命令、在哪个目录）都会存成一个文件，放在 `%LOCALAPPDATA%\keepane\sessions` 下面。结构一变就存一次，`kill-server` 的时候也存。所以不管是重启、崩溃还是手滑 `kill-session`，文件都还在。session 里最后一个程序退出（比如在最后一个 shell 里敲了 `exit`）时，它的保存文件 10 秒后删掉（机器正在关机时不删）；`C-b w` 里按 `D` 或用 `delete-saved` 可以手动删掉。所以：
 

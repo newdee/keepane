@@ -366,6 +366,220 @@ fn record_messages() {
     d.finish();
 }
 
+/// Stand-in agents for the recordings (tests/demo-agent.mjs): `claude` and
+/// `codex` on the PATH run it from where the real agents' packages live, so
+/// keepane knows them as it knows the real ones; their transcripts go to a
+/// folder of the recording's own (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), their
+/// tokens are priced by a fixed list. Set for the processes started after.
+fn stand_in_agents() -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("keepane-demo-agents-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/demo-agent.mjs");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("agents' bin");
+    for (name, at) in [("claude", "@anthropic-ai/claude-code/cli.mjs"), ("codex", "@openai/codex/bin/codex.mjs")] {
+        let file = root.join("node_modules").join(at);
+        std::fs::create_dir_all(file.parent().unwrap()).expect("agent's package");
+        std::fs::copy(script, &file).expect("the stand-in agent");
+        std::fs::write(bin.join(format!("{name}.cmd")), format!("@node \"{}\" %*\r\n", file.display())).expect("shim");
+    }
+    let prices = root.join("prices.json");
+    std::fs::write(
+        &prices,
+        r#"{"claude-opus-5-5": {"input_cost_per_token": 4e-06, "output_cost_per_token": 2e-05,
+             "cache_read_input_token_cost": 2e-07, "cache_creation_input_token_cost": 5e-06, "max_input_tokens": 1000000},
+           "claude-haiku-4-5": {"input_cost_per_token": 1e-06, "output_cost_per_token": 5e-06,
+             "cache_read_input_token_cost": 1e-07, "cache_creation_input_token_cost": 1.25e-06, "max_input_tokens": 200000},
+           "gpt-5.5": {"input_cost_per_token": 5e-06, "output_cost_per_token": 3e-05,
+             "cache_read_input_token_cost": 5e-07, "max_input_tokens": 1050000}}"#,
+    )
+    .expect("price list");
+    let path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var("PATH", format!("{};{path}", bin.display()));
+        std::env::set_var("CLAUDE_CONFIG_DIR", root.join("claude"));
+        std::env::set_var("CODEX_HOME", root.join("codex"));
+        std::env::set_var("KEEPANE_PRICE_LIST", &prices);
+    }
+    root
+}
+
+/// The seventh recording: three agents at work, what each has used and
+/// cost on its pane's border, then all of them in the dashboard.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_agents() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT7").unwrap_or_else(|_| "target/demo-frames-7".into());
+    stand_in_agents();
+    let conf = "set -g pane-border-status top\n\
+                set -g pane-border-format \" #{pane_index} #{?agent,#{agent_model} · #{agent_cost} · ctx #{agent_context},#{pane_current_command}} \"\n";
+    let mut d = Demo::start("demo7", &out_dir, conf);
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+    let working = |n: usize| move |s: &vt100::Screen| s.contents().matches("demo stand-in").count() >= n;
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s agents"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(2);
+    // Three agents, each in a folder of its own.
+    rec.type_line("mkdir \\api,\\web,\\docs | Out-Null; cd \\api; claude work claude-opus-5-5 14");
+    rec.wait_for("the first agent", working(1), 20);
+    rec.hold(2);
+    rec.key("\x02%");
+    rec.hold(2);
+    rec.type_line("cd \\web; codex work gpt-5.5 14");
+    rec.wait_for("the second agent", working(2), 20);
+    rec.hold(2);
+    rec.key("\x02\"");
+    rec.hold(2);
+    rec.type_line("cd \\docs; claude work claude-haiku-4-5 14");
+    rec.wait_for("the third agent", working(3), 20);
+    // Each border: the model, the cost so far, how full the context is.
+    rec.until("three costs", |s| s.contents().matches(" · $").count() >= 3, 20);
+    rec.hold(12);
+    rec.still("agents-borders");
+
+    // C-b v: all of them in one place, the total in the title.
+    rec.key("\x02v");
+    rec.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"), 15);
+    rec.hold(6);
+    rec.key("j");
+    rec.hold(5);
+    rec.key("j");
+    rec.hold(5);
+    rec.still("agents");
+    rec.key("k");
+    rec.hold(5);
+    rec.key("q");
+    rec.hold(3);
+
+    // And for a script: list-agents.
+    rec.key("\x02c");
+    rec.wait_for("window 1", |s| s.contents().contains("1:pwsh*"), 20);
+    rec.hold(2);
+    rec.type_line("keepane list-agents");
+    rec.wait_for("the list", |s| s.contents().contains("agents:0.2"), 10);
+    rec.hold(10);
+    rec.still("list-agents");
+
+    d.finish();
+}
+
+/// The eighth recording: a test fails; `C-b y` takes what it printed; a
+/// message hands it to an agent, which fixes it; the test passes.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_fix() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT8").unwrap_or_else(|_| "target/demo-frames-8".into());
+    stand_in_agents();
+    let mut d = Demo::start("demo8", &out_dir, "set -g pane-timestamps on\n");
+    // The project's test: it fails until the agent has fixed the code.
+    std::fs::write(
+        d.tmp.join("project").join("test.ps1"),
+        "'running 12 tests'\n\
+         if (Test-Path fixed) { 'test result: ok. 12 passed; 0 failed'; exit 0 }\n\
+         'test parse::empty_line ... FAILED'\n\
+         ''\n\
+         \"thread 'parse::empty_line' panicked at src/parse.rs:41:9:\"\n\
+         'assertion `left == right` failed'\n\
+         '  left: [\"a\", \"\", \"b\"]'\n\
+         ' right: [\"a\", \"b\"]'\n\
+         ''\n\
+         'test result: FAILED. 11 passed; 1 failed'\n\
+         exit 1\n",
+    )
+    .expect("test.ps1");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s fix"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(2);
+    // An agent beside the shell, waiting for work (an `ai` pane).
+    rec.key("\x02%");
+    rec.hold(2);
+    rec.type_line("claude fixer");
+    rec.wait_for("the agent waiting", |s| s.contents().contains("waiting for a message"), 20);
+    rec.hold(3);
+    rec.key("\x02h");
+    rec.hold(2);
+
+    // The test fails.
+    rec.type_line("./test.ps1");
+    rec.wait_for("the failure", |s| s.contents().contains("1 failed"), 20);
+    rec.hold(6);
+    // C-b y: what the last command printed, to a buffer (and the clipboard).
+    rec.key("\x02y");
+    rec.wait_for("copied", |s| s.contents().contains("copied"), 10);
+    rec.hold(6);
+    // Handed to the agent, which fixes it and says it is free again.
+    rec.type_line("keepane send-message --to %claude \"fix this: $(keepane show-buffer)\"");
+    rec.until("fixed", |s| s.contents().contains("fixed: parse_line"), 30);
+    rec.hold(6);
+    // The test passes.
+    rec.type_line("./test.ps1");
+    rec.wait_for("passing", |s| s.contents().contains("12 passed; 0 failed"), 20);
+    rec.hold(10);
+    rec.still("fix");
+
+    d.finish();
+}
+
+/// The ninth recording: a session at work, the server gone as a reboot
+/// takes it, and `keepane resume` bringing it all back.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_resume() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT9").unwrap_or_else(|_| "target/demo-frames-9".into());
+    let mut d = Demo::start("demo9", &out_dir, "");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s work"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(2);
+    // A day's work: the repository, a build, a server's log.
+    rec.type_line("git status");
+    rec.wait_for("git", |s| s.contents().contains("No commits yet"), 20);
+    rec.hold(3);
+    rec.key("\x02%");
+    rec.hold(2);
+    rec.type_line(
+        "keepane rename-pane builder; 1..5 | % { \"   Compiling crate$_ v0.$_.0\" }; '    Finished release in 41s'",
+    );
+    rec.wait_for("the build", |s| s.contents().contains("Finished release"), 20);
+    rec.hold(3);
+    rec.key("\x02\"");
+    rec.hold(2);
+    rec.type_line("mkdir \\logs | Out-Null; cd \\logs; 'listening on :8080', 'GET /health 200', 'GET /api/v1 200'");
+    rec.wait_for("the log", |s| s.contents().contains("GET /api/v1 200"), 20);
+    rec.hold(4);
+    rec.still("before-reboot");
+    // C-b C-s saves now (a shutdown, a restart or a log-off saves by itself).
+    rec.key("\x02\x13");
+    rec.hold(4);
+
+    // The machine restarts: the server and every program in it are gone.
+    rec.type_line("keepane kill-server");
+    rec.wait_for("back in the plain shell", |s| s.contents().contains("server exited"), 20);
+    rec.hold(3);
+    rec.type_line("# after the reboot: nothing running. What can come back:");
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} list-saved"));
+    rec.wait_for("the saved session", |s| s.contents().contains("work"), 10);
+    rec.hold(6);
+    // Everything back: the panes, their names and folders, what they showed.
+    rec.type_line(&format!("keepane -L {socket} resume"));
+    rec.wait_for("resumed", |s| s.contents().contains("Finished release") && s.contents().contains("0:pwsh*"), 30);
+    rec.hold(10);
+    rec.still("resume");
+
+    d.finish();
+}
+
 /// The sixth recording: `C-b w`, the chart of every session, window and
 /// pane, moved through with hjkl; `a` opens all of it, `v` turns it into
 /// the tree and the list.
@@ -736,14 +950,17 @@ impl Demo {
         std::fs::write(
             &prompt,
             // The project's drive, so that `list-panes` (which prints each
-            // pane's directory) and the status line show a short path.
+            // pane's directory) and the status line show a short path. Only
+            // the shell the recording starts in goes there and is cleared: a
+            // pane starts where keepane puts it, a resumed one with what it
+            // showed before.
             format!(
                 "function global:prompt {{ 'PS> ' }}\n\
                  $Host.UI.RawUI.WindowTitle = 'pwsh'\n\
                  try {{ Set-PSReadLineOption -PredictionSource None -HistorySaveStyle SaveNothing }} catch {{}}\n\
-                 Set-Location {}\\\n\
+                 if (-not $env:KEEPANE) {{ Set-Location {}\\ }}\n\
                  {}\n\
-                 Clear-Host\n",
+                 if (-not $env:KEEPANE) {{ Clear-Host }}\n",
                 drive.0,
                 keepane::config::PROMPT_HOOK
             ),

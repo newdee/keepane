@@ -107,8 +107,9 @@ impl AgentRow {
         let model = if self.model.is_empty() { String::new() } else { format!(" {}", self.model) };
         let cost = if self.cost.is_empty() { String::new() } else { format!(" · {}", self.cost) };
         let context = if self.context.is_empty() { String::new() } else { format!(" · context {}", self.context) };
+        // What matters most first: a narrow panel cuts the end.
         format!(
-            "\x1b[35m{}\x1b[0m{model}{cost} · {} tokens{context} · cpu {} · mem {} · {} tools · {} turns",
+            "\x1b[35m{}\x1b[0m{model}{cost}{context} · {} tokens · cpu {} · mem {} · {} tools · {} turns",
             self.kind, self.tokens, self.cpu, self.mem, self.tools, self.turns
         )
     }
@@ -1096,7 +1097,9 @@ impl Board {
         let (left_w, main) = if narrow {
             (w, (self.focus == Panel::Main).then_some(Rect { x: 0, y: 0, w, h: body }))
         } else {
-            let lw = (w * 9 / 20).clamp(30, 64).min(w - 20);
+            // Half, up to 64: the pane list needs the room more than the
+            // screen beside it, in a popup above all.
+            let lw = (w / 2).clamp(30, 64).min(w - 20);
             (lw, Some(Rect { x: lw, y: 0, w: w - lw, h: body }))
         };
         if narrow && self.focus == Panel::Main {
@@ -1117,24 +1120,30 @@ impl Board {
         let chosen = self.chosen_id();
         let mut table: Vec<(Option<String>, String)> = Vec::new();
         let mut session = None;
-        for r in self.shown() {
+        let shown = self.shown();
+        // A column every row shows only its blank in (no pane named; every
+        // pane `normal` and running) is left out: in a narrow popup the room
+        // goes to what each pane runs, its agent's cost.
+        let names = shown.iter().any(|r| !r.name.is_empty());
+        let modes = shown.iter().any(|r| r.mode != "normal" || r.dead);
+        for r in shown {
             if session != Some(&r.session) {
                 session = Some(&r.session);
                 table.push((None, format!("\x1b[1m{}\x1b[0m", r.session)));
             }
             let quiet =
                 if r.activity > 0 { crate::format::human_duration(self.now - r.activity) } else { String::new() };
-            let name = if r.name.is_empty() { String::from("·") } else { r.name.clone() };
-            let line = format!(
-                "{}{} {} {:<3} {:>2} {:>4}  {}",
-                fit(&format!("{} {}", r.place, r.id), 9),
-                fit(&format!(" {name}"), 11),
-                fit(if r.mode == "normal" { "-" } else { &r.mode }, 6),
-                r.state_styled(),
-                r.inbox,
-                quiet,
-                r.agent.as_ref().map(AgentRow::short).unwrap_or_else(|| r.command.clone())
-            );
+            let mut line = fit(&format!("{} {}", r.place, r.id), 9);
+            if names {
+                let name = if r.name.is_empty() { "·" } else { &r.name };
+                line.push_str(&fit(&format!(" {name}"), 11));
+            }
+            if modes {
+                let mode = if r.mode == "normal" { "-" } else { &r.mode };
+                line.push_str(&format!(" {} {}", fit(mode, 6), r.state_styled()));
+            }
+            let what = r.agent.as_ref().map(AgentRow::short).unwrap_or_else(|| r.command.clone());
+            line.push_str(&format!(" {:>2} {:>4}  {what}", r.inbox, quiet));
             table.push((Some(r.id.clone()), line));
         }
         let at = table.iter().position(|(id, _)| id.is_some() && *id == chosen).unwrap_or(0);
@@ -1153,7 +1162,7 @@ impl Board {
         } else {
             format!(" · {}", crate::format::human_dollars(costs.iter().sum()))
         };
-        let title = format!("[1] Panes  {} · {busy} busy · {queued} queued{spent}{web}{filtered}", shown.len());
+        let title = format!("[1] Panes  {}{spent} · {busy} busy · {queued} queued{web}{filtered}", shown.len());
         let (start, table) = self.pane_table(r.inner_h());
         let chosen = self.chosen_id();
         let focused = self.focus == Panel::Panes;
@@ -2283,13 +2292,37 @@ mod tests {
         b.set_rows(rows);
         let text = screen(&b).join("\n");
         for want in [
-            "[1] Panes  3 · 1 busy · 2 queued · $2.50",
+            "[1] Panes  3 · $2.50 · 1 busy · 2 queued",
             "claude $2.10 34%",
-            "claude claude-opus-5-5 · $2.10 · 1.2M tokens · context 34% · cpu 12% · mem 812M · 42 tools · 10 turns",
+            "claude claude-opus-5-5 · $2.10 · context 34% · 1.2M tokens · cpu 12% · mem 812M · 42 tools · 10 turns",
         ] {
             assert!(text.contains(want), "{want}:\n{text}");
         }
         assert!(b.rows[2].matches("codex") && b.rows[0].matches("opus"), "found by agent and model");
+    }
+
+    /// Panes all unnamed and `normal`: those columns are left out, and in
+    /// a narrow popup each agent's cost and context still show.
+    #[test]
+    fn a_narrow_board_keeps_room_for_the_agents() {
+        let mut b = board();
+        let agent =
+            AgentRow { kind: "claude".into(), cost: "$0.58".into(), context: "9%".into(), ..AgentRow::default() };
+        let mut rows = b.rows.clone();
+        for r in &mut rows {
+            r.name.clear();
+            r.mode = "normal".into();
+            r.agent = Some(agent.clone());
+        }
+        b.set_rows(rows);
+        // The popup in a 96-column terminal (prefix v: 80% of it).
+        b.resize(76, 20);
+        let text = screen(&b).join("\n");
+        assert_eq!(text.matches("claude $0.58 9%").count(), 3, "{text}");
+        // Named or moded panes keep their columns, as before.
+        let b = board();
+        let text = screen(&b).join("\n");
+        assert!(text.contains("lead") && text.contains(" ai "), "{text}");
     }
 
     /// The board's own format, as the server fills it, reads back: the

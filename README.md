@@ -144,7 +144,8 @@ processes of the same user from each other.
 `C-b v` (a popup) or `keepane dashboard` (any terminal) lays everything out in
 panels, lazygit style. On the left: `[1]` every pane, grouped by session, with
 its work mode, whether it is free, its inbox, how long it has been quiet and
-its program; `[2]` the chosen pane's inbox; `[3]` the tasks. On the right,
+its program (or its agent's cost and context, the total in the title); `[2]`
+the chosen pane's inbox; `[3]` the tasks. On the right,
 `[0]` the chosen pane: its address, directory, pid, how long it has run, what
 it says it is doing, and then its screen live (with its colours), its
 scrollback, its events, or the message or task under the cursor: moving onto
@@ -163,6 +164,17 @@ to `shell` (where what it gets is run) ask first. The design:
 [docs/design/dashboard.md](docs/design/dashboard.md).
 
 ### What the agents use and cost
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-agents-light.gif">
+    <img src="docs/img/keepane-agents.gif" width="880"
+         alt="Three agents at work in three panes, each border showing its model, cost so far and how full its context is; the dashboard listing them with cost and context and the total in its title; keepane list-agents printing the same for a script">
+  </picture>
+</p>
+
+(The agents in the recording are stand-ins that write Claude Code's and
+Codex's transcripts; keepane reads the real ones the same way.)
 
 keepane knows the agents its panes run: Claude Code, Codex and pi (by the
 program's name, or by what `node` runs). For each, it reads the transcript
@@ -494,6 +506,20 @@ what the last one printed (the lines between it and the next prompt, at most
 paste into an issue or an agent. `keepane copy-output -p -t %3` prints it
 instead, for a script. In copy mode, `[` and `]` go from command to command.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-fix-light.gif">
+    <img src="docs/img/keepane-fix.gif" width="880"
+         alt="A test fails in the left pane; C-b y copies what it printed; send-message hands it to the agent pane on the right, which fixes the code and says it is free; the test then passes">
+  </picture>
+</p>
+
+A test fails; `C-b y` takes what it printed; one message hands it to the
+agent beside it (`keepane send-message --to %claude "fix this: $(keepane
+show-buffer)"`), which gets it when it is free. (The agent in the recording
+is a stand-in that writes an agent's transcript; any agent set up with
+`keepane setup` works the same way.)
+
 A shell started with a script or command of its own (`pwsh -File`,
 `bash -c`) is left as it is, hook and all; that script can install the hook
 itself: `Invoke-Expression (keepane __shell-hook | Out-String)` in
@@ -533,6 +559,14 @@ want when you kill something to free a port or a file. The last pane of a
 session is not kept, because the session ends with it.
 
 ## Resume after a reboot
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-resume-light.gif">
+    <img src="docs/img/keepane-resume.gif" width="880"
+         alt="A session of three panes: git status, a build named builder, a server log; C-b C-s saves it; the server is stopped as a reboot stops it; keepane list-saved shows the session, and keepane resume brings back the panes, their names and folders and what they showed">
+  </picture>
+</p>
 
 Every session is saved to its own file under `%LOCALAPPDATA%\keepane\sessions`
 whenever its shape changes (windows, panes, layout, names, start commands

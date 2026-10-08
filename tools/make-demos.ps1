@@ -41,6 +41,10 @@ $takes = @(
     @{ Env = "KEEPANE_DEMO_OUT3"; Test = "record_history"; Name = "keepane-history" },
     @{ Env = "KEEPANE_DEMO_OUT4"; Test = "record_messages"; Name = "keepane-messages" },
     @{ Env = "KEEPANE_DEMO_OUT6"; Test = "record_chart"; Name = "keepane-chart" },
+    # Stand-in agents (tests/demo-agent.mjs, run by node): needs node on the PATH.
+    @{ Env = "KEEPANE_DEMO_OUT7"; Test = "record_agents"; Name = "keepane-agents" },
+    @{ Env = "KEEPANE_DEMO_OUT8"; Test = "record_fix"; Name = "keepane-fix" },
+    @{ Env = "KEEPANE_DEMO_OUT9"; Test = "record_resume"; Name = "keepane-resume" },
     # The tour: a panel beside the terminal, and the phone (Edge through
     # puppeteer-core, as tools/make-phone-shots.ps1 does).
     @{ Env = "KEEPANE_DEMO_OUT5"; Test = "record_tour"; Name = "keepane-tour"; Panel = 380 }

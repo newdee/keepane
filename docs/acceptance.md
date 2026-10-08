@@ -3652,3 +3652,18 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 8 | 全量回归（三平台） | fmt、clippy 干净；Windows 351 + 10 + 114（e2e）；Linux 328 + 114；浏览器 33/33（含新的 agent 卡片测试） | 干净（1/3） |
 | 9 | 机制通路（真实环境） | 真实联网取到的价目表存成 `prices.json`：39,202 字节、583 个模型，正好等于 LiteLLM 当天 4,504 项里"用本名、有输入输出价"的个数；`claude-opus-5-5` 6 个数与原表一致。真实 `node.exe` 进程：命令行带 `@anthropic-ai/claude-code` 的认作 claude，带 `@openai/codex` 的认作 codex，`server.js` 的不是 agent | 干净（2/3） |
 | 10 | 边界：损坏的持久状态、极端配置 | 数据目录的 `prices.json` 写成乱码：server 照常，3 秒后重新下载（583 个模型），100 万输入 token 计 $4.00；`set -g agent-cost` 不带值翻转为 off，花费消失；`agent-c`、`agent-co` 都报有歧义（还有 `agent-commands`），`maybe` 报 bad boolean；`KEEPANE_PRICE_LIST` 指向不存在的文件：不下载、花费为空、token 照算（1.0M），数据目录的表未被改动。用户真实的 `prices.json` 事先备份、事后放回 | 干净（3/3），验收通过 |
+
+## 111. 三段新录屏：agent 一览、测试失败交给 agent、重启后 resume；dashboard 窄弹窗
+
+用户："4三段都要"。`tests/demo_frames.rs` 加 `record_agents`、`record_fix`、`record_resume`，`tools/make-demos.ps1` 加三项，深浅两套；README（中英）和站点各放进对应章节。
+
+- 录屏里的 agent 是替身（`tests/demo-agent.mjs`，用 node 跑，放在真 agent 包所在的路径上，keepane 按命令行认出）：打印几行工作，按 Claude Code / Codex 的格式写会话记录，价格用固定的表。页面上写明是替身。
+- 录 agent 那段时看出 dashboard 的问题：96 列终端里的弹窗，左栏只有 34 列，前面 44 列是固定宽的列（名字、模式、状态……），最后一列（程序，现在是 agent 的花费）根本显示不出来；改前程序名也一样看不到。改为：每一行都只是占位的列（没有 pane 起名；全是 `normal` 且在跑）整列省掉；左栏占一半（30–64 列）；标题里总花费紧跟 pane 数；所选 pane 的 agent 行把上下文放在 token 前。有名字、有模式时各列与原来逐字相同（原有测试不改即过）。
+- 录 resume 时两个录屏脚本的问题：提示符脚本一律 `Set-Location` 到盘根并 `Clear-Host`，恢复的 pane 内容被清掉、目录被改回盘根；改为只对外层 shell 这样做（`$env:KEEPANE` 为空时）。替身 agent 在 `ai` pane 里把信封的结尾行 `[keepane end=1]` 当成第二条消息，又被控制台回显；改为原始模式读键、不回显、只有信封的行跳过。
+- 事故（已处理）：第一次录 resume 时 `keepane resume` 没带 `-L`，进了用户正在用的 server（scoop 0.33，socket default）；同时我手工跑的 dev server 没设 `KEEPANE_SESSIONS_DIR`，会话存进了真实的 sessions 目录。结果用户的 server 恢复了我的 5 个测试 session（c、r、p、a、e：替身 agent、node 循环、20 个 cmd）。逐个核对启动命令都在我的 scratchpad 后，`kill-session` 加 `delete-saved` 删掉这 5 个；用户自己的 `daily`、`0-wmux` 没动；来历不明的 `x` 留着。录屏改为带 `-L`，手工脚本都设临时的 sessions 和 history 目录，记入记忆。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路（读录下的帧） | 深浅各一套：fix 的最后一帧测试通过、之前失败，agent 只修了 1 次；resume 的画面有 `No commits yet`、`Finished release in 41s`、`GET /api/v1 200`、状态栏 `W:\logs`；agents 的 dashboard 3 行都带花费和上下文，标题有总数，`list-agents` 3 行。用户的 server 仍只有 daily、0-wmux、x | 干净（1/3） |
+| 2 | 全量回归（三平台） | fmt、clippy 干净；Windows 352 + 10 + 114；Linux 329 + 114；浏览器 33/33；18 段录屏（9 段 × 深浅）全部录成 | 干净（2/3） |
+| 3 | 静态一致性 | README（中英）和站点引用的图 35 张，缺 0；9 个 GIF 都有浅色版；站点 97 个 i18n 键都有中文、没有多余的中文；make-demos 的 9 项与 9 个录屏函数一一对应；左栏宽度代码 `(w / 2).clamp(30, 64)` 与设计文档一致 | 干净（3/3），验收通过 |
