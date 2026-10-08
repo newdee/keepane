@@ -3627,3 +3627,28 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 机制通路存活 | 页面去掉这条规则：平板、手机两个测试失败，桌面的通过；还原后 layout 连跑两遍 6/6 | 干净（1/3） |
 | 2 | 可复现性 | 浏览器全量连跑两遍，32/32、32/32 | 干净（2/3） |
 | 3 | 静态一致性 | README（中英）讲手势的 4 处都是页面自己的手势，仍然成立；测试与说明里已无"测试自己注入规则"的说法（只剩样式表里的规则本身） | 干净（3/3），验收通过 |
+
+
+## 110. agent 监视：pane 里的 Claude Code、Codex、pi 用了多少、花了多少
+
+用户："3只看keepane里的，要花费"。参考 agtop、AgentMonitor，选了适合 keepane 的做法：只看 keepane pane 里的 agent，数字来自 agent 自己写的会话记录。
+
+- 认出 agent：pane 进程树里第一个叫 `claude`、`codex`、`pi` 的进程；`node`/`bun`/`deno` 看命令行（`@anthropic-ai/claude-code`、`@openai/codex`、`pi-coding-agent`）。新增平台函数 `tree_of`、`usage_of`（CPU 纳秒、内存、启动时间）、`process_command_line`（Windows 读 PEB，Linux 读 `/proc`，macOS 用 `ps`）。Linux 的进程表也缓存 1 秒（与 Windows 相同），`program_of` 与 agent 监视共用。
+- 会话记录：Claude `~/.claude/projects/<目录名>/*.jsonl`（含 `<会话>/subagents/*.jsonl`），Codex `~/.codex/sessions/年/月/日/*.jsonl`（第一行的 cwd），pi `~/.pi/agent/sessions/--<目录>--/*.jsonl`。只读 agent 启动后写过的文件，每 2 秒读一次新增部分（`Tail`：只读整行，文件变短从头读）。同目录同种 agent 不止一个时，每个文件归"文件创建前最后启动的那个"。
+- 计数：Claude 按 message.id 去重，`usage.iterations` 有就用它（顶层为 0），`<synthetic>` 不算；Codex 取最后一次 `token_count` 的累计值（input 减去 cached）；pi 累加，并用它自己的 `cost.total`。按模型分别计价（`by_model`）。
+- 价格：LiteLLM 公开价目表，只在 `agent-cost on`（默认）且有 agent 时用 `curl` 下载，一天一次，失败 1 小时后重试，缓存 `prices.json`（只存用到的 6 个数）。`KEEPANE_PRICE_LIST` 指定自己的表，不下载（测试用它，永不联网）。模型名匹配：原名 → 去掉 `provider/` 和 `[1m]` → 去掉日期 → 最长的、以 `-` 接续的前缀。
+- 显示：格式变量 `agent` `agent_model` `agent_cost` `agent_tokens` `agent_context` `agent_cpu` `agent_mem` `agent_tools` `agent_turns`；`list-agents [-J]`；dashboard 的 pane 列表（`claude $2.10 34%`）、标题里的总花费、所选 pane 上方一行；网页卡片一行（上下文进度条）。
+- 已知限制（写进 README）：别处（编辑器、另一个终端）的 agent 同时在同一目录工作，它的记录会算进这个 pane；花费是 API 标价，不是订阅的计费。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 逻辑正确（独立重算） | 本会话的真实记录（快照）：独立 PowerShell 脚本与 keepane 的 7 个数逐一相等：1246 回复、1558 次工具、644,773,190 token、上下文 304,048（30%）、$221.948615；加 1 个 subagent 记录：$223.076337、1278、1621、上下文仍是主会话的；Codex 真实记录：gpt-5.5、2 回合、27,532 token、上下文 5%、$0.05596，全部相等。所有 Codex 记录里的事件类型共 11 种，工具调用只有 `function_call` | **有问题**：`list-agents -J` 的 cost 带浮点尾巴（`223.07633699999997`）。改为保留到百万分之一美元，加单元测试（不计数） |
+| 2 | 静态一致性 | 对照 README（中英）、手册、站点、模块注释的 12 条说法与代码：配置项 `agent-cost` 在 6 处登记（字段、默认值、SHOWABLE、KNOWN、BOOLEAN、set/show）且在 `prices_tick`、`agents_seen` 被读；PANE_FORMAT 9 个 agent 字段与 `AgentRow` 9 个、网页 FIELDS 7 个与 JSON 7 个键一一对应 | **有问题**：(1) "一天最多一次"与代码不符（失败 1 小时后重试），4 处；(2) 没写明 `CLAUDE_CONFIG_DIR`/`CODEX_HOME` 读的是 server 启动时的环境；(3) "每个数都是数字"漏了不知道时为 `null`；(4) `docs/tmux-parity.md` 的 keepane 自有变量里缺 `agent_*`。全部改正（不计数） |
+| 3 | 边界与退化输入（实机） | dev server + 假 agent：无记录的新 agent 1 个、0 回复；乱码行/二进制/CRLF/半行 → 1 回复 110 token，补完半行 → 2、120；未知模型 `llama-9` → token 1120、花费只算已知部分 $0.00072；同目录先后两个 claude → 各自 1 个文件（4 回复 1122 token / 1 回复 14 token），旧文件追加仍归先启动的；文件被重写 → 1、6；文件删掉 → 0、0 文件；没有 agent → `list-agents` 0 字节，`-J` 为 `[]` | **有问题**：(1) 新 agent 花费为空，应为 $0.00；(2) 有模型不在价目表时，花费只算一部分却不提示；(3) 价目表还没取到时，pi 自己记的花费也被丢掉。改为：什么都没用时 0；部分未计价时花费后加 `+`（JSON `cost_partial: true`），文档说明；pi 的花费不依赖价目表。加单元测试（不计数） |
+| 4 | 机制通路存活（变异 13 项） | 每项改一处、跑相关测试：8 项被抓；漏 5 项：同目录两个 agent 时文件归谁、只写包名的命令行（`bun x @anthropic-ai/claude-code`）、dashboard 的格式字段、网页字段顺序、格式变量的填写 | **有问题**（测试缺口）：补 5 个测试（`a_new_transcript_is_the_latest_started_agents`、`the_formats_say_it_as_it_reads`、`its_format_reads_back_with_the_agent`、网页字段经格式展开再读回、`bun x` 一例）；网页字段提到模块常量 `PANE_FIELDS` 才能测。重跑 5 项全部被抓（不计数） |
+| 5 | 可复现性 + 开销（release） | 同一 20 MB 记录连跑 3 次，去掉 pid/CPU/内存后输出只有 1 种；20 个 pane 无 agent：server 30 秒 CPU 312 ms；加 1 个 agent 后同为 312 ms，内存 56 MB | **有问题**：20 MB 记录首次出数要 19.9 秒。原因：`Tail::read` 每行从缓冲区头部 `drain`，剩下的字节每行搬一次，O(n²)。改为一遍扫完再一次 `drain`：2.9 秒（含最多 2 秒的等下一次查看）。全仓搜同类写法（按行循环里从头删）：没有别处（不计数） |
+| 6 | 代码正确性（错误路径、并发） | 读 agents/prices/newer/public_ip 的线程与标志：后台询问都是"先置 `asking`，等回答再清"，共 4 处 | **有问题**（共性）：线程里一旦 panic，`asking` 永远不清，此后再也不问（价目、更新检查、公网地址、agent 监视都会停）。收敛为一个共享实现 `ask_on_thread`：panic 时回答 None；agent 监视的常驻线程每次查看 `catch_unwind`，失败就清空重来，线程没了下次重建。加测试 `an_ask_on_a_thread_always_answers`（不计数） |
+| 7 | 代码通读（`agents.rs` 全文） | 逐段读 `look`/`find`/`sample`/`owners`/线程与回答；Linux 全量 328 + 114 通过（修之前的代码） | **有问题**：(1) `node` 进程的命令行刚启动时可能读不到，结果"不是 agent"被缓存到进程结束，之后再也认不出；改为读到了才缓存。(2) 旧版 Claude Code 把 subagent 记录放在会话旁边（`agent-<id>.jsonl`），会被当成主记录、可能提供上下文；按文件名认作 helper（`is_helper`，加测试）。(3) `look` 的注释还说"没有价目表就没有花费"，与第 3 轮的改动不符，改正（不计数） |
+| 8 | 全量回归（三平台） | fmt、clippy 干净；Windows 351 + 10 + 114（e2e）；Linux 328 + 114；浏览器 33/33（含新的 agent 卡片测试） | 干净（1/3） |
+| 9 | 机制通路（真实环境） | 真实联网取到的价目表存成 `prices.json`：39,202 字节、583 个模型，正好等于 LiteLLM 当天 4,504 项里"用本名、有输入输出价"的个数；`claude-opus-5-5` 6 个数与原表一致。真实 `node.exe` 进程：命令行带 `@anthropic-ai/claude-code` 的认作 claude，带 `@openai/codex` 的认作 codex，`server.js` 的不是 agent | 干净（2/3） |
+| 10 | 边界：损坏的持久状态、极端配置 | 数据目录的 `prices.json` 写成乱码：server 照常，3 秒后重新下载（583 个模型），100 万输入 token 计 $4.00；`set -g agent-cost` 不带值翻转为 off，花费消失；`agent-c`、`agent-co` 都报有歧义（还有 `agent-commands`），`maybe` 报 bad boolean；`KEEPANE_PRICE_LIST` 指向不存在的文件：不下载、花费为空、token 照算（1.0M），数据目录的表未被改动。用户真实的 `prices.json` 事先备份、事后放回 | 干净（3/3），验收通过 |

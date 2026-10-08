@@ -162,6 +162,46 @@ moves into it to scroll. Closing a pane, deleting a message and switching a pane
 to `shell` (where what it gets is run) ask first. The design:
 [docs/design/dashboard.md](docs/design/dashboard.md).
 
+### What the agents use and cost
+
+keepane knows the agents its panes run: Claude Code, Codex and pi (by the
+program's name, or by what `node` runs). For each, it reads the transcript
+the agent writes for its directory (`~/.claude/projects`, `~/.codex/sessions`,
+`~/.pi/agent/sessions`; `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, as the server
+was started with, are followed),
+only the part written since the last read, every two seconds. From it come
+the model, the tokens used, the tools called, the replies made and how full
+the context is; from the process table, the CPU and memory of the agent and
+everything under it. Claude Code's subagents count toward its pane.
+
+The cost: pi says its own. For the others, keepane prices each model's tokens
+(fresh, cached, written to the cache, received) by
+[LiteLLM's public price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json),
+fetched with `curl` once a day (an hour later after a failed try), only while
+a pane runs an agent, and kept in the data directory. The list is the providers' list prices: a
+subscription (Claude Max, ChatGPT Pro) is billed otherwise, so read it as
+what the work would cost through the API. A model the list does not have is
+left out, and the cost then says so with a `+` (`$2.10+`: at least that).
+`set -g agent-cost off` stops the
+fetch and leaves cost out; `KEEPANE_PRICE_LIST` names a list of your own
+(LiteLLM's form) instead.
+
+Where it shows: the dashboard's pane list (`claude $2.10 34%`: cost, context)
+and a line over the chosen pane with everything; a line on each agent's card
+on the phone page; `keepane list-agents` (`-J` for JSON, every figure a
+number, `null` when not known); and the format variables `agent` `agent_model` `agent_cost`
+`agent_tokens` `agent_context` `agent_cpu` `agent_mem` `agent_tools`
+`agent_turns`, for a border or the status line:
+
+```tmux
+set -g pane-border-status top
+set -g pane-border-format " #{pane_index} #{?agent,#{agent_model} #{agent_cost} ctx #{agent_context},#{pane_current_command}} "
+```
+
+Only agents in keepane's panes are read. An agent elsewhere (another
+terminal, an editor) working in the same directory at the same time writes
+to the same folder, and its transcript is counted with the pane's.
+
 Messages and changes to panes are written to an event log,
 `%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`, kept for 30 days
 (`event-log`, `event-log-days`, `event-log-max`). `list-tasks`,
@@ -1045,6 +1085,7 @@ set -g log-history-days 30        # for how long; 0 keeps everything (log-histor
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
 set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
+set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
 bind -r j select-pane -D
@@ -1142,7 +1183,8 @@ repository), `pane_current_path_short` (`~` for home), `pane_pid_command`
 `pane_output_count` (how many times the pane has printed; a script can
 compare two readings to tell whether anything changed, which
 `pane_activity`, in whole seconds, cannot). `keepane_update` is a newer
-keepane's version once the daily check found one.
+keepane's version once the daily check found one. The `agent_*` variables
+describe the agent a pane runs ([What the agents use and cost](#what-the-agents-use-and-cost)).
 
 The network: `local_ip` is the address this machine reaches the network
 from (read from the system, nothing sent), and `public_ip` the address the

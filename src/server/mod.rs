@@ -2,6 +2,7 @@
 //! named pipe; renders frames.
 
 pub mod actor;
+mod agents;
 mod digits;
 mod done;
 mod hints;
@@ -17,6 +18,7 @@ mod mail;
 mod newer;
 pub mod observe;
 pub mod pane;
+mod prices;
 mod public_ip;
 pub mod render;
 mod shellhist;
@@ -108,6 +110,10 @@ enum Event {
     NewerChecked(Option<String>),
     /// The address the internet sees this machine at came back (`public_ip`).
     PublicIp(Option<String>),
+    /// The panes' agents were looked at (`agents`).
+    AgentStats(HashMap<PaneId, agents::Stats>),
+    /// The price list was fetched, or could not be (`prices`).
+    Prices(Option<Box<prices::Prices>>),
     /// A request to the phones' page told who asked (`web_host`).
     Web(u64, crate::web::Seen),
     /// `web-stop`'s task has ended: answer the client that asked.
@@ -116,6 +122,21 @@ enum Event {
     LinkAnswer(Box<link_out::LinkAnswer>),
     /// `done-webhook` could not be told (`done`): why.
     DoneWebhookFailed(String),
+}
+
+/// Runs `ask` on a thread of its own and sends its answer as `answer`. A
+/// panic in it answers None: a flag set while the answer is awaited
+/// (`asking`) is never left set for good.
+fn ask_on_thread<T: Send + 'static>(
+    events: &mpsc::UnboundedSender<Event>,
+    ask: impl FnOnce() -> Option<T> + Send + 'static,
+    answer: fn(Option<T>) -> Event,
+) {
+    let tx = events.clone();
+    std::thread::spawn(move || {
+        let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(ask)).unwrap_or(None);
+        let _ = tx.send(answer(got));
+    });
 }
 
 /// How long after keepane's prompt marker a pane's command is taken as
@@ -905,6 +926,10 @@ pub struct Server {
     newer: newer::Check,
     /// `#{public_ip}`, while a format uses it.
     public_ip: public_ip::PublicIp,
+    /// The panes' agents, as last looked at (`agents`).
+    agents: agents::Agents,
+    /// What their tokens cost (`prices`), while `agent-cost` is on.
+    prices: prices::PriceList,
     /// The phones' page, while it is served (`web-start`).
     web: Option<web_host::WebHost>,
     /// Starts of it so far (`web_host`: stale requests are told apart).
@@ -1269,6 +1294,8 @@ impl Server {
             events_pruned: None,
             newer: newer::Check::default(),
             public_ip: public_ip::PublicIp::default(),
+            agents: agents::Agents::default(),
+            prices: prices::PriceList::default(),
             web: None,
             web_generation: 0,
             link: None,
@@ -2119,6 +2146,8 @@ impl Server {
             }
             Event::NewerChecked(latest) => self.newer_checked(latest),
             Event::PublicIp(ip) => self.public_ip_answered(ip),
+            Event::AgentStats(stats) => self.agents_seen(stats),
+            Event::Prices(p) => self.prices_fetched(p),
             Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
             Event::LinkAnswer(a) => self.link_answered(*a),
@@ -2142,6 +2171,8 @@ impl Server {
                 self.mail_tick();
                 self.newer_tick();
                 self.public_ip_tick();
+                self.agents_tick();
+                self.prices_tick();
                 self.web_tick();
                 self.web_fit_tick();
                 self.forget_due();
@@ -5616,6 +5647,7 @@ impl Server {
                     lines => Outcome::Text(lines.join("\n")),
                 }
             }
+            Cmd::ListAgents { json } => self.list_agents(json),
             Cmd::CopyOutput { target, print } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
@@ -5926,6 +5958,9 @@ impl Server {
             ctx.cursor_y = cy;
             ctx.history_size = p.parser.screen().scrollback_rows();
             ctx.history_limit = self.opts.history_limit;
+            if let Some(a) = self.agents.stats.get(&pid) {
+                a.fill(&mut ctx);
+            }
         }
         if let Some(r) = w.rect_of(pid) {
             let area = self.window_area(sess.cols, sess.rows);
@@ -9195,6 +9230,16 @@ fn copy_selection(p: &mut Pane) -> Result<(usize, String, Option<String>), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An ask on a thread answers, even when it panics: None then.
+    #[test]
+    fn an_ask_on_a_thread_always_answers() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+        ask_on_thread(&tx, || Some("203.0.113.7".to_string()), Event::PublicIp);
+        assert!(matches!(rx.blocking_recv(), Some(Event::PublicIp(Some(ip))) if ip == "203.0.113.7"));
+        ask_on_thread(&tx, || -> Option<String> { panic!("a bug in the ask") }, Event::PublicIp);
+        assert!(matches!(rx.blocking_recv(), Some(Event::PublicIp(None))), "a panic answers None");
+    }
 
     #[test]
     fn old_shell_history_files_go_unless_something_refers_to_them() {

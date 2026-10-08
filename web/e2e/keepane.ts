@@ -9,6 +9,9 @@ import path from "node:path";
 export const SOCKET = "e2e-web";
 /** Everything the run writes: the copy of keepane, its config and saved sessions. */
 export const DIR = path.join(os.tmpdir(), "keepane-e2e");
+/** Where the server looks for Claude Code's transcripts (`CLAUDE_CONFIG_DIR`):
+ *  a stand-in agent's, never the user's. */
+export const CLAUDE_DIR = path.join(DIR, "claude");
 /** A copy of the build's binary, so `cargo build` is never locked out by the run. */
 export const EXE = path.join(DIR, process.platform === "win32" ? "keepane.exe" : "keepane");
 

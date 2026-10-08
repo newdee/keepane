@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::platform::sysinfo::{System, hostname, program_of, short_path, system};
+pub use crate::platform::sysinfo::{System, hostname, program_of, short_path, system, tree_of, usage_of};
 
 /// The address this machine reaches the network from (IPv4), empty when it
 /// has none. The system is asked which address a UDP socket "connected" to

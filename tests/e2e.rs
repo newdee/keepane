@@ -6135,7 +6135,7 @@ async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
     // Edges: nothing typed yet lists the first options; an unknown or
     // ambiguous name, a user @option, and a third word have nothing to offer.
     for (typed, want) in [
-        ("set ", "(agent-commands agent-pane-limit animation animation-time autosave base-index +"),
+        ("set ", "(agent-commands agent-cost agent-pane-limit animation animation-time autosave +"),
         ("set zzz o", "(no completion) set zzz o"),
         ("set mo o", "(no completion) set mo o"),
         ("set @my", "(no completion) set @my"),
@@ -8186,4 +8186,142 @@ async fn each_shell_pane_keeps_its_own_command_history() {
         let text = std::fs::read_to_string(shared).unwrap_or_default();
         assert!(!text.contains(one.as_str()) && !text.contains(two.as_str()), "the shared history file was written");
     }
+}
+
+/// `list-agents` and the `agent_*` formats: a pane running an agent (here a
+/// stand-in program named `claude`) is read from the transcript it writes,
+/// as the transcript grows; its tokens priced by the list given; `agent-cost
+/// off` leaves cost out; a pane whose agent has gone has none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panes_agent_is_read_from_its_transcript() {
+    let root = std::env::temp_dir().join(format!("keepane-agent-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (bin, work, cfg) = (root.join("bin"), root.join("work"), root.join("cfg"));
+    for d in [&bin, &work, &cfg] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    // A program that waits, under the agent's name.
+    #[cfg(windows)]
+    let argv = {
+        let exe = bin.join("claude.exe");
+        std::fs::copy(r"C:\Windows\System32\PING.EXE", &exe).unwrap();
+        vec![exe.to_string_lossy().into_owned(), "-n".into(), "600".into(), "127.0.0.1".into()]
+    };
+    // Linux: a script (its process is named after it; a copy of `sleep` may
+    // be one program for all of coreutils, which goes by the name it is run as).
+    #[cfg(target_os = "linux")]
+    let argv = {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = bin.join("claude");
+        std::fs::write(&exe, "#!/bin/sh\nsleep 600\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        vec![exe.to_string_lossy().into_owned()]
+    };
+    #[cfg(target_os = "macos")]
+    let argv = {
+        let exe = bin.join("claude");
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        vec![exe.to_string_lossy().into_owned(), "600".into()]
+    };
+    let prices = root.join("prices.json");
+    std::fs::write(
+        &prices,
+        r#"{"claude-opus-5-5": {"input_cost_per_token": 4e-06, "output_cost_per_token": 2e-05,
+            "cache_read_input_token_cost": 2e-07, "max_input_tokens": 100000}}"#,
+    )
+    .unwrap();
+    unsafe {
+        std::env::set_var("CLAUDE_CONFIG_DIR", &cfg);
+        std::env::set_var("KEEPANE_PRICE_LIST", &prices);
+    }
+    let h = Harness::start("agents").await;
+    let w = work.to_string_lossy().into_owned();
+    let (code, _, err) = h.cli(&args(&["new-session", "-d", "-s", "ag", "-c", &w], &argv)).await;
+    assert_eq!(code, 0, "{err}");
+    // Claude Code's folder for the directory, as the system names it.
+    #[cfg(unix)]
+    let w = work.canonicalize().unwrap().to_string_lossy().into_owned();
+    let folder: String = w.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let project = cfg.join("projects").join(folder);
+    std::fs::create_dir_all(&project).unwrap();
+    let reply = |id: &str, input: u64, output: u64, cached: u64| {
+        format!(
+            "{}\n",
+            serde_json::json!({"type": "assistant", "message": {"id": id, "model": "claude-opus-5-5",
+                "content": [{"type": "tool_use"}],
+                "usage": {"input_tokens": input, "output_tokens": output, "cache_read_input_tokens": cached}}})
+        )
+    };
+    let transcript = project.join("s.jsonl");
+    std::fs::write(&transcript, reply("m1", 1000, 2000, 10000)).unwrap();
+    let agents = || h.cli(&["list-agents", "-J"]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let first = loop {
+        let (_, out, _) = agents().await;
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_default();
+        if v[0]["turns"] == 1 && v[0]["cost"].is_number() {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "the agent and its cost: {out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let a = &first[0];
+    assert_eq!(
+        (a["agent"].as_str(), a["model"].as_str(), a["target"].as_str()),
+        (Some("claude"), Some("claude-opus-5-5"), Some("ag:0.0"))
+    );
+    assert_eq!(
+        (a["tokens"]["total"].as_u64(), a["context_pct"].as_u64(), a["tools"].as_u64()),
+        (Some(13000), Some(11), Some(1))
+    );
+    let cost = a["cost"].as_f64().unwrap();
+    assert!((cost - 0.046).abs() < 1e-9, "1000 in, 2000 out, 10000 read from the cache: {cost}");
+    let (_, out, _) = h
+        .cli(&[
+            "display-message",
+            "-p",
+            "-t",
+            "ag",
+            "#{agent} #{agent_cost} #{agent_tokens} #{agent_context} #{agent_turns}",
+        ])
+        .await;
+    assert_eq!(out.trim(), "claude $0.05 13k 11% 1");
+    let (_, plain, _) = h.cli(&["list-agents"]).await;
+    assert!(
+        plain.starts_with("%") && plain.contains(" ag:0.0 claude claude-opus-5-5 cost $0.05 tokens 13k context 11%"),
+        "{plain}"
+    );
+
+    // It grows: only what is new is read, and counted once.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, reply("m2", 500, 100, 40000).as_bytes()))
+        .unwrap();
+    h.wait_for_cli(
+        "the second reply",
+        &["display-message", "-p", "-t", "ag", "#{agent_turns} #{agent_context}"],
+        |_, out| out.trim() == "2 40%",
+    )
+    .await;
+
+    // Cost off: none said; the context still a share of the window.
+    h.cli(&["set", "-g", "agent-cost", "off"]).await;
+    h.wait_for_cli(
+        "no cost",
+        &["display-message", "-p", "-t", "ag", "[#{agent_cost}]#{agent} #{agent_context}"],
+        |_, out| out.trim() == "[]claude 40%",
+    )
+    .await;
+
+    // The agent gone: no agent.
+    let shell: Vec<String> = PROMPT_SHELL.split(' ').map(String::from).collect();
+    let (code, _, err) = h.cli(&args(&["respawn-pane", "-k", "-t", "ag"], &shell)).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_for_cli("no agent", &["list-agents", "-J"], |_, out| out.trim() == "[]").await;
+    unsafe {
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        std::env::remove_var("KEEPANE_PRICE_LIST");
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }

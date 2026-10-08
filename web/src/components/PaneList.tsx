@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ContextMenu, useContextPress, type MenuAt, type MenuEntry } from "./ContextMenu";
-import type { Pane } from "../api";
+import type { Agent, Pane } from "../api";
 import { bounced, headOf, quietFor, stateOf, under } from "../format";
 import { useStored } from "../hooks";
 import { t } from "../i18n";
@@ -382,6 +382,7 @@ function PaneCard({
           <span className="min-w-0 truncate">{sub}</span>
         </div>
       ) : null}
+      {p.agent ? <AgentLine a={p.agent} /> : null}
       {p.unheard && p.inbox > 0 ? (
         <div className="mt-1.5 pl-4.5 text-xs text-warning">
           {t(
@@ -400,6 +401,35 @@ function PaneCard({
           {p.silence ? <Mark icon={<Moon className="size-3" />} label={t("quiet", "没动静")} /> : null}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** The pane's agent: its model, what it has cost, how full its context is
+ *  (a bar when it is a share), the tokens it has used, its CPU. */
+function AgentLine({ a }: { a: Agent }) {
+  const pct = a.context.endsWith("%") ? Math.min(100, Number(a.context.slice(0, -1)) || 0) : null;
+  const tone = pct === null ? "" : pct >= 80 ? "bg-danger" : pct >= 60 ? "bg-warning" : "bg-accent";
+  return (
+    <div
+      data-agent={a.kind}
+      className="mt-1.5 flex min-w-0 items-center gap-2 pl-4.5 text-xs tabular-nums text-muted"
+      title={t(`${a.kind}: ${a.tokens} tokens, memory ${a.mem}`, `${a.kind}：${a.tokens} tokens，内存 ${a.mem}`)}
+    >
+      <span className="min-w-0 truncate font-medium text-foreground">{a.model || a.kind}</span>
+      {a.cost ? <span className="shrink-0">{a.cost}</span> : null}
+      {a.context ? (
+        <span className="flex shrink-0 items-center gap-1" aria-label={t(`context ${a.context}`, `上下文 ${a.context}`)}>
+          {pct !== null ? (
+            <span className="h-1 w-8 overflow-hidden rounded-full bg-default">
+              <span className={"block h-full rounded-full " + tone} style={{ width: `${pct}%` }} />
+            </span>
+          ) : null}
+          {a.context}
+        </span>
+      ) : null}
+      <span className="shrink-0">{a.tokens}</span>
+      <span className="shrink-0">{t(`cpu ${a.cpu}`, `CPU ${a.cpu}`)}</span>
     </div>
   );
 }

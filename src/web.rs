@@ -842,17 +842,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             json_str(env!("CARGO_PKG_VERSION"))
         )),
         (true, "/api/panes") => {
-            // The program running now (`cargo` under the shell during a
-            // build), or the one the pane started with once that is gone.
-            const FIELDS: &str = "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}\t\
-                                  #{?pane_pid_command,#{pane_pid_command},#{pane_current_command}}\t\
-                                  #{pane_active}\t#{window_active}\t#{pane_width}\t\
-                                  #{pane_height}\t#{pane_dead}\t#{session_attached}\t\
-                                  #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}\t\
-                                  #{pane_name}\t#{pane_work_mode}\t#{pane_current_path_short}\t\
-                                  #{pane_activity}\t#{pane_last_line}\t#{pane_idle}\t#{pane_inbox}\t#{pane_unheard}\t#{pane_message}\t\
-                                  #{pane_dead_status}\t#{alternate_on}\t#{pane_title}";
-            match q(vec!["list-panes".into(), "-a".into(), "-F".into(), FIELDS.into()]).await {
+            match q(vec!["list-panes".into(), "-a".into(), "-F".into(), PANE_FIELDS.into()]).await {
                 Ok((0, out, _)) => Response::json(panes_json(&out)),
                 Ok((_, _, err)) => Response::text(500, err.trim()),
                 Err(e) => Response::text(500, &format!("{e:#}")),
@@ -1162,7 +1152,21 @@ fn held_with_a_button(k: &str) -> bool {
     !seen.is_empty() && KEYS.contains(&rest) && !rest.starts_with("Wheel")
 }
 
-/// The list-panes lines (tab-separated, in FIELDS order) as a JSON array.
+/// `list-panes -F` for `/api/panes`, read by `panes_json`. The program
+/// running now (`cargo` under the shell during a build), or the one the pane
+/// started with once that is gone.
+const PANE_FIELDS: &str = "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}\t\
+                           #{?pane_pid_command,#{pane_pid_command},#{pane_current_command}}\t\
+                           #{pane_active}\t#{window_active}\t#{pane_width}\t\
+                           #{pane_height}\t#{pane_dead}\t#{session_attached}\t\
+                           #{window_activity_flag}\t#{window_bell_flag}\t#{window_silence_flag}\t\
+                           #{pane_name}\t#{pane_work_mode}\t#{pane_current_path_short}\t\
+                           #{pane_activity}\t#{pane_last_line}\t#{pane_idle}\t#{pane_inbox}\t#{pane_unheard}\t#{pane_message}\t\
+                           #{pane_dead_status}\t#{alternate_on}\t\
+                           #{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_context}\t#{agent_tokens}\t\
+                           #{agent_cpu}\t#{agent_mem}\t#{pane_title}";
+
+/// The list-panes lines (tab-separated, in `PANE_FIELDS` order) as a JSON array.
 fn panes_json(out: &str) -> String {
     panes_json_at(out, chrono::Utc::now().timestamp().max(0) as u64)
 }
@@ -1173,12 +1177,22 @@ fn panes_json_at(out: &str, now: u64) -> String {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() < 27 {
+            if f.len() < 34 {
                 return None;
             }
             // The title the program set (last: one with a tab in it is still
             // whole, the tab a space).
-            let title = f[26..].join(" ");
+            let title = f[33..].join(" ");
+            // The agent it runs (`list-agents`), its figures as they read;
+            // null for none.
+            let agent = if f[26].is_empty() {
+                "null".to_string()
+            } else {
+                let keys = ["kind", "model", "cost", "context", "tokens", "cpu", "mem"];
+                let o: serde_json::Map<String, serde_json::Value> =
+                    keys.iter().zip(&f[26..33]).map(|(k, v)| (k.to_string(), (*v).into())).collect();
+                serde_json::Value::Object(o).to_string()
+            };
             let num = |s: &str| s.parse::<u64>().unwrap_or(0);
             // The window's alerts, as the status line marks them: it printed
             // (#), rang (!), or went quiet (~) while nobody looked.
@@ -1186,7 +1200,7 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
                  \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
                  \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{},\"path\":{},\"quiet\":{},\"last\":{},\
-                 \"idle\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"exit\":{},\"alt\":{},\"title\":{}}}",
+                 \"idle\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"exit\":{},\"alt\":{},\"agent\":{},\"title\":{}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -1222,6 +1236,7 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 // A full-screen program (no scrollback): the page scrolls it
                 // with the wheel instead.
                 f[25] == "1",
+                agent,
                 json_str(&title)
             ))
         })
@@ -1481,15 +1496,46 @@ mod tests {
         let qr = qr_text("http://192.168.1.23:7681/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert!(qr.lines().count() > 10 && qr.contains('█'), "{qr}");
         let json = panes_json_at(
-            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t7\t\t0\t✳ fix\tthe login\n\
-             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t1\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\t2\t1\t\nshort line\n",
+            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t7\t\t0\t\t\t\t\t\t\t\t✳ fix\tthe login\n\
+             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t1\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\t2\t1\tclaude\tclaude-opus-5-5\t$2.10\t34%\t1.2M\t12%\t812M\t\nshort line\n",
             1060,
         );
         assert_eq!(
             json,
-            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"unheard":false,"working":7,"exit":null,"alt":false,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":true,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"inbox":3,"unheard":true,"working":0,"exit":2,"alt":true,"title":""}]"#
+            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"unheard":false,"working":7,"exit":null,"alt":false,"agent":null,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":true,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"inbox":3,"unheard":true,"working":0,"exit":2,"alt":true,"agent":{"kind":"claude","model":"claude-opus-5-5","cost":"$2.10","context":"34%","tokens":"1.2M","cpu":"12%","mem":"812M"},"title":""}]"#
         );
         assert_eq!(panes_json(""), "[]");
+        // The fields as the server fills them read back: the agent's in
+        // their places.
+        let ctx = crate::format::Context {
+            pane_id: 9,
+            pane_title: "a title".into(),
+            agent: "pi".into(),
+            agent_model: "m".into(),
+            agent_cost: "$1.00".into(),
+            agent_context: "5%".into(),
+            agent_tokens: "2k".into(),
+            agent_cpu: "1%".into(),
+            agent_mem: "9M".into(),
+            ..Default::default()
+        };
+        let line = crate::format::plain(&crate::format::expand(
+            PANE_FIELDS,
+            &ctx,
+            &mut crate::format::ShellCache::default(),
+            Default::default(),
+            chrono::Local::now(),
+        ));
+        let v: serde_json::Value = serde_json::from_str(&panes_json_at(&line, 0)).unwrap();
+        assert_eq!(
+            (&v[0]["id"], &v[0]["title"], &v[0]["agent"]),
+            (
+                &serde_json::json!("%9"),
+                &serde_json::json!("a title"),
+                &serde_json::json!({"kind": "pi", "model": "m", "cost": "$1.00", "context": "5%",
+                    "tokens": "2k", "cpu": "1%", "mem": "9M"})
+            )
+        );
         // The keys the page sends: named ones, Ctrl with a letter, Alt with
         // a letter or digit; nothing else.
         for k in ["Enter", "C-c", "C-x", "M-x", "M-1"] {

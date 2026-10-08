@@ -8,7 +8,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DIR, EXE, SOCKET, kp } from "./keepane.ts";
+import { CLAUDE_DIR, DIR, EXE, SOCKET, kp } from "./keepane.ts";
 
 const quiet = (f: () => unknown) => {
   try {
@@ -72,6 +72,23 @@ fs.rmSync(sessions, { recursive: true, force: true });
 // Read by the server this starts: no user config, no user sessions.
 process.env.KEEPANE_CONFIG = conf;
 process.env.KEEPANE_SESSIONS_DIR = sessions;
+// Agents (tests/feat.e2e.ts): their transcripts here, their tokens priced
+// by this list, nothing fetched.
+fs.rmSync(CLAUDE_DIR, { recursive: true, force: true });
+process.env.CLAUDE_CONFIG_DIR = CLAUDE_DIR;
+const prices = path.join(DIR, "prices.json");
+fs.writeFileSync(
+  prices,
+  JSON.stringify({
+    "claude-opus-5-5": {
+      input_cost_per_token: 4e-6,
+      output_cost_per_token: 2e-5,
+      cache_read_input_token_cost: 2e-7,
+      max_input_tokens: 100000,
+    },
+  }),
+);
+process.env.KEEPANE_PRICE_LIST = prices;
 
 // work: editor | builder (a shell pane, with some output), and logs; notes.
 // work is wide: its prompts take one row (tests/feat.e2e.ts makes a narrow

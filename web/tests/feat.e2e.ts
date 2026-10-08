@@ -2,7 +2,9 @@
 // run again.
 import { expect } from "e2e";
 import { dialog, box, entry, noNotice, pageText, test, ticked } from "../e2e/fixtures.ts";
-import { capture, kp, page, paneNumber, portOf, show, token, withOption } from "../e2e/keepane.ts";
+import fs from "node:fs";
+import path from "node:path";
+import { CLAUDE_DIR, DIR, capture, kp, page, paneNumber, portOf, show, token, withOption } from "../e2e/keepane.ts";
 import { phone, type Fingers } from "../e2e/phone.ts";
 import type { Browser } from "@e2e-dev/web";
 import type { Screen } from "e2e";
@@ -265,6 +267,44 @@ test("a new session from the phone, and a pane run again", async ({ app, browser
     }
   });
   await finger.close();
+});
+
+test("an agent's card: its model, cost and context", async ({ app, browser }) => {
+  // A program that waits, under the agent's name, in a directory of its own.
+  const win = process.platform === "win32";
+  const bin = path.join(DIR, "agent-bin");
+  const exe = path.join(bin, win ? "claude.exe" : "claude");
+  fs.mkdirSync(bin, { recursive: true });
+  // Linux: a script (named after it; a copy of `sleep` may be all of
+  // coreutils in one program, which goes by the name it is run as).
+  const linux = process.platform === "linux";
+  if (linux) fs.writeFileSync(exe, "#!/bin/sh\nsleep 600\n", { mode: 0o755 });
+  else if (!fs.existsSync(exe)) fs.copyFileSync(win ? "C:\\Windows\\System32\\PING.EXE" : "/bin/sleep", exe);
+  const work = path.join(DIR, "agent-work", token());
+  fs.mkdirSync(work, { recursive: true });
+  kp("split-window", "-d", "-t", "notes", "-c", work, exe, ...(win ? ["-n", "600", "127.0.0.1"] : linux ? [] : ["600"]));
+  const pane = show("notes:0.1", "#{pane_id}");
+  try {
+    // Its transcript, where Claude Code keeps one for that directory.
+    const folder = (win ? work : fs.realpathSync(work)).replace(/[^A-Za-z0-9]/g, "-");
+    const project = path.join(CLAUDE_DIR, "projects", folder);
+    fs.mkdirSync(project, { recursive: true });
+    const usage = { input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 10000 };
+    const reply = { type: "assistant", message: { id: "m1", model: "claude-opus-5-5", content: [], usage } };
+    fs.writeFileSync(path.join(project, "s.jsonl"), JSON.stringify(reply) + "\n");
+    await expect.poll(() => show(pane, "#{agent_cost} #{agent_context}"), { timeout: 20000 }).toBe("$0.05 11%");
+    await app.open(page(portOf(app.baseUrl)));
+    await browser.reload();
+    const line = browser.locator(`[data-pane="${pane}"] [data-agent="claude"]`);
+    await expect(line).toContainText("claude-opus-5-5");
+    await expect(line).toContainText("$0.05");
+    await expect(line).toContainText("11%");
+    await expect(line).toContainText("13k");
+    // Other cards have none.
+    await expect(browser.locator('[data-pane][data-name="builder"] [data-agent]')).toHaveCount(0);
+  } finally {
+    kp("kill-pane", "-t", pane);
+  }
 });
 
 test("desktop: a card's menu has the modes, the pane's ticked", async ({ app, browser, screen }) => {

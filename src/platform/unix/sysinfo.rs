@@ -31,6 +31,9 @@ struct Cache {
     /// (idle, total) jiffies at the last reading.
     cpu: Option<(u64, u64)>,
     programs: HashMap<u32, (Instant, String)>,
+    /// The process list, at most a second old: ten panes are ten lookups
+    /// a second, not ten reads of every process.
+    procs: Option<(Instant, Vec<(u32, u32, String)>)>,
 }
 
 static CACHE: std::sync::LazyLock<Mutex<Cache>> = std::sync::LazyLock::new(|| Mutex::new(Cache::default()));
@@ -76,6 +79,31 @@ mod readings {
     pub fn uptime() -> Option<i64> {
         let t = std::fs::read_to_string("/proc/uptime").ok()?;
         t.split_whitespace().next()?.parse::<f64>().ok().map(|s| s as i64)
+    }
+
+    /// A process's CPU time so far (nanoseconds), resident memory (bytes)
+    /// and when it started (Unix seconds), from `/proc/<pid>/stat` and
+    /// `statm`, and the boot time in `/proc/stat`.
+    pub fn usage_of(pid: u32) -> Option<(u64, u64, u64)> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // After "(comm)": state ppid ... utime is the 12th, stime the 13th,
+        // starttime (ticks after boot) the 20th.
+        let after = &stat[stat.rfind(')')? + 1..];
+        let f: Vec<&str> = after.split_whitespace().collect();
+        let ticks: u64 = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
+        let per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
+        let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+        let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(0) as u64;
+        static BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let boot = *BOOT.get_or_init(|| {
+            std::fs::read_to_string("/proc/stat")
+                .ok()
+                .and_then(|t| t.lines().find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok()))
+                .unwrap_or(0)
+        });
+        let started = boot + f.get(19).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0) / per_sec;
+        Some((ticks * 1_000_000_000 / per_sec, pages * page, started))
     }
 
     /// (pid, parent, name) of every process, from `/proc/<pid>/stat`.
@@ -156,6 +184,55 @@ mod readings {
         Some(now - boot.tv_sec)
     }
 
+    #[repr(C)]
+    struct Timebase {
+        numer: u32,
+        denom: u32,
+    }
+    unsafe extern "C" {
+        fn mach_timebase_info(info: *mut Timebase) -> i32;
+    }
+
+    /// A process's CPU time so far (nanoseconds), resident memory (bytes)
+    /// and when it started (Unix seconds), from `proc_pidinfo`; its times
+    /// are in mach ticks.
+    pub fn usage_of(pid: u32) -> Option<(u64, u64, u64)> {
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTASKINFO,
+                0,
+                (&mut info as *mut libc::proc_taskinfo).cast(),
+                size,
+            )
+        };
+        if got != size {
+            return None;
+        }
+        static BASE: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+        let (numer, denom) = *BASE.get_or_init(|| {
+            let mut t = Timebase { numer: 1, denom: 1 };
+            unsafe { mach_timebase_info(&mut t) };
+            (u64::from(t.numer), u64::from(t.denom.max(1)))
+        });
+        let ticks = info.pti_total_user + info.pti_total_system;
+        let mut bsd: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut bsd as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        let started = if got == size { bsd.pbi_start_tvsec } else { 0 };
+        Some((ticks * numer / denom, info.pti_resident_size, started))
+    }
+
     /// (pid, parent, name) of every process this user may read.
     pub fn processes() -> Vec<(u32, u32, String)> {
         let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -183,7 +260,39 @@ mod readings {
     }
 }
 
+pub use readings::usage_of;
 use readings::{battery, cpu_times, memory, processes};
+
+/// `pid` and every process under it, (pid, name).
+pub fn tree_of(pid: u32) -> Vec<(u32, String)> {
+    let procs = process_list();
+    let Some((_, _, own)) = procs.iter().find(|(p, _, _)| *p == pid) else { return Vec::new() };
+    let mut out = vec![(pid, own.clone())];
+    let mut at = vec![pid];
+    while let Some(parent) = at.pop() {
+        for (child, pp, name) in &procs {
+            if *pp == parent && *child != parent && !out.iter().any(|(p, _)| p == child) {
+                out.push((*child, name.clone()));
+                at.push(*child);
+            }
+        }
+    }
+    out
+}
+
+/// `processes()`, at most a second old.
+fn process_list() -> Vec<(u32, u32, String)> {
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, procs)) = &c.procs
+        && at.elapsed() < Duration::from_secs(1)
+    {
+        return procs.clone();
+    }
+    let procs = processes();
+    c.procs = Some((Instant::now(), procs.clone()));
+    procs
+}
+
 /// The current reading, refreshed when the last one is over a second old.
 pub fn system() -> System {
     let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -255,7 +364,7 @@ pub fn program_of(pid: u32) -> String {
             return name.clone();
         }
     }
-    let procs = processes();
+    let procs = process_list();
     let name = match procs.iter().find(|(p, _, _)| *p == pid) {
         None => String::new(),
         Some((_, _, own)) => {

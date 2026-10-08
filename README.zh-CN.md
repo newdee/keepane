@@ -87,6 +87,21 @@ keepane send-message --to %lead --task 12 "还有一件事"
 
 也能直接操作。对 pane：`s` 发消息、`r` 改名、`m` 改工作模式、`R` 标记就绪（解卡）、`o` 跳过去（顺带关掉弹窗）、`x` 关掉。对收件箱：`d` 删除排队消息（`u` 撤销）、`K`/`J` 上下移、`t` 放到最前、Enter 进到右边滚动阅读。关 pane、删消息、把 pane 切到 `shell`（从此收到的文字会被当命令执行）这三样会先确认。设计见 [docs/design/dashboard.md](docs/design/dashboard.md)。
 
+### agent 用了多少、花了多少
+
+keepane 认得 pane 里跑的 agent：Claude Code、Codex 和 pi（看程序名，或看 `node` 跑的是什么）。每个 agent 都会为它的工作目录写一份会话记录（`~/.claude/projects`、`~/.codex/sessions`、`~/.pi/agent/sessions`；也认 server 启动时的 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`）。keepane 每 2 秒读一次，只读上次之后新写的部分，从中得到模型、用掉的 token、调用工具的次数、回复的次数、上下文占了多少；再从进程表读 agent 及其子进程的 CPU 和内存。Claude Code 的 subagent 算在它的 pane 上。
+
+花费：pi 自己记了花费，直接用。其余的按 [LiteLLM 的公开价目表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) 给每个模型的 token（新输入、读缓存、写缓存、输出）分别计价。价目表用 `curl` 下载，一天一次（失败了 1 小时后再试），只在有 pane 跑 agent 时才下载，存在数据目录里。表上是各家的 API 标价：订阅（Claude Max、ChatGPT Pro）另有计费，所以这个数是“同样的活走 API 要花多少”。价目表里没有的模型不计价，这时花费后面带 `+`（`$2.10+`：至少这么多）。`set -g agent-cost off` 不下载，也不显示花费；环境变量 `KEEPANE_PRICE_LIST` 可以指定自己的价目表（LiteLLM 的格式）。
+
+在哪里看：dashboard 的 pane 列表（`claude $2.10 34%`：花费、上下文），所选 pane 上方一行列出全部数字；手机网页上 agent pane 的卡片多一行；`keepane list-agents`（`-J` 输出 JSON，每个数都是数字，不知道的是 `null`）；还有格式变量 `agent` `agent_model` `agent_cost` `agent_tokens` `agent_context` `agent_cpu` `agent_mem` `agent_tools` `agent_turns`，可以放进边框或状态栏：
+
+```tmux
+set -g pane-border-status top
+set -g pane-border-format " #{pane_index} #{?agent,#{agent_model} #{agent_cost} ctx #{agent_context},#{pane_current_command}} "
+```
+
+只读 keepane pane 里的 agent。但如果别处（另一个终端、编辑器）的 agent 同时在同一个目录里工作，它的记录写在同一个文件夹，会被算进这个 pane。
+
 消息及 pane 状态变化会写入事件日志：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停止时，未投递的消息会被丢弃，并留下日志记录。pane 名字和工作模式随 session 保存。设计细节见 [docs/design/mailbox.md](docs/design/mailbox.md)。
 
 ## 安装
@@ -568,6 +583,7 @@ set -g monitor-activity on        # 后台窗口有输出就在状态栏标 `#`
 set -g monitor-bell on            # 响铃标 `!`；默认就是开的
 set -g monitor-silence 60         # 60 秒没动静标 `~`；0 是关掉
 set -g visual-bell on             # 用状态栏提示代替真的响铃
+set -g agent-cost off             # 不下载价目表，pane 里的 agent 不显示花费（默认开）
 set -g done-after 60              # 命令跑满一分钟才通知（见"pane 完成时通知你"）
 
 set -g pane-timestamps on         # 每条命令的时间显示在行尾（prefix C-t 切换）
@@ -633,7 +649,7 @@ set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm
 - client：`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`
 - server：`host` `host_short` `socket_path` `version` `pid`。另外还有 `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`。
 
-系统信息直接从进程读取，无需 `#(命令)`：`cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`（没电池就是空）`battery_charging` `uptime`。其他常用变量：`git_branch`（pane 所在目录的分支，读 `.git` 得来，不在仓库里就是空）、`pane_current_path_short`（家目录写成 `~`）、`pane_pid_command`（pane 里此刻在跑的程序，编译时是 `cargo`）、`pane_output_count`（pane 输出过多少次；脚本比较前后两次的值就知道有没有新输出，只精确到秒的 `pane_activity` 做不到）。`keepane_update` 是每日检查发现的新版本号。
+系统信息直接从进程读取，无需 `#(命令)`：`cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`（没电池就是空）`battery_charging` `uptime`。其他常用变量：`git_branch`（pane 所在目录的分支，读 `.git` 得来，不在仓库里就是空）、`pane_current_path_short`（家目录写成 `~`）、`pane_pid_command`（pane 里此刻在跑的程序，编译时是 `cargo`）、`pane_output_count`（pane 输出过多少次；脚本比较前后两次的值就知道有没有新输出，只精确到秒的 `pane_activity` 做不到）。`keepane_update` 是每日检查发现的新版本号。`agent_*` 变量说的是 pane 里跑的 agent（见 [agent 用了多少、花了多少](#agent-用了多少花了多少)）。
 
 网络：`local_ip` 是本机上网所用的地址（向系统查询，不发送任何数据），`public_ip` 是外网看到的地址。后者只有外部服务知道，所以只有当某个正在显示的格式用到 `#{public_ip}` 时，keepane 才会去问（`api.ipify.org`，每 10 分钟一次）；没用到就不会问任何人。默认外观里两者都没有，想显示就加上：
 

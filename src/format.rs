@@ -147,6 +147,40 @@ pub struct Context {
     /// The program running in the pane right now (its newest descendant),
     /// e.g. `cargo` during a build; the shell's own name when idle.
     pub pane_pid_command: String,
+    /// The agent the pane runs (`claude`, `codex`, `pi`), empty when none;
+    /// the rest of its figures as they read (server `agents`): its model,
+    /// its cost so far (`$1.23`; `$1.23+` when a model it used is not priced;
+    /// empty when not known), the tokens it has
+    /// used (`1.2M`), how full its context is (`34%`, or its size when the
+    /// window is not known), its processes' CPU (`12%`) and memory
+    /// (`812M`), the tools it has called and the replies it has made.
+    pub agent: String,
+    pub agent_model: String,
+    pub agent_cost: String,
+    pub agent_tokens: String,
+    pub agent_context: String,
+    pub agent_cpu: String,
+    pub agent_mem: String,
+    pub agent_tools: String,
+    pub agent_turns: String,
+}
+
+/// A count as people read it: `950`, `1.2k`, `123k`, `4.5M`, `1.2G`.
+pub fn human_count(n: u64) -> String {
+    let f = n as f64;
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=9_999 => format!("{:.1}k", f / 1e3),
+        10_000..=999_999 => format!("{}k", n / 1_000),
+        1_000_000..=99_999_999 => format!("{:.1}M", f / 1e6),
+        100_000_000..=999_999_999 => format!("{}M", n / 1_000_000),
+        _ => format!("{:.1}G", f / 1e9),
+    }
+}
+
+/// Dollars as people read them: `$0.42`, `$12.30`, `$123`.
+pub fn human_dollars(d: f64) -> String {
+    if d >= 100.0 { format!("${}", d.round() as u64) } else { format!("${d:.2}") }
 }
 
 /// A number of seconds as people say it: `42s`, `5m`, `2h13m`, `3d2h`.
@@ -325,6 +359,15 @@ impl Context {
             "pane_current_path_short" => self.pane_path_short.clone(),
             "pane_last_line" => self.pane_last_line.clone(),
             "pane_pid_command" => self.pane_pid_command.clone(),
+            "agent" => self.agent.clone(),
+            "agent_model" => self.agent_model.clone(),
+            "agent_cost" => self.agent_cost.clone(),
+            "agent_tokens" => self.agent_tokens.clone(),
+            "agent_context" => self.agent_context.clone(),
+            "agent_cpu" => self.agent_cpu.clone(),
+            "agent_mem" => self.agent_mem.clone(),
+            "agent_tools" => self.agent_tools.clone(),
+            "agent_turns" => self.agent_turns.clone(),
             "version" => env!("CARGO_PKG_VERSION").to_string(),
             "pid" => std::process::id().to_string(),
             _ => return None,

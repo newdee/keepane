@@ -53,7 +53,22 @@ export type Pane = {
   inbox: number;
   unheard: boolean;
   working: number;
+  /** The agent it runs (Claude Code, Codex, pi), its figures as they read;
+   *  null for none. */
+  agent: Agent | null;
   title: string;
+};
+
+/** A pane's agent (`list-agents`): `cost` "$2.10" and `context` "34%"
+ *  (or its size when the window is not known) may be empty. */
+export type Agent = {
+  kind: string;
+  model: string;
+  cost: string;
+  context: string;
+  tokens: string;
+  cpu: string;
+  mem: string;
 };
 
 /** The terminal's theme: what a pane's text is drawn in. */

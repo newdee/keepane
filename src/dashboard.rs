@@ -54,7 +54,70 @@ pub fn needs_yes(argv: &[String]) -> bool {
 }
 
 /// `list-panes -F` for the board: one pane a line, tab-separated.
-pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}";
+pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}";
+
+/// The agent a pane runs, its figures as the `agent_*` formats write them.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct AgentRow {
+    pub kind: String,
+    pub model: String,
+    /// `$1.23` (`$1.23+`: some tokens unpriced), empty when not known.
+    pub cost: String,
+    pub tokens: String,
+    pub context: String,
+    pub cpu: String,
+    pub mem: String,
+    pub tools: String,
+    pub turns: String,
+}
+
+impl AgentRow {
+    /// From the fields after `pane_unheard`; None for a pane without an
+    /// agent (or a line from a server that does not know them).
+    fn parse(f: &[&str]) -> Option<AgentRow> {
+        let g = |i: usize| f.get(i).copied().unwrap_or_default().to_string();
+        let kind = g(0);
+        (!kind.is_empty()).then(|| AgentRow {
+            kind,
+            model: g(1),
+            cost: g(2),
+            tokens: g(3),
+            context: g(4),
+            cpu: g(5),
+            mem: g(6),
+            tools: g(7),
+            turns: g(8),
+        })
+    }
+
+    /// In the pane table, where room is short: `claude $2.10 34%` (the
+    /// share of its context window in use).
+    fn short(&self) -> String {
+        let mut s = self.kind.clone();
+        for v in [&self.cost, &self.context] {
+            if !v.is_empty() {
+                s.push_str(&format!(" {v}"));
+            }
+        }
+        s
+    }
+
+    /// Over the chosen pane: everything.
+    fn line(&self) -> String {
+        let model = if self.model.is_empty() { String::new() } else { format!(" {}", self.model) };
+        let cost = if self.cost.is_empty() { String::new() } else { format!(" · {}", self.cost) };
+        let context = if self.context.is_empty() { String::new() } else { format!(" · context {}", self.context) };
+        format!(
+            "\x1b[35m{}\x1b[0m{model}{cost} · {} tokens{context} · cpu {} · mem {} · {} tools · {} turns",
+            self.kind, self.tokens, self.cpu, self.mem, self.tools, self.turns
+        )
+    }
+
+    /// The cost in dollars, when known.
+    fn dollars(&self) -> Option<f64> {
+        self.cost.strip_prefix('$')?.trim_end_matches('+').parse().ok()
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct PaneRow {
@@ -79,6 +142,8 @@ pub struct PaneRow {
     pub exit: String,
     /// An agent's pane whose agent has not said it is free since it started.
     pub unheard: bool,
+    /// The agent it runs, if any (`list-agents`).
+    pub agent: Option<AgentRow>,
 }
 
 impl PaneRow {
@@ -107,6 +172,7 @@ impl PaneRow {
             size: format!("{}x{}", f[16], f[17]),
             exit: f[18].into(),
             unheard: f.get(19) == Some(&"1"),
+            agent: f.get(20..).and_then(AgentRow::parse),
         })
     }
 
@@ -150,7 +216,8 @@ impl PaneRow {
 
     fn matches(&self, filter: &str) -> bool {
         let f = filter.to_lowercase();
-        [&self.address, &self.session, &self.name, &self.mode, &self.status, &self.command, &self.path]
+        let agent = self.agent.as_ref().map(|a| format!("{} {}", a.kind, a.model)).unwrap_or_default();
+        [&self.address, &self.session, &self.name, &self.mode, &self.status, &self.command, &self.path, &agent]
             .iter()
             .any(|x| x.to_lowercase().contains(&f))
     }
@@ -1066,7 +1133,7 @@ impl Board {
                 r.state_styled(),
                 r.inbox,
                 quiet,
-                r.command
+                r.agent.as_ref().map(AgentRow::short).unwrap_or_else(|| r.command.clone())
             );
             table.push((Some(r.id.clone()), line));
         }
@@ -1080,7 +1147,13 @@ impl Board {
         let queued: usize = shown.iter().map(|r| r.inbox).sum();
         let filtered = if self.filter.is_empty() { String::new() } else { format!(" · /{}", self.filter) };
         let web = self.web.map(|n| format!(" · web {n} connected")).unwrap_or_default();
-        let title = format!("[1] Panes  {} · {busy} busy · {queued} queued{web}{filtered}", shown.len());
+        let costs: Vec<f64> = shown.iter().filter_map(|r| r.agent.as_ref()?.dollars()).collect();
+        let spent = if costs.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", crate::format::human_dollars(costs.iter().sum()))
+        };
+        let title = format!("[1] Panes  {} · {busy} busy · {queued} queued{spent}{web}{filtered}", shown.len());
         let (start, table) = self.pane_table(r.inner_h());
         let chosen = self.chosen_id();
         let focused = self.focus == Panel::Panes;
@@ -1148,14 +1221,13 @@ impl Board {
                 let quiet =
                     if p.activity > 0 { crate::format::human_duration(self.now - p.activity) } else { "?".into() };
                 let exit = if p.dead { format!(" · exited {}", p.exit) } else { String::new() };
-                (
-                    format!("[0] {}{name} · {} · {}", p.id, p.mode, p.state()),
-                    vec![
-                        format!("\x1b[36m{}\x1b[0m  {}  \x1b[2m{}\x1b[0m", p.address, p.command, p.path),
-                        format!("pid {} · up {up} · quiet {quiet} · {}{exit}", p.pid, p.size),
-                        format!("doing: {}", p.doing()),
-                    ],
-                )
+                let mut head = vec![
+                    format!("\x1b[36m{}\x1b[0m  {}  \x1b[2m{}\x1b[0m", p.address, p.command, p.path),
+                    format!("pid {} · up {up} · quiet {quiet} · {}{exit}", p.pid, p.size),
+                ];
+                head.extend(p.agent.as_ref().map(AgentRow::line));
+                head.push(format!("doing: {}", p.doing()));
+                (format!("[0] {}{name} · {} · {}", p.id, p.mode, p.state()), head)
             }
             None => ("[0] no panes".to_string(), Vec::new()),
         };
@@ -2183,6 +2255,81 @@ mod tests {
         ] {
             assert!(text.contains(want), "{want}:\n{text}");
         }
+    }
+
+    /// A pane's agent: its cost and context in the table, all of it over
+    /// the chosen pane, the costs summed in the title; a line without the
+    /// fields (an older server) or with none (no agent) has no agent.
+    #[test]
+    fn agents_show_their_cost_and_context() {
+        let line = "$1:@2.%7\twork\t1.0\t%7\ttester\tai\t1\t0\t\tclaude\t\t0\t/src\t99\t100\t150\t80\t24\t\t0";
+        assert_eq!(PaneRow::parse(line).unwrap().agent, None, "an older server");
+        let none = format!("{line}\t\t\t\t\t\t\t\t\t");
+        assert_eq!(PaneRow::parse(&none).unwrap().agent, None, "no agent");
+        let with = format!("{line}\tclaude\tclaude-opus-5-5\t$2.10\t1.2M\t34%\t12%\t812M\t42\t10");
+        let a = PaneRow::parse(&with).unwrap().agent.unwrap();
+        assert_eq!((a.kind.as_str(), a.cost.as_str(), a.dollars()), ("claude", "$2.10", Some(2.1)));
+        assert_eq!(a.short(), "claude $2.10 34%");
+        let unknown = AgentRow { kind: "codex".into(), ..AgentRow::default() };
+        assert_eq!((unknown.short().as_str(), unknown.dollars()), ("codex", None), "nothing known, nothing said");
+        let partial = AgentRow { cost: "$1.25+".into(), ..AgentRow::default() };
+        assert_eq!(partial.dollars(), Some(1.25), "at least: counted in the total");
+        let mut b = board();
+        b.resize(200, 30);
+        let mut rows = b.rows.clone();
+        rows[0].agent = Some(a.clone());
+        rows[1].agent = Some(AgentRow { cost: "$0.40".into(), ..a.clone() });
+        rows[2].agent = Some(unknown);
+        b.set_rows(rows);
+        let text = screen(&b).join("\n");
+        for want in [
+            "[1] Panes  3 · 1 busy · 2 queued · $2.50",
+            "claude $2.10 34%",
+            "claude claude-opus-5-5 · $2.10 · 1.2M tokens · context 34% · cpu 12% · mem 812M · 42 tools · 10 turns",
+        ] {
+            assert!(text.contains(want), "{want}:\n{text}");
+        }
+        assert!(b.rows[2].matches("codex") && b.rows[0].matches("opus"), "found by agent and model");
+    }
+
+    /// The board's own format, as the server fills it, reads back: the
+    /// agent's figures land in their fields.
+    #[test]
+    fn its_format_reads_back_with_the_agent() {
+        let ctx = crate::format::Context {
+            pane_id: 7,
+            agent: "codex".into(),
+            agent_model: "gpt-5.5".into(),
+            agent_cost: "$0.06".into(),
+            agent_tokens: "27k".into(),
+            agent_context: "5%".into(),
+            agent_cpu: "3%".into(),
+            agent_mem: "120M".into(),
+            agent_tools: "4".into(),
+            agent_turns: "2".into(),
+            ..Default::default()
+        };
+        let segs = crate::format::expand(
+            PANE_FORMAT,
+            &ctx,
+            &mut crate::format::ShellCache::default(),
+            Default::default(),
+            chrono::Local::now(),
+        );
+        let r = PaneRow::parse(&crate::format::plain(&segs)).unwrap();
+        assert_eq!(r.id, "%7");
+        let a = r.agent.unwrap();
+        let got = [&a.kind, &a.model, &a.cost, &a.tokens, &a.context, &a.cpu, &a.mem, &a.tools, &a.turns];
+        assert_eq!(got, ["codex", "gpt-5.5", "$0.06", "27k", "5%", "3%", "120M", "4", "2"]);
+        let none = crate::format::Context { pane_id: 8, ..Default::default() };
+        let segs = crate::format::expand(
+            PANE_FORMAT,
+            &none,
+            &mut crate::format::ShellCache::default(),
+            Default::default(),
+            chrono::Local::now(),
+        );
+        assert_eq!(PaneRow::parse(&crate::format::plain(&segs)).unwrap().agent, None);
     }
 
     /// While the phones' page is served, the pane panel says how many are

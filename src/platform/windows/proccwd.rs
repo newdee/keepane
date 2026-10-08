@@ -35,9 +35,11 @@ unsafe extern "system" {
 }
 
 /// PEB.ProcessParameters, and RTL_USER_PROCESS_PARAMETERS.CurrentDirectory
-/// (a CURDIR: a UNICODE_STRING DosPath, then a handle), 64-bit layout.
+/// (a CURDIR: a UNICODE_STRING DosPath, then a handle) and .CommandLine (a
+/// UNICODE_STRING), 64-bit layout.
 const PEB_PROCESS_PARAMETERS: usize = 0x20;
 const PARAMS_CURRENT_DIRECTORY: usize = 0x38;
+const PARAMS_COMMAND_LINE: usize = 0x70;
 
 fn read<T: Copy>(process: HANDLE, at: usize) -> Option<T> {
     let mut value = std::mem::MaybeUninit::<T>::uninit();
@@ -55,6 +57,21 @@ fn read<T: Copy>(process: HANDLE, at: usize) -> Option<T> {
 /// another user's, a 32-bit process with a different layout, a path that
 /// is not a drive path).
 pub fn process_cwd(pid: u32) -> Option<String> {
+    let path = params_string(pid, PARAMS_CURRENT_DIRECTORY)?;
+    let path = path.trim_end_matches('\\').to_string();
+    // "C:" alone means the drive's root.
+    let path = if path.len() == 2 && path.ends_with(':') { format!("{path}\\") } else { path };
+    if path.len() >= 2 && path.as_bytes()[1] == b':' { Some(path) } else { None }
+}
+
+/// The command line the process was started with, or None when it cannot
+/// be read (as `process_cwd`).
+pub fn process_command_line(pid: u32) -> Option<String> {
+    params_string(pid, PARAMS_COMMAND_LINE)
+}
+
+/// A UNICODE_STRING of the process's parameters block, at `offset` in it.
+fn params_string(pid: u32, offset: usize) -> Option<String> {
     const _: () = assert!(std::mem::size_of::<usize>() == 8, "64-bit PEB offsets");
     let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
     if process.is_null() {
@@ -79,8 +96,8 @@ pub fn process_cwd(pid: u32) -> Option<String> {
         let params: usize = read(process, peb + PEB_PROCESS_PARAMETERS)?;
         // UNICODE_STRING: Length (bytes), MaximumLength, then the buffer
         // pointer at +8.
-        let length: u16 = read(process, params + PARAMS_CURRENT_DIRECTORY)?;
-        let buffer: usize = read(process, params + PARAMS_CURRENT_DIRECTORY + 8)?;
+        let length: u16 = read(process, params + offset)?;
+        let buffer: usize = read(process, params + offset + 8)?;
         if buffer == 0 || length == 0 || length > 32 * 1024 {
             return None;
         }
@@ -93,11 +110,7 @@ pub fn process_cwd(pid: u32) -> Option<String> {
         if ok == 0 || got != length as usize {
             return None;
         }
-        let path = String::from_utf16_lossy(&wide);
-        let path = path.trim_end_matches('\\').to_string();
-        // "C:" alone means the drive's root.
-        let path = if path.len() == 2 && path.ends_with(':') { format!("{path}\\") } else { path };
-        if path.len() >= 2 && path.as_bytes()[1] == b':' { Some(path) } else { None }
+        Some(String::from_utf16_lossy(&wide))
     })();
     unsafe { CloseHandle(process) };
     result
@@ -115,7 +128,16 @@ mod tests {
     }
 
     #[test]
+    fn our_own_command_line_reads_back() {
+        let got = process_command_line(std::process::id()).expect("this process");
+        let exe = std::env::current_exe().unwrap();
+        let stem = exe.file_stem().unwrap().to_string_lossy().to_string();
+        assert!(got.contains(&stem), "{got}");
+    }
+
+    #[test]
     fn a_dead_or_foreign_pid_is_none() {
+        assert_eq!(process_command_line(0), None);
         assert_eq!(process_cwd(0), None);
         assert_eq!(process_cwd(4), None, "System: another user, no access");
         assert_eq!(process_cwd(u32::MAX), None);

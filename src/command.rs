@@ -184,6 +184,12 @@ pub enum Cmd {
         /// ends, where what it printed stops, and the command itself.
         json: bool,
     },
+    /// `list-agents [-J]`: the agents the panes run (Claude Code, Codex,
+    /// pi), each with its model, cost, tokens, context, CPU and memory.
+    ListAgents {
+        /// `-J`: as JSON, every figure as a number.
+        json: bool,
+    },
     /// `copy-output [-p] [-t pane]`: what the pane's last command printed,
     /// to a paste buffer and the clipboard; `-p` prints it instead.
     CopyOutput {
@@ -939,6 +945,7 @@ impl fmt::Display for Cmd {
                 }
                 fmt_target(f, target)
             }
+            Cmd::ListAgents { json } => f.write_str(if *json { "list-agents -J" } else { "list-agents" }),
             Cmd::CopyOutput { target, print } => {
                 f.write_str("copy-output")?;
                 if *print {
@@ -2076,6 +2083,7 @@ pub const COMMANDS: &[&str] = &[
     "list-commands",
     "list-keys",
     "list-marks",
+    "list-agents",
     "copy-output",
     "hints",
     "shell-history",
@@ -2207,6 +2215,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-commands", &[]),
     ("list-keys", &[]),
     ("list-marks", &["-J", "-t"]),
+    ("list-agents", &["-J"]),
     ("copy-output", &["-p", "-t"]),
     ("hints", &[]),
     ("shell-history", &["-c", "-m", "-n", "-t"]),
@@ -2614,6 +2623,17 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ListMarks { target, json }
+        }
+        "list-agents" => {
+            let mut json = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-J" => json = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ListAgents { json }
         }
         "copy-output" => {
             let (mut target, mut print) = (None, false);
@@ -4275,7 +4295,11 @@ mod tests {
         assert_eq!(p("show-task 12"), Cmd::ShowTask { id: 12, json: false });
         assert_eq!(p("list-marks -J -t %3"), Cmd::ListMarks { target: Some(Target::parse("%3")), json: true });
         assert_eq!(p("list-marks"), Cmd::ListMarks { target: None, json: false });
-        for s in ["trace-message 5 -w 3 -J", "show-task 12 -J", "show-task 12", "list-marks -J -t %3", "list-marks"] {
+        assert_eq!(p("list-agents -J"), Cmd::ListAgents { json: true });
+        assert_eq!(p("list-agents"), Cmd::ListAgents { json: false });
+        assert!(parse_line("list-agents -x").is_err() && parse_line("list-agents x").is_err());
+        let all = ["trace-message 5 -w 3 -J", "show-task 12 -J", "show-task 12", "list-marks -J -t %3", "list-marks"];
+        for s in all.into_iter().chain(["list-agents -J", "list-agents"]) {
             assert_eq!(p(&p(s).to_string()), p(s), "{s}");
         }
         assert!(parse_line("show-task 12 -x").unwrap_err().contains("unknown flag"));

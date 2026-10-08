@@ -40,6 +40,9 @@ pub struct Options {
     /// Ask GitHub once a day whether a newer keepane is out; the status
     /// line says so (`#{keepane_update}`).
     pub update_check: bool,
+    /// Give each pane's agent its cost in dollars (`#{agent_cost}`), from a
+    /// public price list fetched once a day while an agent runs.
+    pub agent_cost: bool,
     /// A line of text on every pane's top or bottom border ("off", "top",
     /// "bottom"), from `pane-border-format`.
     pub pane_border_status: String,
@@ -322,6 +325,7 @@ pub const SHOWABLE: &[&str] = &[
     "visual-activity",
     "notify",
     "update-check",
+    "agent-cost",
     "pane-border-status",
     "pane-border-format",
     "pane-base-index",
@@ -390,6 +394,7 @@ impl Default for Options {
             visual_activity: false,
             notify: false,
             update_check: true,
+            agent_cost: true,
             pane_border_status: "off".into(),
             pane_border_format: " #{?pane_active,#[bold],}#{pane_index}: #{pane_title}#[default] ".into(),
             base_index: 0,
@@ -543,6 +548,7 @@ fn parse_style(v: &str) -> Result<(Option<Color>, Option<Color>), String> {
 /// (which the server handles itself). Used to expand an abbreviation.
 pub const KNOWN: &[&str] = &[
     "agent-commands",
+    "agent-cost",
     "agent-pane-limit",
     "animation",
     "animation-time",
@@ -643,6 +649,7 @@ pub const ACCEPTED: &[&str] = &[
 
 /// Options that are on or off, so `set -g mouse` with no value flips them.
 const BOOLEAN: &[&str] = &[
+    "agent-cost",
     "animation",
     "autosave",
     "event-log",
@@ -834,6 +841,7 @@ impl Options {
             "visual-activity" => self.visual_activity = parse_bool(value)?,
             "notify" => self.notify = parse_bool(value)?,
             "update-check" => self.update_check = parse_bool(value)?,
+            "agent-cost" => self.agent_cost = parse_bool(value)?,
             "pane-border-status" => {
                 self.pane_border_status = match value {
                     "off" | "top" | "bottom" => value.to_string(),
@@ -1029,6 +1037,7 @@ impl Options {
             "visual-activity" => onoff(self.visual_activity),
             "notify" => onoff(self.notify),
             "update-check" => onoff(self.update_check),
+            "agent-cost" => onoff(self.agent_cost),
             "pane-border-status" => self.pane_border_status.clone(),
             "pane-border-format" => self.pane_border_format.clone(),
             "pane-base-index" => self.pane_base_index.to_string(),

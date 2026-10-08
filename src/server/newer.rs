@@ -50,10 +50,7 @@ impl Server {
             return;
         }
         self.newer.asking = true;
-        let tx = self.events.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Event::NewerChecked(latest_release()));
-        });
+        super::ask_on_thread(&self.events, latest_release, Event::NewerChecked);
     }
 
     /// The answer: `latest` is the latest release's version, None when

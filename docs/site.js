@@ -112,6 +112,8 @@ const ZH = {
     "Claude Code 这样的 agent 通过 MCP 使用它：发消息和回信、在一轮之内等回信、自己开 pane 干活。<code>keepane setup</code> 为 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode 配好 hook 和注册，agent 每轮结束时就会收到下一条消息；如果某个 agent 从没报告过空闲，发给它的消息会告诉你缺的是哪一项配置。",
   "cm.p3":
     "pane 的工作模式只能在那个 pane 里切换，所以任何 pane 里运行的程序都不能把别的 pane 变成收到什么就执行什么的 shell。发生过的一切记在事件日志里，保留 30 天。",
+  "cm.p4":
+    "pane 里跑的每个 agent（Claude Code、Codex、pi）都显示模型、花了多少、上下文占了多少、token、CPU 和内存：dashboard 里有，手机上它的卡片上有，<code>keepane list-agents</code> 和 <code>#{agent_cost}</code> 这类变量也有。keepane 读的是 agent 自己写的会话记录；花费按 LiteLLM 的公开价目表（API 标价）计算，也可以 <code>agent-cost off</code> 关掉。",
 
   "c4.title": "你的 .tmux.conf，导入一次就能用",
   "c4.sub":

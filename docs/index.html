@@ -95,6 +95,7 @@
           <li data-i18n="cm.p1">Every message says where it came from in one line of JSON. A chain of messages is one task, with how long each step waited and took; one that goes round more than eight times is refused.</li>
           <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup</code> sets up the hook and the registration for Claude Code, Codex, Gemini CLI, Cursor CLI or opencode, so the agent is handed its next message when a turn ends; a message for an agent that never says it is free tells you which setup it lacks.</li>
           <li data-i18n="cm.p3">A pane's work mode is changed in that pane, so nothing running in one pane turns another into a shell that runs what it is sent. What happens is kept in an event log for 30 days.</li>
+          <li data-i18n="cm.p4">Each agent a pane runs (Claude Code, Codex, pi) shows its model, what it has cost, how full its context is, its tokens, CPU and memory: in the dashboard, on its card on the phone, in <code>keepane list-agents</code> and in <code>#{agent_cost}</code>-style variables. keepane reads the transcripts the agents write; cost is priced by LiteLLM's public list (API list prices), or <code>agent-cost off</code>.</li>
         </ul>
       </section>
 

@@ -39,10 +39,7 @@ impl Server {
             return;
         }
         self.public_ip.asking = true;
-        let tx = self.events.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Event::PublicIp(ask()));
-        });
+        super::ask_on_thread(&self.events, ask, Event::PublicIp);
     }
 
     pub(super) fn public_ip_answered(&mut self, ip: Option<String>) {

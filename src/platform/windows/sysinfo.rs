@@ -13,8 +13,11 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX};
-use windows_sys::Win32::System::Threading::GetSystemTimes;
+use windows_sys::Win32::System::Threading::{
+    GetProcessTimes, GetSystemTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 /// One reading of everything system-wide, taken at most once a second
 /// (every window's status context asks, several times a render).
@@ -178,6 +181,47 @@ pub fn program_of(pid: u32) -> String {
     c.programs.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
     c.programs.insert(pid, (Instant::now(), name.clone()));
     name
+}
+
+/// `pid` and every process under it, (pid, name without `.exe`), from the
+/// snapshot (at most a second old); ConPTY's own conhost.exe left out. A
+/// child is one listed after its parent (a parent's id can be reused).
+pub fn tree_of(pid: u32) -> Vec<(u32, String)> {
+    let procs = process_list();
+    let name = |n: &str| n.trim_end_matches(".exe").trim_end_matches(".EXE").to_string();
+    let Some(root) = procs.iter().position(|(p, _, _)| *p == pid) else { return Vec::new() };
+    let mut out = vec![(pid, name(&procs[root].2))];
+    let mut at = vec![(pid, root)];
+    while let Some((parent, ip)) = at.pop() {
+        for (i, (child, pp, n)) in procs.iter().enumerate() {
+            if *pp == parent && i > ip && !n.eq_ignore_ascii_case("conhost.exe") {
+                out.push((*child, name(n)));
+                at.push((*child, i));
+            }
+        }
+    }
+    out
+}
+
+/// A process's CPU time so far (nanoseconds, user and kernel), the memory
+/// it holds (working set, bytes) and when it started (Unix seconds); None
+/// when it cannot be read.
+pub fn usage_of(pid: u32) -> Option<(u64, u64, u64)> {
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return None;
+    }
+    let ft = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    let times = unsafe { GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) } != 0;
+    let mut mem: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+    mem.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    let memory = unsafe { K32GetProcessMemoryInfo(h, &mut mem, mem.cb) } != 0;
+    unsafe { CloseHandle(h) };
+    // FILETIME counts 100 ns; as a moment, from 1601.
+    let started = ft(created).saturating_sub(116_444_736_000_000_000) / 10_000_000;
+    (times && memory).then(|| ((ft(kernel) + ft(user)) * 100, mem.WorkingSetSize as u64, started))
 }
 
 /// Every process as (pid, parent pid, exe name), from one snapshot.

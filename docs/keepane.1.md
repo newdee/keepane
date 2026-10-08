@@ -95,7 +95,8 @@ marked; `-c` the commands only, `-m` every message sent to it),
 `list-done` (when panes were done: `done-events`, told to the phone, `notify`,
 the `pane-done` hook and `done-webhook`),
 `show-messages`, `clock-mode`, `dashboard` (panes, inboxes, tasks and the
-chosen pane's screen, to act on).
+chosen pane's screen, to act on), `list-agents` (the Claude Code, Codex and
+pi the panes run: model, cost, tokens, context, CPU, memory; `-J` as JSON).
 
 ### Panes that pass messages
 
@@ -273,6 +274,16 @@ request with `curl`, nothing about you in it); a newer one shows on the
 status line (`#{keepane_update}`) and in `show-messages`.
 `set -g update-check off` stops it.
 
+While a pane runs an agent (Claude Code, Codex, pi), the server reads the
+transcript the agent writes and gives its figures to `list-agents`, the
+dashboard, the phone page and the formats `agent`, `agent_model`,
+`agent_cost`, `agent_tokens`, `agent_context`, `agent_cpu`, `agent_mem`,
+`agent_tools` and `agent_turns`. Cost prices the tokens by LiteLLM's public
+list, fetched with `curl` once a day (an hour later after a failed try)
+while an agent runs (pi says its own); these are API list prices, not what a subscription is billed. A
+cost with `+` after it left out a model the list does not have.
+`set -g agent-cost off` stops the fetch and leaves cost out.
+
 ## ENVIRONMENT
 
 `KEEPANE`
@@ -293,6 +304,14 @@ status line (`#{keepane_update}`) and in `show-messages`.
 `KEEPANE_NO_UPDATE_CHECK`
 : Set, the server never asks whether a newer keepane is out.
 
+`KEEPANE_PRICE_LIST`
+: A price list (LiteLLM's form) to price the agents' tokens by, instead of
+  the one fetched; nothing is fetched.
+
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`
+: Where Claude Code and Codex keep their transcripts, as the agents
+  themselves read them (the server's own environment).
+
 `COLORTERM`, `TERM_PROGRAM`
 : A terminal that says `TERM_PROGRAM=Apple_Terminal` without
   `COLORTERM=truecolor` gets the nearest of the 256 colours for every
@@ -305,7 +324,7 @@ status line (`#{keepane_update}`) and in `show-messages`.
 
 `~/.local/share/keepane/` (Linux), `~/Library/Application Support/keepane/` (macOS), `%LOCALAPPDATA%\keepane\` (Windows)
 : The data directory: logs, saved sessions, what panes printed, the event
-  log, `web.key` (the phone's code kept by `keepane web --keep-key`), and
+  log, `prices.json` (the agents' price list, as last fetched), `web.key` (the phone's code kept by `keepane web --keep-key`), and
   `link/`*socket*`/`: a server's key pair (`key`, readable by its user alone)
   and the machines it lets in (`authorized`: a public key, an address, and
   `shell` and `screen` for what they may do, one machine a line).
