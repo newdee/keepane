@@ -140,20 +140,6 @@ export interface Fingers {
  */
 export async function phone(browser: Browser, size = { width: 390, height: 844 }): Promise<Fingers> {
   await browser.setViewport(size);
-  // A swipe from the edge is the page's: no history step of Chromium's own
-  // (a test that wants the system's back says so, with history.back()).
-  const noSwipeBack = () => {
-    const add = () => {
-      const s = document.createElement("style");
-      s.textContent = "html, body { overscroll-behavior-x: none !important }";
-      (document.head ?? document.documentElement).append(s);
-    };
-    if (document.documentElement) add();
-    else document.addEventListener("DOMContentLoaded", add, { once: true });
-    return null;
-  };
-  await browser.addInitScript(noSwipeBack);
-  await browser.evaluate(noSwipeBack);
   const { http } = JSON.parse(fs.readFileSync(ENDPOINT, "utf8"));
   const { webSocketDebuggerUrl } = await (await fetch(`${http}/json/version`)).json();
   open?.close();

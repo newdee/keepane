@@ -22,6 +22,14 @@ body,
   height: var(--vh);
 }
 
+/* A sideways swipe is the page's (the list folds, the pane changes, the
+   edge goes back): not also the browser's own history step (Chrome's swipe
+   navigation). The system's back gesture is not the page's to stop. */
+html,
+body {
+  overscroll-behavior-x: none;
+}
+
 body {
   margin: 0;
   overflow: hidden;
