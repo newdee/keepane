@@ -93,24 +93,41 @@ impl AgentRow {
     /// In the pane table, where room is short: `claude $2.10 34%` (the
     /// share of its context window in use).
     fn short(&self) -> String {
-        let mut s = self.kind.clone();
-        for v in [&self.cost, &self.context] {
-            if !v.is_empty() {
-                s.push_str(&format!(" {v}"));
-            }
+        let mut s = paint("35", &self.kind);
+        if !self.cost.is_empty() {
+            s.push_str(&format!(" {}", paint("32", &self.cost)));
+        }
+        if !self.context.is_empty() {
+            s.push_str(&format!(" {}", paint_context(&self.context)));
         }
         s
     }
 
-    /// Over the chosen pane: everything.
+    /// Over the chosen pane: everything, each figure after the word that
+    /// says what it is (the words dim).
     fn line(&self) -> String {
-        let model = if self.model.is_empty() { String::new() } else { format!(" {}", self.model) };
-        let cost = if self.cost.is_empty() { String::new() } else { format!(" · {}", self.cost) };
-        let context = if self.context.is_empty() { String::new() } else { format!(" · context {}", self.context) };
+        let sep = paint("2", " · ");
+        let model = if self.model.is_empty() { String::new() } else { format!(" {}", paint("36", &self.model)) };
+        let cost = if self.cost.is_empty() { String::new() } else { format!("{sep}{}", paint("32", &self.cost)) };
+        let context = if self.context.is_empty() {
+            String::new()
+        } else {
+            format!("{sep}{} {}", paint("2", "context"), paint_context(&self.context))
+        };
         // What matters most first: a narrow panel cuts the end.
         format!(
-            "\x1b[35m{}\x1b[0m{model}{cost}{context} · {} tokens · cpu {} · mem {} · {} tools · {} turns",
-            self.kind, self.tokens, self.cpu, self.mem, self.tools, self.turns
+            "{}{model}{cost}{context}{sep}{} {}{sep}{} {}{sep}{} {}{sep}{} {}{sep}{} {}",
+            paint("35", &self.kind),
+            self.tokens,
+            paint("2", "tokens"),
+            paint("2", "cpu"),
+            self.cpu,
+            paint("2", "mem"),
+            self.mem,
+            self.tools,
+            paint("2", "tools"),
+            self.turns,
+            paint("2", "turns"),
         )
     }
 
@@ -189,15 +206,27 @@ impl PaneRow {
         }
     }
 
-    /// The state, coloured: free green, busy yellow, exited red.
+    /// The state, coloured: free green, busy yellow, exited red; a
+    /// `normal` pane (never free or busy) nothing.
     fn state_styled(&self) -> String {
         let colour = match self.state() {
             "idle" => "32",
             "busy" => "33",
             "exited" => "31",
-            _ => "2",
+            _ => return String::new(),
         };
-        format!("\x1b[{colour}m{:<6}\x1b[0m", self.state())
+        paint(colour, self.state())
+    }
+
+    /// The work mode, coloured: `ai` magenta, `shell` (it runs what it
+    /// gets) yellow; `normal` nothing.
+    fn mode_styled(&self) -> String {
+        match self.mode.as_str() {
+            "normal" => String::new(),
+            "ai" => paint("35", "ai"),
+            "shell" => paint("33", "shell"),
+            m => m.to_string(),
+        }
     }
 
     /// What it is doing: what it said, else the message it works on, else
@@ -491,6 +520,75 @@ fn clip(s: &str, width: usize) -> (String, usize) {
         out.push_str("\x1b[0m");
     }
     (out, used)
+}
+
+/// `text` in the style `sgr` (`32` green, `1` bold, `2` dim...), then
+/// plain again; nothing for no text. Colour says what a thing is, never
+/// only decorates: the 16 colours the terminal's theme maps, so a light
+/// theme reads as well as a dark one.
+fn paint(sgr: &str, text: &str) -> String {
+    if text.is_empty() { String::new() } else { format!("\x1b[{sgr}m{text}\x1b[0m") }
+}
+
+/// Keys and what they do (`j/k pane  Enter screen`, two spaces between),
+/// each key cyan and bold so the eye finds it, what it does plain.
+fn key_hints(hints: &str) -> String {
+    hints
+        .split("  ")
+        .map(|h| match h.split_once(' ') {
+            Some((key, what)) => format!("{} {what}", paint("1;36", key)),
+            None => paint("1;36", h),
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+/// Whether a wait as it reads (`85ms`, `7.3s`, `4m05s`, `2h13m`, `3d2h`) is
+/// a minute or more: worth the eye.
+fn waited_long(waiting: &str) -> bool {
+    let w = waiting.trim_end_matches("ms");
+    w.len() == waiting.len() && w.contains(['m', 'h', 'd'])
+}
+
+/// The pane table's lines, each with the pane it is (None: a heading).
+type Rows = Vec<(Option<String>, String)>;
+
+/// A column of the pane table: its heading, a cell a pane (styled),
+/// whether it reads against its right edge (a number), and how much it is
+/// kept when room is short (the lowest goes first; `u8::MAX` never).
+struct Column {
+    head: &'static str,
+    cells: Vec<String>,
+    right: bool,
+    keep: u8,
+}
+
+impl Column {
+    /// As wide as its widest cell or its heading.
+    fn width(&self) -> usize {
+        self.cells.iter().map(|c| width_of(c)).max().unwrap_or(0).max(self.head.len())
+    }
+
+    fn cell(&self, text: &str) -> String {
+        if self.right { fit_right(text, self.width()) } else { fit(text, self.width()) }
+    }
+}
+
+/// A context's share in the colour of how full it is: green, yellow from
+/// 60%, red from 80%; a size (no window known) plain.
+fn paint_context(context: &str) -> String {
+    match context.strip_suffix('%').and_then(|p| p.parse::<u32>().ok()) {
+        Some(p) if p >= 80 => paint("31", context),
+        Some(p) if p >= 60 => paint("33", context),
+        Some(_) => paint("32", context),
+        None => context.to_string(),
+    }
+}
+
+/// `s` in `width` columns, against their right edge (a number).
+fn fit_right(s: &str, width: usize) -> String {
+    let (out, used) = clip(s, width);
+    format!("{}{out}", " ".repeat(width - used))
 }
 
 /// `s` in exactly `width` columns: cut, or filled with spaces.
@@ -1060,8 +1158,10 @@ impl Board {
         let Some(row) = row else { return Action::Redraw };
         match panel {
             Panel::Panes => {
-                let (start, table) = self.pane_table(rect.inner_h());
-                if let Some((Some(id), _)) = table.get(start + row) {
+                let (start, heading, table) = self.pane_table(rect.inner_h(), rect.inner_w());
+                // The heading row is not a pane.
+                let row = row.checked_sub(usize::from(heading.is_some()));
+                if let Some((Some(id), _)) = row.and_then(|row| table.get(start + row)) {
                     let id = id.clone();
                     if Some(&id) != self.chosen.as_ref() {
                         self.chosen = Some(id);
@@ -1114,40 +1214,75 @@ impl Board {
         Layout { panes: rect(0, panes_h), inbox: rect(panes_h, inbox_h), tasks: rect(panes_h + inbox_h, tasks_h), main }
     }
 
-    /// The pane table (session headings and panes), with each line's pane,
-    /// and the first line shown in `rows` so the chosen pane is in view.
-    fn pane_table(&self, rows: usize) -> (usize, Vec<(Option<String>, String)>) {
+    /// The pane table in `width` columns: what each column is (a row that
+    /// stays on top), the session headings and panes, each line with its
+    /// pane, and the first line shown in the `rows` below the heading so
+    /// the chosen pane is in view.
+    ///
+    /// Each column is as wide as what is in it. A column every row shows
+    /// only its blank in (no pane named, every pane `normal` and running, no
+    /// message waiting) is left out; when the rest do not fit, the ones
+    /// least needed go first (quiet, mode, inbox, name, state), so what each
+    /// pane runs, an agent's cost and context, keeps 16 columns.
+    fn pane_table(&self, rows: usize, width: usize) -> (usize, Option<String>, Rows) {
+        const RUNNING: usize = 16;
         let chosen = self.chosen_id();
-        let mut table: Vec<(Option<String>, String)> = Vec::new();
-        let mut session = None;
         let shown = self.shown();
-        // A column every row shows only its blank in (no pane named; every
-        // pane `normal` and running) is left out: in a narrow popup the room
-        // goes to what each pane runs, its agent's cost.
-        let names = shown.iter().any(|r| !r.name.is_empty());
-        let modes = shown.iter().any(|r| r.mode != "normal" || r.dead);
-        for r in shown {
+        let quiet_of = |r: &PaneRow| {
+            if r.activity > 0 { crate::format::human_duration(self.now - r.activity) } else { String::new() }
+        };
+        let inbox_of = |r: &PaneRow| if r.inbox > 0 { paint("1;34", &r.inbox.to_string()) } else { String::new() };
+        let col = |head, cells, right, keep| Column { head, cells, right, keep };
+        let mut cols = vec![col(
+            "pane",
+            shown.iter().map(|r| format!("{} {}", r.place, paint("2", &r.id))).collect(),
+            false,
+            u8::MAX,
+        )];
+        if shown.iter().any(|r| !r.name.is_empty()) {
+            cols.push(col("name", shown.iter().map(|r| paint("1", &r.name)).collect(), false, 3));
+        }
+        if shown.iter().any(|r| r.mode != "normal" || r.dead) {
+            cols.push(col("mode", shown.iter().map(|r| r.mode_styled()).collect(), false, 1));
+            cols.push(col("state", shown.iter().map(|r| r.state_styled()).collect(), false, 4));
+        }
+        if shown.iter().any(|r| r.inbox > 0) {
+            cols.push(col("inbox", shown.iter().map(|r| inbox_of(r)).collect(), true, 2));
+        }
+        cols.push(col("quiet", shown.iter().map(|r| quiet_of(r)).collect(), true, 0));
+        // The row's marker, then each column and a space; two before what
+        // runs, which keeps what its widest needs, up to 16 columns.
+        let what_of = |r: &PaneRow| r.agent.as_ref().map(AgentRow::short).unwrap_or_else(|| r.command.clone());
+        let running = shown.iter().map(|r| width_of(&what_of(r))).max().unwrap_or(0).clamp(7, RUNNING);
+        let used = |cols: &[Column]| 1 + cols.iter().map(|c| c.width() + 1).sum::<usize>() + 1;
+        while used(&cols) + running > width {
+            let Some(least) = cols.iter().enumerate().filter(|(_, c)| c.keep != u8::MAX).min_by_key(|(_, c)| c.keep)
+            else {
+                break;
+            };
+            cols.remove(least.0);
+        }
+        // What each column is, over it, dim; a blank cell is nothing there,
+        // not a sign standing for nothing.
+        let heading = (!shown.is_empty()).then(|| {
+            let mut head: String = cols.iter().map(|c| c.cell(c.head) + " ").collect();
+            head.push_str(" running");
+            paint("2", &head)
+        });
+        let mut table: Rows = Vec::new();
+        let mut session = None;
+        for (i, r) in shown.iter().enumerate() {
             if session != Some(&r.session) {
                 session = Some(&r.session);
-                table.push((None, format!("\x1b[1m{}\x1b[0m", r.session)));
+                table.push((None, paint("1;34", &r.session)));
             }
-            let quiet =
-                if r.activity > 0 { crate::format::human_duration(self.now - r.activity) } else { String::new() };
-            let mut line = fit(&format!("{} {}", r.place, r.id), 9);
-            if names {
-                let name = if r.name.is_empty() { "·" } else { &r.name };
-                line.push_str(&fit(&format!(" {name}"), 11));
-            }
-            if modes {
-                let mode = if r.mode == "normal" { "-" } else { &r.mode };
-                line.push_str(&format!(" {} {}", fit(mode, 6), r.state_styled()));
-            }
-            let what = r.agent.as_ref().map(AgentRow::short).unwrap_or_else(|| r.command.clone());
-            line.push_str(&format!(" {:>2} {:>4}  {what}", r.inbox, quiet));
+            let mut line: String = cols.iter().map(|c| c.cell(&c.cells[i]) + " ").collect();
+            line.push_str(&format!(" {}", what_of(r)));
             table.push((Some(r.id.clone()), line));
         }
         let at = table.iter().position(|(id, _)| id.is_some() && *id == chosen).unwrap_or(0);
-        (window_start(at, table.len(), rows), table)
+        let room = rows.saturating_sub(usize::from(heading.is_some()));
+        (window_start(at, table.len(), room), heading, table)
     }
 
     fn panes_box(&self, r: Rect) -> Vec<String> {
@@ -1163,15 +1298,18 @@ impl Board {
             format!(" · {}", crate::format::human_dollars(costs.iter().sum()))
         };
         let title = format!("[1] Panes  {}{spent} · {busy} busy · {queued} queued{web}{filtered}", shown.len());
-        let (start, table) = self.pane_table(r.inner_h());
+        let (start, heading, table) = self.pane_table(r.inner_h(), r.inner_w());
         let chosen = self.chosen_id();
         let focused = self.focus == Panel::Panes;
-        let lines = table
-            .iter()
-            .skip(start)
-            .take(r.inner_h())
-            .map(|(id, line)| row_line(line, id.is_some() && *id == chosen, focused, r.inner_w()))
-            .collect();
+        let mut lines: Vec<String> = heading.iter().map(|h| row_line(h, false, focused, r.inner_w())).collect();
+        let room = r.inner_h().saturating_sub(lines.len());
+        lines.extend(
+            table
+                .iter()
+                .skip(start)
+                .take(room)
+                .map(|(id, line)| row_line(line, id.is_some() && *id == chosen, focused, r.inner_w())),
+        );
         boxed(&title, "", lines, r, focused)
     }
 
@@ -1189,7 +1327,17 @@ impl Board {
             .map(|(i, m)| {
                 // From a pane: its part of the address (a name is short already).
                 let from = m.from.split(' ').next().unwrap_or_default().rsplit('.').next().unwrap_or_default();
-                let line = format!("#{:<3} {:<7} {:>4}  {}", m.id, clip(from, 7).0, m.waiting, m.text);
+                let waiting = if waited_long(&m.waiting) { paint("33", &m.waiting) } else { m.waiting.clone() };
+                let line = format!(
+                    "{} {} {}{} {}{} {}",
+                    paint("2", &format!("#{}", m.id)),
+                    paint("2", "from"),
+                    paint("36", from),
+                    paint("2", " ·"),
+                    waiting,
+                    paint("2", " ·"),
+                    m.text
+                );
                 row_line(&line, i == self.inbox_pick, focused, r.inner_w())
             })
             .collect();
@@ -1229,14 +1377,39 @@ impl Board {
                 let up = if p.started > 0 { crate::format::human_duration(self.now - p.started) } else { "?".into() };
                 let quiet =
                     if p.activity > 0 { crate::format::human_duration(self.now - p.activity) } else { "?".into() };
-                let exit = if p.dead { format!(" · exited {}", p.exit) } else { String::new() };
+                let sep = paint("2", " · ");
+                let exit =
+                    if p.dead { format!("{sep}{}", paint("31", &format!("exited {}", p.exit))) } else { String::new() };
+                let label = |w: &str| paint("2", w);
                 let mut head = vec![
-                    format!("\x1b[36m{}\x1b[0m  {}  \x1b[2m{}\x1b[0m", p.address, p.command, p.path),
-                    format!("pid {} · up {up} · quiet {quiet} · {}{exit}", p.pid, p.size),
+                    // Where it is as a person says it (session:window.pane),
+                    // what runs, where; the full address last.
+                    format!(
+                        "{}  {}  {}  {}",
+                        paint("1", &format!("{}:{}", p.session, p.place)),
+                        p.command,
+                        paint("36", &p.path),
+                        paint("2", &p.address)
+                    ),
+                    format!(
+                        "{} {}{sep}{} {up}{sep}{} {quiet}{sep}{}{exit}",
+                        label("pid"),
+                        p.pid,
+                        label("up"),
+                        label("quiet"),
+                        p.size
+                    ),
                 ];
                 head.extend(p.agent.as_ref().map(AgentRow::line));
-                head.push(format!("doing: {}", p.doing()));
-                (format!("[0] {}{name} · {} · {}", p.id, p.mode, p.state()), head)
+                head.push(format!("{} {}", label("doing:"), p.doing()));
+                // The mode and the state when they say something.
+                let mut title = format!("[0] {}{name}", p.id);
+                for word in [p.mode.as_str(), p.state()] {
+                    if !matches!(word, "normal" | "-" | "") {
+                        title.push_str(&format!(" · {word}"));
+                    }
+                }
+                (title, head)
             }
             None => ("[0] no panes".to_string(), Vec::new()),
         };
@@ -1307,7 +1480,8 @@ impl Board {
             Panel::Tasks => "j/k pick (shown right)  Enter scroll it",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
-        format!(" {keys}  \x1b[2m│ Tab/1230 panel  / filter  ? keys  q quit\x1b[0m")
+        let all = "Tab/1230 panel  / filter  ? keys  q quit";
+        format!(" {}  {}  {}", key_hints(keys), paint("2", "│"), key_hints(all))
     }
 
     /// Everything on screen, as the bytes that draw it: every row exactly
@@ -1654,6 +1828,12 @@ fn boxed(title: &str, right: &str, lines: Vec<String>, r: Rect, focused: bool) -
     let title_room = if with_right { inner - right_w - 2 } else { inner };
     let (text, text_w) = clip(&format!("─{title} "), title_room);
     let fill = "─".repeat(title_room - text_w);
+    // The title in full colour whatever the border: its number blue, the
+    // rest bold.
+    let text = match text.strip_prefix('─').and_then(|t| t.split_once(']')) {
+        Some((num, rest)) => format!("─\x1b[0m{}{}{border}", paint("1;34", &format!("{num}]")), paint("1", rest)),
+        None => text,
+    };
     let top = if with_right {
         format!("{border}┌{text}{fill}\x1b[0m {right} {border}┐\x1b[0m")
     } else {
@@ -2278,9 +2458,13 @@ mod tests {
         let with = format!("{line}\tclaude\tclaude-opus-5-5\t$2.10\t1.2M\t34%\t12%\t812M\t42\t10");
         let a = PaneRow::parse(&with).unwrap().agent.unwrap();
         assert_eq!((a.kind.as_str(), a.cost.as_str(), a.dollars()), ("claude", "$2.10", Some(2.1)));
-        assert_eq!(a.short(), "claude $2.10 34%");
+        assert_eq!(strip(&a.short()), "claude $2.10 34%");
         let unknown = AgentRow { kind: "codex".into(), ..AgentRow::default() };
-        assert_eq!((unknown.short().as_str(), unknown.dollars()), ("codex", None), "nothing known, nothing said");
+        assert_eq!(
+            (strip(&unknown.short()).as_str(), unknown.dollars()),
+            ("codex", None),
+            "nothing known, nothing said"
+        );
         let partial = AgentRow { cost: "$1.25+".into(), ..AgentRow::default() };
         assert_eq!(partial.dollars(), Some(1.25), "at least: counted in the total");
         let mut b = board();
@@ -2315,14 +2499,98 @@ mod tests {
             r.agent = Some(agent.clone());
         }
         b.set_rows(rows);
-        // The popup in a 96-column terminal (prefix v: 80% of it).
-        b.resize(76, 20);
+        // The popup in a 96x26 terminal: prefix v opens it at 90%, inside
+        // its own border (86 - 2 by 23 - 2).
+        b.resize(84, 21);
         let text = screen(&b).join("\n");
         assert_eq!(text.matches("claude $0.58 9%").count(), 3, "{text}");
         // Named or moded panes keep their columns, as before.
         let b = board();
         let text = screen(&b).join("\n");
         assert!(text.contains("lead") && text.contains(" ai "), "{text}");
+    }
+
+    /// Readable at a glance: the columns are named over them, a blank is a
+    /// blank (no `·` or `-` standing for nothing), and each colour says one
+    /// thing: free, busy, the mode, messages waiting, how full a context is.
+    #[test]
+    fn the_board_says_what_its_columns_and_colours_are() {
+        let mut b = board();
+        b.resize(200, 30);
+        let text = screen(&b).join("\n");
+        assert!(text.contains("pane   name   mode state inbox quiet  running"), "{text}");
+        // The pane rows of the left panel (between its borders).
+        let rows: Vec<&str> = text.lines().filter_map(|l| l.split('│').nth(1)).filter(|l| l.contains(" %")).collect();
+        assert_eq!(rows.len(), 3, "{text}");
+        assert!(rows.iter().all(|l| !l.contains(" · ") && !l.contains(" - ")), "{rows:#?}");
+        // The picked row is reversed, its colours gone: pick one that has none.
+        b.chosen = Some("%3".into());
+        let f = b.frame();
+        for (sgr, what) in [
+            ("32m", "idle"),
+            ("33m", "busy"),
+            ("35m", "ai"),
+            ("1;34m", "2"),
+            ("1;34m", "[1]"),
+            ("1;34m", "work"),
+            ("1;36m", "j/k"),
+            ("1;36m", "Tab/1230"),
+        ] {
+            assert!(f.contains(&format!("\x1b[{sgr}{what}\x1b[0m")), "{what} in \\x1b[{sgr}");
+        }
+        assert_eq!(paint_context("12%"), "\x1b[32m12%\x1b[0m");
+        assert_eq!(paint_context("60%"), "\x1b[33m60%\x1b[0m");
+        assert_eq!(paint_context("80%"), "\x1b[31m80%\x1b[0m");
+        assert_eq!(paint_context("340k"), "340k", "a size, not a share: plain");
+        assert_eq!(paint("1", ""), "", "no text, no codes");
+        for (w, long) in [
+            ("85ms", false),
+            ("7.3s", false),
+            ("59s", false),
+            ("1m", true),
+            ("4m05s", true),
+            ("2h13m", true),
+            ("3d2h", true),
+        ] {
+            assert_eq!(waited_long(w), long, "{w}");
+        }
+        // The inbox says which field is which.
+        inbox(&mut b);
+        let text = screen(&b).join("\n");
+        assert!(text.contains("#5 from user · 1s · first"), "{text}");
+    }
+
+    /// Named agent panes in `ai` mode with messages waiting, in the popup
+    /// of a 96x26 terminal: the least needed columns go, each agent's cost
+    /// and context stay whole.
+    #[test]
+    fn a_popup_drops_columns_before_the_agents_figures() {
+        let mut b = board();
+        let agent =
+            AgentRow { kind: "claude".into(), cost: "$2.10".into(), context: "34%".into(), ..AgentRow::default() };
+        let mut rows = b.rows.clone();
+        for r in &mut rows {
+            r.agent = Some(agent.clone());
+        }
+        b.set_rows(rows);
+        b.resize(84, 21);
+        let text = screen(&b).join("\n");
+        assert_eq!(text.matches("claude $2.10 34%").count(), 3, "{text}");
+        assert!(text.contains("pane   name   state  running"), "quiet, mode and inbox go first: {text}");
+        assert!(text.contains("lead") && text.contains("busy"), "name and state stay: {text}");
+        // Wide: every column.
+        b.resize(200, 30);
+        assert!(screen(&b).join("\n").contains("quiet  running"));
+        // Panes running short things (`pwsh`) leave the room to the other
+        // columns: messages waiting still show in the popup.
+        let mut b = board();
+        b.resize(84, 21);
+        let text = screen(&b).join("\n");
+        assert!(text.contains("inbox") && text.contains("running"), "{text}");
+        // A `normal` pane's title has no placeholders for its mode and state.
+        b.chosen = Some("%3".into());
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[0] %3 ─") && !text.contains("normal ·"), "{text}");
     }
 
     /// The board's own format, as the server fills it, reads back: the
@@ -2402,9 +2670,13 @@ mod tests {
         let r = layout.inbox.unwrap();
         b.mouse(&click(r.x + 3, r.y + 2));
         assert_eq!((b.focus, b.inbox_pick), (Panel::Inbox, 1));
-        // A pane: its line in the table (session headings take lines too).
+        // A pane: its line in the table (the column heading and session
+        // headings take lines too: heading, work, %1, %2, ops, %3).
         let p = layout.panes.unwrap();
-        b.mouse(&click(p.x + 3, p.y + 1 + 4));
+        b.mouse(&click(p.x + 3, p.y + 1 + 5));
+        assert_eq!((b.focus, b.chosen.as_deref()), (Panel::Panes, Some("%3")));
+        // The column heading is no pane: the choice stays.
+        b.mouse(&click(p.x + 3, p.y + 1));
         assert_eq!((b.focus, b.chosen.as_deref()), (Panel::Panes, Some("%3")));
         // The main panel takes focus; the wheel scrolls it.
         b.set_main((0..100).map(|i| format!("line {i}")).collect());

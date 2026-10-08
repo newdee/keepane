@@ -144,8 +144,10 @@ processes of the same user from each other.
 `C-b v` (a popup) or `keepane dashboard` (any terminal) lays everything out in
 panels, lazygit style. On the left: `[1]` every pane, grouped by session, with
 its work mode, whether it is free, its inbox, how long it has been quiet and
-its program (or its agent's cost and context, the total in the title); `[2]`
-the chosen pane's inbox; `[3]` the tasks. On the right,
+its program (or its agent's cost and context, the total in the title), under
+named columns, each colour saying one thing (free green, busy yellow,
+messages waiting blue, a context red as it fills); in a narrow window the
+least needed columns give way first; `[2]` the chosen pane's inbox; `[3]` the tasks. On the right,
 `[0]` the chosen pane: its address, directory, pid, how long it has run, what
 it says it is doing, and then its screen live (with its colours), its
 scrollback, its events, or the message or task under the cursor: moving onto

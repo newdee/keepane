@@ -3669,3 +3669,19 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | 静态一致性 | README（中英）和站点引用的图 35 张，缺 0；9 个 GIF 都有浅色版；站点 97 个 i18n 键都有中文、没有多余的中文；make-demos 的 9 项与 9 个录屏函数一一对应；左栏宽度代码 `(w / 2).clamp(30, 64)` 与设计文档一致 | 干净（3/3），验收通过 |
 
 发布 0.35.0 时 CI 在 Linux、macOS 上失败：`src/platform/unix/sysinfo.rs` 的进程表缓存类型触发 `clippy::type_complexity`。Windows 上的 clippy 不编译 `cfg(unix)` 的代码，WSL 里只跑了测试没跑 clippy，所以两边都没抓到。改为与 Windows 一样起名 `type Proc`；WSL 的检查脚本改为依次跑 fmt、clippy、测试（fmt ok，clippy 0 警告，329 + 114 通过）。Release 流程等 CI 通过才构建，所以旧标签没有产出任何发布；标签 `v0.35.0` 移到修好的提交上。
+
+## 112. dashboard 一眼读懂：列名、留空、按意思上色、窄窗先让位
+
+用户："I think the font color in ctrl b v dashboard can be more colorful"，接着"it should be more readable for human"。先给方案，用户"ok, going on"后动手。
+
+- [1] 顶上一行（暗色，不随列表滚动，鼠标点它不算选 pane）写出每列：pane、name、mode、state、inbox、quiet、running。空格子就是空：不再放 `·`、`-`、`0`。
+- 列宽按内容定。每行都空的列整列省掉。放不下时按 quiet、mode、inbox、name、state 的顺序去掉；最后一列留它最宽的内容所需（7 到 16 列）：96 列终端的弹窗里，agent 的花费和上下文完整，有排队消息的 inbox 列也还在。
+- 颜色只表达意思，只用 16 色 ANSI：idle 绿、busy 黄、exited 红；`ai` 品红、`shell` 黄；排队数和 session 标题蓝色粗体；agent 名品红、花费绿、上下文 <60% 绿 / 60% 起黄 / 80% 起红；收件箱发件人青、等了 1 分钟以上黄、`from` 暗；面板标题编号蓝、其余粗体（没聚焦时也不暗）；底行键名青色粗体、说明正常色。选中的行照旧反色、行内无色。
+- [0]：标题不再写 `normal · -`；头部先写 `work:0.2`、程序、目录，完整地址放行末暗色；`pid`、`up`、`quiet`、`doing:`、`tokens` 等标签暗色，值正常色。收件箱一行写成 `#5 from user · 1s · first`。
+- 结构：表格列成为 `Column`（标题、各格、是否右对齐、保留优先级），`pane_table` 按宽度裁列；鼠标点击按标题行换算。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路（变异 14 项） | idle 不绿、ai 不品红、红色阈值改 90%、长等待不黄、键不青、标题编号不蓝、空名字放回 `·`、去掉列名行、quiet 改成最后才去、running 总留 16、不裁列、鼠标不算标题行、收件箱不写 `from`、标题留 `normal`：14 项全部被测试抓到 | 干净（1/3） |
+| 2 | 全量回归（三平台） | Windows fmt、clippy 干净，354 + 10 + 114；Linux fmt ok、clippy 0、331 + 114；浏览器 33/33 | 干净（2/3） |
+| 3 | 视觉（深浅两套，读帧数据 + 看图） | 18 段录屏全部重录；messages 的 dashboard：列名行在、agent 那行 `busy 2 pwsh`、表里占位符 0 个（深浅相同）；agents 的 dashboard：列名 `pane quiet running`、3 行都带花费和上下文；两套截图逐张看过，浅色主题下颜色同样清楚 | 干净（3/3），验收通过 |
