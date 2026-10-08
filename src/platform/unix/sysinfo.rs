@@ -33,8 +33,11 @@ struct Cache {
     programs: HashMap<u32, (Instant, String)>,
     /// The process list, at most a second old: ten panes are ten lookups
     /// a second, not ten reads of every process.
-    procs: Option<(Instant, Vec<(u32, u32, String)>)>,
+    procs: Option<(Instant, Vec<Proc>)>,
 }
+
+/// A process: its id, its parent's id, its name.
+type Proc = (u32, u32, String);
 
 static CACHE: std::sync::LazyLock<Mutex<Cache>> = std::sync::LazyLock::new(|| Mutex::new(Cache::default()));
 
@@ -281,7 +284,7 @@ pub fn tree_of(pid: u32) -> Vec<(u32, String)> {
 }
 
 /// `processes()`, at most a second old.
-fn process_list() -> Vec<(u32, u32, String)> {
+fn process_list() -> Vec<Proc> {
     let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, procs)) = &c.procs
         && at.elapsed() < Duration::from_secs(1)
