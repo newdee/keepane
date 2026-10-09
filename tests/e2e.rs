@@ -809,6 +809,99 @@ async fn a_drag_over_wide_characters_copies_what_it_covers() {
     h.cli(&["kill-server"]).await;
 }
 
+/// With a Chinese input method on, `[` arrives as `【`: after the prefix,
+/// in copy mode and at a y/n question keepane reads such a key as its ASCII
+/// form; a prompt for text keeps it as typed.
+#[tokio::test(flavor = "multi_thread")]
+async fn full_width_keys_work_where_keepane_reads_keys() {
+    let h = Harness::start("fullwidth").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "f"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    // C-b 【 is C-b [: copy mode; ｑ is q: out again.
+    c.prefix('【').await;
+    h.wait_for_cli("copy mode", &["display-message", "-p", "-t", "f", "#{pane_in_mode}"], |_, o| o.trim() == "1").await;
+    c.type_str("ｑ").await;
+    h.wait_for_cli("out of copy mode", &["display-message", "-p", "-t", "f", "#{pane_in_mode}"], |_, o| {
+        o.trim() == "0"
+    })
+    .await;
+    // A name typed at the rename prompt keeps its full-width brackets.
+    c.prefix('，').await;
+    c.wait_for("the rename prompt", |s| s.contents().contains("(rename-window)")).await;
+    c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
+    c.type_str("【工作】").await;
+    c.enter().await;
+    h.wait_for_cli("renamed", &["display-message", "-p", "-t", "f", "#{window_name}"], |_, o| o.trim() == "【工作】")
+        .await;
+    // A y/n question: ｙ is y (C-b ＆ kills the window; a second one keeps
+    // the session).
+    h.cli(&["new-window", "-d", "-t", "f"]).await;
+    c.prefix('＆').await;
+    c.wait_for("the question", |s| s.contents().contains("(y/n)")).await;
+    c.type_str("ｙ").await;
+    h.wait_for_cli("one window left", &["list-windows", "-t", "f"], |_, o| o.lines().count() == 1).await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// A selection dragged to the pane's top row scrolls on while the pointer
+/// stays there, so it takes lines that were above the screen; let go on
+/// the status line (outside the pane), it is still copied.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_drag_at_the_edge_scrolls_and_is_copied_wherever_let_go() {
+    let h = Harness::start("dragscroll").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "s"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    c.type_str(&count_to(80, "row-")).await;
+    c.enter().await;
+    c.wait_for("output", |s| s.contents().contains("row-80")).await;
+    // The first `row-N` on screen: what is above it is only in the scrollback.
+    let first = |s: &vt100::Screen| {
+        s.rows(0, COLS).find_map(|r| r.trim().strip_prefix("row-").and_then(|n| n.parse::<u32>().ok()))
+    };
+    let top = first(c.screen.screen()).expect("rows on screen");
+    let row_of =
+        |s: &vt100::Screen, n: u32| s.rows(0, COLS).position(|r| r.trim() == format!("row-{n}")).unwrap() as i16;
+    let from = row_of(c.screen.screen(), top + 5);
+    let m = |y: i16, buttons: u32, flags: u32| MouseRecord { x: 2, y, buttons, ctrl: 0, flags };
+    c.send(ClientMsg::Mouse(m(from, 1, 0))).await;
+    c.send(ClientMsg::Mouse(m(from - 1, 1, 1))).await;
+    // Up to the top row, and held there: it scrolls a line every 80 ms.
+    c.send(ClientMsg::Mouse(m(0, 1, 1))).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    c.send(ClientMsg::Mouse(m(0, 0, 0))).await;
+    let copied = |want: String| {
+        let h = &h;
+        async move {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let (code, out, _) = h.cli(&["show-buffer"]).await;
+                if code == 0 && out.contains(&want) {
+                    return out;
+                }
+                assert!(Instant::now() < deadline, "{want} not copied: {out:?}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
+    let out = copied(format!("row-{}", top + 4)).await;
+    let earliest = out.lines().find_map(|l| l.trim().strip_prefix("row-")?.parse::<u32>().ok()).unwrap();
+    assert!(earliest + 3 <= top, "scrolled past the screen's top (row-{top}): from row-{earliest}\n{out}");
+    // Let go on the status line, outside the pane: still copied (the
+    // pointer kept to the pane's last row).
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("back at the bottom", |s| s.contents().contains("row-80")).await;
+    let from = row_of(c.screen.screen(), 78);
+    c.send(ClientMsg::Mouse(m(from, 1, 0))).await;
+    c.send(ClientMsg::Mouse(m(from + 1, 1, 1))).await;
+    c.send(ClientMsg::Mouse(m(ROWS as i16 - 1, 1, 1))).await;
+    c.send(ClientMsg::Mouse(m(ROWS as i16 - 1, 0, 0))).await;
+    let out = copied("w-79".into()).await;
+    assert!(out.starts_with("w-78"), "from where it was pressed: {out:?}");
+    h.cli(&["kill-server"]).await;
+}
+
 /// Copy mode by keys over wide characters: a search lands on the word, `E`
 /// goes to its end and `y` copies exactly it (the cursor counts columns, a
 /// Chinese character two).

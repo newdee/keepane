@@ -293,6 +293,35 @@ fn vk_to_char(vk: u16, shift: bool) -> Option<char> {
     Some(c)
 }
 
+/// A key as keepane's own keys read it: a character an input method gives
+/// in its full-width form (Chinese, Japanese, Korean: `【` for `[`, `：` for
+/// `:`, `Ａ` for `A`, `１` for `1`, the ideographic space for a space) as
+/// the ASCII one on the keyboard. Only for the keys keepane answers itself
+/// (after the prefix, copy mode, pickers, menus, y/n): what is typed into a
+/// pane or a text prompt stays as typed.
+pub fn ascii_form(k: Key) -> Key {
+    let KeyCode::Char(c) = k.code else { return k };
+    let ascii = match c {
+        // The full-width forms of the ASCII characters, one for one.
+        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+        '\u{3000}' => ' ',
+        // What a Chinese input method types for the keys that have no
+        // full-width form of their own.
+        '【' | '「' | '『' => '[',
+        '】' | '」' | '』' => ']',
+        '《' | '〈' => '<',
+        '》' | '〉' => '>',
+        '“' | '”' => '"',
+        '‘' | '’' => '\'',
+        '。' => '.',
+        '、' => '\\',
+        '·' => '`',
+        '￥' => '$',
+        _ => c,
+    };
+    Key { code: KeyCode::Char(ascii), ..k }
+}
+
 /// Convert a raw key-down record into a logical key, if it represents one.
 /// Modifier-only presses, key-ups and lone surrogate halves yield `None`.
 pub fn key_from_record(r: &KeyRecord) -> Option<Key> {
@@ -402,6 +431,42 @@ fn control_char_key(c: char, alt: bool) -> Option<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a Chinese input method types for a key, read as the key.
+    #[test]
+    fn full_width_keys_read_as_their_ascii_form() {
+        for (typed, key) in [
+            ('【', '['),
+            ('】', ']'),
+            ('：', ':'),
+            ('？', '?'),
+            ('，', ','),
+            ('；', ';'),
+            ('！', '!'),
+            ('（', '('),
+            ('）', ')'),
+            ('《', '<'),
+            ('》', '>'),
+            ('“', '"'),
+            ('’', '\''),
+            ('。', '.'),
+            ('、', '\\'),
+            ('·', '`'),
+            ('￥', '$'),
+            ('～', '~'),
+            ('Ａ', 'A'),
+            ('ｚ', 'z'),
+            ('１', '1'),
+            ('\u{3000}', ' '),
+        ] {
+            assert_eq!(ascii_form(Key::ch(typed)), Key::ch(key), "{typed}");
+        }
+        assert_eq!(ascii_form(Key::ctrl('ｂ')), Key::ctrl('b'), "modifiers kept");
+        for same in ['中', 'a', '[', 'é'] {
+            assert_eq!(ascii_form(Key::ch(same)), Key::ch(same), "{same}: as it is");
+        }
+        assert_eq!(ascii_form(Key::plain(KeyCode::Enter)), Key::plain(KeyCode::Enter));
+    }
 
     fn rec(vk: u16, ch: u16, ctrl: u32) -> KeyRecord {
         KeyRecord { down: true, repeat: 1, vk, sc: 0, ch, ctrl }

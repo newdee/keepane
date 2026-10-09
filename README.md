@@ -417,6 +417,13 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
 | `M-n` / `M-p` | next / previous window with an alert (see `monitor-activity`) |
 
+With a Chinese, Japanese or Korean input method on, a key that comes in its
+full-width form (`【` for `[`, `：` for `:`, `ｙ` for `y`) works as the key:
+after the prefix, in copy mode, in the pickers and menus, at a y/n question
+and in the dashboard. What is typed into a pane, or as text at a prompt (a
+window's name), stays as typed; a key bound in its full-width form is that
+binding.
+
 Zooming, unzooming and moving the focus are animated, for 160 ms by
 default. Programs are resized once, to the size they end up at, so nothing
 waits for the animation. `set -g animation off` turns it off, and
@@ -445,8 +452,12 @@ normal screen, sends arrow keys to full-screen programs, and is passed
 through to programs that ask for mouse events; `send-keys WheelUp` (or
 `WheelDown`) sends a program what the wheel would, from a script (nothing on
 the normal screen, where the wheel scrolls keepane's own history). Drag to
-select text; it is copied to the Windows clipboard on release, and a right
-click pastes the clipboard into the pane, as the terminal itself would.
+select text; it is copied to the Windows clipboard on release, wherever the
+pointer is let go, and a right click pastes the clipboard into the pane, as
+the terminal itself would. Dragged to the pane's top or bottom row, or past
+it, the pane scrolls while the pointer stays there, so a selection can take
+more than the screen holds. A selection copies the columns it covers: a
+Chinese character, two columns wide, is copied whole.
 
 `C-b F` (`hints`) puts a label of one or two letters on every path, web
 address and git hash in the panes on screen: a compiler's

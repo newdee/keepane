@@ -224,7 +224,10 @@ Keys are pressed after the prefix, `C-b` (`set -g prefix C-a` changes it).
 `C-b ?` lists every binding. A key not pressed within half a second of the
 prefix brings up a panel of what the keys do, by group, read from the
 bindings as they are; the key then works as ever (`prefix-hint off` hides
-it, `prefix-hint-delay` sets the wait in milliseconds). The defaults:
+it, `prefix-hint-delay` sets the wait in milliseconds). A key an input
+method gives in its full-width form (`【`, `：`, `ｙ`) is read as the ASCII
+key wherever keepane reads keys itself; what is typed into a pane or a
+text prompt stays as typed. The defaults:
 
 | Key | Does |
 |---|---|

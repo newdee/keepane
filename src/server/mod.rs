@@ -106,6 +106,9 @@ enum Event {
     /// (`prefix-hint`): only a frame, which draws the panel if so (the
     /// drawing checks the time, so a prefix answered since draws nothing).
     PrefixHintDue,
+    /// A selection dragged to a pane's edge scrolls a line more, when the
+    /// pointer is still there (`Selecting`).
+    DragScroll(ClientId),
     /// The daily look for a newer keepane came back (`newer`).
     NewerChecked(Option<String>),
     /// The address the internet sees this machine at came back (`public_ip`).
@@ -196,6 +199,21 @@ struct Drag {
     horizontal: bool,
     last: i32,
 }
+
+/// A selection being dragged in a pane's copy mode: the pane keeps the
+/// mouse until the button goes up, wherever the pointer is; at its top or
+/// bottom row, or past it, the pane scrolls (`edge`: 1 up, -1 down, 0 not).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Selecting {
+    pane: PaneId,
+    edge: i32,
+    /// A `DragScroll` is on its way: one at a time.
+    ticking: bool,
+}
+
+/// While the pointer stays at a selected pane's edge, it scrolls a line
+/// this often.
+const DRAG_SCROLL: Duration = Duration::from_millis(80);
 
 /// The `choose-tree` picker (prefix `w` / `s`): a list of sessions, each
 /// followed by its windows when `expand` is set. `items` and `lines` are
@@ -515,6 +533,8 @@ struct Client {
     popup: Option<Popup>,
     mouse_buttons: u32,
     drag: Option<Drag>,
+    /// A selection being dragged (`Selecting`).
+    selecting: Option<Selecting>,
     /// Virtual keys whose key-down we consumed; drop the matching key-up.
     swallow_up: HashSet<u16>,
     /// A bell from a background window, to ring at the next render.
@@ -2068,6 +2088,7 @@ impl Server {
                         popup: None,
                         mouse_buttons: 0,
                         drag: None,
+                        selecting: None,
                         swallow_up: HashSet::new(),
                         pending_bell: false,
                         pending: std::collections::VecDeque::new(),
@@ -2157,6 +2178,12 @@ impl Server {
             }
             // The frame after every event draws it.
             Event::PrefixHintDue => {}
+            Event::DragScroll(cid) => {
+                if let Some(sel) = self.clients.get_mut(&cid).and_then(|c| c.selecting.as_mut()) {
+                    sel.ticking = false;
+                }
+                self.drag_scroll(cid);
+            }
             Event::PromptSettled(id) => {
                 if let Some(p) = self.find_pane_mut(id)
                     && std::mem::take(&mut p.settle)
@@ -6135,7 +6162,7 @@ impl Server {
         if c.hints.is_some() {
             if let Some(k) = key {
                 c.swallow_up.insert(rec.vk);
-                self.hints_key(cid, k);
+                self.hints_key(cid, crate::keys::ascii_form(k));
             }
             return;
         }
@@ -6150,7 +6177,7 @@ impl Server {
             c.swallow_up.insert(rec.vk);
             let typed = c.panes_typed.take();
             let until = c.panes_until.take();
-            let KeyCode::Char(d @ '0'..='9') = k.code else { return };
+            let KeyCode::Char(d @ '0'..='9') = crate::keys::ascii_form(k).code else { return };
             let d = d as usize - '0' as usize;
             let Some((count, active, last)) =
                 self.session(sid).and_then(|s| s.window()).map(|w| (w.panes.len(), w.active, w.last_pane))
@@ -6235,7 +6262,10 @@ impl Server {
                     }
                     return;
                 }
-                match self.prefix_binds.get(&k).cloned() {
+                // A key bound as it was typed, else its ASCII form (`【` is
+                // `[` with a Chinese input method on).
+                let bound = self.prefix_binds.get(&k).or_else(|| self.prefix_binds.get(&crate::keys::ascii_form(k)));
+                match bound.cloned() {
                     Some(b) => {
                         // `bind -r`: the same table answers bare keys for a
                         // while, so `prefix h h h` walks three panes left.
@@ -6253,7 +6283,8 @@ impl Server {
             }
             // Still inside the repeat window: a repeatable key runs again.
             if c.repeat_until.is_some_and(|t| Instant::now() < t) {
-                match self.prefix_binds.get(&k).cloned() {
+                let bound = self.prefix_binds.get(&k).or_else(|| self.prefix_binds.get(&crate::keys::ascii_form(k)));
+                match bound.cloned() {
                     Some(b) if b.repeat => {
                         let c = self.clients.get_mut(&cid).unwrap();
                         c.swallow_up.insert(rec.vk);
@@ -6296,7 +6327,7 @@ impl Server {
             }
             if in_chooser {
                 c.swallow_up.insert(rec.vk);
-                self.chooser_key(cid, k);
+                self.chooser_key(cid, crate::keys::ascii_form(k));
                 return;
             }
             if in_copy {
@@ -6305,11 +6336,12 @@ impl Server {
                 // (usually `send -X ...`, which goes to the built-in motions
                 // below directly, so a binding never finds itself again);
                 // any other key is copy mode's own.
-                if let Some(b) = self.copy_binds.get(&k).cloned() {
+                let ascii = crate::keys::ascii_form(k);
+                if let Some(b) = self.copy_binds.get(&k).or_else(|| self.copy_binds.get(&ascii)).cloned() {
                     let out = self.exec(b.cmd, Some(cid));
                     self.reply(cid, out);
                 } else if let Some(pid) = self.session(sid).and_then(|s| s.window()).map(|w| w.active) {
-                    self.copy_key(cid, pid, k);
+                    self.copy_key(cid, pid, ascii);
                 }
                 return;
             }
@@ -6402,6 +6434,13 @@ impl Server {
     fn prompt_key(&mut self, cid: ClientId, k: Key) {
         let Some(c) = self.clients.get_mut(&cid) else { return };
         let Some(p) = c.prompt.as_mut() else { return };
+        // A y/n question reads `ｙ` as `y`; a prompt for text keeps what is
+        // typed (a name may well hold `【`).
+        let k = if matches!(p.kind, PromptKind::Confirm(_) | PromptKind::ConfirmPicker { .. }) {
+            crate::keys::ascii_form(k)
+        } else {
+            k
+        };
         if k.code != KeyCode::Tab {
             p.hint = None; // Tab's candidates stay up for one key only
         }
@@ -7793,6 +7832,19 @@ impl Server {
             return;
         }
 
+        // A selection being dragged: its pane has the mouse until the left
+        // button goes up, wherever the pointer is (another pane, a border,
+        // the status line); a wheel or another button meanwhile ends it.
+        if let Some(sel) = self.clients.get(&cid).and_then(|c| c.selecting) {
+            let release = released & BTN_LEFT != 0;
+            if release || (buttons & BTN_LEFT != 0 && wheel.is_none()) {
+                let at = (i32::from(m.x) + i32::from(view_x), i32::from(m.y) + i32::from(view_y));
+                self.select_drag(cid, sid, sel.pane, at, release);
+                return;
+            }
+            self.clients.get_mut(&cid).unwrap().selecting = None;
+        }
+
         let status_y =
             if self.opts.status { Some(if self.opts.status_top { 0 } else { crows.saturating_sub(1) }) } else { None };
         if Some(y) == status_y {
@@ -7922,42 +7974,103 @@ impl Server {
             let c = pane.copy.as_mut().unwrap();
             c.anchor = Some((abs, c.cx));
             c.dragging = true;
+            // From now on the drag is this pane's (`select_drag`).
+            self.clients.get_mut(&cid).unwrap().selecting = Some(Selecting { pane: pid, edge: 0, ticking: false });
+        }
+    }
+
+    /// The pointer of a selection being dragged in pane `pid`, at `at`
+    /// (window cells, maybe outside the pane); `release`: the button went
+    /// up there. The selection ends where the pointer is, kept within the
+    /// pane. At its top or bottom row, or past it, the pane scrolls a line
+    /// now and every `DRAG_SCROLL` while the pointer stays (`drag_scroll`).
+    /// Let go, the selection is copied, wherever the pointer is.
+    fn select_drag(&mut self, cid: ClientId, sid: SessionId, pid: PaneId, at: (i32, i32), release: bool) {
+        let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) else {
+            self.clients.get_mut(&cid).unwrap().selecting = None;
+            return;
+        };
+        let (Some(rect), Some(pane)) = (w.rect_of(pid), w.pane_mut(pid)) else {
+            self.clients.get_mut(&cid).unwrap().selecting = None;
+            return;
+        };
+        if !pane.copy.as_ref().is_some_and(|c| c.dragging) {
+            self.clients.get_mut(&cid).unwrap().selecting = None;
             return;
         }
-        if motion && buttons & BTN_LEFT != 0 && in_copy {
-            let c = pane.copy.as_mut().unwrap();
-            if c.dragging {
-                c.cx = px.min(pane.cols - 1);
-                c.cy = py.min(pane.rows - 1);
-            }
+        let (cols, rows) = (i32::from(pane.cols), i32::from(pane.rows));
+        let (x, y) = (at.0 - i32::from(rect.x), at.1 - i32::from(rect.y));
+        let c = pane.copy.as_mut().unwrap();
+        c.cx = x.clamp(0, cols - 1) as u16;
+        c.cy = y.clamp(0, rows - 1) as u16;
+        if release {
+            self.clients.get_mut(&cid).unwrap().selecting = None;
+            self.finish_selection(cid, sid, pid);
             return;
         }
-        if released & BTN_LEFT != 0 && in_copy {
-            let (cols, rows) = (pane.cols, pane.rows);
-            let c = pane.copy.as_mut().unwrap();
-            if c.dragging {
-                c.dragging = false;
-                c.cx = px.min(cols - 1);
-                c.cy = py.min(rows - 1);
-                let (anchor, cx) = (c.anchor, c.cx);
-                let same = anchor == Some((copy_abs(pane), cx));
-                if same {
-                    // A plain click: just leave copy mode.
-                    exit_copy_mode(pane);
-                } else {
-                    match copy_selection(pane) {
-                        Ok((n, text, clipboard)) => {
-                            self.set_buffer(None, &text, false);
-                            let note = clipboard.map(|e| format!(" ({e})")).unwrap_or_default();
-                            self.message(cid, &format!("copied {n} characters{note}"));
-                        }
-                        Err(e) => self.message(cid, &e),
-                    }
-                    if let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.pane_mut(pid)) {
-                        exit_copy_mode(p);
-                    }
-                }
+        let edge = if y <= 0 {
+            1
+        } else if y >= rows - 1 {
+            -1
+        } else {
+            0
+        };
+        let sel = self.clients.get_mut(&cid).unwrap().selecting.as_mut().unwrap();
+        let reached = edge != 0 && sel.edge == 0;
+        sel.edge = edge;
+        if reached {
+            self.drag_scroll(cid);
+        }
+    }
+
+    /// A selection held at its pane's edge: a line further that way, and
+    /// again in `DRAG_SCROLL` while it is still there.
+    fn drag_scroll(&mut self, cid: ClientId) {
+        let Some(c) = self.clients.get(&cid) else { return };
+        let (Some(sel), Some(sid)) = (c.selecting, c.session) else { return };
+        if sel.edge == 0 {
+            return;
+        }
+        let Some(pane) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.pane_mut(sel.pane)) else {
+            return;
+        };
+        copy_scroll(pane, i64::from(sel.edge));
+        if !sel.ticking {
+            if let Some(s) = self.clients.get_mut(&cid).and_then(|c| c.selecting.as_mut()) {
+                s.ticking = true;
             }
+            let tx = self.events.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(DRAG_SCROLL).await;
+                let _ = tx.send(Event::DragScroll(cid));
+            });
+        }
+    }
+
+    /// A drag let go: what it covers is copied (to a paste buffer and the
+    /// clipboard), or, when it covers nothing (a plain click), copy mode
+    /// just ends.
+    fn finish_selection(&mut self, cid: ClientId, sid: SessionId, pid: PaneId) {
+        let Some(pane) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.pane_mut(pid)) else {
+            return;
+        };
+        let Some(c) = pane.copy.as_mut() else { return };
+        c.dragging = false;
+        let (anchor, cx) = (c.anchor, c.cx);
+        if anchor == Some((copy_abs(pane), cx)) {
+            exit_copy_mode(pane);
+            return;
+        }
+        match copy_selection(pane) {
+            Ok((n, text, clipboard)) => {
+                self.set_buffer(None, &text, false);
+                let note = clipboard.map(|e| format!(" ({e})")).unwrap_or_default();
+                self.message(cid, &format!("copied {n} characters{note}"));
+            }
+            Err(e) => self.message(cid, &e),
+        }
+        if let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.pane_mut(pid)) {
+            exit_copy_mode(p);
         }
     }
 
@@ -9349,6 +9462,7 @@ mod tests {
             popup: None,
             mouse_buttons: 0,
             drag: None,
+            selecting: None,
             swallow_up: HashSet::new(),
             pending_bell: false,
             pending: std::collections::VecDeque::new(),

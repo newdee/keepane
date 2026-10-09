@@ -856,12 +856,16 @@ impl Board {
 
     fn key_inner(&mut self, k: Key) -> Action {
         self.note = None;
+        // Text being typed (a message, a name, the filter) is kept as typed;
+        // a key of the board's own, `【` for `[` with a Chinese input method
+        // on, is read as its ASCII form.
         if let Some(d) = self.dialog.take() {
-            return self.answer(d, k);
+            return self.answer(d, crate::keys::ascii_form(k));
         }
         if let Some((what, text)) = self.input.take() {
             return self.typed(what, text, k);
         }
+        let k = crate::keys::ascii_form(k);
         let plain = !k.ctrl && !k.alt;
         // Everywhere.
         match k.code {
@@ -2374,6 +2378,27 @@ mod tests {
         // An error instead of a record: shown as it came.
         b.set_main(vec!["no task #99".into()]);
         assert!(strip(&b.frame()).contains("no task #99"));
+    }
+
+    /// With a Chinese input method on: `】` is `]` (the next tab), `ｑ` is
+    /// `q`; a message being typed keeps its `【` as typed.
+    #[test]
+    fn full_width_keys_are_the_boards_keys_but_text_stays() {
+        let mut b = board();
+        b.focus = Panel::Main;
+        b.key(Key::ch('】'));
+        assert_eq!(b.tab, Tab::Scrollback, "】 went to the next tab");
+        b.focus = Panel::Panes;
+        b.key(Key::ch('ｓ'));
+        for c in "【急】ｔｅｓｔ".chars() {
+            b.key(Key::ch(c));
+        }
+        let sent = b.key(Key::plain(KeyCode::Enter));
+        assert!(
+            matches!(&sent, Action::Run(argv) if argv.last().map(String::as_str) == Some("【急】ｔｅｓｔ")),
+            "the message as typed: {sent:?}"
+        );
+        assert!(matches!(b.key(Key::ch('ｑ')), Action::Quit));
     }
 
     #[test]
