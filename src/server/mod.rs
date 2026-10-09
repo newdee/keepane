@@ -6663,10 +6663,10 @@ impl Server {
             (start..=last).collect()
         };
         let hit = candidates.into_iter().find_map(|abs| {
-            let (text, _) = p.line_text(abs);
-            text.to_lowercase().find(&needle).map(|byte| {
-                // Column in characters, which is what the copy cursor counts.
-                let col = text[..byte].chars().count() as u16;
+            let text = p.line_text(abs).0.to_lowercase();
+            text.find(&needle).map(|byte| {
+                // The copy cursor counts columns: a wide character is two.
+                let col = unicode_width::UnicodeWidthStr::width(&text[..byte]) as u16;
                 (abs, col)
             })
         });
@@ -7618,7 +7618,8 @@ impl Server {
             (KeyCode::Char('^'), false, false) => {
                 let abs = copy_abs(p);
                 let (line, _) = p.line_text(abs);
-                let col = line.chars().take_while(|ch| ch.is_whitespace()).count() as u16;
+                let blank = &line[..line.len() - line.trim_start().len()];
+                let col = unicode_width::UnicodeWidthStr::width(blank) as u16;
                 let c = p.copy.as_mut().unwrap();
                 c.cx = col.min(cols.saturating_sub(1));
             }
@@ -8885,10 +8886,18 @@ fn copy_word_motion(p: &mut Pane, key: char) {
             2
         }
     };
+    // A row as its columns, each the character drawn there (a wide one in
+    // both of its): the cursor moves a column at a time, as it is drawn.
+    let columns = |p: &mut Pane, abs: usize| -> Vec<char> {
+        let text = p.line_text(abs).0;
+        let chars: Vec<char> = text.chars().collect();
+        let mut row: Vec<char> = pane::column_spans(&text).iter().map(|s| chars[s.start]).collect();
+        row.resize(cols.max(1), ' ');
+        row
+    };
     let abs = copy_abs(p);
     let last = p.scrollback_len() + p.rows as usize - 1;
-    let mut line: Vec<char> = p.line_text(abs).0.chars().collect();
-    line.resize(cols.max(1), ' ');
+    let mut line = columns(p, abs);
     let mut x = p.copy.as_ref().map(|c| c.cx as usize).unwrap_or(0).min(cols.saturating_sub(1));
     let mut cur = abs;
     let forward = key != 'b' && key != 'B';
@@ -8904,8 +8913,7 @@ fn copy_word_motion(p: &mut Pane, key: char) {
                 true
             } else if cur < last {
                 cur += 1;
-                line = p.line_text(cur).0.chars().collect();
-                line.resize(cols.max(1), ' ');
+                line = columns(p, cur);
                 x = 0;
                 true
             } else {
@@ -8916,8 +8924,7 @@ fn copy_word_motion(p: &mut Pane, key: char) {
             true
         } else if cur > 0 {
             cur -= 1;
-            line = p.line_text(cur).0.chars().collect();
-            line.resize(cols.max(1), ' ');
+            line = columns(p, cur);
             x = line.len().saturating_sub(1);
             true
         } else {
@@ -9180,6 +9187,19 @@ fn copy_sel_view(rows: u16, cols: u16, cm: &CopyMode, cursor_abs: usize) -> Opti
 /// Returns the number of characters copied and the text, which the caller
 /// also stores as a paste buffer.
 fn copy_selection(p: &mut Pane) -> Result<(usize, String, Option<String>), String> {
+    let text = selected_text(p)?;
+    let n = text.chars().count();
+    // The clipboard can be busy (another program holding it, a clipboard
+    // manager reacting to the last change): the paste buffer is set either
+    // way, and the trouble is reported beside the count.
+    let clipboard = crate::clipboard::set_text(&text).err().map(|e| format!("clipboard: {e}"));
+    Ok((n, text, clipboard))
+}
+
+/// What copy mode's selection covers: from the anchor to the cursor (or
+/// the rectangle between them), lines joined where the terminal wrapped
+/// them, blanks at their ends dropped.
+fn selected_text(p: &mut Pane) -> Result<String, String> {
     let cur_abs = copy_abs(p);
     let c = p.copy.as_ref().unwrap();
     let Some((abs_a, col_a)) = c.anchor else { return Err("no selection".into()) };
@@ -9194,18 +9214,23 @@ fn copy_selection(p: &mut Pane) -> Result<(usize, String, Option<String>), Strin
     for abs in a.0..=b.0 {
         let (line, wrapped) = p.line_text(abs);
         let chars: Vec<char> = line.chars().collect();
+        // The selection's ends are columns; what is copied is the
+        // characters drawn in them (a wide character in its two).
+        let spans = pane::column_spans(&line);
+        let from = |col: usize| spans.get(col).map_or(chars.len(), |s| s.start);
+        let upto = |col: usize| spans.get(col).map_or(chars.len(), |s| s.end);
         // A rectangle takes the same columns from every line.
         let start = if rect {
-            rx0
+            from(rx0)
         } else if abs == a.0 {
-            a.1 as usize
+            from(a.1 as usize)
         } else {
             0
         };
         let end = if rect {
-            (rx1 + 1).min(chars.len())
+            upto(rx1)
         } else if abs == b.0 {
-            (b.1 as usize + 1).min(chars.len())
+            upto(b.1 as usize)
         } else {
             chars.len()
         };
@@ -9219,17 +9244,49 @@ fn copy_selection(p: &mut Pane) -> Result<(usize, String, Option<String>), Strin
             }
         }
     }
-    let n = text.chars().count();
-    // The clipboard can be busy (another program holding it, a clipboard
-    // manager reacting to the last change): the paste buffer is set either
-    // way, and the trouble is reported beside the count.
-    let clipboard = crate::clipboard::set_text(&text).err().map(|e| format!("clipboard: {e}"));
-    Ok((n, text, clipboard))
+    Ok(text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A selection copies the characters drawn in the columns it covers:
+    /// wide ones (Chinese, an emoji) two columns each, an accent with its
+    /// letter, half of a wide character as all of it; over lines and as a
+    /// rectangle; plain text as ever.
+    #[test]
+    fn a_selection_copies_the_columns_it_covers() {
+        let argv: Vec<String> = if cfg!(windows) {
+            ["cmd.exe", "/c", "exit"].map(String::from).to_vec()
+        } else {
+            ["/bin/sh", "-c", "exit"].map(String::from).to_vec()
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut p = Pane::spawn(1, &argv, None, 40, 6, 100, &[], tx).unwrap();
+        p.process_output("plain text here\r\n中文 ab😀cd e\u{301}f\r\n宽字一\r\n宽字二".as_bytes());
+        // (row, column) of the anchor and of the cursor, the rectangle or not.
+        let mut pick = |a: (usize, u16), b: (usize, u16), rect: bool| {
+            enter_copy_mode(&mut p);
+            let c = p.copy.as_mut().unwrap();
+            c.offset = 0;
+            (c.cy, c.cx) = (b.0 as u16, b.1);
+            c.anchor = Some(a);
+            c.rect = rect;
+            let got = selected_text(&mut p).unwrap();
+            exit_copy_mode(&mut p);
+            got
+        };
+        assert_eq!(pick((0, 6), (0, 9), false), "text", "plain: a column a character, as before");
+        // 中文 is columns 0-3, ` ` 4, ab 5-6, 😀 7-8, cd 9-10, ` ` 11, é 12, f 13.
+        assert_eq!(pick((1, 5), (1, 10), false), "ab😀cd");
+        assert_eq!(pick((1, 1), (1, 2), false), "中文", "half of each: all of each");
+        assert_eq!(pick((1, 8), (1, 8), false), "😀", "the emoji's second column");
+        assert_eq!(pick((1, 12), (1, 13), false), "e\u{301}f", "an accent with its letter");
+        assert_eq!(pick((1, 5), (2, 1), false), "ab😀cd e\u{301}f\n宽", "over two lines");
+        assert_eq!(pick((2, 2), (3, 3), true), "字\n字", "a rectangle: the same columns of each line");
+        assert_eq!(pick((1, 30), (1, 39), false), "", "past the end of the text: nothing");
+    }
 
     /// An ask on a thread answers, even when it panics: None then.
     #[test]

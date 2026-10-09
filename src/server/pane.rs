@@ -76,6 +76,30 @@ pub struct Finished {
     pub exit: Option<i32>,
 }
 
+/// Each screen column of a row's text (as `Pane::line_text` gives it), as
+/// the range of characters drawn there: a wide character (Chinese, two
+/// columns) in both its columns, a zero-width one (a combining accent) with
+/// the column before it. Copy mode's cursor counts columns and a row's
+/// text counts characters: this is where the two meet.
+pub fn column_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, ch) in text.chars().enumerate() {
+        match unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) {
+            0 => match spans.last().map(|s| s.start) {
+                // Every column of the character before takes it too.
+                Some(start) => {
+                    for s in spans.iter_mut().rev().take_while(|s| s.start == start) {
+                        s.end = i + 1;
+                    }
+                }
+                None => spans.push(i..i + 1),
+            },
+            w => spans.extend(std::iter::repeat_n(i..i + 1, w)),
+        }
+    }
+    spans
+}
+
 /// What was typed at a prompt: the line from column `col` on, a cell a
 /// column (a wide character takes two), blanks trimmed; nothing when the
 /// line ends before that column (the prompt and nothing after it).
@@ -1622,6 +1646,8 @@ impl Pane {
 
     /// Text of the absolute line `abs` (0 = oldest scrollback line), joined
     /// across soft-wrapped rows is *not* done here; one visual row per call.
+    /// One character per cell drawn (a wide one, two columns, once): copy
+    /// mode, which counts columns, reads it through `column_spans`.
     pub fn line_text(&mut self, abs: usize) -> (String, bool) {
         let max = self.scrollback_len();
         let rows = self.rows as usize;
@@ -2193,6 +2219,19 @@ mod tests {
         assert_eq!(p.last_line(), "tests: 42 passed");
         p.process_output(b"echo a\tb\r\na\tb\r\nPS> x");
         assert_eq!(p.last_line(), "a       b", "a tab as the screen shows it");
+    }
+
+    /// Each column of a row, as the characters drawn in it: one each for
+    /// plain text (as before), a wide character in both of its columns, an
+    /// accent with the letter it sits on.
+    #[test]
+    fn a_rows_columns_are_its_characters_as_drawn() {
+        assert_eq!(column_spans("ab c"), [0..1, 1..2, 2..3, 3..4], "plain text: a column a character");
+        assert_eq!(column_spans("a中b"), [0..1, 1..2, 1..2, 2..3], "中 in both its columns");
+        assert_eq!(column_spans("e\u{301}x"), [0..2, 2..3], "é as e and its accent: one column");
+        assert_eq!(column_spans("中\u{301}"), [0..2, 0..2], "an accent on a wide character: both columns");
+        assert_eq!(column_spans("\u{301}a"), [0..1, 1..2], "an accent first: a column of its own");
+        assert!(column_spans("").is_empty());
     }
 
     /// What was typed: the line after the prompt's column, wide characters

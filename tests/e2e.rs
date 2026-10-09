@@ -770,6 +770,94 @@ async fn a_drag_in_a_shell_copies_what_it_covers() {
     h.cli(&["kill-server"]).await;
 }
 
+/// A drag copies exactly the columns it covers, wide characters (Chinese,
+/// two columns each) before, inside and after the selection included.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_drag_over_wide_characters_copies_what_it_covers() {
+    let h = Harness::start("dragwide").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "w"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    c.type_str(&prints("'中文前面 dragme-宽字-5678 后面'")).await;
+    c.enter().await;
+    c.wait_for("the text", |s| s.contents().matches("dragme-").count() >= 2).await;
+    // The printed row (not the typed one), and the column its word starts at.
+    let (row, col) = (0..24u16)
+        .rev()
+        .find_map(|r| {
+            let line: String = c.screen.screen().rows(0, COLS).nth(r as usize).unwrap_or_default();
+            let i = line.find("dragme-")?;
+            line.starts_with("中文前面").then(|| (r, unicode_width::UnicodeWidthStr::width(&line[..i]) as u16))
+        })
+        .unwrap_or_else(|| panic!("the text on screen:\n{}", c.screen.screen().contents()));
+    // `dragme-宽字-5678` is 17 columns: from its first to its last.
+    let m = |x: u16, buttons: u32, flags: u32| MouseRecord { x: x as i16, y: row as i16, buttons, ctrl: 0, flags };
+    c.send(ClientMsg::Mouse(m(col, 1, 0))).await;
+    c.send(ClientMsg::Mouse(m(col + 8, 1, 1))).await;
+    c.send(ClientMsg::Mouse(m(col + 16, 1, 1))).await;
+    c.send(ClientMsg::Mouse(m(col + 16, 0, 0))).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, out, _) = h.cli(&["show-buffer"]).await;
+        if code == 0 && out.contains("dragme") {
+            assert_eq!(out.trim_end(), "dragme-宽字-5678", "exactly what the drag covered");
+            break;
+        }
+        assert!(Instant::now() < deadline, "nothing copied: {out:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.cli(&["kill-server"]).await;
+}
+
+/// Copy mode by keys over wide characters: a search lands on the word, `E`
+/// goes to its end and `y` copies exactly it (the cursor counts columns, a
+/// Chinese character two).
+#[tokio::test(flavor = "multi_thread")]
+async fn copy_mode_keys_count_wide_characters_as_two_columns() {
+    let h = Harness::start("copywide").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "k"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    c.type_str(&prints("'中文前面 dragme-宽字-5678 后面'")).await;
+    c.enter().await;
+    c.wait_for("the text", |s| s.rows(0, COLS).any(|r| r.starts_with("中文前面"))).await;
+    c.prefix('[').await;
+    c.type_str("?dragme").await;
+    c.enter().await;
+    c.type_str(" ").await;
+    c.type_str("E").await;
+    c.type_str("y").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, out, _) = h.cli(&["show-buffer"]).await;
+        if code == 0 && out.contains("dragme") {
+            assert_eq!(out.trim_end(), "dragme-宽字-5678", "from the search's hit to the word's end");
+            break;
+        }
+        assert!(Instant::now() < deadline, "nothing copied: {out:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // `^` past blanks two columns wide (the ideographic space).
+    c.type_str(&prints("'\u{3000}\u{3000}indented-9'")).await;
+    c.enter().await;
+    c.wait_for("the indented line", |s| s.rows(0, COLS).any(|r| r.starts_with("\u{3000}\u{3000}indented-9"))).await;
+    c.prefix('[').await;
+    c.type_str("?indented-9").await;
+    c.enter().await;
+    c.type_str("0^ Ey").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, out, _) = h.cli(&["show-buffer"]).await;
+        if code == 0 && out.contains("indented-9") {
+            assert_eq!(out.trim_end(), "indented-9", "from the first that is not blank");
+            break;
+        }
+        assert!(Instant::now() < deadline, "nothing copied: {out:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn resize_and_two_clients() {
     let h = Harness::start("resize").await;
