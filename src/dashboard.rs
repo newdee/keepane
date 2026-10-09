@@ -955,6 +955,9 @@ impl Board {
         match code {
             KeyCode::Down | KeyCode::Char('j') => self.step_pane(1),
             KeyCode::Up | KeyCode::Char('k') => self.step_pane(-1),
+            // The first pane, the last (as vi, and Home / End).
+            KeyCode::Home | KeyCode::Char('g') => self.step_pane(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.step_pane(isize::MAX / 2),
             KeyCode::Enter => {
                 self.tab = Tab::Screen;
                 self.scroll = 0;
@@ -985,6 +988,8 @@ impl Board {
         match (code, picked) {
             (KeyCode::Down | KeyCode::Char('j'), _) => self.inbox_pick = (self.inbox_pick + 1).min(last),
             (KeyCode::Up | KeyCode::Char('k'), _) => self.inbox_pick = self.inbox_pick.saturating_sub(1),
+            (KeyCode::Home | KeyCode::Char('g'), _) => self.inbox_pick = 0,
+            (KeyCode::End | KeyCode::Char('G'), _) => self.inbox_pick = last,
             (KeyCode::Char('u'), _) => return Action::Run(owned(&["drop-message", "-u"])),
             (KeyCode::Enter, Some(m)) => {
                 self.detail = Some(Detail::Message(m.id));
@@ -1022,6 +1027,8 @@ impl Board {
         match code {
             KeyCode::Down | KeyCode::Char('j') => self.task_pick = (self.task_pick + 1).min(last),
             KeyCode::Up | KeyCode::Char('k') => self.task_pick = self.task_pick.saturating_sub(1),
+            KeyCode::Home | KeyCode::Char('g') => self.task_pick = 0,
+            KeyCode::End | KeyCode::Char('G') => self.task_pick = last,
             KeyCode::Enter => {
                 let id = self.tasks.get(self.task_pick).map(|t| t.id.clone()).filter(|id| !id.is_empty());
                 match id {
@@ -1043,8 +1050,8 @@ impl Board {
         match code {
             KeyCode::Up | KeyCode::Char('k') => self.scroll_by(1),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_by(-1),
-            KeyCode::Char('g') => self.scroll_by(self.main.len() as isize),
-            KeyCode::Char('G') => self.scroll_by(-(self.main.len() as isize)),
+            KeyCode::Home | KeyCode::Char('g') => self.scroll_by(self.main.len() as isize),
+            KeyCode::End | KeyCode::Char('G') => self.scroll_by(-(self.main.len() as isize)),
             KeyCode::Enter => self.focus_on(self.left),
             _ => {}
         }
@@ -1479,9 +1486,13 @@ impl Board {
             return format!("\x1b[1m {n}\x1b[0m");
         }
         let keys = match self.focus {
-            Panel::Panes => "j/k pane  Enter screen  s send  r rename  m mode  R ready  o go there  x close",
-            Panel::Inbox => "j/k pick (shown right)  Enter scroll it  d delete  K/J move  t to top  u undo delete",
-            Panel::Tasks => "j/k pick (shown right)  Enter scroll it",
+            Panel::Panes => {
+                "j/k pane  g/G first/last  Enter screen  s send  r rename  m mode  R ready  o go there  x close"
+            }
+            Panel::Inbox => {
+                "j/k pick (shown right)  g/G first/last  Enter scroll it  d delete  K/J move  t to top  u undo delete"
+            }
+            Panel::Tasks => "j/k pick (shown right)  g/G first/last  Enter scroll it",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
         let all = "Tab/1230 panel  / filter  ? keys  q quit";
@@ -1859,6 +1870,7 @@ fn help_lines() -> Vec<String> {
         "  [ / ]                             change the tab on the right",
         "  PgUp / PgDn, C-b / C-f            page the right panel (C-u / C-d half a page;",
         "                                    in the prefix-v popup, C-b C-b sends C-b)",
+        "  g / G, Home / End                 the first / last row of a list; top / bottom on the right",
         "  /                                 filter the panes",
         "  q, Esc                            quit (Esc first cancels a question)",
         "  mouse                             click a panel or a row; the wheel scrolls",
@@ -2107,6 +2119,8 @@ mod tests {
             KeyCode::PPage,
             KeyCode::NPage,
             KeyCode::BSpace,
+            KeyCode::Home,
+            KeyCode::End,
         ] {
             keys.push(Key::plain(code));
         }
@@ -2378,6 +2392,37 @@ mod tests {
         // An error instead of a record: shown as it came.
         b.set_main(vec!["no task #99".into()]);
         assert!(strip(&b.frame()).contains("no task #99"));
+    }
+
+    /// `g` / `G` (and Home / End) go to the first / last row of whichever
+    /// list has the focus, as they go to the top / bottom on the right.
+    #[test]
+    fn g_and_shift_g_go_to_the_first_and_last_row() {
+        let mut b = board();
+        inbox(&mut b);
+        b.set_tasks(&["#1  running  one".into(), "#2  done  two".into(), "#3  failed  three".into()]);
+        for (last, first) in [(Key::ch('G'), Key::ch('g')), (Key::plain(KeyCode::End), Key::plain(KeyCode::Home))] {
+            b.focus = Panel::Panes;
+            b.key(last);
+            assert_eq!(b.chosen_row().unwrap().id, "%3", "{last:?}");
+            b.key(first);
+            assert_eq!(b.chosen_row().unwrap().id, "%1", "{first:?}");
+            b.focus = Panel::Tasks;
+            b.key(last);
+            assert_eq!(b.task_pick, 2);
+            b.key(first);
+            assert_eq!(b.task_pick, 0);
+        }
+        // The inbox is the chosen pane's: %2 has the two messages.
+        b.focus = Panel::Panes;
+        b.key(Key::ch('j'));
+        inbox(&mut b);
+        b.focus = Panel::Inbox;
+        b.key(Key::ch('Ｇ'));
+        assert_eq!(b.inbox_pick, 1, "Ｇ from an input method is G");
+        b.key(Key::ch('g'));
+        assert_eq!(b.inbox_pick, 0);
+        assert!(strip(&b.frame()).contains("g/G first/last"), "the bottom line says so");
     }
 
     /// With a Chinese input method on: `】` is `]` (the next tab), `ｑ` is

@@ -154,7 +154,9 @@ scrollback, its events, or the message or task under the cursor: moving onto
 one in `[2]` or `[3]` shows it at once, laid out (its stage on its colour, who
 sent it to whom, when each step came, then its text and what it printed; a
 task, its messages joined down the left). Tab, `1 2 3 0` and `h`/`l` move
-between panels, `j`/`k` within one, `[`/`]` change what the right side shows;
+between panels, `j`/`k` within one, `g`/`G` (or Home/End) to its first or
+last row (the top or bottom on the right), `[`/`]` change what the right
+side shows;
 the mouse clicks and scrolls; `?` lists every key.
 
 It also acts. On a pane: `s` sends it a message, `r` renames it, `m`
