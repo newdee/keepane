@@ -3,6 +3,7 @@
 
 pub mod actor;
 mod agents;
+mod clock;
 mod digits;
 mod done;
 mod hints;
@@ -8413,18 +8414,18 @@ impl Server {
             }
             cursor = None;
         }
-        // `clock-mode`: a big clock over the panes that asked for one.
+        // `clock-mode`: a big clock over the panes that asked for one, and
+        // under it what is worth a glance (`clock-mode-info`, `clock`).
         {
-            let now = chrono::Local::now().format("%H:%M").to_string();
+            let now = chrono::Local::now();
             let w = &self.sessions[spos].windows[self.sessions[spos].cur];
-            let clocks: Vec<Rect> =
-                w.rects.iter().filter(|(id, _)| w.pane(*id).is_some_and(|p| p.clock)).map(|(_, r)| *r).collect();
-            for rect in clocks {
-                let style = render::Style::colors(self.opts.pane_border_active_fg, vt100::Color::Default);
-                grid.fill(rect, render::Style::default());
-                if !render::draw_big_text(&mut grid, rect, &now, style) && rect.w > 0 && rect.h > 0 {
-                    grid.put_str(rect.x, rect.y, &now, style, rect.w);
-                }
+            let colour = self.opts.clock_mode_colour.unwrap_or(self.opts.pane_border_active_fg);
+            for (id, rect) in w.rects.iter().filter(|(id, _)| w.pane(*id).is_some_and(|p| p.clock)) {
+                let lines = match w.pane(*id) {
+                    Some(p) if self.opts.clock_mode_info => self.clock_info(p, *id, now),
+                    _ => Vec::new(),
+                };
+                render::draw_clock(&mut grid, *rect, now, self.opts.clock_mode_style, colour, &lines);
                 cursor = None;
             }
         }

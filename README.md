@@ -407,7 +407,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `T` / `f` | name this pane / find a window by name or title |
 | `[` / `PgUp` | copy mode (see below) |
 | `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
-| `t` / `~` / `r` | clock / recent messages / redraw |
+| `t` / `~` / `r` | clock, and under it the date (and UTC), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended), its agent (model, cost, context) and the machine (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`) / recent messages / redraw |
 | `]` | paste the clipboard |
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names) |
 | `d` | detach |

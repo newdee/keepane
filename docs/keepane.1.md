@@ -277,6 +277,14 @@ request with `curl`, nothing about you in it); a newer one shows on the
 status line (`#{keepane_update}`) and in `show-messages`.
 `set -g update-check off` stops it.
 
+`clock-mode` (prefix t) draws the time in big digits and under it the date
+(and UTC), the pane (its program, folder and branch, how long it has run and
+been quiet), its last command (how long it took, how it ended), its agent
+(model, cost, context) and the machine (CPU, memory, battery, time since
+boot). `clock-mode-info off` leaves the time alone, as tmux draws it;
+`clock-mode-style 12` counts the hours to 12; `clock-mode-colour` colours the
+digits (`default`: the active pane border's colour).
+
 While a pane runs an agent (Claude Code, Codex, pi), the server reads the
 transcript the agent writes and gives its figures to `list-agents`, the
 dashboard, the phone page and the formats `agent`, `agent_model`,

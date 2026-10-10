@@ -891,7 +891,14 @@ async fn a_drag_at_the_edge_scrolls_and_is_copied_wherever_let_go() {
     // Let go on the status line, outside the pane: still copied (the
     // pointer kept to the pane's last row).
     c.key(0x1B, '\x1b', 0).await;
-    c.wait_for("back at the bottom", |s| s.contents().contains("row-80")).await;
+    // Back at the bottom, the whole frame drawn: a frame comes in pieces, and
+    // `row-80` alone may show before row 78 has moved to its place.
+    c.wait_for("back at the bottom", |s| {
+        let rows: Vec<String> = s.rows(0, COLS).map(|r| r.trim().to_string()).collect();
+        let at = rows.windows(3).position(|w| w[0] == "row-78" && w[1] == "row-79" && w[2] == "row-80");
+        at.is_some_and(|i| rows[i + 3..].iter().any(|r| r.starts_with("keepane>")))
+    })
+    .await;
     let from = row_of(c.screen.screen(), 78);
     c.send(ClientMsg::Mouse(m(from, 1, 0))).await;
     c.send(ClientMsg::Mouse(m(from + 1, 1, 1))).await;
@@ -2033,11 +2040,45 @@ async fn clock_conditionals_and_client_commands() {
     c.attach(&["new", "-s", "c1"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
 
-    // prefix t draws a clock; any key puts it away.
+    // prefix t draws a clock, with what is worth a glance under it: the
+    // date and UTC, the pane (its program, how long it ran and has been
+    // quiet), the machine; any key puts it away.
+    let weekday = chrono::Local::now().format("%A").to_string();
     c.prefix('t').await;
     c.wait_for("clock", |s| s.contents().contains("███")).await;
+    c.wait_for("the lines under it", |s| {
+        let t = s.contents();
+        t.contains(" · UTC ") && t.contains(" · up ") && t.contains(" · quiet ")
+    })
+    .await;
+    assert!(c.text().contains(&weekday) || !chrono::Local::now().format("%A").to_string().eq(&weekday), "{}", c.text());
     c.type_str("x").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    // clock-mode-info off: the time alone, as tmux draws it; style 12: AM / PM.
+    h.cli(&["set", "-g", "clock-mode-info", "off"]).await;
+    h.cli(&["set", "-g", "clock-mode-style", "12"]).await;
+    c.prefix('t').await;
+    c.wait_for("the bare clock", |s| {
+        s.contents().contains("███") && (s.contents().contains("AM") || s.contents().contains("PM"))
+    })
+    .await;
+    assert!(!c.text().contains(" · UTC "), "{}", c.text());
+    c.type_str("x").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    let (code, _, err) = h.cli(&["set", "-g", "clock-mode-style", "13"]).await;
+    assert!(code != 0 && err.contains("12 or 24"), "{err}");
+    // clock-mode-colour: the digits in it.
+    h.cli(&["set", "-g", "clock-mode-colour", "red"]).await;
+    c.prefix('t').await;
+    c.wait_for("a red clock", |s| {
+        (0..ROWS).any(|y| {
+            (0..COLS).any(|x| {
+                s.cell(y, x).is_some_and(|cell| cell.contents() == "█" && cell.fgcolor() == vt100::Color::Idx(1))
+            })
+        })
+    })
+    .await;
+    c.type_str("x").await;
 
     // if-shell -F takes the branch the format says.
     h.cli(&["if-shell", "-F", "#{?session_name,yes,}", "set -g @cond true", "set -g @cond false"]).await;

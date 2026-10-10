@@ -62,6 +62,12 @@ pub struct Options {
     /// `display-panes`: the other panes' numbers, and the active pane's.
     pub display_panes_colour: Color,
     pub display_panes_active_colour: Color,
+    /// `clock-mode` (prefix t): the hours as 12 or 24, the big digits'
+    /// colour (None: the active pane border's), and the lines under them
+    /// (the date, the pane, its last command, its agent, the machine).
+    pub clock_mode_style: u8,
+    pub clock_mode_colour: Option<Color>,
+    pub clock_mode_info: bool,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
     pub status_left: String,
@@ -315,6 +321,9 @@ pub const SHOWABLE: &[&str] = &[
     "pane-active-border-style",
     "display-panes-colour",
     "display-panes-active-colour",
+    "clock-mode-style",
+    "clock-mode-colour",
+    "clock-mode-info",
     "base-index",
     "remain-on-exit",
     "save-history",
@@ -408,6 +417,9 @@ impl Default for Options {
             // tmux's defaults.
             display_panes_colour: Color::Idx(4),
             display_panes_active_colour: Color::Idx(1),
+            clock_mode_style: 24,
+            clock_mode_colour: None,
+            clock_mode_info: true,
             pane_border_fg: Color::Rgb(0x3b, 0x42, 0x61),
             // The session name on a blue block.
             status_left: "#[fg=#1a1b26,bg=#7aa2f7,bold] #S #[default] ".into(),
@@ -555,6 +567,9 @@ pub const KNOWN: &[&str] = &[
     "autosave",
     "base-index",
     "choose-tree-style",
+    "clock-mode-colour",
+    "clock-mode-info",
+    "clock-mode-style",
     "default-command",
     "default-shell",
     "default-terminal",
@@ -651,6 +666,7 @@ pub const ACCEPTED: &[&str] = &[
 const BOOLEAN: &[&str] = &[
     "agent-cost",
     "animation",
+    "clock-mode-info",
     "autosave",
     "event-log",
     "keep-zoom",
@@ -735,6 +751,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "done-webhook-format" => DONE_WEBHOOK_FORMATS,
         "theme" => THEME_NAMES,
         "choose-tree-style" => &["chart", "list", "tree"],
+        "clock-mode-style" => &["12", "24"],
         "done-events" => &["all", "none", "command agent"],
         _ => &[],
     }
@@ -815,6 +832,20 @@ impl Options {
             "status-fg" => self.status_fg = parse_color(value)?,
             "status-bg" => self.status_bg = parse_color(value)?,
             "display-panes-colour" => self.display_panes_colour = parse_color(value)?,
+            "clock-mode-style" => {
+                self.clock_mode_style = match value.trim() {
+                    "12" => 12,
+                    "24" => 24,
+                    _ => return Err(format!("clock-mode-style is 12 or 24, not '{value}'")),
+                }
+            }
+            "clock-mode-colour" => {
+                self.clock_mode_colour = match value.trim() {
+                    "default" => None,
+                    v => Some(parse_color(v)?),
+                }
+            }
+            "clock-mode-info" => self.clock_mode_info = parse_bool(value)?,
             "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
                 if let (Some(c), _) = parse_style(value)? {
@@ -1098,6 +1129,9 @@ impl Options {
             "pane-border-style" => format!("fg={}", color_name(self.pane_border_fg)),
             "pane-active-border-style" => format!("fg={}", color_name(self.pane_border_active_fg)),
             "display-panes-colour" => color_name(self.display_panes_colour),
+            "clock-mode-style" => self.clock_mode_style.to_string(),
+            "clock-mode-colour" => self.clock_mode_colour.map_or("default".into(), color_name),
+            "clock-mode-info" => onoff(self.clock_mode_info),
             "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
         })
@@ -1368,6 +1402,31 @@ mod tests {
         assert_eq!(o.get("animation-time").as_deref(), Some("0"), "a refused value leaves the old one");
         assert!(o.set("history-limit", "x").is_err());
         assert_eq!(o.prefix.to_string(), "C-a");
+    }
+
+    /// tmux's `clock-mode-style` and `clock-mode-colour`, and keepane's
+    /// `clock-mode-info`: set, shown back, refused when wrong.
+    #[test]
+    fn the_clock_options_read_back() {
+        let mut o = Options::default();
+        assert_eq!(
+            (
+                o.get("clock-mode-style").as_deref(),
+                o.get("clock-mode-colour").as_deref(),
+                o.get("clock-mode-info").as_deref()
+            ),
+            (Some("24"), Some("default"), Some("on"))
+        );
+        o.set("clock-mode-style", "12").unwrap();
+        o.set("clock-mode-colour", "red").unwrap();
+        o.set("clock-mode-info", "off").unwrap();
+        assert_eq!((o.clock_mode_style, o.clock_mode_colour, o.clock_mode_info), (12, Some(Color::Idx(1)), false));
+        assert_eq!(o.get("clock-mode-colour").as_deref(), Some("red"));
+        o.set("clock-mode-colour", "default").unwrap();
+        assert_eq!(o.clock_mode_colour, None, "back to the active border's");
+        assert!(o.set("clock-mode-style", "13").unwrap_err().contains("12 or 24"));
+        assert!(o.set("clock-mode-colour", "nocolour").is_err());
+        assert_eq!(option_values("clock-mode-style"), ["12", "24"]);
     }
 
     #[test]
