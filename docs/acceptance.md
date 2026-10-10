@@ -3817,3 +3817,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 7 | CI（tag v0.35.3 推送后） | CI 两处失败，Release 门禁因此停止，未发布任何产物：① `npm run check` 报 `web/tests/layout.e2e.ts:166` TS2345（条目 118 加的 `browser.evaluate` 回调返回 void）——本地当时只跑了 `tsc --noEmit`，没跑包含 `tsconfig.e2e.json` 的 `npm run check`；② Windows e2e 超时：CI 的提示符路径更长，80 列 pane 里命令在 `Write-Out` / `put` 处折行，断言跨过了折行点 | **有问题**：回调返回 `null`；两处新断言先去掉换行再匹配（共享 helper 的另 94 处调用不变）（不计数） |
 | 8 | 全量回归（按 CI 的命令） | `npm run check` 0（改前同一命令报 TS2345）；fmt、clippy 两平台 0；Windows 365 + 10 + 119；Linux 342 + 119 | 干净（1/3） |
 | 9 | 复现 CI 条件 + 浏览器 | CI 截到的屏幕原文：旧断言 false、新断言 true；`npm run build` 后 `web/dist` 无变化；浏览器 34/34 | 干净（2/3） |
+| 10 | CI（三平台 + 网页） | `76a7ad4` 上 CI 4/4 个 job 通过（网页类型与构建、Windows、Linux、macOS）；tag `v0.35.3` 移到该提交后（原 tag 未发布任何产物）Release 成功，13 个产物；Homebrew 3/3 哈希一致 | 干净（3/3），验收通过 |
