@@ -67,9 +67,9 @@ pane 根据工作模式处理消息：
 [keepane id=12 task=12 from=$1:@1.%3 name=lead mode=ai to=$1:@2.%7 via=shell hop=0]
 ```
 
-每个字段是 `名字=值`，用空格隔开；值里不会有空格，程序按空格切开就能读回。`set -g message-envelope json` 改成把同样的字段写成一行 JSON（`{"keepane":1,"id":12,…}`，0.17 之前的写法）；事件日志一直用 JSON。
+每个字段是 `名字=值`，用空格隔开；值里不会有空格，程序按空格切开就能读回。`set -g message-envelope json` 改成把同样的字段写成一行 JSON（`{"keepane":1,"id":12,…}`，0.17 之前的写法，shell 命令前也是）；事件日志一直用 JSON。
 
-投给 shell 时，信封头放在命令前，写成不执行任何东西、又会留在历史里的形式：PowerShell 里是注释（`<# [keepane …] #> cargo test`），bash 和 zsh 里是 `:` 的参数（`: '[keepane …]'; cargo test`）。多行内容会合为一条命令执行，对应一个结果（bash 和 zsh 里取最后一行的结果）。投给 agent 时，内容由信封头、正文和结束行 `[keepane end=12]` 组成。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
+投给 shell 时，命令前放一个短信封头（编号和发件方：有名字用名字，否则用 pane，否则是 `user`），写成不执行任何东西、又会留在历史里的形式：PowerShell 里是注释（`<# keepane #12 from %lead #> cargo test`），bash 和 zsh 里是 `:` 的参数（`: 'keepane #12 from %lead'; cargo test`）；其余字段用 `trace-message 12` 查看。多行内容会合为一条命令执行，对应一个结果（bash 和 zsh 里取最后一行的结果）。投给 agent 时，内容由信封头、正文和结束行 `[keepane end=12]` 组成。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
 
 发送方能选的字段按名字给：`--to`（目标 pane，简写 `-t`）、`--re 12`（回复第 12 条消息，不写 `--to` 就发给它的发送方；`-r` 回复本 pane 正在处理的那条）、`--task 12`（接着第 12 号任务）。其余由 keepane 填：谁发的（`from`、`name`、`mode`）、编号、hop 和 `via`。发送方改不了它们，所以信封头可信，hop 上限也照样管用：
 
@@ -356,7 +356,7 @@ keepane save-session -a     # 现在就把每个 session 各存一遍（prefix C
 
 每个 PowerShell、bash、zsh pane 的命令历史（按 ↑ 翻出来的那些）也各自保存，放在会话存档目录下，所以恢复后的 pane 翻到的是它自己跑过的命令，而不是所有 pane 混在一起的。新开的 pane 会复制一份它来源的那个 pane 的历史（分屏时是被分的那个，新窗口时是当前在用的那个），没有来源就复制这个 shell 自己的历史文件。没有 pane、也没有存档再引用的历史文件，超过 `log-history-days` 天会被清掉。
 
-发给 `shell` 模式 pane 的消息在那里也是一条命令，会带着信封（`<# [keepane id=12 …] #>`）进这个历史。`keepane shell-history -t %3` 把历史读出来，消息那行会标出来（`✉ #12 %builder  cargo test`）；`-c` 只看命令，去掉消息；`-m` 改为列出事件日志里所有发给这个 pane 的消息（任何模式），带上每条的处理结果；`-n 20` 只看最后 20 条。
+发给 `shell` 模式 pane 的消息在那里也是一条命令，会带着信封头（`<# keepane #12 from %builder #>`）进这个历史。`keepane shell-history -t %3` 把历史读出来，消息那行会标出来（`✉ #12 %builder  cargo test`）；`-c` 只看命令，去掉消息；`-m` 改为列出事件日志里所有发给这个 pane 的消息（任何模式），带上每条的处理结果；`-n 20` 只看最后 20 条。
 
 想让这一切在登录 Windows 时自动发生：
 

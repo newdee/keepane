@@ -112,14 +112,21 @@ pub struct Delivered {
 }
 
 /// The envelope at the start of `entry`, if it has one: PowerShell's
-/// `<# … #> command`, a POSIX shell's `: '…'; command`, the header either
-/// `[keepane id=… from=…]` or the JSON one of before 0.17.
+/// `<# … #> command`, a POSIX shell's `: '…'; command`, the header
+/// `keepane #12 from %builder` (from 0.35.3), or, in history kept from
+/// before, `[keepane id=… from=…]` or the JSON one of before 0.17.
 pub fn delivered(entry: &str) -> Option<Delivered> {
     let (header, command) = match entry.strip_prefix("<# ") {
         Some(rest) => rest.split_once(" #> ")?,
         None => entry.strip_prefix(": '")?.split_once("'; ")?,
     };
-    let (id, from, name) = if let Some(inner) = header.strip_prefix("[keepane ").and_then(|h| h.strip_suffix(']')) {
+    let (id, from, name) = if let Some(short) = header.strip_prefix("keepane #") {
+        let (id, from) = short.split_once(" from ")?;
+        if from.is_empty() || from.contains(' ') {
+            return None;
+        }
+        (id.parse().ok()?, from.to_string(), None)
+    } else if let Some(inner) = header.strip_prefix("[keepane ").and_then(|h| h.strip_suffix(']')) {
         let field = |k: &str| inner.split(' ').find_map(|f| f.strip_prefix(k)?.strip_prefix('=')).map(String::from);
         (field("id")?.parse().ok()?, field("from")?, field("name"))
     } else if header.starts_with("{\"keepane\"") {
@@ -166,6 +173,16 @@ mod tests {
 
     #[test]
     fn messages_are_told_by_their_envelope() {
+        let short = "<# keepane #12 from %builder #> cargo test";
+        assert_eq!(delivered(short), Some(Delivered { id: 12, from: "%builder".into(), command: "cargo test".into() }));
+        assert_eq!(
+            delivered(": 'keepane #4 from user'; make"),
+            Some(Delivered { id: 4, from: "user".into(), command: "make".into() })
+        );
+        assert_eq!(delivered("<# keepane #x from user #> ls"), None, "no id");
+        assert_eq!(delivered("<# keepane #3 from  #> ls"), None, "no sender");
+        assert_eq!(delivered("<# keepane #3 #> ls"), None, "no from");
+        // The headers of before 0.35.3, in history kept from then.
         let fields =
             "<# [keepane id=12 task=3 from=$1:@3.%7 name=builder mode=ai to=$1:@4.%9 via=shell hop=1] #> cargo test";
         assert_eq!(

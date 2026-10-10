@@ -104,13 +104,15 @@ Every message carries a header of fixed fields, with its source and route:
 Each field is `name=value`, separated by spaces; no value holds a space,
 so a program reads it back by splitting. `set -g message-envelope json`
 writes the same fields as one line of JSON instead
-(`{"keepane":1,"id":12,…}`), as before 0.17; the event log always keeps
-the JSON.
+(`{"keepane":1,"id":12,…}`), as before 0.17, also in front of a shell's
+command; the event log always keeps the JSON.
 
-Delivered to a shell, the header goes before the command in a form that
-runs nothing and stays in the history: a comment in PowerShell
-(`<# [keepane …] #> cargo test`), the argument of `:` in bash and zsh
-(`: '[keepane …]'; cargo test`). Several lines are joined into one command
+Delivered to a shell, a short header (the id and the sender: its name,
+else its pane, else `user`) goes before the command in a form that runs
+nothing and stays in the history: a comment in PowerShell
+(`<# keepane #12 from %lead #> cargo test`), the argument of `:` in bash
+and zsh (`: 'keepane #12 from %lead'; cargo test`); `trace-message 12`
+shows the rest. Several lines are joined into one command
 that runs them together, with one result (in bash and zsh, the last
 line's). Delivered to an agent, it is the header, the text and the end
 line `[keepane end=12]`. `task` ties together the order, the work and the
@@ -625,7 +627,7 @@ use for a new window), else of the shell's own history file. Files no pane or sa
 session refers to go after `log-history-days`.
 
 A message delivered to a pane in `shell` mode is a command there too, and
-goes into that history with its envelope in front (`<# [keepane id=12 …] #>`).
+goes into that history with its header in front (`<# keepane #12 from %builder #>`).
 `keepane shell-history -t %3` reads the history back, each message marked
 (`✉ #12 %builder  cargo test`); `-c` leaves the messages out, `-m` lists
 instead every message sent to the pane in any mode, from the event log, with

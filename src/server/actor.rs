@@ -88,6 +88,19 @@ impl Sender {
     pub fn short(&self) -> String {
         self.name().map_or_else(|| self.from_field(), |n| n.to_string())
     }
+
+    /// The sender as a target names it, for the short header in a shell:
+    /// `%name`, else a pane's `%id`, else `user`; on another machine the
+    /// same after `host:port/`. No space, quote mark or `#>` in it.
+    pub fn tag(&self) -> String {
+        match self {
+            Sender::User => "user".into(),
+            Sender::Pane { id, name, .. } => name.as_ref().map_or_else(|| format!("%{id}"), |n| format!("%{n}")),
+            Sender::Remote { addr, address, name, .. } => {
+                name.as_ref().map_or_else(|| format!("{addr}/{address}"), |n| format!("{addr}/%{n}"))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,12 +189,27 @@ impl Message {
         }
     }
 
+    /// The header in front of a command typed into a shell: who sent it and
+    /// its id, short so the line stays readable (`keepane #12 from
+    /// %builder`); the rest is in the event log (`trace-message 12`). The
+    /// JSON style keeps the whole JSON envelope there, as before 0.17.
+    pub fn shell_header(&self, style: EnvelopeStyle) -> String {
+        match style {
+            EnvelopeStyle::Fields => format!("keepane #{} from {}", self.id, self.from.tag()),
+            EnvelopeStyle::Json => self.envelope(),
+        }
+    }
+
     /// What is typed into the pane to deliver it (Enter follows). A shell
-    /// gets the header in front of the command in a form that runs nothing
-    /// and stays in the history (`syntax`: the language of the shell at the
-    /// prompt); an agent gets the header, the text, and the end line.
+    /// gets the short header in front of the command in a form that runs
+    /// nothing and stays in the history (`syntax`: the language of the
+    /// shell at the prompt); an agent gets the header, the text, and the
+    /// end line.
     pub fn wrapped(&self, syntax: Syntax, style: EnvelopeStyle) -> String {
-        let header = self.header(style);
+        let header = match self.via {
+            WorkMode::Shell => self.shell_header(style),
+            WorkMode::Ai | WorkMode::Normal => self.header(style),
+        };
         match (self.via, syntax) {
             (WorkMode::Shell, Syntax::PowerShell) => format!("<# {header} #> {}", one_command(&self.text)),
             (WorkMode::Shell, Syntax::Posix) => {
@@ -664,8 +692,8 @@ mod tests {
     fn each_mode_wraps_the_same_envelope_its_own_way() {
         let (f, j) = (EnvelopeStyle::Fields, EnvelopeStyle::Json);
         let m = msg(5, WorkMode::Shell);
-        assert_eq!(m.wrapped(Syntax::PowerShell, f), format!("<# {} #> text 5", m.fields()));
-        assert_eq!(m.wrapped(Syntax::Posix, f), format!(": '{}'; text 5", m.fields()));
+        assert_eq!(m.wrapped(Syntax::PowerShell, f), "<# keepane #5 from %builder #> text 5");
+        assert_eq!(m.wrapped(Syntax::Posix, f), ": 'keepane #5 from %builder'; text 5");
         assert_eq!(m.wrapped(Syntax::PowerShell, j), format!("<# {} #> text 5", m.envelope()));
         assert_eq!(m.wrapped(Syntax::Posix, j), format!(": '{}'; text 5", m.envelope()));
         let m = msg(5, WorkMode::Ai);
@@ -674,6 +702,48 @@ mod tests {
         assert_eq!(m.wrapped(Syntax::Posix, f), agent, "an agent's text is not the shell's");
         let agent = format!("{}\ntext 5\n{{\"keepane\":1,\"end\":5}}", m.envelope());
         assert_eq!(m.wrapped(Syntax::Posix, j), agent);
+    }
+
+    /// A shell's header names the sender as a target does, for each kind
+    /// of sender, and `shell-history` reads the id and the sender back.
+    #[test]
+    fn a_shells_header_is_short_and_reads_back() {
+        let mut m = msg(12, WorkMode::Shell);
+        let senders = [
+            (m.from.clone(), "%builder"),
+            (Sender::Pane { id: 7, address: "$1:@3.%7".into(), name: None, mode: WorkMode::Shell }, "%7"),
+            (Sender::User, "user"),
+            (
+                Sender::Remote {
+                    addr: "100.64.0.3:7681".into(),
+                    address: "$2:@5.%8".into(),
+                    name: Some("lead".into()),
+                    mode: None,
+                },
+                "100.64.0.3:7681/%lead",
+            ),
+            (
+                Sender::Remote {
+                    addr: "[fd7a:115c:a1e0::3]:7681".into(),
+                    address: "user".into(),
+                    name: None,
+                    mode: None,
+                },
+                "[fd7a:115c:a1e0::3]:7681/user",
+            ),
+        ];
+        for (from, tag) in senders {
+            m.from = from;
+            assert_eq!(m.shell_header(EnvelopeStyle::Fields), format!("keepane #12 from {tag}"));
+            for syntax in [Syntax::PowerShell, Syntax::Posix] {
+                let w = m.wrapped(syntax, EnvelopeStyle::Fields);
+                let d = crate::server::shellhist::delivered(&w).unwrap_or_else(|| panic!("{w}"));
+                assert_eq!((d.id, d.from.as_str(), d.command.as_str()), (12, tag, "text 12"), "{w}");
+            }
+        }
+        // An agent still gets the whole header.
+        let m = msg(12, WorkMode::Ai);
+        assert!(m.wrapped(Syntax::Posix, EnvelopeStyle::Fields).starts_with(&m.fields()));
     }
 
     #[test]

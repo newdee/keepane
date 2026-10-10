@@ -3796,3 +3796,21 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 12 | 全量回归 | fmt、clippy 两平台 0；Windows 364 + 10 + 119；Linux 341 + 119；tsc 0；浏览器 34/34 | 干净（1/3） |
 | 13 | 可复现性 | 长按测试 10/10；状态栏测试 10/10；浏览器全量 2 次 34/34；Windows 364 + 10 + 119 | 干净（2/3） |
 | 14 | 静态一致性 | 渲染脚本调色板与主题 16/16 一致，默认前景/背景/条底色 3/3；注释数字复算一致；TS 开着 `noUnusedLocals`，tsc 0；Windows 364 + 10 + 119；Linux 341 + 119；浏览器 34/34 | 干净（3/3），验收通过 |
+
+## 119. 投给 shell 的信封头缩短
+
+用户："message from mail boxulgy in the theme"（shell 里收到的消息前面那一长串难看），确认提案后说 "do it"。
+
+- 原来：`<# [keepane id=1 task=1 from=$1:@3.%4 mode=normal to=$1:@3.%2 via=shell hop=0] #> cargo test`，命令前约 90 列，窄 pane 里折行。
+- 现在：`<# keepane #1 from %lead #> cargo test`（POSIX：`: 'keepane #1 from %lead'; make`）。发件方有名字写 `%名字`，否则 `%窗格号`，否则 `user`；另一台机器的前面加 `主机:端口/`。名字只许字母、数字、`-`、`_` 且不能全是数字，所以 `%名字` 和 `%窗格号` 不会混，头里也不会有 `#>`、`'`、空格。
+- 不变：agent 和 `read-message`、`trace-message` 仍是完整字段头；`message-envelope json` 时 shell 里仍写完整 JSON；事件日志仍是 JSON。`shell-history` 新旧三种写法都认。
+- 定性：设计改动，不是缺陷。投递入口只有一个（`mail.rs` 的 `deliver`），`shell-history` 是唯一读回 shell 头的地方（`dashboard` 的 `envelope_fields` 只读 `read-message` 的输出，网页不读）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量回归 | Windows 365 + 10 + 119；Linux 342 + 119；clippy 0；`fmt --check` 报 `tests/e2e.rs` 两处 | **有问题**：`cargo fmt`（不计数） |
+| 2 | 机制通路（变异） | 6/6 被抓到：shell 换回完整字段头、`wrapped` 不用短头、无名 pane 写地址、远端名字丢主机、`shell-history` 不认短头（e2e 抓到）、接受空发件方；还原后两文件哈希与变异前一致。Windows 365 + 10 + 119；Linux 342 + 119 | 干净（1/3） |
+| 3 | 静态一致性（文档对代码） | README 中英、`mailbox.md`、代码注释 4 处写"`read-message 12` 查看其余字段"；`read-message` 是取自己收件箱最早一条，不按编号查。按编号看完整头的是 `trace-message 12`（`observe.rs:382`） | **有问题**：4 处改为 `trace-message 12`（不计数） |
+| 4 | 边界与退化输入 + 全量 | 名字校验 `actor.rs:568–571`、远端名字与地址校验 `link_in.rs:41–45`：头里不会出现 `#>`、`'`、空格；命令里含 ` #> ` 时按第一个切，头部无此串，读回正确（单测）。fmt、clippy 两平台 0；Windows 365 + 10 + 119；Linux 342 + 119 | 干净（1/3） |
+| 5 | 真实 shell + 可复现性 | 隔离临时服务器（`-L` + `KEEPANE_SESSIONS_DIR`）里的 pwsh：头部 28 列（原约 93 列），`shell-history` 标出 `✉ #1 user`、`✉ #2 %lead`。shell 的两个 e2e 测试 Windows 连跑 5 次 10/10，Linux 连跑 5 次 10/10 | 干净（2/3） |
+| 6 | 不变量（所有入口） + 全量 | `Message::wrapped` 只有 `mail.rs:441` 一处调用；只有 `via=shell` 用短头，agent 与 normal 用完整头（单测断言）；`web/src` 无解析信封处。fmt、clippy 两平台 0；Windows 365 + 10 + 119；Linux 342 + 119 | 干净（3/3），验收通过 |

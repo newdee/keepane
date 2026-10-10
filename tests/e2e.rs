@@ -7528,7 +7528,8 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     let (_, trace, _) = h.cli(&["trace-message", &id_long, "-w", "30"]).await;
     assert!(trace.starts_with(&format!("#{id_long} done")) && trace.contains(&"x".repeat(160)), "{trace}");
     // The envelope goes in front as an argument of `:`, which runs nothing.
-    let screen = h.wait_capture("sh:0.0", "the envelope", |t| t.contains(": '[keepane id=")).await;
+    let screen =
+        h.wait_capture("sh:0.0", "the envelope", |t| t.contains(&format!(": 'keepane #{id} from user'; printf"))).await;
     assert!(screen.contains("abcd"), "{screen}");
     wait_format(&h, p, "#{pane_idle}", "1").await;
     let (_, out, _) = h.cli(&["send-message", "-t", &t, "ls /keepane-not-here-xyz"]).await;
@@ -7650,7 +7651,9 @@ async fn a_shell_pane_runs_what_it_is_sent_and_its_result_is_kept() {
     assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
     assert!(trace.contains("output:\nabcd"), "{trace}");
     // The command ran with its envelope in front, as a comment.
-    let screen = h.wait_capture("sh:0.0", "the envelope", |t| t.contains("<# [keepane id=")).await;
+    let screen = h
+        .wait_capture("sh:0.0", "the envelope", |t| t.contains(&format!("<# keepane #{id} from user #> Write-Output")))
+        .await;
     assert!(screen.contains("abcd"), "{screen}");
     // A command that fails is on record as failed.
     wait_format(&h, p, "#{pane_idle}", "1").await;

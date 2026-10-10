@@ -293,6 +293,7 @@ $1:@3.%4 tester (ai, busy) · 2 queued · working on #12
 用户要求（2026-09-27）：直接看 JSON 太难看，并且发送时能按字段指定。
 
 - 投递、`read-message`、`trace-message` 里的信封头改成字段式：`[keepane id=12 task=3 from=… name=… mode=… to=… via=… hop=1 re=9]`，字段名与顺序同 JSON，`名字=值` 以空格分隔；值不含空格和 `]`（名字限字母数字 `-` `_`，地址与模式词都没有），按空格切开即可读回。结束行 `[keepane end=12]`。选项 `message-envelope fields|json`，默认 `fields`；事件日志永远是 JSON（机器格式，不随选项变）。
+- 投给 shell 的信封头缩短（0.35.3，用户要求：命令前的整个字段头太长、太难看，窄窗格里还折行）：`<# keepane #12 from %builder #> cargo test`、`: 'keepane #12 from %builder'; make`。只留编号和发件方（有名字写 `%名字`，否则写 `%窗格号`，否则 `user`；另一台机器的前面加 `主机:端口/`），因为 `shell-history` 读回时只用这两项；其余字段在事件日志里，`trace-message 12` 查看。agent 仍收完整字段头（它要按字段核对来源）。`message-envelope json` 时 shell 里仍写完整 JSON。`shell-history` 三种写法都认，旧历史照样识别。
 - `send-message` 按名字给发送方能选的字段：`--to`（=`-t`）、`--re <id>`（回复某条，默认发给它的发送方）、`--task <id>`（接着某个任务，hop 取该任务已到达的最远一跳 +1，被拒收的消息不算）。`from`、`name`、`mode`、`id`、`hop`、`via` 不能由发送方给：否则来源可以伪造，hop 上限也拦不住循环；给了就报错说明原因。MCP 的 `send_message` 同样多了 `re`、`task`。
 
 ## 11. 持久化
