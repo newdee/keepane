@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "keepane"
-version = "0.35.3"
+version = "0.35.4"
 dependencies = [
  "anyhow",
  "bincode",
