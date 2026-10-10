@@ -2083,6 +2083,25 @@ async fn clock_conditionals_and_client_commands() {
     assert!(c.text().contains(&weekday) || !chrono::Local::now().format("%A").to_string().eq(&weekday), "{}", c.text());
     c.type_str("x").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    // A folder too long for the pane: its start gives way (`…`), so how
+    // long the pane has run and been quiet still shows.
+    let deep = std::env::temp_dir().join(format!(
+        "keepane-{}-{}",
+        "a-folder-with-a-very-long-name".repeat(3),
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&deep).unwrap();
+    h.cli(&["new-window", "-t", "c1:", "-c", &deep.to_string_lossy()]).await;
+    h.wait_capture("c1:1", "a shell in the long folder", |t| t.contains("keepane>")).await;
+    c.prefix('t').await;
+    c.wait_for("the pane line shortened", |s| {
+        s.contents().lines().any(|l| l.contains(" in …") && l.contains(" · quiet "))
+    })
+    .await;
+    c.type_str("x").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    h.cli(&["kill-window", "-t", "c1:1"]).await;
+    let _ = std::fs::remove_dir_all(&deep);
     // clock-mode-info off: the time alone, as tmux draws it; style 12: AM / PM.
     h.cli(&["set", "-g", "clock-mode-info", "off"]).await;
     h.cli(&["set", "-g", "clock-mode-style", "12"]).await;
@@ -3051,11 +3070,26 @@ async fn many_windows_leave_the_status_lines_right_side_whole() {
     let row = status(c.screen.screen());
     assert!(row.ends_with("RIGHT-END 12:34") && row.contains('<') && row.contains('>'), "{row:?}");
     assert!(shown(&row).contains(&5), "the one before it: {row:?}");
-    // A right side too long for the current window gives way to it.
-    h.cli(&["set", "-g", "status-right", &"x".repeat(90)]).await;
+    // A right side too long for the current window gives way to it and
+    // its marks, cut at its start.
+    h.cli(&["set", "-g", "status-right", &format!("{}END", "x".repeat(90))]).await;
     c.wait_for("the long right side", |s| status(s).contains("xxxxxxxxxx")).await;
     let row = status(c.screen.screen());
-    assert!(row.contains("6:window-06*"), "{row:?}");
+    assert!(row.contains("<6:window-06*>") && row.contains(" …x") && row.ends_with("xEND"), "{row:?}");
+    // A window left out that prints something: its side's mark reversed.
+    h.cli(&["set", "-g", "status-right", "RIGHT-END 12:34"]).await;
+    h.cli(&["set", "-g", "monitor-activity", "on"]).await;
+    h.wait_capture("m:11", "a shell in the last window", |t| t.contains("keepane>")).await;
+    h.cli(&["send-keys", "-t", "m:11", "echo far-away", "Enter"]).await;
+    let reversed = |s: &vt100::Screen, mark: char| {
+        let row = status(s);
+        row.char_indices().find(|(_, c)| *c == mark).is_some_and(|(i, _)| {
+            let col = row[..i].chars().count() as u16;
+            s.cell(ROWS - 1, col).is_some_and(|c| c.inverse())
+        })
+    };
+    c.wait_for("> reversed for the window with activity", |s| reversed(s, '>')).await;
+    assert!(!reversed(c.screen.screen(), '<'), "nothing waits before: {:?}", status(c.screen.screen()));
     h.cli(&["kill-server"]).await;
 }
 
@@ -3653,6 +3687,9 @@ async fn alerts_flag_background_windows() {
     let h = Harness::start("alerts").await;
     let (code, _, err) = h.cli(&["set", "-g", "monitor-activity", "on"]).await;
     assert_eq!(code, 0, "{err}");
+    // A short right side: both windows on the line, whatever the length of
+    // the folder the machine runs the tests in (macOS: /private/var/…).
+    h.cli(&["set", "-g", "status-right", "R"]).await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "al"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;

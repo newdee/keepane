@@ -29,7 +29,36 @@ pub(super) struct LastCommand {
     pub exit: Option<i32>,
 }
 
-/// The lines, in order, each with its colour (None: the pane's own).
+/// `text` in `room` columns: as it is if it fits; else cut, the cut marked
+/// `…`, at its start (`keep_end`: a path, whose end says where) or its end
+/// (a command, whose start says what).
+fn fit(text: &str, room: usize, keep_end: bool) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= room || room == 0 {
+        return if room == 0 { String::new() } else { text.to_string() };
+    }
+    let mut kept = Vec::new();
+    let mut used = 1; // the `…`
+    let chars: Vec<char> = if keep_end { text.chars().rev().collect() } else { text.chars().collect() };
+    for c in chars {
+        let w = c.width().unwrap_or(0);
+        if used + w > room {
+            break;
+        }
+        used += w;
+        kept.push(c);
+    }
+    if keep_end {
+        std::iter::once('…').chain(kept.into_iter().rev()).collect()
+    } else {
+        kept.into_iter().chain(std::iter::once('…')).collect()
+    }
+}
+
+/// The lines, in order, each with its colour (None: the pane's own), each
+/// at most `width` columns: a long path loses its start and a long command
+/// its end, so what follows them on the line (how long, how it ended)
+/// stays.
 pub(super) fn clock_lines(
     now: DateTime<Local>,
     hours: u8,
@@ -37,28 +66,35 @@ pub(super) fn clock_lines(
     last: Option<&LastCommand>,
     agent: Option<&agents::Stats>,
     sys: &crate::sysinfo::System,
+    width: usize,
 ) -> Vec<(String, Option<Color>)> {
+    use unicode_width::UnicodeWidthStr;
+    let room = |fixed: &str| width.saturating_sub(fixed.width());
     let clock = |t: DateTime<chrono::FixedOffset>| {
         if hours == 12 { t.format("%-I:%M %p").to_string() } else { t.format("%H:%M").to_string() }
     };
     let utc = now.with_timezone(&Utc).fixed_offset();
     let mut lines = vec![(format!("{} · UTC {}", now.format("%A, %-d %B %Y"), clock(utc)), None)];
 
-    let mut here = pane.program.clone();
-    if !pane.path.is_empty() {
-        here.push_str(&format!(" in {}", pane.path));
-    }
+    let mut after = String::new();
     if !pane.branch.is_empty() {
-        here.push_str(&format!(" ({})", pane.branch));
+        after.push_str(&format!(" ({})", pane.branch));
     }
-    here.push_str(&format!(" · up {} · quiet {}", human_duration(pane.up_secs), human_duration(pane.quiet_secs)));
+    after.push_str(&format!(" · up {} · quiet {}", human_duration(pane.up_secs), human_duration(pane.quiet_secs)));
+    let here = if pane.path.is_empty() {
+        format!("{}{after}", pane.program)
+    } else {
+        let before = format!("{} in ", pane.program);
+        format!("{before}{}{after}", fit(&pane.path, room(&format!("{before}{after}")), true))
+    };
     lines.push((here, None));
 
     if let Some(l) = last.filter(|l| !l.command.is_empty()) {
         let took = |a: DateTime<Local>, b: DateTime<Local>| command_duration((b - a).num_milliseconds());
+        // What follows the command, then the command in what is left.
         let line = match (l.start, l.end) {
             (start, Some(end)) => {
-                let mut s = format!("last: {}", l.command);
+                let mut s = String::new();
                 if let Some(start) = start {
                     s.push_str(&format!(" · {}", took(start, end)));
                 }
@@ -72,10 +108,15 @@ pub(super) fn clock_lines(
                 }
                 let at = if hours == 12 { end.format("%-I:%M %p") } else { end.format("%H:%M") };
                 s.push_str(&format!(" · finished {at}"));
-                (s, (colour != Color::Default).then_some(colour))
+                let command = fit(&l.command, room(&format!("last: {s}")), false);
+                (format!("last: {command}{s}"), (colour != Color::Default).then_some(colour))
             }
-            (Some(start), None) => (format!("running: {} · for {}", l.command, took(start, now)), Some(Color::Idx(3))),
-            (None, None) => (format!("last: {}", l.command), None),
+            (Some(start), None) => {
+                let s = format!(" · for {}", took(start, now));
+                let command = fit(&l.command, room(&format!("running: {s}")), false);
+                (format!("running: {command}{s}"), Some(Color::Idx(3)))
+            }
+            (None, None) => (format!("last: {}", fit(&l.command, room("last: "), false)), None),
         };
         lines.push(line);
     }
@@ -115,8 +156,15 @@ pub(super) fn clock_lines(
 }
 
 impl Server {
-    /// `clock_lines` for pane `id`, from what the server knows of it now.
-    pub(super) fn clock_info(&self, p: &Pane, id: PaneId, now: DateTime<Local>) -> Vec<(String, Option<Color>)> {
+    /// `clock_lines` for pane `id`, from what the server knows of it now,
+    /// for a pane `width` columns wide.
+    pub(super) fn clock_info(
+        &self,
+        p: &Pane,
+        id: PaneId,
+        now: DateTime<Local>,
+        width: usize,
+    ) -> Vec<(String, Option<Color>)> {
         let path = p.current_path().unwrap_or_default();
         let facts = PaneFacts {
             program: p
@@ -146,6 +194,7 @@ impl Server {
             last.as_ref(),
             self.agents.stats.get(&id),
             &crate::sysinfo::system(),
+            width,
         )
     }
 }
@@ -175,6 +224,37 @@ mod tests {
         }
     }
 
+    /// A narrow pane: a long path loses its start and a long command its
+    /// end, so what follows them on the line still shows; no line is wider
+    /// than the pane.
+    #[test]
+    fn a_long_path_or_command_gives_way_to_what_follows_it() {
+        use unicode_width::UnicodeWidthStr;
+        let now = Local.with_ymd_and_hms(2026, 10, 10, 14, 25, 0).unwrap();
+        let deep = PaneFacts { path: "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T".into(), ..facts() };
+        let long = LastCommand {
+            command: "cargo build --release --target x86_64-unknown-linux-musl --features full".into(),
+            start: Some(now - chrono::Duration::seconds(102)),
+            end: Some(now),
+            exit: Some(0),
+        };
+        let lines = clock_lines(now, 24, &deep, Some(&long), None, &sys(), 60);
+        assert_eq!(lines[1].0, "pwsh in …j8snz9_vkdnw0r0000gn/T (main) · up 3h12m · quiet 4m");
+        assert_eq!(lines[2].0, "last: cargo build --release --… · 1m42s · ✓ · finished 14:25");
+        assert!(lines.iter().all(|(l, _)| l.width() <= 60), "{lines:?}");
+        assert_eq!((lines[1].0.width(), lines[2].0.width()), (60, 60), "the room used, not more");
+        // Wide enough: as they are.
+        let lines = clock_lines(now, 24, &deep, Some(&long), None, &sys(), 200);
+        assert!(lines[1].0.contains("/private/var/folders/") && lines[2].0.contains("--features full"));
+        // Wide characters count by their columns; nothing to keep, nothing.
+        assert_eq!(fit("项目/文档", 6, true), "…/文档");
+        assert_eq!(fit("项目/文档", 6, false), "项目/…");
+        assert_eq!(fit("项目/文档", 5, false), "项目…", "a wide character never half");
+        assert_eq!(fit("abc", 3, true), "abc");
+        assert_eq!(fit("abcd", 1, true), "…");
+        assert_eq!(fit("abcd", 0, false), "");
+    }
+
     #[test]
     fn under_the_clock_each_line_says_one_thing() {
         let now = Local.with_ymd_and_hms(2026, 10, 10, 14, 25, 0).unwrap();
@@ -185,7 +265,7 @@ mod tests {
             exit: Some(101),
         };
         let ended = LastCommand { start: Some(now - chrono::Duration::seconds(402)), ..ended };
-        let lines = clock_lines(now, 24, &facts(), Some(&ended), None, &sys());
+        let lines = clock_lines(now, 24, &facts(), Some(&ended), None, &sys(), 200);
         let text: Vec<&str> = lines.iter().map(|(s, _)| s.as_str()).collect();
         let utc = now.with_timezone(&Utc).format("%H:%M").to_string();
         assert_eq!(text[0], format!("Saturday, 10 October 2026 · UTC {utc}"));
@@ -208,18 +288,18 @@ mod tests {
         let mut usage = agents::Usage { model: "claude-opus-5-5".into(), ..Default::default() };
         usage.tokens.input = 1_200_000;
         let agent = agents::Stats { usage, cost: Some(2.1), context_pct: Some(34), ..Default::default() };
-        let lines = clock_lines(now, 12, &facts(), Some(&running), Some(&agent), &sys());
+        let lines = clock_lines(now, 12, &facts(), Some(&running), Some(&agent), &sys(), 200);
         let text: Vec<&str> = lines.iter().map(|(s, _)| s.as_str()).collect();
         assert!(text[0].contains(" AM") || text[0].contains(" PM"), "UTC in 12 hours: {}", text[0]);
         assert_eq!(text[2], "running: npm run dev · for 1m05s");
         assert_eq!(text[3], "claude claude-opus-5-5 · $2.10 · context 34% · 1.2M tokens");
         let done =
             LastCommand { exit: Some(0), end: Some(now), start: Some(now - chrono::Duration::seconds(3)), ..running };
-        let lines = clock_lines(now, 12, &facts(), Some(&done), None, &sys());
+        let lines = clock_lines(now, 12, &facts(), Some(&done), None, &sys(), 200);
         assert_eq!(lines[2].0, "last: npm run dev · 3.0s · ✓ · finished 2:25 PM");
         assert_eq!(lines[2].1, Some(Color::Idx(2)));
         // Nothing typed yet: no command line.
         let none = LastCommand { command: String::new(), ..done };
-        assert_eq!(clock_lines(now, 24, &facts(), Some(&none), None, &sys()).len(), 3);
+        assert_eq!(clock_lines(now, 24, &facts(), Some(&none), None, &sys(), 200).len(), 3);
     }
 }

@@ -8332,9 +8332,15 @@ impl Server {
         let notice = (!opts_status).then(|| (prompt.clone(), message.clone()));
         let status_line = if opts_status {
             let (left, windows, right) = self.status_parts(spos, Some(cid));
+            let alerts = self.sessions[spos]
+                .windows
+                .iter()
+                .map(|w| w.alert_activity || w.alert_bell || w.alert_silence || w.alert_mail)
+                .collect();
             Some(StatusLine {
                 left,
                 windows,
+                alerts,
                 separator: self.opts.window_status_separator.clone(),
                 justify: render::Justify::parse(&self.opts.status_justify),
                 right,
@@ -8495,7 +8501,7 @@ impl Server {
             let colour = self.opts.clock_mode_colour.unwrap_or(self.opts.pane_border_active_fg);
             for (id, rect) in w.rects.iter().filter(|(id, _)| w.pane(*id).is_some_and(|p| p.clock)) {
                 let lines = match w.pane(*id) {
-                    Some(p) if self.opts.clock_mode_info => self.clock_info(p, *id, now),
+                    Some(p) if self.opts.clock_mode_info => self.clock_info(p, *id, now, usize::from(rect.w)),
                     _ => Vec::new(),
                 };
                 render::draw_clock(&mut grid, *rect, now, self.opts.clock_mode_style, colour, &lines);

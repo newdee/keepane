@@ -330,6 +330,10 @@ pub struct StatusLine {
     /// Between window labels (`window-status-separator`).
     pub separator: String,
     pub justify: Justify,
+    /// Which windows wait to tell something (activity, bell, silence, a
+    /// message): a `<` or `>` standing for left-out windows shows it. Short
+    /// of the windows: the rest have none.
+    pub alerts: Vec<bool>,
     /// Expanded `status-right`.
     pub right: Vec<Segment>,
     pub message: Option<String>,
@@ -476,8 +480,13 @@ pub fn compose(f: &Frame) -> Composed {
                 };
             }
             let base = Style::colors(s.fg, s.bg);
+            // A mark stands for the windows left out on its side; one of
+            // them waiting to tell something shows it reversed, as tmux
+            // shows an alert.
+            let waiting = |r: std::ops::Range<usize>| r.into_iter().any(|i| s.alerts.get(i).copied().unwrap_or(false));
+            let mark = |alert: bool| if alert { Style { inverse: true, ..base } } else { base };
             if plan.before && x < win_end {
-                x += g.put_str(x, sy, "<", base, win_end - x);
+                x += g.put_str(x, sy, "<", mark(waiting(0..plan.first)), win_end - x);
             }
             for (i, (label, current)) in s.windows.iter().enumerate() {
                 if i < plan.first || i >= plan.end {
@@ -500,9 +509,15 @@ pub fn compose(f: &Frame) -> Composed {
                 window_hits.push((start, x));
             }
             if plan.after && x < win_end {
-                g.put_str(x, sy, ">", base, win_end - x);
+                g.put_str(x, sy, ">", mark(waiting(plan.end..s.windows.len())), win_end - x);
             }
-            if plan.right_w < f.cols {
+            if plan.right_w < full && plan.right_w > 0 {
+                // Given way: its end (the machine, the clock) kept, its
+                // start cut and marked.
+                let at = f.cols - plan.right_w;
+                g.put_str(at, sy, "…", base, 1);
+                g.put_segments(at + 1, sy, &tail_segments(&s.right, plan.right_w - 1), plan.right_w - 1);
+            } else if plan.right_w < f.cols {
                 g.put_segments(f.cols - plan.right_w, sy, &s.right, plan.right_w);
             }
         }
@@ -545,8 +560,9 @@ fn span(widths: &[u16], sep_w: u16, a: usize, b: usize) -> u16 {
 /// around the current one (the ones before it given room first), marked
 /// `<` and `>` at the cut ends where a column is left for them. Only when
 /// the current window cannot fit does the right side give way, as far as
-/// that window needs (it is cut at its end, so no further); when the window
-/// cannot fit even then, the right side keeps its width. A long right side
+/// that window and its marks need (it is cut at its start, marked `…`, so
+/// the machine and the clock at its end stay); when the window cannot fit
+/// even then, the right side keeps its width. A long right side
 /// (a long pane title, the default path and load on a narrow terminal)
 /// therefore never hides the current window, and many windows never hide
 /// the right side. `x` is where the windows start (after status-left); one
@@ -565,7 +581,18 @@ fn plan_windows(cols: u16, x: u16, widths: &[u16], cur: Option<usize>, sep_w: u1
         let end = (0..=n).rev().find(|&e| span(widths, sep_w, 0, e).saturating_add(u16::from(e < n)) <= room);
         return WindowPlan::marked(0, end.unwrap_or(0), n, full);
     };
-    let right_w = if !fits(widths[cur], full) && fits(widths[cur], 0) { room_beside(widths[cur]) } else { full };
+    // Giving way, the right side leaves a column for each mark too, when
+    // there is room for them.
+    let marks = u16::from(cur > 0) + u16::from(cur + 1 < n);
+    let right_w = if fits(widths[cur], full) {
+        full
+    } else if fits(widths[cur].saturating_add(marks), 0) {
+        room_beside(widths[cur] + marks)
+    } else if fits(widths[cur], 0) {
+        room_beside(widths[cur])
+    } else {
+        full
+    };
     let room = room_beside(right_w);
     if total <= room {
         return WindowPlan::marked(0, n, n, right_w);
@@ -591,6 +618,35 @@ fn plan_windows(cols: u16, x: u16, widths: &[u16], cur: Option<usize>, sep_w: u1
     }
     WindowPlan::marked(first, end, n, right_w)
 }
+/// The last `w` columns of `segs`, styles kept; a wide character cut in
+/// two leaves a space in its place.
+fn tail_segments(segs: &[Segment], w: u16) -> Vec<Segment> {
+    use unicode_width::UnicodeWidthChar;
+    let mut left = w;
+    let mut out = Vec::new();
+    for s in segs.iter().rev() {
+        let mut text: Vec<char> = Vec::new();
+        for c in s.text.chars().rev() {
+            let cw = c.width().unwrap_or(0) as u16;
+            if cw > left {
+                if left > 0 {
+                    text.push(' ');
+                    left = 0;
+                }
+                break;
+            }
+            text.push(c);
+            left -= cw;
+        }
+        out.push(Segment { text: text.into_iter().rev().collect(), style: s.style });
+        if left == 0 {
+            break;
+        }
+    }
+    out.reverse();
+    out
+}
+
 /// Display width of a segment list.
 pub fn seg_width(segs: &[Segment]) -> u16 {
     segs.iter().map(|s| s.text.width() as u16).sum()
@@ -1933,6 +1989,7 @@ mod tests {
             status: Some(StatusLine {
                 left: seg("[s] ", Style { bold: true, ..st }),
                 windows: vec![(seg("0:a", st), true), (seg("1:b", st), false)],
+                alerts: Vec::new(),
                 separator: " ".into(),
                 justify: Justify::Left,
                 right: seg("12:00", st),
@@ -1982,6 +2039,7 @@ mod tests {
                 status: Some(StatusLine {
                     left: seg("[s] ", st),
                     windows: vec![(seg("0:a", st), true), (seg("1:b", st), false)],
+                    alerts: Vec::new(),
                     separator: sep.into(),
                     justify,
                     right: seg("R", st),
@@ -2051,6 +2109,7 @@ mod tests {
             status: Some(StatusLine {
                 left,
                 windows: vec![(seg("0:long-name", st), true), (seg("1:x", st), false)],
+                alerts: Vec::new(),
                 separator: " ".into(),
                 justify: Justify::Left,
                 right: seg("RR", Style { bold: true, ..st }),
@@ -2082,12 +2141,24 @@ mod tests {
         assert!(!g.get(7, 1).style.inverse, "the mark is not part of the label");
         assert_eq!(hits, vec![(4, 7), (0, 0)]);
         // A right side too long for the current window gives way, only as
-        // far as that window needs (it is cut at its end).
+        // far as that window and its mark need: cut at its start, marked
+        // `…`, its end (the clock) kept, its styles too.
         f.status.as_mut().unwrap().right = seg("0123456789ab", Style { bold: true, ..st });
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
-        assert_eq!(row, "abcd0:x 0123");
+        assert_eq!(row, "abcd0:x> …ab");
+        assert!(!g.get(9, 1).style.bold, "the mark is the line's own");
+        assert!(g.get(10, 1).style.bold && g.get(11, 1).style.bold);
         assert_eq!(hits, vec![(4, 7), (0, 0)]);
+        // A window left out that waits to tell something: its mark shows
+        // it reversed; one with nothing to tell, plain.
+        f.status.as_mut().unwrap().alerts = vec![false, true];
+        let (g, _, _) = compose(&f);
+        assert!(g.get(7, 1).style.inverse, "> for a window with an alert");
+        f.status.as_mut().unwrap().alerts = vec![true, false];
+        let (g, _, _) = compose(&f);
+        assert!(!g.get(7, 1).style.inverse, "the alert is the shown window's, not the left-out one's");
+        f.status.as_mut().unwrap().alerts = Vec::new();
         // The list does not fit at all: windows before the current one are
         // left out (and never hit), the current one is always shown, and
         // the right side keeps its width; no column is left for a `<`.
@@ -2110,6 +2181,24 @@ mod tests {
         let row: String = (0..10).map(|x| g.get(x, 1).text()).collect();
         assert_eq!(row, "abcd<1:bb ", "0:a left out so 1:bb fits; 2:c does not; `<` where a column is left");
         assert_eq!(hits, vec![(0, 0), (5, 9), (0, 0)]);
+    }
+
+    /// The end of a right side, as many columns as asked: styles kept, a
+    /// wide character cut in two a space.
+    #[test]
+    fn the_end_of_a_right_side_keeps_its_styles() {
+        let st = Style::colors(Color::Idx(7), Color::Idx(0));
+        let mut segs = seg("中文ab", st);
+        segs.extend(seg("12:34", Style { bold: true, ..st }));
+        let text = |v: Vec<Segment>| v.iter().map(|s| s.text.clone()).collect::<String>();
+        assert_eq!(text(tail_segments(&segs, 5)), "12:34");
+        assert_eq!(text(tail_segments(&segs, 7)), "ab12:34");
+        assert_eq!(text(tail_segments(&segs, 8)), " ab12:34", "half of 文 is a space");
+        assert_eq!(text(tail_segments(&segs, 9)), "文ab12:34");
+        assert_eq!(text(tail_segments(&segs, 40)), "中文ab12:34");
+        assert_eq!(text(tail_segments(&segs, 0)), "");
+        assert!(tail_segments(&segs, 5).iter().all(|s| s.text.is_empty() || s.style.bold));
+        assert_eq!(seg_width(&tail_segments(&segs, 8)), 8);
     }
 
     /// Many windows: the right side (the machine, the clock) stays whole;
@@ -2144,6 +2233,16 @@ mod tests {
                     let drawn = span(&ten, 1, p.first, p.end) + u16::from(p.before) + u16::from(p.after);
                     if p.end > p.first {
                         assert!(u32::from(4 + drawn + 1 + p.right_w) <= u32::from(cols), "{cols} {cur} {full}: {p:?}");
+                    }
+                    // Giving way is for the current window alone, and no
+                    // more than it and its marks need.
+                    if p.right_w < full {
+                        assert!(p.first <= cur && cur < p.end, "{cols} {cur} {full}: {p:?}");
+                        let marks = u16::from(cur > 0) + u16::from(cur < 9);
+                        assert!(
+                            u32::from(4 + 3 + marks + 1 + p.right_w) >= u32::from(cols),
+                            "{cols} {cur} {full}: {p:?}"
+                        );
                     }
                     assert!(!p.before || p.first > 0, "{p:?}");
                     assert!(!p.after || p.end < 10, "{p:?}");
@@ -2194,6 +2293,7 @@ mod tests {
                 status: Some(StatusLine {
                     left: seg("[a-very-long-session-name] ", Style::default()),
                     windows: vec![(seg("0:x", Style::default()), true)],
+                    alerts: Vec::new(),
                     separator: " ".into(),
                     justify: Justify::Left,
                     right: seg("right", Style::default()),
@@ -2279,6 +2379,7 @@ mod tests {
             status: Some(StatusLine {
                 left: seg("[s] ", Style::default()),
                 windows: vec![],
+                alerts: Vec::new(),
                 separator: " ".into(),
                 justify: Justify::Left,
                 right: Vec::new(),
