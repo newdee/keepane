@@ -167,6 +167,7 @@ test("phone: the long press, the edge swipe, reloads", async ({ app, browser, sc
     const w = window as unknown as { lift?: number; clicked?: number };
     addEventListener("touchend", () => (w.lift = performance.now()), true);
     addEventListener("click", () => (w.clicked = performance.now()), true);
+    return null;
   });
   await finger.longPress(card(browser, "builder"));
   await cardMenu(screen);
