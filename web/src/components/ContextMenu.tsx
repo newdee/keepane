@@ -88,9 +88,18 @@ export function useContextPress(open: (x: number, y: number) => void) {
   const cancel = () => {
     clearTimeout(timer.current);
     start.current = null;
-    // The click a long press may end in comes at once; a later one (iOS
-    // sends none after a long press) is a real tap.
-    if (fired.current) window.setTimeout(() => (fired.current = false), 400);
+    // The click a long press may end in comes at once and with no press of
+    // its own; a later one (iOS sends none after a long press), or one that
+    // starts with a new press however soon, is a real tap.
+    if (fired.current) {
+      const done = () => {
+        fired.current = false;
+        clearTimeout(t);
+        window.removeEventListener("pointerdown", done, true);
+      };
+      const t = window.setTimeout(done, 400);
+      window.addEventListener("pointerdown", done, true);
+    }
   };
   return {
     onContextMenu: (e: React.MouseEvent) => {

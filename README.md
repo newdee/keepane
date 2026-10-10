@@ -855,7 +855,8 @@ code, and to copy the command or what it printed; see "Command times and
 history"). Under the screen is the session's status line, as the terminal
 draws it, in its colours: its two ends stay put and the windows between them
 scroll sideways when there are more than fit (the current one in view), so
-the machine and the clock always show; tapping a window opens it. Status
+the machine and the clock always show (a right end too long for the room is
+cut at its start, marked `…`); tapping a window opens it. Status
 line, in the view menu, hides it on this device; `set -g status off` hides it
 everywhere. A tap on a session or window folds it (the device remembers); its
 right click or long press renames it or folds every window of a session at

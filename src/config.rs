@@ -1501,6 +1501,53 @@ mod tests {
         assert!(o.set("save-history", "").is_err(), "not an on/off option");
     }
 
+    /// The light theme reads clearly: each colour text is drawn in (the
+    /// panes' text, the 15 colours after black, which a light theme keeps
+    /// light for what is drawn on colour) at 4.5:1 or more on the panes and
+    /// on the status bar (WCAG AA), the pane borders at 3:1 on the panes.
+    #[test]
+    fn the_light_theme_reads_clearly() {
+        fn lum(c: Color) -> f64 {
+            let Color::Rgb(r, g, b) = c else { panic!("an RGB colour: {c:?}") };
+            let ch = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+        }
+        let ratio = |a: Color, b: Color| {
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        let mut o = Options::default();
+        o.set("theme", "tokyo-day").unwrap();
+        let (pane, bar) = (o.window_bg, o.status_bg);
+        let text: Vec<(String, Color)> = std::iter::once(("text".to_string(), o.window_fg))
+            .chain(o.pane_colours.iter().enumerate().skip(1).map(|(i, c)| (format!("colour {i}"), *c)))
+            .collect();
+        for (name, c) in text {
+            assert!(ratio(c, pane) >= 4.5, "{name} on the panes: {:.2}:1", ratio(c, pane));
+            assert!(ratio(c, bar) >= 4.5, "{name} on the bar: {:.2}:1", ratio(c, bar));
+        }
+        assert!(ratio(o.pane_border_fg, pane) >= 3.0, "the border: {:.2}:1", ratio(o.pane_border_fg, pane));
+        assert!(ratio(o.pane_border_active_fg, pane) >= 3.0, "the active border");
+        // The status line's own runs (`#[fg=…,bg=…]`), each on its block or on the bar.
+        let base = crate::server::render::Style::colors(o.status_fg, bar);
+        let formats = [&o.status_left, &o.window_status_format, &o.window_status_current_format, &o.status_right];
+        let mut runs = 0;
+        for f in formats {
+            for spec in f.split("#[").skip(1).filter_map(|s| s.split_once(']')).map(|(spec, _)| spec) {
+                if !spec.contains("fg=") {
+                    continue;
+                }
+                let s = crate::format::style_from_spec(spec, base);
+                assert!(ratio(s.fg, s.bg) >= 4.5, "#[{spec}] (no bg: the bar's): {:.2}:1", ratio(s.fg, s.bg));
+                runs += 1;
+            }
+        }
+        assert_eq!(runs, 13, "every coloured run of the status line checked");
+    }
+
     /// The built-in themes set the same options, so one replaces another
     /// whole: tokyo-day and back is the default look again.
     #[test]
@@ -1515,7 +1562,7 @@ mod tests {
         let mut o = Options::default();
         o.set("theme", "tokyo-day").unwrap();
         assert_eq!(o.get("theme").as_deref(), Some("tokyo-day"));
-        assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x37, 0x60, 0xbf), Color::Rgb(0xe1, 0xe2, 0xe7)));
+        assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x33, 0x58, 0xb0), Color::Rgb(0xe1, 0xe2, 0xe7)));
         assert_eq!(o.pane_colours.len(), 16);
         assert_ne!(o.get("status-right"), default.get("status-right"));
         o.set("theme", "tokyo-night").unwrap();

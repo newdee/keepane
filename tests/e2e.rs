@@ -2687,7 +2687,7 @@ async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
     let (code, _, err) = h.cli(&["set", "-g", "theme", "tokyo-day"]).await;
     assert_eq!(code, 0, "{err}");
     c.wait_for("light panes", |s| bg_at(s) == Some(Color::Rgb(0xe1, 0xe2, 0xe7))).await;
-    c.wait_for("the day's red", |s| red_cell(s) == Some(Color::Rgb(0xf5, 0x2a, 0x65))).await;
+    c.wait_for("the day's red", |s| red_cell(s) == Some(Color::Rgb(0xb2, 0x1e, 0x49))).await;
     assert_eq!(h.cli(&["show", "-gv", "theme"]).await.1.trim(), "tokyo-day");
     // The page: what it is, set from there, refused when read-only.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2698,9 +2698,9 @@ async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
         (v["name"].as_str(), v["bg"].as_str(), v["fg"].as_str()),
-        (Some("tokyo-day"), Some("#e1e2e7"), Some("#3760bf"))
+        (Some("tokyo-day"), Some("#e1e2e7"), Some("#3358b0"))
     );
-    assert_eq!(v["palette"][1].as_str(), Some("#f52a65"));
+    assert_eq!(v["palette"][1].as_str(), Some("#b21e49"));
     assert_eq!(v["names"], serde_json::json!(["tokyo-night", "tokyo-day"]));
     let (code, body) = http(addr, "POST", "/api/theme?name=solarized", "k", "").await;
     assert_eq!(code, 400, "{body}");

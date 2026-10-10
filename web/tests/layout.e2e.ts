@@ -1,6 +1,6 @@
 // Menus on a right click, a long press and Shift+F10; the list folding to a
 // strip; swipes on a tablet; the long press and the edge swipe on a phone.
-import { expect } from "e2e";
+import { expect, type Screen } from "e2e";
 import { dialog, entry, pageText, stays, test } from "../e2e/fixtures.ts";
 import { closeIfThere, kp, page, paneIds, paneNumber, portOf, show } from "../e2e/keepane.ts";
 import { phone } from "../e2e/phone.ts";
@@ -9,6 +9,12 @@ import type { Browser } from "@e2e-dev/web";
 const cards = (browser: Browser) => browser.locator("[data-pane]").count();
 const rails = (browser: Browser) => browser.locator("[data-rail]").count();
 const card = (browser: Browser, name: string) => browser.locator(`[data-pane][data-name="${name}"]`);
+// A card's menu, open and taking keys: its 11 entries shown, the focus on
+// the first (Escape before then goes to the page, and the menu stays).
+const cardMenu = async (screen: Screen) => {
+  await expect(screen.getByRole("menuitem")).toHaveCount(11);
+  await expect(entry(screen, "打开")).toBeFocused();
+};
 const onList = (browser: Browser) => browser.evaluate(() => !document.querySelector("#screen") && document.querySelectorAll("[data-pane]").length >= 4);
 
 test("desktop: right click, Shift+F10, closing a pane, the strip", async ({ app, browser, screen }) => {
@@ -49,8 +55,8 @@ test("desktop: right click, Shift+F10, closing a pane, the strip", async ({ app,
   // Shift+F10 on a focused card: its menu, at the card; Escape gives the focus back.
   await card(browser, "builder").focus();
   await browser.keyboard.press("Shift+F10");
-  await expect(screen.getByRole("menuitem")).toHaveCount(11);
-  const c = (await card(browser, "builder").boundingBox())!;
+  await cardMenu(screen);
+  const c =(await card(browser, "builder").boundingBox())!;
   const m = (await screen.getByRole("menu").boundingBox())!;
   expect(m.y >= c.y - 8 && m.y <= c.y + c.height + 40 && m.x >= c.x - 8 && m.x <= c.x + c.width, "the menu is at the card").toBe(true);
   await browser.keyboard.press("Escape");
@@ -142,7 +148,7 @@ test("phone: the long press, the edge swipe, reloads", async ({ app, browser, sc
   ).toBe(true);
   await finger.longPress(browser.locator('[data-pane][data-name="builder"] span').first());
   expect(await browser.evaluate(() => String(getSelection())), "a long press selects no text").toBe("");
-  await expect(screen.getByRole("menuitem")).toHaveCount(11);
+  await cardMenu(screen);
   await browser.keyboard.press("Escape");
   await expect(screen.getByRole("menu")).toHaveCount(0);
 
@@ -154,9 +160,24 @@ test("phone: the long press, the edge swipe, reloads", async ({ app, browser, sc
   await expect(dialog(screen, /收件箱/)).toBeVisible();
   await browser.keyboard.press("Escape");
   await expect(dialog(screen, /收件箱/)).toHaveCount(0);
-  // A mouse after a long press (a tablet with a mouse): a click opens the pane.
+  // A mouse after a long press (a tablet with a mouse): a click opens the
+  // pane, however soon it comes (here sooner than 400 ms after the finger
+  // left, when a click could still be the long press's own).
+  await browser.evaluate(() => {
+    const w = window as unknown as { lift?: number; clicked?: number };
+    addEventListener("touchend", () => (w.lift = performance.now()), true);
+    addEventListener("click", () => (w.clicked = performance.now()), true);
+  });
+  await finger.longPress(card(browser, "builder"));
+  await cardMenu(screen);
+  await browser.keyboard.press("Escape");
   await card(browser, "builder").tap();
   await expect(browser.locator("#screen")).toBeVisible();
+  const soon = await browser.evaluate(() => {
+    const w = window as unknown as { lift: number; clicked: number };
+    return w.clicked - w.lift;
+  });
+  expect(soon, "the click came within 400 ms of the long press").toBeLessThan(400);
 
   // An edge swipe goes back, never to the pane before: no screen asked for it.
   const prev = paneNumber("work:0.0");

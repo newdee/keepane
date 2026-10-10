@@ -54,11 +54,11 @@ $titleFg = "#565f89"; $accentFg = "#7aa2f7"; $sideFg = "#c0caf5"; $sideMuted = "
 if ($Light) {
     # Tokyo Day, as themes/tokyo-day.conf sets the panes.
     $palette = @(
-        "#e9e9ed", "#f52a65", "#587539", "#8c6c3e", "#2e7de9", "#9854f1", "#007197", "#6172b0",
-        "#a1a6c5", "#f52a65", "#587539", "#8c6c3e", "#2e7de9", "#9854f1", "#007197", "#3760bf"
+        "#e9e9ed", "#b21e49", "#4b6431", "#725833", "#225baa", "#7440b8", "#006486", "#4d5a8b",
+        "#595c6d", "#b21e49", "#4b6431", "#725833", "#225baa", "#7440b8", "#006486", "#3358b0"
     )
-    $defaultFg = "#3760bf"; $defaultBg = "#e1e2e7"; $chromeBg = "#d0d5e3"
-    $titleFg = "#848cb5"; $accentFg = "#2e7de9"; $sideFg = "#3760bf"; $sideMuted = "#6172b0"
+    $defaultFg = "#3358b0"; $defaultBg = "#e1e2e7"; $chromeBg = "#d0d5e3"
+    $titleFg = "#565b76"; $accentFg = "#225baa"; $sideFg = "#3358b0"; $sideMuted = "#4d5a8b"
 }
 
 function To-Color([string]$spec, [string]$fallback) {

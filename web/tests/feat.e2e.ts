@@ -318,6 +318,27 @@ test("the status line under the screen: its windows open, the menu hides it", as
     Number(kp("display-message", "-p", "-t", "work", "#{session_windows}").trim()),
   );
   await expect(browser.locator('#status-line [aria-current][data-window="0"]')).toHaveCount(1);
+  // Room for all: nothing marked as cut. On a phone the windows keep what
+  // they need (up to 40%) and the right end is cut from its left, saying
+  // so; past 40% the windows fade where more are hidden. Neither runs into
+  // the other. Wide again, the marks go.
+  const cut = browser.locator("#status-line [data-cut]");
+  const more = browser.locator("#status-line [data-more]");
+  await expect(cut).toHaveCount(0);
+  await expect(more).toHaveCount(0);
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect(cut).toHaveCount(1);
+  await expect(more).toHaveCount(0);
+  kp("new-window", "-d", "-t", "work:", "-n", "one-more-window");
+  try {
+    await expect(browser.locator('#status-line [data-more="end"]')).toHaveCount(1);
+    await expect(cut).toHaveCount(1);
+  } finally {
+    kp("kill-window", "-t", "work:one-more-window");
+  }
+  await expect(more).toHaveCount(0);
+  await browser.setViewport({ width: 1280, height: 860 });
+  await expect(cut).toHaveCount(0);
   // A window's label opens that window's pane.
   const logs = show("work:1", "#{pane_id}");
   await browser.locator('#status-line [data-window="1"]').click();
