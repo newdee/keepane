@@ -307,6 +307,30 @@ test("an agent's card: its model, cost and context", async ({ app, browser }) =>
   }
 });
 
+test("the status line under the screen: its windows open, the menu hides it", async ({ app, browser, screen }) => {
+  await app.open(page(portOf(app.baseUrl), paneNumber("work:0.1")));
+  await browser.reload();
+  const bar = browser.locator("#status-line");
+  await expect(bar).toBeVisible();
+  // As the terminal draws it: the session, its windows, the current marked.
+  await expect(bar).toContainText("work");
+  await expect(browser.locator("#status-line [data-window]")).toHaveCount(
+    Number(kp("display-message", "-p", "-t", "work", "#{session_windows}").trim()),
+  );
+  await expect(browser.locator('#status-line [aria-current][data-window="0"]')).toHaveCount(1);
+  // A window's label opens that window's pane.
+  const logs = show("work:1", "#{pane_id}");
+  await browser.locator('#status-line [data-window="1"]').click();
+  await expect.poll(() => browser.evaluate(() => JSON.stringify(history.state && history.state.pane))).toBe(JSON.stringify(logs));
+  // The View menu turns it off (and on again, as it was).
+  await browser.locator("#view").click();
+  await entry(screen, "状态栏").tap();
+  await expect(bar).toHaveCount(0);
+  await browser.locator("#view").click();
+  await entry(screen, "状态栏").tap();
+  await expect(bar).toBeVisible();
+});
+
 test("desktop: a card's menu has the modes, the pane's ticked", async ({ app, browser, screen }) => {
   await app.open(page(portOf(app.baseUrl)));
   await browser.locator('[data-pane][data-name="builder"]').secondaryTap();

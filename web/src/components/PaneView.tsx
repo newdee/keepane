@@ -37,11 +37,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { getJson, post, q, type Pane, type Theme } from "../api";
 import { ansiToHtml, blank } from "../ansi";
 import { bounced, headOf, stampDetail, stampText, under, where } from "../format";
-import { useScreen, useStored, useVisible } from "../hooks";
+import { useScreen, useStatusLine, useStored, useVisible } from "../hooks";
 import { t } from "../i18n";
 import { copyText, outputOf, plain } from "../copy";
 import { ContextMenu, type MenuAt } from "./ContextMenu";
 import { ConfirmClose, History, type Sent } from "./Sheets";
+import { StatusBar } from "./StatusBar";
 
 // Buttons: what they show, what they send (a named key, `=` text, `@` the
 // page's own: Ctrl, Alt). The usual ones, then the rest.
@@ -106,6 +107,9 @@ export function PaneView(props: Props) {
   const visible = useVisible();
   const [wrap, setWrap] = useStored<boolean | number>("keepane-wrap", true);
   const [detail, setDetail] = useStored<boolean | number>("keepane-detail", false);
+  // The session's status line under the screen (on unless turned off here).
+  const [statusOn, setStatusOn] = useStored<boolean | number>("keepane-status-line", true);
+  const statusLine = useStatusLine(p ? p.session : null, !!statusOn);
   // What the box does with what is typed: sends it as it is typed (live),
   // types it on Enter (a second Enter runs it), or types and runs it.
   const [inputMode, setInputMode] = useStored<InputMode>("keepane-input", choseBefore());
@@ -453,6 +457,8 @@ export function PaneView(props: Props) {
       toast(!wrap ? t("Long lines wrap", "长行自动换行") : t("Long lines scroll sideways", "长行左右滑动"), { timeout: 2000 });
     } else if (k === "detail") {
       toggleDetail();
+    } else if (k === "status-line") {
+      setStatusOn(!statusOn);
     } else if (k === "enter:live" || k === "enter:type" || k === "enter:run") {
       setInputMode(k.slice(6) as InputMode);
     } else if (k === "copy") {
@@ -531,6 +537,9 @@ export function PaneView(props: Props) {
                 </Item>
                 <Item id="detail" icon={<Clock className="size-4" />} checked={!!detail}>
                   {t("When each command ran", "每条命令的时间")}
+                </Item>
+                <Item id="status-line" icon={<PanelBottom className="size-4" />} checked={!!statusOn}>
+                  {t("Status line", "状态栏")}
                 </Item>
                 <Item id="find" icon={<Search className="size-4" />}>
                   {t("Find in the output", "在输出里查找")}
@@ -709,6 +718,9 @@ export function PaneView(props: Props) {
           />
         </div>
       </div>
+      {statusOn && statusLine && statusLine.on ? (
+        <StatusBar line={statusLine} theme={theme} onOpen={(pane) => pane !== id && props.onGo(pane)} />
+      ) : null}
 
       {readOnly ? null : (
         <Composer

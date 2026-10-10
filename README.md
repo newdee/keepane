@@ -852,7 +852,12 @@ put first, up, down or delete (and undo), and the last few it finished. The
 view menu holds the rest: When each command ran adds a column with the time
 each command started (tap one for its date, how long it took and its exit
 code, and to copy the command or what it printed; see "Command times and
-history"). A tap on a session or window folds it (the device remembers); its
+history"). Under the screen is the session's status line, as the terminal
+draws it, in its colours: its two ends stay put and the windows between them
+scroll sideways when there are more than fit (the current one in view), so
+the machine and the clock always show; tapping a window opens it. Status
+line, in the view menu, hides it on this device; `set -g status off` hides it
+everywhere. A tap on a session or window folds it (the device remembers); its
 right click or long press renames it or folds every window of a session at
 once. A pane wider than the phone wraps its long lines at the phone's edge
 (the view menu turns that off, for a full-screen program). Fit to this screen,

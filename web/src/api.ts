@@ -71,6 +71,34 @@ export type Agent = {
   mem: string;
 };
 
+/** A colour as the server writes it: the terminal's own (null), one of the
+ *  256 (a number), or `#rrggbb`. */
+export type Colour = null | number | string;
+/** A run of a status line with one style. */
+export type Seg = {
+  text: string;
+  fg: Colour;
+  bg: Colour;
+  bold: boolean;
+  dim: boolean;
+  italic: boolean;
+  underline: boolean;
+  inverse: boolean;
+};
+/** A session's status line, as the terminal draws it (`status-line -J`):
+ *  `status-left`, each window's label (with its number, whether it is the
+ *  current one and its active pane), `status-right`; `on`: `status` is on. */
+export type StatusLine = {
+  session: string;
+  on: boolean;
+  fg: Colour;
+  bg: Colour;
+  separator: string;
+  left: Seg[];
+  windows: { index: number; current: boolean; pane: string; segments: Seg[] }[];
+  right: Seg[];
+};
+
 /** The terminal's theme: what a pane's text is drawn in. */
 export type Theme = { name: string; names: string[]; fg: string; bg: string; palette: string[] };
 

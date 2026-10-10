@@ -809,6 +809,35 @@ async fn a_drag_over_wide_characters_copies_what_it_covers() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `status-line`: a session's status line as text, or (`-J`) its parts,
+/// each window with its number, whether it is current and its active pane;
+/// `on` says whether `status` is on (the phone page then hides it).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_line_is_there_for_a_script_and_the_page() {
+    let h = Harness::start("statusline").await;
+    h.cli(&["new", "-d", "-s", "st", "-n", "first"]).await;
+    h.cli(&["new-window", "-d", "-t", "st", "-n", "second"]).await;
+    let (code, text, err) = h.cli(&["status-line", "-t", "st"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(text.contains("[st]") && text.contains("0:first*") && text.contains("1:second"), "{text}");
+    let (_, json, _) = h.cli(&["status-line", "-J", "-t", "st"]).await;
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let second = h.cli(&["display-message", "-p", "-t", "st:1", "#{pane_id}"]).await.1;
+    assert_eq!((v["session"].as_str(), v["on"].as_bool()), (Some("st"), Some(true)));
+    assert_eq!(v["windows"][0]["current"], true);
+    assert_eq!((v["windows"][1]["index"].as_u64(), v["windows"][1]["pane"].as_str()), (Some(1), Some(second.trim())));
+    let segs = |part: &serde_json::Value| {
+        part.as_array().unwrap().iter().map(|s| s["text"].as_str().unwrap().to_string()).collect::<String>()
+    };
+    assert!(segs(&v["left"]).contains("[st]") && segs(&v["windows"][1]["segments"]).contains("1:second"), "{json}");
+    h.cli(&["set", "-g", "status", "off"]).await;
+    let (_, json, _) = h.cli(&["status-line", "-J", "-t", "st"]).await;
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["on"], false);
+    let (code, _, err) = h.cli(&["status-line", "-t", "nosuch"]).await;
+    assert!(code != 0 && !err.is_empty());
+    h.cli(&["kill-server"]).await;
+}
+
 /// With a Chinese input method on, `[` arrives as `【`: after the prefix,
 /// in copy mode and at a y/n question keepane reads such a key as its ASCII
 /// form; a prompt for text keeps it as typed.

@@ -96,7 +96,9 @@ marked; `-c` the commands only, `-m` every message sent to it),
 the `pane-done` hook and `done-webhook`),
 `show-messages`, `clock-mode`, `dashboard` (panes, inboxes, tasks and the
 chosen pane's screen, to act on), `list-agents` (the Claude Code, Codex and
-pi the panes run: model, cost, tokens, context, CPU, memory; `-J` as JSON).
+pi the panes run: model, cost, tokens, context, CPU, memory; `-J` as JSON),
+`status-line` (a session's status line as drawn; `-J` its parts, their colours
+and each window's pane, which the phone page draws under the screen).
 
 ### Panes that pass messages
 

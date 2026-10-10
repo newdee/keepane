@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, getJson, key, needsCode, post, type Done, type Pane, type Screen, type Theme } from "./api";
+import { api, getJson, key, needsCode, post, type Done, type Pane, type Screen, type StatusLine, type Theme } from "./api";
 import { store, stored } from "./format";
 import { t } from "./i18n";
 
@@ -67,6 +67,33 @@ export function usePanes(enabled: boolean) {
     };
   }, [visible, enabled, reload]);
   return { panes, error, reload };
+}
+
+/** A session's status line, asked again every 2 s while the page is in
+ *  view and `enabled`; null until it comes, or when it cannot. */
+export function useStatusLine(session: string | null, enabled: boolean) {
+  const visible = useVisible();
+  const [line, setLine] = useState<StatusLine | null>(null);
+  useEffect(() => {
+    if (!visible || !enabled || !session) return;
+    let stop = false;
+    let timer: number | undefined;
+    const loop = async () => {
+      try {
+        const l = await getJson<StatusLine>(`/api/status?session=${encodeURIComponent(session)}`);
+        if (!stop) setLine(l);
+      } catch {
+        if (!stop) setLine(null);
+      }
+      if (!stop) timer = window.setTimeout(loop, 2000);
+    };
+    loop();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [visible, enabled, session]);
+  return line;
 }
 
 export type ScreenState = Screen & { error: string | null; gone: boolean };

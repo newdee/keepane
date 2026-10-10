@@ -5,7 +5,8 @@ export function esc(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 }
 
-function colour256(n: number, palette: string[]) {
+/** Colour `n` of the 256: the theme's first 16, then xterm's cube and greys. */
+export function colour256(n: number, palette: string[]) {
   if (n < 16) return palette[n];
   if (n >= 232) {
     const v = 8 + 10 * (n - 232);

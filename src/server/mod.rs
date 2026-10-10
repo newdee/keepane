@@ -64,6 +64,10 @@ fn prune_shell_history_files(dir: &std::path::Path, keep: &HashSet<String>, cuto
     }
 }
 
+/// A status line's three parts, expanded: `status-left`, each window's
+/// label with whether it is the current window, `status-right`.
+type StatusParts = (Vec<crate::format::Segment>, Vec<(Vec<crate::format::Segment>, bool)>, Vec<crate::format::Segment>);
+
 pub type ClientId = u32;
 pub type SessionId = u32;
 pub type WindowId = u32;
@@ -5676,6 +5680,10 @@ impl Server {
                 }
             }
             Cmd::ListAgents { json } => self.list_agents(json),
+            Cmd::StatusLine { target, json } => match self.resolve_session(target.as_ref(), cid) {
+                Ok(sid) => self.status_line_out(sid, json),
+                Err(e) => Outcome::Error(e),
+            },
             Cmd::CopyOutput { target, print } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
@@ -8183,6 +8191,101 @@ impl Server {
         self.animating()
     }
 
+    /// The status line of session `spos` as drawn for client `cid` (None:
+    /// for no client, the phone page): `status-left`, each window's label
+    /// (and whether it is the current one), `status-right`, expanded.
+    fn status_parts(&mut self, spos: usize, cid: Option<ClientId>) -> StatusParts {
+        let sid = self.sessions[spos].id;
+        let base = render::Style::colors(self.opts.status_fg, self.opts.status_bg);
+        let now = chrono::Local::now();
+        // One context per window, built while nothing is borrowed
+        // mutably; the status line's title is clipped so a long path
+        // in it cannot push the window list off the line.
+        let (cur, n) = (self.sessions[spos].cur, self.sessions[spos].windows.len());
+        let ctxs: Vec<crate::format::Context> = (0..n)
+            .map(|i| {
+                let mut c = self.context(sid, i, None, cid);
+                c.pane_title = truncate(&c.pane_title, 30);
+                c
+            })
+            .collect();
+        let cache = &mut self.shell_cache;
+        let cur_ctx = ctxs.get(cur).cloned().unwrap_or_default();
+        let mut left = crate::format::expand(&self.opts.status_left, &cur_ctx, cache, base, now);
+        let mut right = crate::format::expand(&self.opts.status_right, &cur_ctx, cache, base, now);
+        clip_segments(&mut left, self.opts.status_left_length);
+        clip_segments(&mut right, self.opts.status_right_length);
+        let windows = ctxs
+            .iter()
+            .enumerate()
+            .map(|(i, ctx)| {
+                let fmt =
+                    if i == cur { &self.opts.window_status_current_format } else { &self.opts.window_status_format };
+                (crate::format::expand(fmt, ctx, cache, base, now), i == cur)
+            })
+            .collect();
+        (left, windows, right)
+    }
+
+    /// `status-line`: session `sid`'s status line as text, or (`json`) its
+    /// parts: each segment's text and style, each window's label with its
+    /// number, whether it is current and its active pane (the phone page
+    /// opens that pane when the label is tapped).
+    fn status_line_out(&mut self, sid: SessionId, json: bool) -> Outcome {
+        let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else {
+            return Outcome::Error("no such session".into());
+        };
+        let (left, windows, right) = self.status_parts(spos, None);
+        let text = |segs: &[crate::format::Segment]| segs.iter().map(|s| s.text.as_str()).collect::<String>();
+        if !json {
+            let list: Vec<String> = windows.iter().map(|(l, _)| text(l)).collect();
+            let line = format!("{}{}  {}", text(&left), list.join(&self.opts.window_status_separator), text(&right));
+            return Outcome::Text(line.trim_end().to_string());
+        }
+        fn colour(c: vt100::Color) -> serde_json::Value {
+            match c {
+                vt100::Color::Default => serde_json::Value::Null,
+                vt100::Color::Idx(n) => n.into(),
+                vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}").into(),
+            }
+        }
+        let segs = |segs: &[crate::format::Segment]| -> serde_json::Value {
+            segs.iter()
+                .filter(|s| !s.text.is_empty())
+                .map(|s| {
+                    serde_json::json!({
+                        "text": s.text, "fg": colour(s.style.fg), "bg": colour(s.style.bg),
+                        "bold": s.style.bold, "dim": s.style.dim, "italic": s.style.italic,
+                        "underline": s.style.underline, "inverse": s.style.inverse,
+                    })
+                })
+                .collect()
+        };
+        let s = &self.sessions[spos];
+        let base = self.opts.base_index;
+        let list: Vec<serde_json::Value> = windows
+            .iter()
+            .enumerate()
+            .map(|(i, (label, current))| {
+                let pane = s.windows.get(i).map(|w| format!("%{}", w.active)).unwrap_or_default();
+                serde_json::json!({ "index": base + i, "current": current, "pane": pane, "segments": segs(label) })
+            })
+            .collect();
+        Outcome::Text(
+            serde_json::json!({
+                "session": s.name,
+                "on": self.opts.status,
+                "fg": colour(self.opts.status_fg),
+                "bg": colour(self.opts.status_bg),
+                "separator": self.opts.window_status_separator,
+                "left": segs(&left),
+                "windows": list,
+                "right": segs(&right),
+            })
+            .to_string(),
+        )
+    }
+
     fn render_client(&mut self, cid: ClientId) {
         self.refit_popup(cid);
         let Some(c) = self.clients.get(&cid) else { return };
@@ -8228,37 +8331,7 @@ impl Server {
         // row at the end instead (as tmux does).
         let notice = (!opts_status).then(|| (prompt.clone(), message.clone()));
         let status_line = if opts_status {
-            let base = render::Style::colors(self.opts.status_fg, self.opts.status_bg);
-            let now = chrono::Local::now();
-            // One context per window, built while nothing is borrowed
-            // mutably; the status line's title is clipped so a long path
-            // in it cannot push the window list off the line.
-            let (cur, n) = (self.sessions[spos].cur, self.sessions[spos].windows.len());
-            let ctxs: Vec<crate::format::Context> = (0..n)
-                .map(|i| {
-                    let mut c = self.context(sid, i, None, Some(cid));
-                    c.pane_title = truncate(&c.pane_title, 30);
-                    c
-                })
-                .collect();
-            let cache = &mut self.shell_cache;
-            let cur_ctx = ctxs.get(cur).cloned().unwrap_or_default();
-            let mut left = crate::format::expand(&self.opts.status_left, &cur_ctx, cache, base, now);
-            let mut right = crate::format::expand(&self.opts.status_right, &cur_ctx, cache, base, now);
-            clip_segments(&mut left, self.opts.status_left_length);
-            clip_segments(&mut right, self.opts.status_right_length);
-            let windows = ctxs
-                .iter()
-                .enumerate()
-                .map(|(i, ctx)| {
-                    let fmt = if i == cur {
-                        &self.opts.window_status_current_format
-                    } else {
-                        &self.opts.window_status_format
-                    };
-                    (crate::format::expand(fmt, ctx, cache, base, now), i == cur)
-                })
-                .collect();
+            let (left, windows, right) = self.status_parts(spos, Some(cid));
             Some(StatusLine {
                 left,
                 windows,
