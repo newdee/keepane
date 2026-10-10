@@ -457,58 +457,35 @@ pub fn compose(f: &Frame) -> Composed {
             cursor = draw_notice(&mut g, sy, s.prompt.as_ref(), s.message.as_deref()).or(cursor);
         } else {
             let mut x = g.put_segments(0, sy, &s.left, f.cols);
-            // The window list comes before the right side: the right side
-            // gets what the whole list leaves over, and is clipped to it.
-            // (A long pane title, or the default path and load, on a
-            // narrow terminal used to push windows off the line.)
             let sep_w = s.separator.width() as u16;
-            let total: u16 = s.windows.iter().map(|(l, _)| seg_width(l)).sum::<u16>()
-                + sep_w * (s.windows.len().saturating_sub(1)) as u16;
+            let widths: Vec<u16> = s.windows.iter().map(|(l, _)| seg_width(l)).collect();
+            let cur = s.windows.iter().position(|(_, c)| *c);
             let full = seg_width(&s.right);
-            // The whole list if it fits; else room for the current window
-            // (the ones before it are left out below); else nothing, since
-            // reserving room for a label that cannot fit anyway is pointless.
-            let cur_w = s.windows.iter().find(|(_, c)| *c).map(|(l, _)| seg_width(l)).unwrap_or(0);
-            let right_w = [total, cur_w]
-                .iter()
-                .find_map(|need| f.cols.checked_sub(x.saturating_add(*need).saturating_add(1)))
-                .map_or(full, |room| full.min(room));
-            let win_end = f.cols.saturating_sub(right_w + 1);
+            let plan = plan_windows(f.cols, x, &widths, cur, sep_w, full);
+            let win_end = f.cols.saturating_sub(plan.right_w + 1);
             let room = win_end.saturating_sub(x);
-            // status-justify moves the whole list when it fits. When it
-            // does not, windows are left out from the front until the
-            // current one fits, so the current window is always shown.
-            let mut first = 0;
-            if total <= room {
+            let total = span(&widths, sep_w, 0, widths.len());
+            // status-justify moves the whole list when it fits; a list cut
+            // short starts at the left, its cut ends marked.
+            if plan.first == 0 && plan.end == widths.len() && total <= room {
                 x = match s.justify {
                     Justify::Left => x,
                     Justify::Centre => x + (room - total) / 2,
                     Justify::Right => win_end - total,
                     Justify::AbsoluteCentre => (f.cols.saturating_sub(total) / 2).clamp(x, win_end - total),
                 };
-            } else if let Some(cur) = s.windows.iter().position(|(_, c)| *c) {
-                let upto = |from: usize| -> u16 {
-                    s.windows[from..=cur].iter().map(|(l, _)| seg_width(l)).sum::<u16>() + sep_w * (cur - from) as u16
-                };
-                while first < cur && upto(first) > room {
-                    first += 1;
-                }
             }
             let base = Style::colors(s.fg, s.bg);
+            if plan.before && x < win_end {
+                x += g.put_str(x, sy, "<", base, win_end - x);
+            }
             for (i, (label, current)) in s.windows.iter().enumerate() {
-                if i < first {
+                if i < plan.first || i >= plan.end {
                     window_hits.push((0, 0)); // left out: never hit
                     continue;
                 }
-                // The separator and the label it leads to go together: a
-                // label that does not fit leaves no dangling separator.
-                let lead = if i > first { sep_w } else { 0 };
-                let w = seg_width(label);
-                if x + lead + w > win_end {
-                    break;
-                }
-                if i > first {
-                    x += g.put_str(x, sy, &s.separator, base, win_end - x);
+                if i > plan.first {
+                    x += g.put_str(x, sy, &s.separator, base, win_end.saturating_sub(x));
                 }
                 let start = x;
                 if *current {
@@ -522,14 +499,98 @@ pub fn compose(f: &Frame) -> Composed {
                 }
                 window_hits.push((start, x));
             }
-            if right_w < f.cols {
-                g.put_segments(f.cols - right_w, sy, &s.right, right_w);
+            if plan.after && x < win_end {
+                g.put_str(x, sy, ">", base, win_end - x);
+            }
+            if plan.right_w < f.cols {
+                g.put_segments(f.cols - plan.right_w, sy, &s.right, plan.right_w);
             }
         }
     }
     (g, cursor, window_hits)
 }
 
+/// What of the status line's windows is drawn, and how wide its right
+/// side is: windows `first..end`, `<` before them when `first > 0`, `>`
+/// after them when windows after them are left out (neither when only the
+/// current window fits, and that without them).
+#[derive(Debug, PartialEq, Eq)]
+struct WindowPlan {
+    first: usize,
+    end: usize,
+    before: bool,
+    after: bool,
+    right_w: u16,
+}
+
+impl WindowPlan {
+    /// Windows `first..end`, marked where some are left out.
+    fn marked(first: usize, end: usize, n: usize, right_w: u16) -> WindowPlan {
+        WindowPlan { first, end, before: first > 0, after: end < n, right_w }
+    }
+}
+
+/// The width of windows `a..b` with the separators between them.
+fn span(widths: &[u16], sep_w: u16, a: usize, b: usize) -> u16 {
+    if a >= b {
+        return 0;
+    }
+    let labels = widths[a..b].iter().fold(0u16, |s, w| s.saturating_add(*w));
+    labels.saturating_add(sep_w.saturating_mul(u16::try_from(b - a - 1).unwrap_or(u16::MAX)))
+}
+
+/// Who gets the status line's room (as tmux does): the right side (the
+/// machine, the clock) keeps its width while the current window still fits
+/// beside it; the windows get the rest, those that do not fit left out
+/// around the current one (the ones before it given room first), marked
+/// `<` and `>` at the cut ends where a column is left for them. Only when
+/// the current window cannot fit does the right side give way, as far as
+/// that window needs (it is cut at its end, so no further); when the window
+/// cannot fit even then, the right side keeps its width. A long right side
+/// (a long pane title, the default path and load on a narrow terminal)
+/// therefore never hides the current window, and many windows never hide
+/// the right side. `x` is where the windows start (after status-left); one
+/// column stays free between them and the right side.
+fn plan_windows(cols: u16, x: u16, widths: &[u16], cur: Option<usize>, sep_w: u16, full: u16) -> WindowPlan {
+    let n = widths.len();
+    let total = span(widths, sep_w, 0, n);
+    let fits = |need: u16, right: u16| u32::from(x) + u32::from(need) + 1 + u32::from(right) <= u32::from(cols);
+    if fits(total, full) {
+        return WindowPlan::marked(0, n, n, full);
+    }
+    let room_beside = |right: u16| cols.saturating_sub(x).saturating_sub(right.saturating_add(1));
+    let Some(cur) = cur.filter(|&c| c < n) else {
+        // No current window to keep: the list as far as it goes.
+        let room = room_beside(full);
+        let end = (0..=n).rev().find(|&e| span(widths, sep_w, 0, e).saturating_add(u16::from(e < n)) <= room);
+        return WindowPlan::marked(0, end.unwrap_or(0), n, full);
+    };
+    let right_w = if !fits(widths[cur], full) && fits(widths[cur], 0) { room_beside(widths[cur]) } else { full };
+    let room = room_beside(right_w);
+    if total <= room {
+        return WindowPlan::marked(0, n, n, right_w);
+    }
+    // The first window shown: as early as the room allows for it, the
+    // windows up to the current one, and a `>` if any come after that one.
+    // (When all those after it fit, so does the `>`: it is no wider than
+    // a separator and a label.)
+    let lead = |f: usize| u16::from(f > 0);
+    let upto = |f: usize, e: usize| span(widths, sep_w, f, e).saturating_add(lead(f)).saturating_add(u16::from(e < n));
+    let Some(first) = (0..=cur).find(|&f| upto(f, cur + 1) <= room) else {
+        // The current window and both marks do not fit: the window alone
+        // if it fits (never drawn half), with the marks there is room for.
+        let w = widths[cur];
+        let before = cur > 0 && w < room;
+        let after = cur + 1 < n && w.saturating_add(u16::from(before)) < room;
+        let end = if w <= room { cur + 1 } else { cur };
+        return WindowPlan { first: cur, end, before: before && end > cur, after: after && end > cur, right_w };
+    };
+    let mut end = cur + 1;
+    while end < n && upto(first, end + 1) <= room {
+        end += 1;
+    }
+    WindowPlan::marked(first, end, n, right_w)
+}
 /// Display width of a segment list.
 pub fn seg_width(segs: &[Segment]) -> u16 {
     segs.iter().map(|s| s.text.width() as u16).sum()
@@ -1958,16 +2019,15 @@ mod tests {
         let (row, hits) = frame(30, Justify::Right, "│");
         assert_eq!(row, "[s]                  0:a│1:b R");
         assert_eq!(hits, vec![(21, 24), (25, 28)]);
-        // Tight: the right side gives way to the whole list (4 + 7 + 1 of
-        // 12 leaves it nothing), and the list has no room to move.
+        // Tight: the right side keeps its width, since the current window
+        // fits beside it; the window after it is left out (never squeezed),
+        // marked `>`; a cut list starts at the left whatever the justify.
         let (row, hits) = frame(12, Justify::Right, "|");
-        assert_eq!(row, "[s] 0:a|1:b ");
-        assert_eq!(hits, vec![(4, 7), (8, 11)]);
-        // Tighter: a window that does not fit is dropped rather than
-        // squeezed, and the right side keeps what the current one leaves.
+        assert_eq!(row, "[s] 0:a>   R");
+        assert_eq!(hits, vec![(4, 7), (0, 0)]);
         let (row, hits) = frame(10, Justify::Right, "|");
-        assert_eq!(row, "[s] 0:a  R");
-        assert_eq!(hits, vec![(4, 7)]);
+        assert_eq!(row, "[s] 0:a> R");
+        assert_eq!(hits, vec![(4, 7), (0, 0)]);
         assert_eq!(Justify::parse("center"), Justify::Centre);
         assert_eq!(Justify::parse("nonsense"), Justify::Left);
     }
@@ -2010,25 +2070,29 @@ mod tests {
         assert_eq!(row, "abcd      RR");
         assert_eq!(g.get(2, 1).style.fg, Color::Idx(1));
         assert!(g.get(10, 1).style.bold);
-        assert!(hits.is_empty());
-        // The list comes before the right side: both labels fit when the
-        // right side gives way; the current one is drawn inverse.
+        assert_eq!(hits, vec![(0, 0), (0, 0)], "nothing drawn, nothing hit");
+        // The right side keeps its width while the current window fits
+        // beside it: the window after it is left out, marked `>`; the
+        // current one is drawn inverse.
         f.status.as_mut().unwrap().windows = vec![(seg("0:x", st), true), (seg("1:y", st), false)];
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
-        assert_eq!(row, "abcd0:x 1:y ");
+        assert_eq!(row, "abcd0:x>  RR");
         assert!(g.get(4, 1).style.inverse);
-        assert_eq!(hits, vec![(4, 7), (8, 11)]);
-        // A long right side is clipped the same way.
+        assert!(!g.get(7, 1).style.inverse, "the mark is not part of the label");
+        assert_eq!(hits, vec![(4, 7), (0, 0)]);
+        // A right side too long for the current window gives way, only as
+        // far as that window needs (it is cut at its end).
         f.status.as_mut().unwrap().right = seg("0123456789ab", Style { bold: true, ..st });
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
-        assert_eq!(row, "abcd0:x 1:y ");
-        assert_eq!(hits, vec![(4, 7), (8, 11)]);
+        assert_eq!(row, "abcd0:x 0123");
+        assert_eq!(hits, vec![(4, 7), (0, 0)]);
         // The list does not fit at all: windows before the current one are
-        // left out (and never hit), the current one is always shown, the
-        // right side gets what is left. (CI caught this: a long default
-        // right side and the current window last hid the current window.)
+        // left out (and never hit), the current one is always shown, and
+        // the right side keeps its width; no column is left for a `<`.
+        // (CI caught this once: a long default right side and the current
+        // window last hid the current window.)
         let status = f.status.as_mut().unwrap();
         status.right = seg("RR", st);
         status.windows = vec![(seg("0:aaa", st), false), (seg("1:bbb", st), false), (seg("2:ccc", st), true)];
@@ -2044,8 +2108,56 @@ mod tests {
         f.cols = 10;
         let (g, _, hits) = compose(&f);
         let row: String = (0..10).map(|x| g.get(x, 1).text()).collect();
-        assert_eq!(row, "abcd1:bb  ", "0:a left out so 1:bb fits; 2:c does not");
-        assert_eq!(hits, vec![(0, 0), (4, 8)]);
+        assert_eq!(row, "abcd<1:bb ", "0:a left out so 1:bb fits; 2:c does not; `<` where a column is left");
+        assert_eq!(hits, vec![(0, 0), (5, 9), (0, 0)]);
+    }
+
+    /// Many windows: the right side (the machine, the clock) stays whole;
+    /// the windows around the current one fill the rest, `<` and `>` where
+    /// some are left out; the windows before the current one go first.
+    #[test]
+    fn many_windows_leave_the_right_side_whole_and_mark_the_cut() {
+        let plan = |cols, widths: &[u16], cur, full| plan_windows(cols, 4, widths, Some(cur), 1, full);
+        let ten = [3u16; 10]; // "0:a" … "9:j": 10 × 3 + 9 separators = 39
+        // Everything fits: as before, nothing marked.
+        assert_eq!(plan(60, &ten, 5, 10), WindowPlan { first: 0, end: 10, before: false, after: false, right_w: 10 });
+        // 40 columns, a right side of 20: 15 columns for windows.
+        // The current one first: the windows after it fill the rest.
+        assert_eq!(plan(40, &ten, 0, 20), WindowPlan { first: 0, end: 3, before: false, after: true, right_w: 20 });
+        // In the middle: the ones before it as far as they go, then `>`.
+        assert_eq!(plan(40, &ten, 5, 20), WindowPlan { first: 3, end: 6, before: true, after: true, right_w: 20 });
+        // Last: no `>`, the ones before it marked `<` (`<` and four
+        // windows would take 16).
+        assert_eq!(plan(40, &ten, 9, 20), WindowPlan { first: 7, end: 10, before: true, after: false, right_w: 20 });
+        // Whatever the room, the current window is in what is drawn, the
+        // right side is whole while that window fits beside it, and what
+        // is drawn fits.
+        for cols in 0..80u16 {
+            for cur in 0..10 {
+                for full in [0u16, 5, 30, 100] {
+                    let p = plan(cols, &ten, cur, full);
+                    let fits_beside = u32::from(4u16 + 3 + 1 + full) <= u32::from(cols);
+                    if fits_beside {
+                        assert_eq!(p.right_w, full, "{cols} {cur} {full}");
+                        assert!(p.first <= cur && cur < p.end, "{cols} {cur} {full}: {p:?}");
+                    }
+                    let drawn = span(&ten, 1, p.first, p.end) + u16::from(p.before) + u16::from(p.after);
+                    if p.end > p.first {
+                        assert!(u32::from(4 + drawn + 1 + p.right_w) <= u32::from(cols), "{cols} {cur} {full}: {p:?}");
+                    }
+                    assert!(!p.before || p.first > 0, "{p:?}");
+                    assert!(!p.after || p.end < 10, "{p:?}");
+                }
+            }
+        }
+        // No current window (none in the list): as far as it goes.
+        assert_eq!(
+            plan_windows(20, 4, &ten, None, 1, 5),
+            WindowPlan { first: 0, end: 2, before: false, after: true, right_w: 5 }
+        );
+        // A list too long to sum in 16 bits does not overflow.
+        let wide = vec![u16::MAX / 2; 8];
+        assert_eq!(plan_windows(200, 4, &wide, Some(7), 1, 20).right_w, 20);
     }
 
     #[test]

@@ -429,7 +429,7 @@ impl Default for Options {
             // is one, then the time on a blue block.
             status_right: "#{?keepane_update,#[fg=#1a1b26,bg=#e0af68,bold] ⇡ #{keepane_update} #[default] ,}#{?web_url,#[fg=#1a1b26,bg=#9ece6a,bold] web #{web_clients} #[default] ,}#{?#{==:#{pane_work_mode},normal},#[fg=#565f89]normal ,#[fg=#1a1b26,bg=#bb9af7,bold] #{pane_work_mode} #[default] }#{?git_branch,#[fg=#bb9af7]#{git_branch} ,}#[fg=#7dcfff]#{pane_current_path_short} #[fg=#9ece6a]CPU #{cpu_percentage} #[fg=#e0af68]MEM #{ram_percentage} #{?battery_percentage,#[fg=#9ece6a]BAT #{battery_percentage} ,}#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M ".into(),
             status_left_length: 40,
-            status_right_length: 100, // the default right side is a long one; the window list still wins the room
+            status_right_length: 100, // the default right side is a long one; it gives way only to the current window
             status_justify: "left".into(),
             // Muted tabs, the current one on a purple block.
             window_status_separator: "".into(),

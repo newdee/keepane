@@ -1221,7 +1221,10 @@ line (a one-shot `display-message -p` or `jobs -F` runs it right away,
 giving up after 3 s). `status-left-length` / `status-right-length` clip. `status-justify
 left|centre|right|absolute-centre` places the window list, and
 `window-status-separator` is what goes between the labels (a space by
-default).
+default). With more windows than fit, the right side stays whole and the
+windows around the current one fill the rest, `<` and `>` marking where
+some are left out when there is a column for them (as in tmux); only a right side too long for the current
+window gives way, as far as that window needs.
 
 The variables, by kind:
 

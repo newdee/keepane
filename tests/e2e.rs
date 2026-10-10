@@ -2989,12 +2989,13 @@ async fn a_late_key_after_the_prefix_gets_a_panel() {
     assert!(on_time >= 2, "the panel late: {took:?}");
 
     // A key in time: no panel, not even later. What the screen shows once a
-    // change made after the delay arrived has every frame before it.
+    // change made after the delay arrived has every frame before it (the
+    // current window's name: the status line always shows that one).
     let seen = |c: &Conn| panel(c.screen.screen());
     h.cli(&["set", "-g", "prefix-hint-delay", "300"]).await;
     c.prefix('p').await;
     tokio::time::sleep(Duration::from_millis(700)).await;
-    h.cli(&["rename-window", "-t", "k:1", "after-in-time"]).await;
+    h.cli(&["rename-window", "-t", "k:0", "after-in-time"]).await;
     c.wait_for("the new name", |s| s.contents().contains("after-in-time")).await;
     assert!(!seen(&c), "a key in time showed the panel:\n{}", c.text());
 
@@ -3003,7 +3004,7 @@ async fn a_late_key_after_the_prefix_gets_a_panel() {
     h.cli(&["set", "-g", "prefix-hint-delay", "0"]).await;
     c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    h.cli(&["rename-window", "-t", "k:1", "after-off"]).await;
+    h.cli(&["rename-window", "-t", "k:0", "after-off"]).await;
     c.wait_for("the new name", |s| s.contents().contains("after-off")).await;
     assert!(!seen(&c), "off showed the panel:\n{}", c.text());
     // The prefix still waited: its key works.
@@ -3012,6 +3013,49 @@ async fn a_late_key_after_the_prefix_gets_a_panel() {
         out.lines().any(|l| l.starts_with("1:") && l.contains("*"))
     })
     .await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// Many windows on an 80-column client: the right side (the machine, the
+/// clock) stays whole; the windows around the current one fill the rest,
+/// `<` and `>` where some are left out; a right side too long for the
+/// current window gives way to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn many_windows_leave_the_status_lines_right_side_whole() {
+    let h = Harness::start("manywin").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "m", "-n", "window-00"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    h.cli(&["set", "-g", "status-right", "RIGHT-END 12:34"]).await;
+    for i in 1..12 {
+        h.cli(&["new-window", "-d", "-t", "m:", "-n", &format!("window-{i:02}")]).await;
+    }
+    let status = |s: &vt100::Screen| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap();
+    let shown = |row: &str| (0..12).filter(|i| row.contains(&format!("{i}:window-{i:02}"))).collect::<Vec<_>>();
+    // The first window current: those after it, then `>`.
+    h.wait_for_cli("twelve windows", &["list-windows", "-t", "m"], |_, out| out.lines().count() == 12).await;
+    c.wait_for("the right side and the cut", |s| status(s).ends_with("RIGHT-END 12:34") && status(s).contains('>'))
+        .await;
+    let row = status(c.screen.screen());
+    assert!(row.ends_with("RIGHT-END 12:34"), "{row:?}");
+    assert!(row.contains("0:window-00*") && row.contains('>') && !row.contains('<'), "{row:?}");
+    assert!(shown(&row).len() < 12, "{row:?}");
+    // The last: `<`, those before it.
+    h.cli(&["select-window", "-t", "m:11"]).await;
+    c.wait_for("the last window current", |s| status(s).contains("11:window-11*")).await;
+    let row = status(c.screen.screen());
+    assert!(row.ends_with("RIGHT-END 12:34") && row.contains('<') && !row.contains('>'), "{row:?}");
+    // One in the middle: both ends cut, the windows next to it shown.
+    h.cli(&["select-window", "-t", "m:6"]).await;
+    c.wait_for("a middle window current", |s| status(s).contains("6:window-06*")).await;
+    let row = status(c.screen.screen());
+    assert!(row.ends_with("RIGHT-END 12:34") && row.contains('<') && row.contains('>'), "{row:?}");
+    assert!(shown(&row).contains(&5), "the one before it: {row:?}");
+    // A right side too long for the current window gives way to it.
+    h.cli(&["set", "-g", "status-right", &"x".repeat(90)]).await;
+    c.wait_for("the long right side", |s| status(s).contains("xxxxxxxxxx")).await;
+    let row = status(c.screen.screen());
+    assert!(row.contains("6:window-06*"), "{row:?}");
     h.cli(&["kill-server"]).await;
 }
 
