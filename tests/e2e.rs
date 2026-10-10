@@ -6272,7 +6272,9 @@ async fn the_machine_variables_answer_without_a_command() {
     c.wait_for("no status line", |s| !s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default().contains("CPU "))
         .await;
     h.cli(&["set", "-g", "status", "on"]).await;
-    h.cli(&["set", "-g", "status-right", "up #{uptime} on #{host_short}"]).await;
+    // The uptime last: a right side too long for the line loses its start,
+    // and the machine's name can be long (macOS CI: 60 characters).
+    h.cli(&["set", "-g", "status-right", "on #{host_short} up #{uptime}"]).await;
     c.wait_for("custom right side", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default().contains("up "))
         .await;
     h.cli(&["kill-server"]).await;
