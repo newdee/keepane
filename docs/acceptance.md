@@ -3861,3 +3861,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 6 | CI（`ae218f7`，三平台） | macOS 失败 1 个：`the_machine_variables_answer_without_a_command` 把右端设成 `up #{uptime} on #{host_short}`，然后找开头的 `up `。macOS 的主机名有 60 个字符，右端放不下，按新规则从开头截断，`up ` 被截掉（`… 6m on sjc22-…`）。其余 7 处设 `status-right` 的测试：6 处的右端短（≤ 15），`#T` 那处标题截到 30，都放得下 | **有问题**：把 uptime 放到格式末尾（末尾总会保留）（不计数）；tag 未推 |
 | 7 | 全量回归 | fmt、clippy 两平台 0；Windows 368 + 10 + 120；Linux 345 + 120 | 干净（1/3） |
 | 8 | 复现长主机名 | Linux 上用 `unshare -r --uts` 设同样 60 字符的主机名：旧测试失败，新测试通过。全量 e2e 在长主机名下有 4 个失败，都是记账的旧缺陷（提示符带主机名，命令折行后只记录第一行，例如 `printf '%s`） | 干净（2/3） |
+| 9 | CI（三平台 + 网页）+ 发布 | `5382187` 上 CI 4/4 个 job 通过（网页、Windows、Linux、macOS）；之后才打 tag `v0.35.4`，Release 成功，13 个产物；Homebrew 3/3 哈希一致；winget PR 改为 0.35.4 | 干净（3/3），验收通过 |
