@@ -2154,22 +2154,20 @@ async fn under_the_clock_something_moves_with_the_machine() {
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     h.wait_capture("a:0.1", "the burst over", |t| t.trim_end().ends_with("keepane>")).await;
     h.cli(&["kill-pane", "-t", "a:0.1"]).await;
-    // A message delivered (to a pane of another session) fills the
-    // messages' bar under this clock, and counts by the heart and on the
-    // keepane line; the system's wave is there where the system gives it.
+    // A message delivered (to a pane of another session) counts on the
+    // keepane line, and by the heart while the clock is on screen (the
+    // messages' bar is there only where the bars leave room for it: not in
+    // 82 columns beside many cores); the system's wave is there where the
+    // system gives it.
     let (code, _, err) = h.cli(&[&["new", "-d", "-s", "m"], HOOKED_SHELL].concat()).await;
     assert_eq!(code, 0, "{err}");
     let p = pane_id(&h, "m:0.0").await;
     let t = format!("%{p}");
     h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
     wait_format(&h, p, "#{pane_idle}", "1").await;
-    c.prefix('t').await;
-    c.wait_for("bars, no message yet", |s| s.contents().contains("MSG 0")).await;
     let (code, _, err) = h.cli(&["send-message", "-t", &t, "echo kpClockMsg"]).await;
     assert_eq!(code, 0, "{err}");
-    c.wait_for("the message's bar", |s| s.contents().contains("MSG 1")).await;
-    c.type_str("x").await;
-    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    h.wait_capture("m:0.0", "the first message delivered", |s| s.contains("kpClockMsg")).await;
     // The heart counts those that come while it is on screen.
     h.cli(&["set", "-g", "clock-mode-animation", "pulse"]).await;
     c.prefix('t').await;

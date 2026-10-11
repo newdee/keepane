@@ -186,6 +186,45 @@ struct Bar {
     hold: f32,
 }
 
+/// A group of the equalizer: its label, its bars' levels (0 to 1), and the
+/// columns its label is given: as wide as it can grow (each figure at its
+/// widest), so the layout holds still while the figures change.
+#[derive(Clone, Debug, PartialEq)]
+struct Group {
+    label: String,
+    levels: Vec<f32>,
+    room: u16,
+}
+
+/// A group whose label at its widest reads like `widest`.
+fn group(label: String, widest: &str, levels: Vec<f32>) -> Group {
+    let room = label.width().max(widest.width()) as u16;
+    Group { label, levels, room }
+}
+
+/// A monitor's label, and the same at its widest.
+#[derive(Clone, Debug)]
+struct Label {
+    text: String,
+    widest: String,
+}
+
+impl Label {
+    fn new(text: String, widest: &str) -> Label {
+        Label { text, widest: widest.to_string() }
+    }
+
+    fn push(&mut self, text: String, widest: &str) {
+        self.text.push_str(&text);
+        self.widest.push_str(widest);
+    }
+
+    /// The columns it is given: its widest, or more when it is wider still.
+    fn room(&self) -> u16 {
+        self.text.width().max(self.widest.width()) as u16
+    }
+}
+
 /// An animation under one pane's clock.
 #[derive(Clone, Debug)]
 pub struct Anim {
@@ -369,34 +408,36 @@ impl Anim {
         let colour = heat(load);
         let beating = (self.beat.fract() - 0.225).abs() < 0.08;
         // Each trace's label in full, and short: what it says first. The
-        // short ones stand where the full ones do not fit.
-        let mut short = format!("♥ {:.0}  CPU {}", self.bpm(), percent(load.cpu));
+        // short ones stand where the full ones do not fit. Each is measured
+        // at its widest (every figure as wide as it grows), so the traces
+        // keep their width while the figures change.
+        let mut short = Label::new(format!("♥ {:.0}  CPU {}", self.bpm(), percent(load.cpu)), "♥ 150  CPU 100%");
         let mut heart = short.clone();
         if let Some(w) = load.cpu_power {
-            heart.push_str(&format!(" {}", watts(w)));
+            heart.push(format!(" {}", watts(w)), " 999W");
         }
         if let Some(t) = load.temp {
-            short.push_str(&format!("  {t:.0}°C"));
-            heart.push_str(&format!("  {t:.0}°C"));
+            short.push(format!("  {t:.0}°C"), "  100°C");
+            heart.push(format!("  {t:.0}°C"), "  100°C");
         }
         if let Some(w) = load.battery_draw {
-            heart.push_str(&format!("  PWR {}", watts(w)));
+            heart.push(format!("  PWR {}", watts(w)), "  PWR 999W");
         }
         if self.messages > 0 {
-            heart.push_str(&format!("  {ENVELOPE} {}", self.messages));
+            heart.push(format!("  {ENVELOPE} {}", self.messages), "  ✉ 99");
         }
         // (which sample, its range, colour, label, short label)
         let mut traces = vec![(0, (-0.3, 1.05), colour, heart, short)];
         if let Some((rx, tx)) = load.net {
-            let short = format!("NET ↓{} ↑{}", rate_text(rx), rate_text(tx));
+            let short = Label::new(format!("NET ↓{} ↑{}", rate_text(rx), rate_text(tx)), "NET ↓9999 ↑9999");
             let mut label = short.clone();
             if let Some((pi, po)) = load.packets {
-                label.push_str(&format!("  {} pkt/s", human_count((pi + po) as u64)));
+                label.push(format!("  {} pkt/s", human_count((pi + po) as u64)), "  999k pkt/s");
             }
             traces.push((1, (-0.05, 1.05), BLUE, label, short));
         }
         if let Some((r, w)) = load.disk {
-            let label = format!("DISK r{} w{}", rate_text(r), rate_text(w));
+            let label = Label::new(format!("DISK r{} w{}", rate_text(r), rate_text(w)), "DISK r9999 w9999");
             traces.push((2, (-1.05, 1.05), MAGENTA, label.clone(), label));
         }
         // The heart, network and disk decide the rows, as if there were no
@@ -404,20 +445,19 @@ impl Anim {
         let rows = if band.h as usize >= 3 * traces.len() { 3 } else { 2 };
         let fit = (band.h / rows).max(1) as usize;
         if let Some(s) = load.switches.filter(|_| fit > traces.len()) {
-            let short = format!("SYS {}/s", human_count(s as u64));
+            let short = Label::new(format!("SYS {}/s", human_count(s as u64)), "SYS 999k/s");
             let mut label = short.clone();
             if let Some(p) = load.processes {
-                label.push_str(&format!("  {p} proc"));
+                label.push(format!("  {p} proc"), "  9999 proc");
             }
             if let Some(t) = load.threads {
-                label.push_str(&format!(" {} thr", human_count(t)));
+                label.push(format!(" {} thr", human_count(t)), " 999k thr");
             }
             traces.push((3, (-1.05, 1.05), CYAN, label, short));
         }
         traces.truncate(fit);
-        let width = |short: bool| {
-            traces.iter().map(|t| if short { t.4.width() } else { t.3.width() }).max().unwrap_or(0) as u16 + 1
-        };
+        let width =
+            |short: bool| traces.iter().map(|t| if short { t.4.room() } else { t.3.room() }).max().unwrap_or(0) + 1;
         let (trace_w, labels) = match (width(false), width(true)) {
             (w, _) if band.w >= MIN_W + w => (band.w - w, Some(false)),
             (_, w) if band.w >= MIN_W + w => (band.w - w, Some(true)),
@@ -426,7 +466,7 @@ impl Anim {
         let label_w = band.w - trace_w;
         let y0 = band.y + (band.h - rows * traces.len() as u16) / 2;
         for (i, (which, range, colour, full, short)) in traces.iter().enumerate() {
-            let label = if labels == Some(true) { short } else { full };
+            let label = if labels == Some(true) { &short.text } else { &full.text };
             let labels = labels.is_some();
             let rect = Rect { x: band.x, y: y0 + i as u16 * rows, w: trace_w, h: rows };
             self.draw_trace(g, rect, *which, *range, *colour, pal);
@@ -577,46 +617,48 @@ impl Anim {
     /// beside those: messages, the CPU's watts, the battery's, swap, context
     /// switches and interrupts. A figure the machine does not give is left
     /// out.
-    fn groups(&self) -> (Vec<(String, Vec<f32>)>, usize) {
+    fn groups(&self) -> (Vec<Group>, usize) {
         let load = &self.input.load;
         let cores = if load.cores.is_empty() { vec![load.cpu] } else { load.cores.clone() };
-        let mut out = vec![(format!("CPU {}", percent(load.cpu)), cores)];
+        let mut out = vec![group(format!("CPU {}", percent(load.cpu)), "CPU 100%", cores)];
         if let Some(m) = load.memory {
-            out.push((format!("MEM {}", percent(m)), vec![m]));
+            out.push(group(format!("MEM {}", percent(m)), "MEM 100%", vec![m]));
         }
         if let Some((r, w)) = load.disk {
-            out.push((format!("DISK {}", rate_text(r + w)), vec![bytes_level(r), bytes_level(w)]));
+            out.push(group(format!("DISK {}", rate_text(r + w)), "DISK 9999", vec![bytes_level(r), bytes_level(w)]));
         }
         if let Some((rx, tx)) = load.net {
-            out.push((format!("NET ↓{} ↑{}", rate_text(rx), rate_text(tx)), vec![bytes_level(rx), bytes_level(tx)]));
+            let label = format!("NET ↓{} ↑{}", rate_text(rx), rate_text(tx));
+            out.push(group(label, "NET ↓9999 ↑9999", vec![bytes_level(rx), bytes_level(tx)]));
         }
         if let Some(t) = load.temp {
-            out.push((format!("{t:.0}°C"), vec![((t - 30.0) / 70.0).clamp(0.0, 1.0)]));
+            out.push(group(format!("{t:.0}°C"), "100°C", vec![((t - 30.0) / 70.0).clamp(0.0, 1.0)]));
         }
         let outs: Vec<f32> = self.out_rates.iter().map(|&r| out_level(r)).collect();
         let total = self.out_rates.iter().sum::<f64>();
-        out.push((format!("OUT {}", rate_text(total)), if outs.is_empty() { vec![0.0] } else { outs }));
+        let outs = if outs.is_empty() { vec![0.0] } else { outs };
+        out.push(group(format!("OUT {}", rate_text(total)), "OUT 9999", outs));
         let first = out.len();
-        out.push((format!("MSG {}", self.messages), vec![self.message_level]));
+        out.push(group(format!("MSG {}", self.messages), "MSG 99", vec![self.message_level]));
         if let Some(w) = load.cpu_power {
-            out.push((watts(w), vec![power_level(w)]));
+            out.push(group(watts(w), "999W", vec![power_level(w)]));
         }
         if let Some(w) = load.battery_draw {
-            out.push((format!("PWR {}", watts(w)), vec![power_level(w)]));
+            out.push(group(format!("PWR {}", watts(w)), "PWR 999W", vec![power_level(w)]));
         }
         if let Some(s) = load.swap {
-            out.push((format!("SWAP {}", percent(s)), vec![s.clamp(0.0, 1.0)]));
+            out.push(group(format!("SWAP {}", percent(s)), "SWAP 100%", vec![s.clamp(0.0, 1.0)]));
         }
         if let Some(s) = load.switches {
             let mut levels = vec![count_level(s)];
             levels.extend(load.interrupts.map(count_level));
-            out.push((format!("CTX {}", human_count(s as u64)), levels));
+            out.push(group(format!("CTX {}", human_count(s as u64)), "CTX 999k", levels));
         }
         (out, first)
     }
 
     fn step_bars(&mut self, dt: f64) {
-        let levels: Vec<f32> = self.groups().0.into_iter().flat_map(|(_, l)| l).collect();
+        let levels: Vec<f32> = self.groups().0.into_iter().flat_map(|g| g.levels).collect();
         if self.bars.len() != levels.len() {
             self.bars = vec![Bar::default(); levels.len()];
         }
@@ -647,10 +689,10 @@ impl Anim {
         // Each group's bars, from the state (`step` sized it to them).
         let mut at = 0;
         let mut bars: Vec<Vec<Bar>> = Vec::new();
-        for (_, levels) in &groups {
-            let end = (at + levels.len()).min(self.bars.len());
+        for grp in &groups {
+            let end = (at + grp.levels.len()).min(self.bars.len());
             bars.push(self.bars.get(at..end).map(<[Bar]>::to_vec).unwrap_or_default());
-            at += levels.len();
+            at += grp.levels.len();
         }
         // The first groups decide the look, as if there were no others: the
         // widest that fits, a gap always between two bars (with no gap the
@@ -661,14 +703,14 @@ impl Anim {
         // groups left out. The others follow, as many as fit in that look.
         let extra_groups = groups.split_off(first.min(groups.len()));
         let extra_bars = bars.split_off(first.min(bars.len()));
-        let width = |groups: &[(String, Vec<f32>)], bars: &[Vec<Bar>], bw: u16, gap: u16| -> u16 {
-            let each = groups.iter().zip(bars).map(|((label, _), b)| {
+        let width = |groups: &[Group], bars: &[Vec<Bar>], bw: u16, gap: u16| -> u16 {
+            let each = groups.iter().zip(bars).map(|(grp, b)| {
                 let n = b.len() as u16;
-                (label.width() as u16).max(n * bw + n.saturating_sub(1) * gap)
+                grp.room.max(n * bw + n.saturating_sub(1) * gap)
             });
             each.sum::<u16>() + 2 * (groups.len() as u16).saturating_sub(1)
         };
-        let fits = |groups: &[(String, Vec<f32>)], bars: &[Vec<Bar>]| {
+        let fits = |groups: &[Group], bars: &[Vec<Bar>]| {
             [(2, 1), (1, 1)].into_iter().find(|&(bw, gap)| width(groups, bars, bw, gap) <= band.w)
         };
         let cores = bars.first().cloned().unwrap_or_default();
@@ -703,10 +745,11 @@ impl Anim {
         }
         let rows = band.h - 1;
         let mut x = band.x + (band.w - width(&groups, &bars, bw, gap)) / 2;
-        for ((label, _), group) in groups.iter().zip(&bars) {
+        for (grp, group) in groups.iter().zip(&bars) {
+            let label = &grp.label;
             let n = group.len() as u16;
             let inner = n * bw + n.saturating_sub(1) * gap;
-            let w = (label.width() as u16).max(inner);
+            let w = grp.room.max(inner);
             let mut bx = x + (w - inner) / 2;
             for bar in group {
                 let eighths = (bar.h * f32::from(rows) * 8.0).round() as i32;
@@ -1025,10 +1068,17 @@ mod tests {
         assert!(t.contains("CPU 50%") && t.contains("OUT ") && !t.contains("MEM") && !t.contains("NET"), "{t}");
         let top: Vec<u16> = (0..g.cols).filter(|&x| g.get(x, band().y).text() != " ").collect();
         assert_eq!(top.len(), 2, "one wide bar reaches the top row: {t}");
-        let t = text(&drawn(&run(Kind::Bars, &busy(), 60, 0.066), band(), &pal));
+        // Each label is given room for its figures at their widest: the six
+        // first groups need 66 columns here, and in 60 the last is left out.
+        let busy_bars = run(Kind::Bars, &busy(), 60, 0.066);
+        let mut g = Grid::new(70, 9);
+        busy_bars.draw(&mut g, Rect { x: 0, y: 0, w: 66, h: 9 }, &pal);
+        let t = text(&g);
         for label in ["CPU 63%", "MEM 41%", "DISK 12M", "NET ↓1.2M ↑80K", "61°C", "OUT "] {
             assert!(t.contains(label), "{label}: {t}");
         }
+        let t = text(&drawn(&busy_bars, band(), &pal));
+        assert!(t.contains("61°C") && !t.contains("OUT "), "{t}");
         // A bar that falls leaves its peak's mark over it a while; an idle
         // one has none, on the bottom row or anywhere.
         let full = Load { cores: vec![1.0], cpu: 1.0, ..Load::default() };
@@ -1052,7 +1102,7 @@ mod tests {
         let bottom: String = (0..g.cols).map(|x| g.get(x, 4).text()).collect();
         let runs: Vec<usize> = bottom.split(' ').filter(|r| !r.is_empty()).map(|r| r.chars().count()).collect();
         assert_eq!(runs, vec![1; 10], "8 core bars, memory, output, each alone (no message: no bar): {t}");
-        assert!(t.contains("MSG 0"), "{t}");
+        assert!(!t.contains("MSG"), "room for the messages' label at its widest (43 columns): none: {t}");
         // Cores taken together stand at their average, not their highest:
         // half of them full and half idle make bars half way up.
         let half = Load { cores: (0..32).map(|i| (i % 2) as f32).collect(), cpu: 0.5, ..many.clone() };
@@ -1110,6 +1160,91 @@ mod tests {
             }
         }
         assert!(same > 0 && more > 0, "{same} the same, {more} with more");
+    }
+
+    /// The layout holds still while the figures change: the same machine
+    /// with every figure short ("0", "1%") and every figure at its widest
+    /// draws its groups and traces in the same columns, the same of them.
+    #[test]
+    fn the_layout_holds_while_the_figures_change() {
+        let pal = Palette::default();
+        let short = Load {
+            cores: vec![0.01; 8],
+            cpu: 0.01,
+            memory: Some(0.01),
+            disk: Some((0.0, 0.0)),
+            net: Some((0.0, 0.0)),
+            temp: Some(5.0),
+            switches: Some(1.0),
+            interrupts: Some(1.0),
+            processes: Some(9),
+            threads: Some(9),
+            swap: Some(0.01),
+            packets: Some((0.0, 0.0)),
+            cpu_power: Some(1.0),
+            battery_draw: Some(1.0),
+        };
+        let wide = Load {
+            cores: vec![1.0; 8],
+            cpu: 1.0,
+            memory: Some(1.0),
+            disk: Some((999.0 * 1024.0, 999.0 * 1024.0)),
+            net: Some((9.9 * 1024.0 * 1024.0, 999.0 * 1024.0)),
+            temp: Some(99.0),
+            switches: Some(999_000.0),
+            interrupts: Some(999_000.0),
+            processes: Some(9999),
+            threads: Some(999_000),
+            swap: Some(1.0),
+            packets: Some((500_000.0, 499_000.0)),
+            cpu_power: Some(999.0),
+            battery_draw: Some(999.0),
+        };
+        // Where the label column starts in pulse (the first column of the
+        // heart's label), and which groups the bars show, by their words.
+        let pulse_at = |load: &Load, w: u16| {
+            let mut g = Grid::new(140, 14);
+            run(Kind::Pulse, load, 40, 0.05).draw(&mut g, Rect { x: 0, y: 0, w, h: 13 }, &pal);
+            (0..g.rows).find_map(|y| (0..g.cols).find(|&x| g.get(x, y).text() == "♥"))
+        };
+        // The groups' words, and the columns of the cores' bars (both
+        // machines' cores half busy).
+        let bars = |load: &Load, w: u16| {
+            let load = Load { cores: vec![0.5; 8], cpu: 0.5, ..load.clone() };
+            let mut g = Grid::new(140, 9);
+            run(Kind::Bars, &load, 40, 0.066).draw(&mut g, Rect { x: 0, y: 0, w, h: 9 }, &pal);
+            // Each label: its word, and the column of its middle.
+            let row: Vec<String> = (0..g.cols).map(|x| g.get(x, 8).text().to_string()).collect();
+            let (mut labels, mut x) = (Vec::new(), 0);
+            while x < row.len() {
+                if row[x] == " " {
+                    x += 1;
+                    continue;
+                }
+                let start = x;
+                while x < row.len() && !(row[x] == " " && row.get(x + 1).is_none_or(|c| c == " ")) {
+                    x += 1;
+                }
+                let word: String = row[start..x].concat().chars().take_while(|c| c.is_alphabetic()).collect();
+                labels.push((word, (start + x) / 2));
+            }
+            // The cores' group ends where memory's label begins.
+            let mem = (0..g.cols).find(|&x| g.get(x, 8).text() == "M").unwrap_or(g.cols);
+            let cores: Vec<u16> = (0..mem).filter(|&x| g.get(x, 7).text() != " ").collect();
+            (labels, cores)
+        };
+        let mut checked = 0;
+        for w in (20..=140).step_by(3) {
+            assert_eq!(pulse_at(&short, w), pulse_at(&wide, w), "pulse at {w}");
+            let ((a, ca), (b, cb)) = (bars(&short, w), bars(&wide, w));
+            assert_eq!(ca, cb, "the cores' bars at {w}");
+            assert_eq!(a.len(), b.len(), "bars at {w}: {a:?} {b:?}");
+            for ((wa, xa), (wb, xb)) in a.iter().zip(&b) {
+                assert!(wa == wb && xa.abs_diff(*xb) <= 1, "bars at {w}: {a:?} {b:?}");
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 41);
     }
 
     /// The monitor as it was where the new figures have no room: the
@@ -1220,7 +1355,7 @@ mod tests {
         a.step(0.05, Input::default());
         a.step(0.05, Input::default());
         let (groups, _) = a.groups();
-        assert!(groups.iter().any(|(l, v)| l == "OUT 0" && v == &vec![0.0]), "{groups:?}");
+        assert!(groups.iter().any(|g| g.label == "OUT 0" && g.levels == vec![0.0]), "{groups:?}");
         // The bar: full at once, under a tenth 2 s on.
         let bar = |steps: usize| run_with_messages(Kind::Bars, &Load::default(), steps, 0.05, &[20]).message_level;
         assert!(bar(21) > 0.9 && bar(60) < 0.1, "{} {}", bar(21), bar(60));
@@ -1279,11 +1414,11 @@ mod tests {
         assert!(a.out_rates[0] == 0.0 && a.out_rates[2] == 0.0, "{:?}", a.out_rates);
         assert!((a.out_rates[1] - 1e6).abs() < 1e4, "1 MB a second: {:?}", a.out_rates);
         let (groups, first) = a.groups();
-        let out = groups.iter().find(|(l, _)| l.starts_with("OUT")).unwrap();
-        assert_eq!(out.0, format!("OUT {}", rate_text(a.out_rates[1])));
-        assert!(out.0.starts_with("OUT 9") && out.0.ends_with('K'), "{}", out.0);
-        assert!(out.1.len() == 3 && out.1[1] > 0.8 && out.1[0] == 0.0, "{out:?}");
-        assert_eq!(groups[first - 1].0, out.0, "the output is the last of the first groups");
+        let out = groups.iter().find(|g| g.label.starts_with("OUT")).unwrap();
+        assert_eq!(out.label, format!("OUT {}", rate_text(a.out_rates[1])));
+        assert!(out.label.starts_with("OUT 9") && out.label.ends_with('K'), "{}", out.label);
+        assert!(out.levels.len() == 3 && out.levels[1] > 0.8 && out.levels[0] == 0.0, "{out:?}");
+        assert_eq!(groups[first - 1].label, out.label, "the output is the last of the first groups");
         a.step(0.05, Input { outs: vec![100, 2_000_000], ..Input::default() });
         assert_eq!(a.out_rates, vec![0.0, 0.0], "a pane fewer: from nothing");
     }

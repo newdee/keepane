@@ -928,35 +928,58 @@ Remove-Item $file -ErrorAction SilentlyContinue
     )
     .expect("build script");
     let (rec, socket) = (&mut d.rec, d.socket.clone());
+    let kp = |args: &[&str]| {
+        let out = std::process::Command::new(&d.exe).args(["-L", &socket]).args(args).output().expect("keepane");
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
 
     rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
     rec.hold(2);
     rec.type_line(&format!("keepane -L {socket} new -s build"));
     rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    // Somewhere for messages to go, out of sight: a pane that runs what
+    // it is sent.
+    kp(&["new", "-d", "-s", "ops"]);
+    kp(&["rename-pane", "-t", "ops:0.0", "tests"]);
+    kp(&["set-work-mode", "-t", "ops:0.0", "shell"]);
     rec.hold(3);
     rec.type_line(".\\build.ps1");
     rec.until("the build", |s| s.contents().contains("Compiling"), 30);
     rec.hold(6);
 
-    // The monitor: the heart beats with the cores, the disk breathes.
+    // The monitor: the heart beats with the cores, the disk breathes; a
+    // message makes it beat early, and counts by it.
     rec.key("\x02t");
     rec.until("the monitor", |s| s.contents().contains("♥"), 10);
-    rec.hold(40);
+    rec.hold(16);
+    kp(&["send-message", "-t", "%tests", "echo 'tests: 42 passed'"]);
+    rec.hold(12);
+    kp(&["send-message", "-t", "%tests", "echo 'lint: clean'"]);
+    rec.hold(12);
     // Any key puts the clock away; the build went on under it.
     rec.key("q");
     rec.hold(4);
 
-    // The rain.
+    // The rain: a message falls as a white drop headed by an envelope.
     rec.key("\x02t");
     rec.until("the rain", |s| s.contents().chars().any(|c| ('\u{ff66}'..='\u{ff9d}').contains(&c)), 10);
-    rec.hold(35);
+    rec.hold(10);
+    kp(&["send-message", "-t", "%tests", "echo 'docs: built'"]);
+    rec.hold(10);
+    kp(&["send-message", "-t", "%tests", "echo 'bench: 3% faster'"]);
+    rec.hold(15);
     rec.key("q");
     rec.hold(4);
 
-    // The bars: a bar a core, memory, the disks, the network, the pane's output.
+    // The bars: a bar a core, memory, the disks, the network, each pane's
+    // output, then messages, the CPU's watts, swap, context switches.
     rec.key("\x02t");
     rec.until("the bars", |s| s.contents().contains("OUT "), 10);
-    rec.hold(40);
+    rec.hold(14);
+    kp(&["send-message", "-t", "%tests", "echo 'tests: 42 passed'"]);
+    rec.hold(14);
+    kp(&["send-message", "-t", "%tests", "echo 'release: ready'"]);
+    rec.hold(16);
     rec.key("q");
     rec.hold(5);
 
