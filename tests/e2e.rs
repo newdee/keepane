@@ -2133,22 +2133,60 @@ async fn under_the_clock_something_moves_with_the_machine() {
         let still = c.frames_for(800).await;
         assert!(still <= 1, "{kind}: {still} frames after the clock went");
     }
-    // The pane's own output moves `OUT`: a short burst printed under the
-    // clock (sent to the pane; the clock only takes the client's keys).
-    // Short, and it ends by itself: the tests running beside this one keep
-    // their timing.
+    // What the window's other panes print moves `OUT` too: a short burst
+    // in a small pane under the clock's. Short, and it ends by itself: the
+    // tests running beside this one keep their timing.
     h.cli(&["set", "-g", "clock-mode-animation", "bars"]).await;
+    let (code, _, err) = h.cli(&["split-window", "-d", "-v", "-t", "a"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.cli(&["resize-pane", "-t", "a:0.1", "-y", "3"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("a:0.1", "the small pane's prompt", |t| t.contains("keepane>")).await;
     c.prefix('t').await;
     c.wait_for("bars", |s| s.contents().contains("OUT 0")).await;
     let burst = if cfg!(windows) { "for /L %i in (1,1,2000) do @echo %i" } else { "seq 1 20000" };
-    h.cli(&["send-keys", "-t", "a", burst, "Enter"]).await;
-    c.wait_for("OUT with the pane's output", |s| {
+    h.cli(&["send-keys", "-t", "a:0.1", burst, "Enter"]).await;
+    c.wait_for("OUT with the other pane's output", |s| {
         s.contents().split("OUT ").nth(1).is_some_and(|r| r.starts_with(|ch: char| ch.is_ascii_digit() && ch != '0'))
     })
     .await;
     c.type_str("x").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
-    h.wait_capture("a", "the burst over", |t| t.trim_end().ends_with("keepane>")).await;
+    h.wait_capture("a:0.1", "the burst over", |t| t.trim_end().ends_with("keepane>")).await;
+    h.cli(&["kill-pane", "-t", "a:0.1"]).await;
+    // A message delivered (to a pane of another session) fills the
+    // messages' bar under this clock, and counts by the heart and on the
+    // keepane line; the system's wave is there where the system gives it.
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "m"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    let p = pane_id(&h, "m:0.0").await;
+    let t = format!("%{p}");
+    h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
+    wait_format(&h, p, "#{pane_idle}", "1").await;
+    c.prefix('t').await;
+    c.wait_for("bars, no message yet", |s| s.contents().contains("MSG 0")).await;
+    let (code, _, err) = h.cli(&["send-message", "-t", &t, "echo kpClockMsg"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("the message's bar", |s| s.contents().contains("MSG 1")).await;
+    c.type_str("x").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    // The heart counts those that come while it is on screen.
+    h.cli(&["set", "-g", "clock-mode-animation", "pulse"]).await;
+    c.prefix('t').await;
+    c.wait_for("the keepane line", |s| s.contents().contains("keepane: 2 sessions · 2 panes · 1 message delivered"))
+        .await;
+    assert!(!c.text().contains('✉'), "{}", c.text());
+    let (code, _, err) = h.cli(&["send-message", "-t", &t, "echo kpClockMsg2"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("the count by the heart", |s| {
+        s.contents().contains("✉ 1") && s.contents().contains("2 messages delivered")
+    })
+    .await;
+    if cfg!(not(target_os = "macos")) {
+        c.wait_for("the system's wave", |s| s.contents().contains("SYS ") && s.contents().contains(" proc")).await;
+    }
+    c.type_str("x").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     // A kind set: that one, every time.
     h.cli(&["set", "-g", "clock-mode-animation", "matrix"]).await;
     c.prefix('t').await;

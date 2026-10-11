@@ -2,8 +2,10 @@
 //! battery, the time since boot (Linux: `/proc`, `/sys`); the program a pane
 //! is running (its newest descendant, from `/proc/<pid>/stat`); a directory
 //! with the home written `~`; for the clock's animation, the cores, disks,
-//! network and temperature. macOS reads the same through `sysctl`, mach and
-//! `proc_pidinfo` (no disks, no temperature).
+//! network, temperature, CPU power, battery draw and the system's own counts
+//! (see `counters`). macOS reads the same through `sysctl`, mach and
+//! `proc_pidinfo` (no disks, temperature, power, context switches,
+//! interrupts or threads).
 
 use crate::sysinfo::human_bytes;
 use std::collections::HashMap;
@@ -62,10 +64,13 @@ mod readings {
         ticks(text.lines().next()?.strip_prefix("cpu ")?)
     }
 
-    /// Each core's (busy, total) time, from `/proc/stat`'s `cpuN` lines.
-    pub fn cores() -> Vec<(u64, u64)> {
-        let Ok(text) = std::fs::read_to_string("/proc/stat") else { return Vec::new() };
-        text.lines()
+    /// Each core's (busy, total) time, from `/proc/stat`'s `cpuN` lines;
+    /// the context switches (`ctxt`) and interrupts (`intr`'s total) since
+    /// boot.
+    pub fn stat() -> (Vec<(u64, u64)>, Option<u64>, Option<u64>) {
+        let Ok(text) = std::fs::read_to_string("/proc/stat") else { return (Vec::new(), None, None) };
+        let cores = text
+            .lines()
             .filter_map(|l| {
                 let rest = l.strip_prefix("cpu")?;
                 let numbers = rest.trim_start_matches(|c: char| c.is_ascii_digit());
@@ -73,7 +78,62 @@ mod readings {
             })
             .filter_map(ticks)
             .map(|(idle, total)| (total.saturating_sub(idle), total))
-            .collect()
+            .collect();
+        let first =
+            |key: &str| text.lines().find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok());
+        (cores, first("ctxt "), first("intr "))
+    }
+
+    /// Processes (`/proc`'s numbered directories) and threads (the
+    /// scheduler's count in `/proc/loadavg`) running now.
+    pub fn tasks() -> (Option<u64>, Option<u64>) {
+        let processes = std::fs::read_dir("/proc").ok().map(|d| {
+            d.flatten()
+                .filter(|e| e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
+                .count() as u64
+        });
+        let threads = std::fs::read_to_string("/proc/loadavg")
+            .ok()
+            .and_then(|t| t.split_whitespace().nth(3)?.split_once('/')?.1.parse().ok());
+        (processes, threads)
+    }
+
+    /// Microjoules the CPU packages have used, from RAPL under `dir`
+    /// (`/sys/class/powercap`): each `intel-rapl:N` (AMD's too) is a
+    /// package. Most systems let only root read it; then None.
+    pub fn cpu_energy(dir: &Path) -> Option<u64> {
+        let mut sum = None;
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(n) = name.strip_prefix("intel-rapl:") else { continue };
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let uj = std::fs::read_to_string(e.path().join("energy_uj")).ok()?.trim().parse::<u64>().ok()?;
+            sum = Some(sum.unwrap_or(0u64).saturating_add(uj));
+        }
+        sum
+    }
+
+    /// Watts the batteries under `dir` (`/sys/class/power_supply`) give
+    /// while discharging: `power_now` (µW), else `current_now` (µA) times
+    /// `voltage_now` (µV). None on mains power or with no battery.
+    pub fn battery_draw(dir: &Path) -> Option<f32> {
+        let mut sum = None;
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            let p = e.path();
+            let read = |f: &str| std::fs::read_to_string(p.join(f)).ok().map(|s| s.trim().to_string());
+            if read("type").as_deref() != Some("Battery") || read("status").as_deref() != Some("Discharging") {
+                continue;
+            }
+            let number = |f: &str| read(f).and_then(|s| s.parse::<f64>().ok()).map(f64::abs);
+            let watts = match number("power_now") {
+                Some(uw) => uw / 1e6,
+                None => number("current_now").zip(number("voltage_now")).map(|(ua, uv)| ua * uv / 1e12)?,
+            };
+            sum = Some(sum.unwrap_or(0.0) + watts as f32);
+        }
+        sum
     }
 
     /// Bytes the disks have read and written, from `/proc/diskstats`
@@ -97,26 +157,30 @@ mod readings {
         sum
     }
 
-    /// Bytes received and sent, from `/proc/net/dev`: the adapters that are
-    /// hardware (`/sys/class/net/<name>/device`) when there are any (a
-    /// bridge or a container's veth carries their bytes again), else every
-    /// one but loopback.
-    pub fn net() -> Option<(u64, u64)> {
+    /// Bytes, then packets, received and sent, from `/proc/net/dev`: the
+    /// adapters that are hardware (`/sys/class/net/<name>/device`) when
+    /// there are any (a bridge or a container's veth carries their bytes
+    /// again), else every one but loopback.
+    #[allow(clippy::type_complexity)]
+    pub fn net() -> Option<((u64, u64), (u64, u64))> {
         let text = std::fs::read_to_string("/proc/net/dev").ok()?;
-        let rows: Vec<(&str, u64, u64)> = text
+        // Name, then bytes in, packets in, bytes out, packets out.
+        let rows: Vec<(&str, [u64; 4])> = text
             .lines()
             .skip(2)
             .filter_map(|l| {
                 let (name, rest) = l.split_once(':')?;
                 let v: Vec<u64> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-                Some((name.trim(), *v.first()?, *v.get(8)?))
+                Some((name.trim(), [*v.first()?, *v.get(1)?, *v.get(8)?, *v.get(9)?]))
             })
             .collect();
         let hardware = |n: &str| Path::new("/sys/class/net").join(n).join("device").exists();
         let any = rows.iter().any(|r| hardware(r.0));
         let picked: Vec<_> = rows.iter().filter(|r| r.0 != "lo" && (!any || hardware(r.0))).collect();
-        (!picked.is_empty())
-            .then(|| picked.iter().fold((0u64, 0u64), |(a, b), r| (a.saturating_add(r.1), b.saturating_add(r.2))))
+        (!picked.is_empty()).then(|| {
+            let s = picked.iter().fold([0u64; 4], |s, r| std::array::from_fn(|i| s[i].saturating_add(r.1[i])));
+            ((s[0], s[2]), (s[1], s[3]))
+        })
     }
 
     /// The CPU's temperature, from the thermal zones and the hwmon sensors.
@@ -164,12 +228,21 @@ mod readings {
 
     /// (total, available) bytes of memory, from `/proc/meminfo`.
     pub fn memory() -> Option<(u64, u64)> {
+        meminfo("MemTotal:", "MemAvailable:")
+    }
+
+    /// (total, free) bytes of swap, from `/proc/meminfo`.
+    pub fn swap() -> Option<(u64, u64)> {
+        meminfo("SwapTotal:", "SwapFree:")
+    }
+
+    fn meminfo(total: &str, free: &str) -> Option<(u64, u64)> {
         let text = std::fs::read_to_string("/proc/meminfo").ok()?;
         let field = |name: &str| -> Option<u64> {
             let l = text.lines().find(|l| l.starts_with(name))?;
             l.split_whitespace().nth(1)?.parse::<u64>().ok().map(|kb| kb * 1024)
         };
-        Some((field("MemTotal:")?, field("MemAvailable:")?))
+        Some((field(total)?, field(free)?))
     }
 
     /// (percent, charging) of the first battery under `/sys/class/power_supply`.
@@ -294,8 +367,36 @@ mod readings {
     }
     const PROCESSOR_CPU_LOAD_INFO: i32 = 2;
 
+    /// Each core's (busy, total) ticks; no public interface gives the
+    /// context switches or interrupts.
+    pub fn stat() -> (Vec<(u64, u64)>, Option<u64>, Option<u64>) {
+        (cores(), None, None)
+    }
+
+    /// Processes (as many as `proc_listallpids` gives); threads need a
+    /// look into each process: not read.
+    pub fn tasks() -> (Option<u64>, Option<u64>) {
+        let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        ((n > 0).then_some(n as u64), None)
+    }
+
+    /// (total, free) bytes of swap, from `vm.swapusage`.
+    pub fn swap() -> Option<(u64, u64)> {
+        let s: libc::xsw_usage = sysctl("vm.swapusage")?;
+        Some((s.xsu_total, s.xsu_avail))
+    }
+
+    /// The CPU's energy and the battery need IOKit or root: not read.
+    pub fn cpu_energy(_: &std::path::Path) -> Option<u64> {
+        None
+    }
+
+    pub fn battery_draw(_: &std::path::Path) -> Option<f32> {
+        None
+    }
+
     /// Each core's (busy, total) ticks, from mach (user, system, idle, nice).
-    pub fn cores() -> Vec<(u64, u64)> {
+    fn cores() -> Vec<(u64, u64)> {
         static HOST: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
         let host = *HOST.get_or_init(|| unsafe { mach_host_self() });
         let (mut count, mut info, mut size) = (0u32, std::ptr::null_mut::<i32>(), 0u32);
@@ -324,10 +425,12 @@ mod readings {
         None
     }
 
-    /// Bytes received and sent by the Ethernet and Wi-Fi adapters (a VPN's
-    /// tunnel or a bridge carries their bytes again; loopback is not the
-    /// network), from the routing socket's 64-bit counters.
-    pub fn net() -> Option<(u64, u64)> {
+    /// Bytes, then packets, received and sent by the Ethernet and Wi-Fi
+    /// adapters (a VPN's tunnel or a bridge carries their bytes again;
+    /// loopback is not the network), from the routing socket's 64-bit
+    /// counters.
+    #[allow(clippy::type_complexity)]
+    pub fn net() -> Option<((u64, u64), (u64, u64))> {
         const IFT_ETHER: u8 = 0x6;
         let mut mib = [libc::CTL_NET, libc::PF_ROUTE, 0, 0, libc::NET_RT_IFLIST2, 0];
         let mut len = 0usize;
@@ -343,7 +446,7 @@ mod readings {
         if sysctl(buf.as_mut_ptr().cast(), &mut len) != 0 {
             return None;
         }
-        let (mut at, mut sum) = (0usize, None::<(u64, u64)>);
+        let (mut at, mut sum) = (0usize, None::<((u64, u64), (u64, u64))>);
         while at + std::mem::size_of::<libc::if_msghdr2>() <= len {
             let m: libc::if_msghdr2 = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(at).cast()) };
             let step = usize::from(m.ifm_msglen);
@@ -355,8 +458,11 @@ mod readings {
                 && m.ifm_flags & libc::IFF_LOOPBACK == 0
                 && data.ifi_type == IFT_ETHER
             {
-                let (a, b) = sum.unwrap_or_default();
-                sum = Some((a.saturating_add(data.ifi_ibytes), b.saturating_add(data.ifi_obytes)));
+                let ((a, b), (pa, pb)) = sum.unwrap_or_default();
+                sum = Some((
+                    (a.saturating_add(data.ifi_ibytes), b.saturating_add(data.ifi_obytes)),
+                    (pa.saturating_add(data.ifi_ipackets), pb.saturating_add(data.ifi_opackets)),
+                ));
             }
             at += step;
         }
@@ -455,16 +561,29 @@ pub use readings::usage_of;
 use readings::{battery, cpu_times, memory, processes};
 
 /// The machine's running totals for the clock's animation: each core,
-/// memory, the disks, the network and the CPU's temperature, as far as the
-/// system gives them. Asked twice a second at most, and only while a clock
-/// is drawn.
+/// memory, the disks, the network, the CPU's temperature, context switches
+/// and interrupts, processes and threads, swap, the CPU's energy and the
+/// battery's draw, as far as the system gives them. Asked twice a second
+/// at most, and only while a clock is drawn.
 pub fn counters() -> crate::sysinfo::Counters {
+    use std::path::Path;
+    let (cores, switches, interrupts) = readings::stat();
+    let (processes, threads) = readings::tasks();
+    let (net, packets) = readings::net().unzip();
     crate::sysinfo::Counters {
-        cores: readings::cores(),
+        cores,
         memory: memory(),
         disk: readings::disk(),
-        net: readings::net(),
+        net,
         temp: readings::temperature(),
+        switches,
+        interrupts,
+        processes,
+        threads,
+        swap: readings::swap(),
+        packets,
+        cpu_energy: readings::cpu_energy(Path::new("/sys/class/powercap")),
+        battery_draw: readings::battery_draw(Path::new("/sys/class/power_supply")),
     }
 }
 
@@ -619,13 +738,62 @@ mod tests {
         }
         let b = counters();
         assert!(a.cores.iter().zip(&b.cores).all(|(x, y)| y.1 >= x.1 && y.0 >= x.0), "never backwards");
-        for (x, y) in [(a.disk, b.disk), (a.net, b.net)] {
+        for (x, y) in [(a.disk, b.disk), (a.net, b.net), (a.packets, b.packets)] {
             if let (Some(x), Some(y)) = (x, y) {
                 assert!(y.0 >= x.0 && y.1 >= x.1, "{x:?} {y:?}");
             }
         }
+        assert_eq!(a.net.is_some(), a.packets.is_some(), "the same adapters: {a:?}");
         let l = crate::sysinfo::load(&a, &b, 0.2);
         assert!(l.cpu > 0.0 && l.cpu <= 1.0, "a core was busy: {l:?}");
+        assert!(b.processes.is_some_and(|p| p > 0), "{b:?}");
+        assert!(b.swap.is_some_and(|(t, f)| f <= t), "{b:?}");
+        // Linux counts the context switches (the spin above made some),
+        // the interrupts and the threads too.
+        if cfg!(not(target_os = "macos")) {
+            assert!(l.switches.is_some_and(|s| s > 0.0) && l.interrupts.is_some(), "{l:?}");
+            assert!(b.threads.is_some_and(|t| t >= 1), "{b:?}");
+        }
+    }
+
+    /// The CPU's energy from RAPL: each package's total, its parts (and
+    /// files a user may not read) not counted twice; the batteries' draw
+    /// while discharging, in watts, from power or from current and voltage.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_cpu_energy_and_the_battery_draw_are_read() {
+        use readings::{battery_draw, cpu_energy};
+        let dir = std::env::temp_dir().join(format!("keepane-power-{}", std::process::id()));
+        let file = |rel: &str, text: &str| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        let cap = dir.join("powercap");
+        assert_eq!(cpu_energy(&cap), None, "no such directory");
+        file("powercap/intel-rapl:0/energy_uj", "1000000\n");
+        file("powercap/intel-rapl:0:0/energy_uj", "999\n");
+        file("powercap/intel-rapl:1/energy_uj", "500\n");
+        file("powercap/intel-rapl/enabled", "1\n");
+        assert_eq!(cpu_energy(&cap), Some(1_000_500), "two packages; a package's core part not again");
+        file("powercap/intel-rapl:1/energy_uj", "denied");
+        assert_eq!(cpu_energy(&cap), None, "a package unreadable: no figure, not a part of one");
+        let ps = dir.join("power_supply");
+        file("power_supply/AC/type", "Mains\n");
+        file("power_supply/AC/online", "1\n");
+        assert_eq!(battery_draw(&ps), None, "no battery");
+        file("power_supply/BAT0/type", "Battery\n");
+        file("power_supply/BAT0/status", "Charging\n");
+        file("power_supply/BAT0/power_now", "20000000\n");
+        assert_eq!(battery_draw(&ps), None, "charging: the battery runs nothing");
+        file("power_supply/BAT0/status", "Discharging\n");
+        assert_eq!(battery_draw(&ps), Some(20.0));
+        file("power_supply/BAT1/type", "Battery\n");
+        file("power_supply/BAT1/status", "Discharging\n");
+        file("power_supply/BAT1/current_now", "-500000\n");
+        file("power_supply/BAT1/voltage_now", "11000000\n");
+        assert_eq!(battery_draw(&ps), Some(25.5), "20 W, and 0.5 A at 11 V");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The CPU's sensor, by kind: the package's first; none when no sensor

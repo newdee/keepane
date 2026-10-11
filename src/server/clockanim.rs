@@ -1,7 +1,9 @@
 //! What moves under the clock (`clock-mode-animation`): a monitor's traces
 //! (`pulse`), falling characters (`matrix`) or an equalizer (`bars`), each
 //! moved by what the machine is doing (its cores, memory, disks, network,
-//! the CPU's temperature) and by what the pane prints.
+//! the CPU's temperature and power, context switches, interrupts, swap) and
+//! by what keepane does (what the window's panes print, the messages it
+//! delivers).
 //!
 //! It is drawn in the 16 colours only, so a theme's `pane-colours` colour
 //! it (the terminal's own when the theme sets none); a tail fades into the
@@ -12,6 +14,7 @@
 
 use super::layout::Rect;
 use super::render::{Cell, Grid, Style};
+use crate::format::human_count;
 use crate::sysinfo::Load;
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -43,12 +46,14 @@ impl Kind {
 pub const MIN_W: u16 = 20;
 pub const MIN_H: u16 = 3;
 
-/// What moves it: the machine's load, and how many bytes the pane has
-/// printed so far.
+/// What moves it: the machine's load; how many bytes each pane of the
+/// clock's window has printed so far, in the window's order; how many
+/// messages keepane has delivered so far.
 #[derive(Clone, Debug, Default)]
 pub struct Input {
     pub load: Load,
-    pub out_bytes: u64,
+    pub outs: Vec<u64>,
+    pub messages: u64,
 }
 
 /// The theme's colours: its 16 (none: the terminal's own) and the panes'
@@ -84,6 +89,9 @@ const MAGENTA: u8 = 5;
 const CYAN: u8 = 6;
 const BRIGHT_WHITE: u8 = 15;
 
+/// A message's mark.
+const ENVELOPE: &str = "✉";
+
 /// Green, yellow or red: by the CPU's temperature when it is known (below
 /// 60 °C, below 80 °C, above), else by how busy the cores are.
 fn heat(load: &Load) -> u8 {
@@ -105,6 +113,23 @@ fn bytes_level(rate: f64) -> f32 {
 /// A pane's output a second on a log scale: 10 B/s is 0, 10 MB/s is 1.
 fn out_level(rate: f64) -> f32 {
     ((rate.max(1.0).log10() - 1.0) / 6.0).clamp(0.0, 1.0) as f32
+}
+
+/// Events a second (context switches, interrupts) on a log scale: 1000 a
+/// second and fewer is 0, a million and more 1.
+fn count_level(rate: f64) -> f32 {
+    ((rate.max(1.0).log10() - 3.0) / 3.0).clamp(0.0, 1.0) as f32
+}
+
+/// Watts on a log scale: 1 W and less is 0, 1000 W 1 (a laptop idles near
+/// 0.3, a desktop's CPU under load near 0.7).
+fn power_level(w: f32) -> f32 {
+    (w.max(1.0).log10() / 3.0).clamp(0.0, 1.0)
+}
+
+/// Watts, short: "8.8W", "67W".
+fn watts(w: f32) -> String {
+    if w < 10.0 { format!("{w:.1}W") } else { format!("{w:.0}W") }
 }
 
 /// Bytes a second, short: "0", "812", "12K", "1.2M".
@@ -169,24 +194,38 @@ pub struct Anim {
     input: Input,
     /// Seconds stepped so far.
     t: f64,
-    /// The pane's output a second, smoothed, and the count last given.
-    out_rate: f64,
-    out_last: Option<u64>,
-    /// `pulse`: the samples (heart, network, disk), newest last, how many
-    /// were ever taken, the part of one still owed, and where the heart
-    /// and the breath are in their cycles.
-    samples: VecDeque<[f32; 3]>,
+    /// Each pane's output a second, smoothed, and the counts last given.
+    out_rates: Vec<f64>,
+    outs_last: Option<Vec<u64>>,
+    /// The messages delivered since it began, the count last given, and
+    /// the messages' bar: full on one, falling after.
+    messages: u64,
+    messages_last: Option<u64>,
+    message_level: f32,
+    /// `pulse`: the samples (heart, network, disk, system), newest last,
+    /// how many were ever taken, the part of one still owed, where the
+    /// heart, the breath and the system's wave are in their cycles, and the
+    /// beats messages still owe.
+    samples: VecDeque<[f32; 4]>,
     taken: u64,
     owed: f64,
     beat: f64,
     breath: f64,
-    /// `matrix`: how far the rain has fallen, and how often the
-    /// characters have changed.
+    wave: f64,
+    early_beats: u32,
+    /// `matrix`: how far the rain has fallen, how often the characters
+    /// have changed, and each message's drop (which message, when it
+    /// began to fall).
     travel: f64,
     flicker: f64,
+    drops: VecDeque<(u64, f64)>,
     /// `bars`: one a level `levels` gives.
     bars: Vec<Bar>,
 }
+
+/// How fast a message's drop falls, rows a second, and how many are kept.
+const DROP_SPEED: f64 = 18.0;
+const DROPS: usize = 32;
 
 impl Anim {
     pub fn new(kind: Kind, seed: u64) -> Anim {
@@ -195,15 +234,21 @@ impl Anim {
             seed,
             input: Input::default(),
             t: 0.0,
-            out_rate: 0.0,
-            out_last: None,
+            out_rates: Vec::new(),
+            outs_last: None,
+            messages: 0,
+            messages_last: None,
+            message_level: 0.0,
             samples: VecDeque::new(),
             taken: 0,
             owed: 0.0,
             beat: 0.0,
             breath: 0.0,
+            wave: 0.0,
+            early_beats: 0,
             travel: 0.0,
             flicker: 0.0,
+            drops: VecDeque::new(),
             bars: Vec::new(),
         }
     }
@@ -213,13 +258,37 @@ impl Anim {
     pub fn step(&mut self, dt: f64, input: Input) {
         let dt = dt.clamp(0.0, 0.5);
         self.t += dt;
-        if let Some(last) = self.out_last
-            && dt > 0.0
-        {
-            let rate = input.out_bytes.saturating_sub(last) as f64 / dt;
-            self.out_rate += (rate - self.out_rate) * (1.0 - (-dt / 0.4).exp());
+        // A pane more or fewer: each starts again from nothing.
+        match &self.outs_last {
+            Some(last) if last.len() == input.outs.len() => {
+                if dt > 0.0 {
+                    let ease = 1.0 - (-dt / 0.4).exp();
+                    for ((r, now), last) in self.out_rates.iter_mut().zip(&input.outs).zip(last) {
+                        *r += (now.saturating_sub(*last) as f64 / dt - *r) * ease;
+                    }
+                }
+            }
+            _ => self.out_rates = vec![0.0; input.outs.len()],
         }
-        self.out_last = Some(input.out_bytes);
+        self.outs_last = Some(input.outs.clone());
+        // The messages delivered since the last step (none on the first:
+        // those came before the clock).
+        let new = self.messages_last.map_or(0, |last| input.messages.saturating_sub(last));
+        self.messages_last = Some(input.messages);
+        self.message_level *= (-dt / 0.8).exp() as f32;
+        if new > 0 {
+            self.messages += new;
+            self.message_level = 1.0;
+            self.early_beats = (self.early_beats + new.min(4) as u32).min(4);
+            for n in self.messages.saturating_sub(new.min(DROPS as u64))..self.messages {
+                self.drops.push_back((n, self.t));
+            }
+        }
+        // A drop gone past any screen is let go.
+        while self.drops.front().is_some_and(|&(_, at)| (self.t - at) * DROP_SPEED > 400.0) || self.drops.len() > DROPS
+        {
+            self.drops.pop_front();
+        }
         self.input = input;
         match self.kind {
             Kind::Pulse => self.step_pulse(dt),
@@ -250,10 +319,20 @@ impl Anim {
         let load = &self.input.load;
         let net = load.net.map_or(0.0, |(rx, tx)| bytes_level(rx + tx));
         let disk = load.disk.map_or(0.0, |(r, w)| bytes_level(r + w));
+        // The system's wave: faster the more the CPUs switch between
+        // threads, taller the more interrupts come.
+        let switching = load.switches.map_or(0.0, count_level);
+        let spikes = load.interrupts.map_or(switching, count_level);
         let bpm = self.bpm();
         self.owed += dt * SAMPLES;
         while self.owed >= 1.0 {
             self.owed -= 1.0;
+            // A message makes the heart beat early: once the last beat is
+            // over (half way through it), the next one starts at once.
+            if self.early_beats > 0 && self.beat.fract() >= 0.5 {
+                self.beat = self.beat.floor() + 1.0;
+                self.early_beats -= 1;
+            }
             // A sample holds the farthest point of its stretch of the beat:
             // the spike is narrower than a sample at any rate, and would
             // otherwise fall between two.
@@ -267,10 +346,15 @@ impl Anim {
             self.beat += step;
             // Faster breaths the more the disks do: one in 5 s to one in 1.4 s.
             self.breath += (0.2 + 0.5 * f64::from(disk)) / SAMPLES;
+            // 2 to 18 swings a second, a faster ripple on them.
+            self.wave += (2.0 + 16.0 * f64::from(switching)) / SAMPLES;
+            let swing = |key: u64, x: f64| 2.0 * noise(hash(self.seed, key, 13), x) - 1.0;
+            let wave = 0.65 * swing(1, self.wave) + 0.35 * swing(2, self.wave * 2.3);
             let sample = [
                 heart,
                 finger * (0.05 + 0.95 * net),
                 (self.breath.fract() as f32 * std::f32::consts::TAU).sin() * (0.05 + 0.95 * disk),
+                wave * (0.15 + 0.85 * spikes),
             ];
             self.samples.push_back(sample);
             if self.samples.len() > KEEP {
@@ -284,24 +368,66 @@ impl Anim {
         let load = &self.input.load;
         let colour = heat(load);
         let beating = (self.beat.fract() - 0.225).abs() < 0.08;
-        let mut heart = format!("♥ {:.0}  CPU {}", self.bpm(), percent(load.cpu));
+        // Each trace's label in full, and short: what it says first. The
+        // short ones stand where the full ones do not fit.
+        let mut short = format!("♥ {:.0}  CPU {}", self.bpm(), percent(load.cpu));
+        let mut heart = short.clone();
+        if let Some(w) = load.cpu_power {
+            heart.push_str(&format!(" {}", watts(w)));
+        }
         if let Some(t) = load.temp {
+            short.push_str(&format!("  {t:.0}°C"));
             heart.push_str(&format!("  {t:.0}°C"));
         }
-        // (which sample, its range, colour, label)
-        let mut traces = vec![(0, (-0.3, 1.05), colour, heart)];
+        if let Some(w) = load.battery_draw {
+            heart.push_str(&format!("  PWR {}", watts(w)));
+        }
+        if self.messages > 0 {
+            heart.push_str(&format!("  {ENVELOPE} {}", self.messages));
+        }
+        // (which sample, its range, colour, label, short label)
+        let mut traces = vec![(0, (-0.3, 1.05), colour, heart, short)];
         if let Some((rx, tx)) = load.net {
-            traces.push((1, (-0.05, 1.05), BLUE, format!("NET ↓{} ↑{}", rate_text(rx), rate_text(tx))));
+            let short = format!("NET ↓{} ↑{}", rate_text(rx), rate_text(tx));
+            let mut label = short.clone();
+            if let Some((pi, po)) = load.packets {
+                label.push_str(&format!("  {} pkt/s", human_count((pi + po) as u64)));
+            }
+            traces.push((1, (-0.05, 1.05), BLUE, label, short));
         }
         if let Some((r, w)) = load.disk {
-            traces.push((2, (-1.05, 1.05), MAGENTA, format!("DISK r{} w{}", rate_text(r), rate_text(w))));
+            let label = format!("DISK r{} w{}", rate_text(r), rate_text(w));
+            traces.push((2, (-1.05, 1.05), MAGENTA, label.clone(), label));
         }
+        // The heart, network and disk decide the rows, as if there were no
+        // system wave; it follows where there is room for it.
         let rows = if band.h as usize >= 3 * traces.len() { 3 } else { 2 };
-        traces.truncate((band.h / rows).max(1) as usize);
-        let label_w = traces.iter().map(|t| t.3.width()).max().unwrap_or(0) as u16 + 1;
-        let (trace_w, labels) = if band.w >= MIN_W + label_w { (band.w - label_w, true) } else { (band.w, false) };
+        let fit = (band.h / rows).max(1) as usize;
+        if let Some(s) = load.switches.filter(|_| fit > traces.len()) {
+            let short = format!("SYS {}/s", human_count(s as u64));
+            let mut label = short.clone();
+            if let Some(p) = load.processes {
+                label.push_str(&format!("  {p} proc"));
+            }
+            if let Some(t) = load.threads {
+                label.push_str(&format!(" {} thr", human_count(t)));
+            }
+            traces.push((3, (-1.05, 1.05), CYAN, label, short));
+        }
+        traces.truncate(fit);
+        let width = |short: bool| {
+            traces.iter().map(|t| if short { t.4.width() } else { t.3.width() }).max().unwrap_or(0) as u16 + 1
+        };
+        let (trace_w, labels) = match (width(false), width(true)) {
+            (w, _) if band.w >= MIN_W + w => (band.w - w, Some(false)),
+            (_, w) if band.w >= MIN_W + w => (band.w - w, Some(true)),
+            _ => (band.w, None),
+        };
+        let label_w = band.w - trace_w;
         let y0 = band.y + (band.h - rows * traces.len() as u16) / 2;
-        for (i, (which, range, colour, label)) in traces.iter().enumerate() {
+        for (i, (which, range, colour, full, short)) in traces.iter().enumerate() {
+            let label = if labels == Some(true) { short } else { full };
+            let labels = labels.is_some();
             let rect = Rect { x: band.x, y: y0 + i as u16 * rows, w: trace_w, h: rows };
             self.draw_trace(g, rect, *which, *range, *colour, pal);
             if labels {
@@ -384,6 +510,16 @@ impl Anim {
         let packets = 0.03 + 0.5 * load.net.map_or(0.0, |(rx, tx)| bytes_level(rx + tx));
         let colour = heat(load);
         let h = f64::from(band.h);
+        // Under the rain, interrupts: stray characters in magenta, more the
+        // more come, new ones ten times a second.
+        let strays = (load.interrupts.map_or(0.0, count_level) * f32::from(band.w) * f32::from(band.h) * 0.04) as u64;
+        let slot = (self.t * 10.0).floor() as u64;
+        for i in 0..strays {
+            let hs = hash(self.seed, slot, i + 100);
+            let (x, y) = ((hs % u64::from(band.w)) as u16, ((hs >> 20) % u64::from(band.h)) as u16);
+            let ch = chars[((hs >> 40) % chars.len() as u64) as usize];
+            g.set(band.x + x, band.y + y, Cell::new(ch.encode_utf8(&mut [0; 4]), false, pal.shade(MAGENTA, 0.4)));
+        }
         for c in 0..band.w {
             let hc = hash(self.seed, u64::from(c), 1);
             let speed = 6.0 + 10.0 * f64::from(unit(hash(hc, 1, 0)));
@@ -412,13 +548,36 @@ impl Anim {
                 g.set(band.x + c, band.y + y as u16, Cell::new(ch.encode_utf8(&mut [0; 4]), false, style));
             }
         }
+        // Each message delivered: a white drop headed by an envelope, over
+        // the rain.
+        const TAIL: i64 = 6;
+        for &(n, at) in &self.drops {
+            let c = (hash(self.seed, n, 11) % u64::from(band.w)) as u16;
+            let head = ((self.t - at) * DROP_SPEED).floor() as i64;
+            for d in 0..TAIL {
+                let y = head - d;
+                if y < 0 || y >= i64::from(band.h) {
+                    continue;
+                }
+                let (text, style) = if d == 0 {
+                    (ENVELOPE.to_string(), Style { bold: true, ..pal.shade(BRIGHT_WHITE, 0.0) })
+                } else {
+                    let ch = chars[(hash(n, y as u64, 12) % chars.len() as u64) as usize];
+                    (ch.to_string(), pal.shade(BRIGHT_WHITE, d as f32 / TAIL as f32 * 0.8))
+                };
+                g.set(band.x + c, band.y + y as u16, Cell::new(&text, false, style));
+            }
+        }
     }
 
-    /// The equalizer's groups, each a label and its bars' levels (0 to 1):
-    /// a bar a core, memory, the disks read and written, the network in
-    /// and out, the temperature, the pane's output. A figure the machine
-    /// does not give is left out.
-    fn groups(&self) -> Vec<(String, Vec<f32>)> {
+    /// The equalizer's groups, each a label and its bars' levels (0 to 1),
+    /// and how many of them are the first ones: a bar a core, memory, the
+    /// disks read and written, the network in and out, the temperature, a
+    /// bar for each pane's output. Then the ones drawn only where they fit
+    /// beside those: messages, the CPU's watts, the battery's, swap, context
+    /// switches and interrupts. A figure the machine does not give is left
+    /// out.
+    fn groups(&self) -> (Vec<(String, Vec<f32>)>, usize) {
         let load = &self.input.load;
         let cores = if load.cores.is_empty() { vec![load.cpu] } else { load.cores.clone() };
         let mut out = vec![(format!("CPU {}", percent(load.cpu)), cores)];
@@ -434,12 +593,30 @@ impl Anim {
         if let Some(t) = load.temp {
             out.push((format!("{t:.0}°C"), vec![((t - 30.0) / 70.0).clamp(0.0, 1.0)]));
         }
-        out.push((format!("OUT {}", rate_text(self.out_rate)), vec![out_level(self.out_rate)]));
-        out
+        let outs: Vec<f32> = self.out_rates.iter().map(|&r| out_level(r)).collect();
+        let total = self.out_rates.iter().sum::<f64>();
+        out.push((format!("OUT {}", rate_text(total)), if outs.is_empty() { vec![0.0] } else { outs }));
+        let first = out.len();
+        out.push((format!("MSG {}", self.messages), vec![self.message_level]));
+        if let Some(w) = load.cpu_power {
+            out.push((watts(w), vec![power_level(w)]));
+        }
+        if let Some(w) = load.battery_draw {
+            out.push((format!("PWR {}", watts(w)), vec![power_level(w)]));
+        }
+        if let Some(s) = load.swap {
+            out.push((format!("SWAP {}", percent(s)), vec![s.clamp(0.0, 1.0)]));
+        }
+        if let Some(s) = load.switches {
+            let mut levels = vec![count_level(s)];
+            levels.extend(load.interrupts.map(count_level));
+            out.push((format!("CTX {}", human_count(s as u64)), levels));
+        }
+        (out, first)
     }
 
     fn step_bars(&mut self, dt: f64) {
-        let levels: Vec<f32> = self.groups().into_iter().flat_map(|(_, l)| l).collect();
+        let levels: Vec<f32> = self.groups().0.into_iter().flat_map(|(_, l)| l).collect();
         if self.bars.len() != levels.len() {
             self.bars = vec![Bar::default(); levels.len()];
         }
@@ -466,7 +643,7 @@ impl Anim {
 
     fn draw_bars(&self, g: &mut Grid, band: Rect, pal: &Palette) {
         const EIGHTHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-        let mut groups = self.groups();
+        let (mut groups, first) = self.groups();
         // Each group's bars, from the state (`step` sized it to them).
         let mut at = 0;
         let mut bars: Vec<Vec<Bar>> = Vec::new();
@@ -475,12 +652,15 @@ impl Anim {
             bars.push(self.bars.get(at..end).map(<[Bar]>::to_vec).unwrap_or_default());
             at += levels.len();
         }
-        // The widest look that fits, a gap always between two bars (with no
-        // gap the cores run together into one block): two columns a bar,
-        // then one; the cores taken two, four… together (their height and
-        // their peak the average: never under the bar, and one busy core in
-        // the group does not pin the mark to the top) until they fit; then
-        // the last groups left out.
+        // The first groups decide the look, as if there were no others: the
+        // widest that fits, a gap always between two bars (with no gap the
+        // cores run together into one block): two columns a bar, then one;
+        // the cores taken two, four… together (their height and their peak
+        // the average: never under the bar, and one busy core in the group
+        // does not pin the mark to the top) until they fit; then the last
+        // groups left out. The others follow, as many as fit in that look.
+        let extra_groups = groups.split_off(first.min(groups.len()));
+        let extra_bars = bars.split_off(first.min(bars.len()));
         let width = |groups: &[(String, Vec<f32>)], bars: &[Vec<Bar>], bw: u16, gap: u16| -> u16 {
             let each = groups.iter().zip(bars).map(|((label, _), b)| {
                 let n = b.len() as u16;
@@ -512,6 +692,15 @@ impl Anim {
             look = fits(&groups, &bars);
         }
         let Some((bw, gap)) = look else { return };
+        for (g, b) in extra_groups.into_iter().zip(extra_bars) {
+            groups.push(g);
+            bars.push(b);
+            if width(&groups, &bars, bw, gap) > band.w {
+                groups.pop();
+                bars.pop();
+                break;
+            }
+        }
         let rows = band.h - 1;
         let mut x = band.x + (band.w - width(&groups, &bars, bw, gap)) / 2;
         for ((label, _), group) in groups.iter().zip(&bars) {
@@ -591,6 +780,14 @@ mod tests {
             disk: Some((12.0 * 1024.0 * 1024.0, 300.0 * 1024.0)),
             net: Some((1.2 * 1024.0 * 1024.0, 80.0 * 1024.0)),
             temp: Some(61.0),
+            switches: Some(48_000.0),
+            interrupts: Some(9_000.0),
+            processes: Some(312),
+            threads: Some(4_300),
+            swap: Some(0.12),
+            packets: Some((2_500.0, 600.0)),
+            cpu_power: Some(67.0),
+            battery_draw: Some(20.0),
         }
     }
 
@@ -598,7 +795,17 @@ mod tests {
     fn run(kind: Kind, load: &Load, steps: usize, dt: f64) -> Anim {
         let mut a = Anim::new(kind, 7);
         for i in 0..steps {
-            a.step(dt, Input { load: load.clone(), out_bytes: i as u64 * 4000 });
+            a.step(dt, Input { load: load.clone(), outs: vec![i as u64 * 4000], messages: 0 });
+        }
+        a
+    }
+
+    /// Like `run`, with a message delivered at each step in `at`.
+    fn run_with_messages(kind: Kind, load: &Load, steps: usize, dt: f64, at: &[usize]) -> Anim {
+        let mut a = Anim::new(kind, 7);
+        for i in 0..steps {
+            let messages = at.iter().filter(|&&s| s <= i).count() as u64;
+            a.step(dt, Input { load: load.clone(), outs: vec![0], messages });
         }
         a
     }
@@ -645,6 +852,14 @@ mod tests {
             disk: Some((f64::INFINITY, -5.0)),
             net: Some((1e300, 0.0)),
             temp: Some(f32::NAN),
+            switches: Some(f64::NAN),
+            interrupts: Some(f64::INFINITY),
+            processes: Some(u64::MAX),
+            threads: Some(0),
+            swap: Some(-3.0),
+            packets: Some((f64::NAN, -1.0)),
+            cpu_power: Some(f32::INFINITY),
+            battery_draw: Some(f32::NAN),
         };
         let loads = [busy(), Load::default(), Load { cores: vec![0.7; 64], cpu: 0.7, ..busy() }, wild];
         let mut checked = 0;
@@ -820,7 +1035,7 @@ mod tests {
         let mut a = run(Kind::Bars, &full, 30, 0.066);
         let idle = Load { cores: vec![0.0], ..Load::default() };
         for _ in 0..5 {
-            a.step(0.066, Input { load: idle.clone(), out_bytes: 0 });
+            a.step(0.066, Input { load: idle.clone(), outs: vec![0], messages: 0 });
         }
         let g = drawn(&a, band(), &pal);
         assert!((0..g.cols).any(|x| g.get(x, band().y).text() == "▔"), "{}", text(&g));
@@ -836,7 +1051,8 @@ mod tests {
         assert!(t.contains("CPU 50%") && t.contains("MEM 30%") && t.contains("OUT"), "{t}");
         let bottom: String = (0..g.cols).map(|x| g.get(x, 4).text()).collect();
         let runs: Vec<usize> = bottom.split(' ').filter(|r| !r.is_empty()).map(|r| r.chars().count()).collect();
-        assert_eq!(runs, vec![1; 10], "8 core bars, memory, output, each alone: {t}");
+        assert_eq!(runs, vec![1; 10], "8 core bars, memory, output, each alone (no message: no bar): {t}");
+        assert!(t.contains("MSG 0"), "{t}");
         // Cores taken together stand at their average, not their highest:
         // half of them full and half idle make bars half way up.
         let half = Load { cores: (0..32).map(|i| (i % 2) as f32).collect(), cpu: 0.5, ..many.clone() };
@@ -844,6 +1060,232 @@ mod tests {
         let rows: Vec<String> = (0..9).map(|y| (0..22).map(|x| g.get(x, y).text()).collect()).collect();
         assert!(rows[0].trim().is_empty() && rows[1].trim().is_empty(), "no core bar near the top: {rows:#?}");
         assert!(rows[8].contains('█') && rows[5].contains('█'), "half way up: {rows:#?}");
+    }
+
+    /// The groups added after the first ones (messages, watts, the battery,
+    /// swap, context switches) are drawn where there is room for them
+    /// beside those, in the same look; where there is not, the frame is
+    /// the one a machine without those figures gives, cell for cell.
+    #[test]
+    fn the_added_bars_take_only_the_room_left() {
+        let pal = Palette::default();
+        let old = Load {
+            switches: None,
+            interrupts: None,
+            processes: None,
+            threads: None,
+            swap: None,
+            packets: None,
+            cpu_power: None,
+            battery_draw: None,
+            ..busy()
+        };
+        let wide = Rect { x: 0, y: 0, w: 150, h: 9 };
+        let mut g = Grid::new(150, 9);
+        run(Kind::Bars, &busy(), 60, 0.066).draw(&mut g, wide, &pal);
+        let t = text(&g);
+        for label in ["CPU 63%", "OUT ", "67W", "PWR 20W", "SWAP 12%", "CTX 48k", "MSG 0"] {
+            assert!(t.contains(label), "{label}: {t}");
+        }
+        let at = |load: &Load, w: u16| {
+            let mut g = Grid::new(150, 9);
+            run(Kind::Bars, load, 60, 0.066).draw(&mut g, Rect { w, ..wide }, &pal);
+            g
+        };
+        let (mut same, mut more) = (0, 0);
+        for w in (20..=150).step_by(2) {
+            let (a, b) = (at(&old, w), at(&busy(), w));
+            if a == b {
+                same += 1;
+            } else {
+                // Where they differ, the old frame's every group is still
+                // there, as many bars wide; the new one only adds to it.
+                more += 1;
+                let (ta, tb) = (text(&a), text(&b));
+                for label in ["CPU 63%", "MEM 41%", "DISK 12M", "NET ↓1.2M ↑80K", "61°C", "OUT "] {
+                    assert_eq!(ta.contains(label), tb.contains(label), "{w} {label}: {ta}\n{tb}");
+                }
+                let lit = |g: &Grid| (0..g.cols).filter(|&x| g.get(x, 7).text() != " ").count();
+                assert!(lit(&b) >= lit(&a), "{w}: {ta}\n{tb}");
+            }
+        }
+        assert!(same > 0 && more > 0, "{same} the same, {more} with more");
+    }
+
+    /// The monitor as it was where the new figures have no room: the
+    /// heart, network and disk keep their rows (the system's wave only where
+    /// a row is left for it), and their short labels where the full ones do
+    /// not fit. Every size: a frame with neither the system's wave nor a
+    /// full label is the one a machine without those figures gives.
+    #[test]
+    fn the_monitor_keeps_its_rows_and_labels_where_the_new_figures_do_not_fit() {
+        let pal = Palette::default();
+        let old = Load {
+            switches: None,
+            interrupts: None,
+            processes: None,
+            threads: None,
+            swap: None,
+            packets: None,
+            cpu_power: None,
+            battery_draw: None,
+            ..busy()
+        };
+        let (a, b) = (run(Kind::Pulse, &old, 90, 0.05), run(Kind::Pulse, &busy(), 90, 0.05));
+        let (mut same, mut short, mut full) = (0, 0, 0);
+        for w in (20..=130).step_by(2) {
+            for h in 3..=13 {
+                let r = Rect { x: 0, y: 0, w, h };
+                let (mut ga, mut gb) = (Grid::new(132, 14), Grid::new(132, 14));
+                a.draw(&mut ga, r, &pal);
+                b.draw(&mut gb, r, &pal);
+                let tb = text(&gb);
+                // The system's wave has a row of its own: a fourth trace
+                // in rows of 3 (9 rows and more) or of 2.
+                let wave = h / if h >= 9 { 3 } else { 2 } >= 4;
+                if wave || tb.contains("67W") {
+                    full += 1;
+                    continue;
+                }
+                assert_eq!(ga, gb, "{w}x{h}:\n{}\n{tb}", text(&ga));
+                same += 1;
+                short += usize::from(tb.contains("CPU 63%  61°C"));
+            }
+        }
+        assert!(same > 0 && short > 0 && full > 0, "{same} the same ({short} with short labels), {full} with more");
+        // 9 rows: three traces of 3 rows each, as before; 12: the system's
+        // wave under them.
+        let rows_of = |h: u16| {
+            let mut g = Grid::new(132, 14);
+            b.draw(&mut g, Rect { x: 0, y: 0, w: 120, h }, &pal);
+            text(&g).contains("SYS")
+        };
+        assert!(!rows_of(9) && !rows_of(11) && rows_of(12));
+    }
+
+    /// A message delivered: the heart beats early (more beats in the same
+    /// time) and the count shows by it; a drop headed by an envelope falls
+    /// through the rain; the messages' bar fills and falls back. Messages
+    /// delivered before the clock came are not counted.
+    #[test]
+    fn a_message_shows_in_each_kind() {
+        let pal = Palette::default();
+        let beats = |a: &Anim| {
+            let s: Vec<f32> = a.samples.iter().map(|s| s[0]).collect();
+            s.windows(2).filter(|w| w[0] < 0.5 && w[1] >= 0.5).count()
+        };
+        let quiet = run_with_messages(Kind::Pulse, &Load::default(), 120, 0.05, &[]);
+        let told = run_with_messages(Kind::Pulse, &Load::default(), 120, 0.05, &[20, 45, 70, 95]);
+        assert!(beats(&told) > beats(&quiet), "{} {}", beats(&quiet), beats(&told));
+        assert_eq!(told.messages, 4);
+        assert!(text(&drawn(&told, band(), &pal)).contains("✉ 4"));
+        assert!(!text(&drawn(&quiet, band(), &pal)).contains('✉'));
+        // Five came before the clock: none counted.
+        let mut a = Anim::new(Kind::Pulse, 7);
+        for i in 0..10 {
+            a.step(0.05, Input { messages: 5 + u64::from(i >= 5), ..Input::default() });
+        }
+        assert_eq!(a.messages, 1);
+        // The rain: an envelope at the head of the drop, 4 steps (0.32 s)
+        // after.
+        let rain = run_with_messages(Kind::Matrix, &Load::default(), 60, 0.08, &[55]);
+        let g = drawn(&rain, band(), &pal);
+        let envelopes: Vec<(u16, u16)> = (0..g.rows)
+            .flat_map(|y| (0..g.cols).map(move |x| (x, y)))
+            .filter(|&(x, y)| g.get(x, y).text() == "✉")
+            .collect();
+        assert_eq!(envelopes.len(), 1, "{}", text(&g));
+        assert_eq!(envelopes[0].1, band().y + 5, "18 rows a second, 0.32 s");
+        assert!(g.get(envelopes[0].0, envelopes[0].1).style.bold);
+        assert!(!text(&drawn(&run(Kind::Matrix, &Load::default(), 60, 0.08), band(), &pal)).contains('✉'));
+        // Gone below the band, and let go a while after.
+        let later = run_with_messages(Kind::Matrix, &Load::default(), 400, 0.08, &[55]);
+        assert!(!text(&drawn(&later, band(), &pal)).contains('✉') && later.drops.is_empty());
+        // A thousand at once: all counted, a few drops and early beats, not
+        // a thousand; drawn in every kind.
+        for kind in Kind::ALL {
+            let mut a = Anim::new(kind, 7);
+            for i in 0..40u64 {
+                a.step(0.05, Input { messages: if i >= 20 { 1000 } else { 0 }, ..Input::default() });
+            }
+            assert_eq!(a.messages, 1000);
+            assert!(a.drops.len() <= DROPS && a.early_beats <= 4, "{} {}", a.drops.len(), a.early_beats);
+            let t = text(&drawn(&a, band(), &pal));
+            assert!(t.contains(if kind == Kind::Bars { "MSG 1000" } else { "" }), "{t}");
+        }
+        assert!(text(&drawn(&run(Kind::Pulse, &busy(), 30, 0.05), band(), &pal)).contains("♥"));
+        // No pane's output given (the pane's window not found): one bar,
+        // at nothing.
+        let mut a = Anim::new(Kind::Bars, 7);
+        a.step(0.05, Input::default());
+        a.step(0.05, Input::default());
+        let (groups, _) = a.groups();
+        assert!(groups.iter().any(|(l, v)| l == "OUT 0" && v == &vec![0.0]), "{groups:?}");
+        // The bar: full at once, under a tenth 2 s on.
+        let bar = |steps: usize| run_with_messages(Kind::Bars, &Load::default(), steps, 0.05, &[20]).message_level;
+        assert!(bar(21) > 0.9 && bar(60) < 0.1, "{} {}", bar(21), bar(60));
+        assert!(
+            text(&drawn(&run_with_messages(Kind::Bars, &Load::default(), 30, 0.05, &[20]), band(), &pal))
+                .contains("MSG 1")
+        );
+    }
+
+    /// The system's wave: more swings the more the CPUs switch, taller the
+    /// more interrupts come; its label says the switches, processes and
+    /// threads. The rain's stray characters come with the interrupts.
+    #[test]
+    fn the_system_wave_and_the_strays_follow_switches_and_interrupts() {
+        let pal = Palette::default();
+        let sys = |switches: f64, interrupts: f64| Load {
+            switches: Some(switches),
+            interrupts: Some(interrupts),
+            ..Load::default()
+        };
+        let wave = |load: &Load| {
+            let a = run(Kind::Pulse, load, 120, 0.05);
+            let s: Vec<f32> = a.samples.iter().map(|s| s[3]).collect();
+            let turns = s.windows(3).filter(|w| (w[1] - w[0]) * (w[2] - w[1]) < 0.0).count();
+            (turns, s.iter().map(|v| v.abs()).fold(0.0, f32::max))
+        };
+        let (calm, low) = wave(&sys(1e3, 1e3));
+        let (busy_turns, _) = wave(&sys(1e6, 1e3));
+        let (_, high) = wave(&sys(1e3, 1e6));
+        assert!(busy_turns > calm * 3, "{calm} {busy_turns}");
+        assert!(high > low * 3.0, "{low} {high}");
+        let t = text(&drawn(&run(Kind::Pulse, &busy(), 60, 0.05), Rect { x: 0, y: 0, w: 64, h: 14 }, &pal));
+        assert!(t.contains("SYS 48k/s  312 proc 4.3k thr"), "{t}");
+        assert!(t.contains("CPU 63% 67W") && t.contains("PWR 20W") && t.contains("NET ↓1.2M ↑80K  3.1k pkt/s"), "{t}");
+        assert!(!text(&drawn(&run(Kind::Pulse, &Load::default(), 60, 0.05), band(), &pal)).contains("SYS"));
+        let strays = |load: &Load| {
+            let g = drawn(&run(Kind::Matrix, load, 60, 0.08), band(), &pal);
+            (0..g.rows)
+                .flat_map(|y| (0..g.cols).map(move |x| (x, y)))
+                .filter(|&(x, y)| g.get(x, y).style.fg == Color::Idx(MAGENTA))
+                .count()
+        };
+        assert_eq!(strays(&sys(1e3, 1e3)), 0);
+        assert!(strays(&sys(1e3, 1e6)) > 10, "{}", strays(&sys(1e3, 1e6)));
+    }
+
+    /// The output bars: one a pane of the window, each at its own rate,
+    /// the label their sum; a pane more or fewer starts them again.
+    #[test]
+    fn each_pane_has_its_output_bar() {
+        let mut a = Anim::new(Kind::Bars, 7);
+        for i in 0..40u64 {
+            a.step(0.05, Input { outs: vec![100, i * 50_000, 0], ..Input::default() });
+        }
+        assert_eq!(a.out_rates.len(), 3);
+        assert!(a.out_rates[0] == 0.0 && a.out_rates[2] == 0.0, "{:?}", a.out_rates);
+        assert!((a.out_rates[1] - 1e6).abs() < 1e4, "1 MB a second: {:?}", a.out_rates);
+        let (groups, first) = a.groups();
+        let out = groups.iter().find(|(l, _)| l.starts_with("OUT")).unwrap();
+        assert_eq!(out.0, format!("OUT {}", rate_text(a.out_rates[1])));
+        assert!(out.0.starts_with("OUT 9") && out.0.ends_with('K'), "{}", out.0);
+        assert!(out.1.len() == 3 && out.1[1] > 0.8 && out.1[0] == 0.0, "{out:?}");
+        assert_eq!(groups[first - 1].0, out.0, "the output is the last of the first groups");
+        a.step(0.05, Input { outs: vec![100, 2_000_000], ..Input::default() });
+        assert_eq!(a.out_rates, vec![0.0, 0.0], "a pane fewer: from nothing");
     }
 
     /// Colours are the theme's: the 16 by index (the theme's palette maps

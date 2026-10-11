@@ -3937,3 +3937,39 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 机制通路（变异） | 4 个变异：从不合并、先试无间隔、合并取最高、峰值取最高，4/4 被抓到（新增断言：32 核 40 列得到 8 根单列柱加内存、输出共 10 段；一半满一半空的核心合并后在半高，顶上两行没有柱也没有标记） | 干净（1/3） |
 | 2 | 全量 | fmt、clippy 三平台 0；Windows 388 + 10 + 121；Linux 364 + 121 | 干净（2/3） |
 | 3 | 可复现性 | 三种动画 × 两种负载（含 32 核合并）步进 200 次的画面指纹：Windows 2 次、Linux 2 次都是 `773996766c484b73`；同一组 154 帧渲染两次，154 张 PNG 哈希全部相同 | 干净（3/3），验收通过 |
+| 4 | CI 与发布（0.35.6） | master `7a63f34` CI 全过（run 38122241528）；打 `v0.35.6` 后 Release 13 个资产（run 38122518227）；Homebrew 公式 3 个 `url`/`sha256` 与资产 digest 全部一致；发布机器人提交 `aa99573`；winget PR #441466 改为 0.35.6（分支 `07eb970`，只剩 0.35.6 一个目录） | 发布完成 |
+
+## 125. 时钟动画加上系统计数、CPU 功耗和 keepane 自己的活动
+
+用户："can we use heart means battery usage? and any metrics can we show ?"；选了 B（系统计数）和 D（keepane 自己的事件），"we can add power_now, such 20w, do not need battery show"；同意 CPU 功耗（RAPL）与电池放电功耗分开标注。
+
+- 读数（平台层 `counters()` 新字段，`load()` 统一换算）：
+  - 上下文切换/秒、中断/秒：Windows 用 PDH `\System\Context Switches/sec`、`\Processor(_Total)\Interrupts/sec` 的原始累计值（32 位，回绕时一次读数算 0）；Linux 用 `/proc/stat` 的 `ctxt`、`intr`；macOS 没有。
+  - 进程数、线程数：Windows PDH `\System\Processes`、`\System\Threads`；Linux 数 `/proc` 的数字目录、`/proc/loadavg` 的线程数；macOS 只有进程数。
+  - 交换区占用：Windows PDH `\Paging File(_Total)\% Usage`（原始分数）；Linux `/proc/meminfo`；macOS `vm.swapusage`。
+  - 网络包数/秒：和字节数同一批网卡（Windows `GetIfTable2` 单播 + 非单播，Linux `/proc/net/dev`，macOS `if_msghdr2`）。
+  - CPU 功耗（W）：Windows PDH `\Energy Meter(rapl_package0_pkg)\Energy`，普通用户可读；Linux RAPL `/sys/class/powercap/intel-rapl:N/energy_uj`（只算整个封装，不重复算子域；多数系统只有 root 可读，读不到就不显示）；macOS 没有。
+  - 电池放电功耗（W）：Windows `CallNtPowerInformation(SystemBatteryState)`，只在用电池且放电时有；Linux 各电池 `power_now`，没有就用 `current_now × voltage_now`，只在 `Discharging` 时有；macOS 没有。不显示电量。
+  - Windows 的 PDH 查询从"只读磁盘两项、一项加不上就全部放弃"改成 8 项各自独立，一项缺了只缺那一项。
+- 画面：
+  - `pulse`：心跳旁 `CPU 35% 67W  61°C  PWR 20W  ✉ 2`；网络旁加包数；新第 4 条波形 `SYS`（摆动快慢随上下文切换，2–18 次/秒；高度随中断），标签 `SYS 48k/s  312 proc 4.3k thr`；每送达 1 条消息心脏提前跳 1 下（最多积攒 4 下），`✉` 计这次打开时钟以来的消息。
+  - `matrix`：中断越多散落的品红色字符越多；每条消息落下一列以 `✉` 开头的白色字符（18 行/秒，最多 32 列）。
+  - `bars`：输出改为窗口里每个 pane 各一根；在原有组之后、放得下时加上 `MSG`（来一条打满，0.8 秒时间常数回落）、CPU 瓦数、`PWR`、`SWAP`、`CTX`（切换、中断两根）。
+  - 时钟信息行最后加一行 `keepane: 2 sessions · 7 panes · 12 messages delivered`（服务器启动以来；服务器在 `mail.rs` 唯一的送达处计数）。
+- 不改变原有显示（"原行为不变"的做法）：原有的组/波形先决定布局，新加的只在剩下的地方跟上。
+  - `bars`：原 6 组照旧决定柱宽、间隔、核心合并，新组按顺序加到放不下为止。
+  - `pulse`：心跳、网络、磁盘三条决定每条几行，`SYS` 只在还剩一条的位置时出现；完整标签放不下时用原来的短标签（`♥ 92  CPU 35%  61°C`、`NET ↓1.2M ↑80K`）。
+- 开发中发现并修掉：
+  1. Energy Meter 原始值的单位：起初按空闲时的数字猜成皮焦，服务器里一直显示 `0.0W`（e2e 画面发现）。满载实测：PDH 自己的 Power 计数显示 185 W，按皮瓦时换算 187 W，按纳焦 52 W，按皮焦 0.05 W → 单位是皮瓦时（1 pWh = 3.6 nJ）。单测改为"1 秒内 1–1000 W"，单位错上千倍就失败。
+  2. 82 列下 `MSG` 排在新组最后，永远放不下（e2e 发现）→ 新组里 `MSG` 排第一。
+  3. 消息计数从时钟打开时开始（打开前的消息不算）；e2e 原先期望打开后立刻有 `✉ 1`，是测试写错，改为时钟显示中再发一条。
+- 代价（release，e2e 进程内含测试客户端，5 秒平均；同一时段先测改动前 `aa99573` 再测改动后）：off 1.0→1.2 帧/秒、CPU 0.9%→0.3%；pulse 16.4→16.4 帧/秒、3.7→4.8 KB/s、1.9%→2.5%；matrix 11.4→11.4、13.1→13.5 KB/s、1.9%→1.6%；bars 13.2→13.4、1.7→1.6 KB/s、2.5%→2.2%。最高 2.5%，低于上次 pulse 的 2.8%。
+- 未验证：Windows 电池放电功耗和 Linux RAPL/电池只在没有电池的台式机和 WSL 上跑过（返回"没有"）；Linux 两者用伪造的 sysfs 目录单测；AMD CPU 上 Windows 的 Energy Meter 实例名未验证。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路（变异） | 17 个单元层变异 17/17 被抓到；2 个服务器层变异用 e2e 检查：不计送达 → 抓到；`OUT` 只取时钟所在 pane → 没有测试能抓（e2e 的刷屏就在时钟 pane 里） | **有问题**：e2e 改为在同窗口另开一个 3 行的 pane 里刷屏；该变异被抓到（"OUT with the other pane's output"超时）（不计数） |
+| 2 | 边界与退化输入 | 新增：一次 1000 条消息（3 种动画都画得出，`✉`/`MSG 1000`，落下的列 ≤32，提前心跳 ≤4）、找不到窗口时 `OUT 0` 一根空柱，通过；但 review 发现回退：标签变长后，窄 pane 里 pulse 的标签整组消失（心跳标签从约 24 列变到最多约 38 列，原来 45 列就显示，现在要 59 列）；4 条波形让 9–11 行的区域里原来 3 条各 3 行变成各 2 行 | **有问题**：短标签兜底、`SYS` 不参与决定行数；新单测在 56 种宽 × 11 种高上逐格比对：没有 `SYS` 也没有完整标签的画面与"没有新数字的机器"完全相同（不计数，重新计数） |
+| 3 | 机制通路（变异，含新修的两处）+ 全量 | 20 个变异 20/20 被抓到，另 2 个是等价变异（`SYS` 总是加入但随后被 `truncate` 去掉；去掉 32 的上限但随后的循环照样删到 32）；fmt、clippy 三平台 0；Windows 393 + 10 + 121；Linux 370 + 121 | 干净（1/3） |
+| 4 | 可复现性（逐字节） | 三种动画 × 每步带新数字、两个 pane 输出、4 条消息，步进 200 次、每 20 步在 3 种区域取画面指纹：Windows 2 次、Linux 2 次都是 `7f084aff0505761a`（代码与第 3 轮全量时相同，只多一个临时测试，已删） | 干净（2/3） |
+| 5 | 代码正确性与代价 + 全量 | review 错误路径（PDH 单项缺失、32 位回绕、无交换区 `total = 0` 为 None、电池 `Rate` 未知值 0x80000000、`/proc` 读不到）与资源（PDH 查询一个句柄常驻、无新线程）；代价见上；fmt、clippy 0；Windows 393 + 10 + 121；Linux 370 + 121 | 干净（3/3），验收通过 |

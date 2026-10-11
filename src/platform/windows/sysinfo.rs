@@ -1,7 +1,8 @@
 //! The machine as the status line shows it, on Windows: CPU and memory in
 //! use, the battery, the time since boot (Win32), the program a pane is
 //! running (a toolhelp snapshot), and a directory with the home written `~`;
-//! for the clock's animation, the cores, disks, network and temperature.
+//! for the clock's animation, the cores, disks, network, temperature, CPU
+//! power, battery draw and the system's own counts (see `counters`).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -283,16 +284,116 @@ fn newest_descendant(pid: u32) -> Option<String> {
 }
 
 /// The machine's running totals for the clock's animation: each core
-/// (`NtQuerySystemInformation`), memory, the disks (PDH, by the counters'
-/// English names, so a Windows in another language finds them too), the
-/// network adapters (`GetIfTable2`) and the CPU's temperature when a sensor
-/// program gives it (see `temperature`). Each a call or two; asked twice a
-/// second at most, and only while a clock is drawn.
+/// (`NtQuerySystemInformation`), memory, the disks, context switches,
+/// interrupts, processes, threads, the paging files and the CPU package's
+/// energy (PDH, see `PDH_COUNTERS`), the network adapters (`GetIfTable2`),
+/// the battery's draw and the CPU's temperature when a sensor program gives
+/// it (see `temperature`). Each a call or two; asked twice a second at
+/// most, and only while a clock is drawn.
 pub fn counters() -> crate::sysinfo::Counters {
     let mut m: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
     m.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
     let memory = (unsafe { GlobalMemoryStatusEx(&mut m) } != 0).then_some((m.ullTotalPhys, m.ullAvailPhys));
-    crate::sysinfo::Counters { cores: cores(), memory, disk: disk(), net: net(), temp: temperature() }
+    let pdh = pdh();
+    let first = |i: usize| pdh[i].map(|(v, _)| v);
+    let (net, packets) = net().unzip();
+    crate::sysinfo::Counters {
+        cores: cores(),
+        memory,
+        disk: first(0).zip(first(1)),
+        net,
+        temp: temperature(),
+        switches: first(2),
+        interrupts: first(3),
+        processes: first(4),
+        threads: first(5),
+        // A raw fraction: (used, total).
+        swap: pdh[6].map(|(used, total)| (total, total.saturating_sub(used))),
+        // Picowatt-hours (3.6 nJ each): its "Power" counter agrees.
+        cpu_energy: first(7).map(|pwh| pwh.saturating_mul(36) / 10_000),
+        packets,
+        battery_draw: battery_draw(),
+    }
+}
+
+/// The PDH counters `counters` reads, by their English names (a Windows in
+/// another language finds them too). The raw value of a "/sec" counter is
+/// its running total; context switches and interrupts are 32-bit totals
+/// that wrap (a wrap is one reading of nothing done). The energy is the
+/// CPU's own meter (RAPL), there where Windows reads one (it does on an
+/// Intel Core i9-13900KF, for any user); elsewhere it is missing, as any of
+/// them may be.
+const PDH_COUNTERS: [&str; 8] = [
+    r"\PhysicalDisk(_Total)\Disk Read Bytes/sec",
+    r"\PhysicalDisk(_Total)\Disk Write Bytes/sec",
+    r"\System\Context Switches/sec",
+    r"\Processor(_Total)\Interrupts/sec",
+    r"\System\Processes",
+    r"\System\Threads",
+    r"\Paging File(_Total)\% Usage",
+    r"\Energy Meter(rapl_package0_pkg)\Energy",
+];
+
+/// A PDH query for `PDH_COUNTERS`, opened once; a counter PDH would not
+/// add is None.
+struct PdhQuery {
+    query: windows_sys::Win32::System::Performance::PDH_HQUERY,
+    counters: Vec<Option<windows_sys::Win32::System::Performance::PDH_HCOUNTER>>,
+}
+// The handles are PDH's, used under the lock only.
+unsafe impl Send for PdhQuery {}
+
+/// The raw (first, second) value of each of `PDH_COUNTERS`, None where it
+/// is missing or not valid now.
+fn pdh() -> [Option<(u64, u64)>; PDH_COUNTERS.len()] {
+    use windows_sys::Win32::System::Performance::{
+        PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_RAW_COUNTER, PdhAddEnglishCounterW, PdhCollectQueryData,
+        PdhGetRawCounterValue, PdhOpenQueryW,
+    };
+    let mut out = [None; PDH_COUNTERS.len()];
+    // None: not tried yet; Some(None): PDH said no, and is not asked again.
+    static QUERY: Mutex<Option<Option<PdhQuery>>> = Mutex::new(None);
+    let mut q = QUERY.lock().unwrap_or_else(|e| e.into_inner());
+    let q = q.get_or_insert_with(|| {
+        let mut query = std::ptr::null_mut();
+        if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut query) } != 0 {
+            return None;
+        }
+        let counters = PDH_COUNTERS
+            .iter()
+            .map(|path| {
+                let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+                let mut c = std::ptr::null_mut();
+                (unsafe { PdhAddEnglishCounterW(query, wide.as_ptr(), 0, &mut c) } == 0).then_some(c)
+            })
+            .collect();
+        Some(PdhQuery { query, counters })
+    });
+    let Some(q) = q.as_ref() else { return out };
+    if unsafe { PdhCollectQueryData(q.query) } != 0 {
+        return out;
+    }
+    for (slot, c) in out.iter_mut().zip(&q.counters) {
+        let Some(c) = c else { continue };
+        let mut v = PDH_RAW_COUNTER::default();
+        let ok = unsafe { PdhGetRawCounterValue(*c, std::ptr::null_mut(), &mut v) } == 0
+            && (v.CStatus == PDH_CSTATUS_VALID_DATA || v.CStatus == PDH_CSTATUS_NEW_DATA);
+        *slot = ok.then_some((v.FirstValue.max(0) as u64, v.SecondValue.max(0) as u64));
+    }
+    out
+}
+
+/// Watts the battery gives while the machine runs on it; None on mains
+/// power, with no battery, or when the battery does not say.
+fn battery_draw() -> Option<f32> {
+    use windows_sys::Win32::System::Power::{CallNtPowerInformation, SYSTEM_BATTERY_STATE, SystemBatteryState};
+    let mut s = SYSTEM_BATTERY_STATE::default();
+    let size = std::mem::size_of::<SYSTEM_BATTERY_STATE>() as u32;
+    let status = unsafe { CallNtPowerInformation(SystemBatteryState, std::ptr::null(), 0, (&raw mut s).cast(), size) };
+    // Rate: milliwatts, negative while discharging; 0x80000000 is unknown.
+    let rate = s.Rate as i32;
+    (status >= 0 && s.BatteryPresent && s.Discharging && !s.AcOnLine && rate < 0 && rate != i32::MIN)
+        .then(|| -rate as f32 / 1000.0)
 }
 
 /// Each core's (busy, total) time in 100 ns ticks, those of this process's
@@ -321,60 +422,12 @@ fn cores() -> Vec<(u64, u64)> {
         .collect()
 }
 
-/// A PDH query for the disks' bytes read and written, opened once.
-struct DiskQuery {
-    query: windows_sys::Win32::System::Performance::PDH_HQUERY,
-    read: windows_sys::Win32::System::Performance::PDH_HCOUNTER,
-    write: windows_sys::Win32::System::Performance::PDH_HCOUNTER,
-}
-// The handles are PDH's, used under the lock only.
-unsafe impl Send for DiskQuery {}
-
-/// Bytes all the disks have read and written: the raw value of a
-/// "bytes/sec" counter is its running total.
-fn disk() -> Option<(u64, u64)> {
-    use windows_sys::Win32::System::Performance::{
-        PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_RAW_COUNTER, PdhAddEnglishCounterW, PdhCollectQueryData,
-        PdhGetRawCounterValue, PdhOpenQueryW,
-    };
-    // None: not tried yet; Some(None): PDH said no, and is not asked again.
-    static QUERY: Mutex<Option<Option<DiskQuery>>> = Mutex::new(None);
-    let mut q = QUERY.lock().unwrap_or_else(|e| e.into_inner());
-    let q = q.get_or_insert_with(|| {
-        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-        let mut query = std::ptr::null_mut();
-        if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut query) } != 0 {
-            return None;
-        }
-        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
-        let r = wide(r"\PhysicalDisk(_Total)\Disk Read Bytes/sec");
-        let w = wide(r"\PhysicalDisk(_Total)\Disk Write Bytes/sec");
-        let ok = unsafe { PdhAddEnglishCounterW(query, r.as_ptr(), 0, &mut read) } == 0
-            && unsafe { PdhAddEnglishCounterW(query, w.as_ptr(), 0, &mut write) } == 0;
-        if !ok {
-            unsafe { windows_sys::Win32::System::Performance::PdhCloseQuery(query) };
-            return None;
-        }
-        Some(DiskQuery { query, read, write })
-    });
-    let q = q.as_ref()?;
-    if unsafe { PdhCollectQueryData(q.query) } != 0 {
-        return None;
-    }
-    let raw = |c| {
-        let mut v = PDH_RAW_COUNTER::default();
-        let ok = unsafe { PdhGetRawCounterValue(c, std::ptr::null_mut(), &mut v) } == 0
-            && (v.CStatus == PDH_CSTATUS_VALID_DATA || v.CStatus == PDH_CSTATUS_NEW_DATA);
-        ok.then_some(v.FirstValue.max(0) as u64)
-    };
-    Some((raw(q.read)?, raw(q.write)?))
-}
-
-/// Bytes received and sent by the network adapters that are hardware:
-/// not loopback, not a virtual switch (Hyper-V's, WSL's, which carry what a
-/// real adapter carries again), not a filter layered on an adapter (the
-/// same bytes once more).
-fn net() -> Option<(u64, u64)> {
+/// Bytes, then packets, received and sent by the network adapters that are
+/// hardware: not loopback, not a virtual switch (Hyper-V's, WSL's, which
+/// carry what a real adapter carries again), not a filter layered on an
+/// adapter (the same bytes once more).
+#[allow(clippy::type_complexity)]
+fn net() -> Option<((u64, u64), (u64, u64))> {
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2,
     };
@@ -383,13 +436,18 @@ fn net() -> Option<(u64, u64)> {
         return None;
     }
     let rows = unsafe { std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize) };
-    let mut sum: Option<(u64, u64)> = None;
+    let mut sum: Option<((u64, u64), (u64, u64))> = None;
     for r in rows {
         // HardwareInterface is the first bit, FilterInterface the second.
         let flags = r.InterfaceAndOperStatusFlags._bitfield;
         if flags & 1 != 0 && flags & 2 == 0 && r.Type != IF_TYPE_SOFTWARE_LOOPBACK {
-            let (rx, tx) = sum.unwrap_or_default();
-            sum = Some((rx.saturating_add(r.InOctets), tx.saturating_add(r.OutOctets)));
+            let ((rx, tx), (prx, ptx)) = sum.unwrap_or_default();
+            let (pin, pout) =
+                (r.InUcastPkts.saturating_add(r.InNUcastPkts), r.OutUcastPkts.saturating_add(r.OutNUcastPkts));
+            sum = Some((
+                (rx.saturating_add(r.InOctets), tx.saturating_add(r.OutOctets)),
+                (prx.saturating_add(pin), ptx.saturating_add(pout)),
+            ));
         }
     }
     unsafe { FreeMibTable(table.cast()) };
@@ -556,11 +614,34 @@ mod tests {
         assert!(a.cores.iter().zip(&b.cores).all(|(x, y)| y.1 >= x.1 && y.0 >= x.0), "never backwards");
         let (da, db) = (a.disk.unwrap(), b.disk.unwrap());
         assert!(db.0 >= da.0 && db.1 >= da.1, "{da:?} {db:?}");
-        if let (Some(na), Some(nb)) = (a.net, b.net) {
-            assert!(nb.0 >= na.0 && nb.1 >= na.1, "{na:?} {nb:?}");
+        for (x, y) in [(a.net, b.net), (a.packets, b.packets)] {
+            if let (Some(x), Some(y)) = (x, y) {
+                assert!(y.0 >= x.0 && y.1 >= x.1, "{x:?} {y:?}");
+            }
         }
+        assert_eq!(a.net.is_some(), a.packets.is_some(), "the same adapters: {a:?}");
         let l = crate::sysinfo::load(&a, &b, 0.2);
         assert!(l.cpu > 0.0 && l.cpu <= 1.0, "a core was busy: {l:?}");
+        // What every Windows has: context switches (the spin above made
+        // some), interrupts, processes and threads, the paging files.
+        assert!(l.switches.is_some_and(|s| s > 0.0), "{l:?}");
+        assert!(l.interrupts.is_some(), "{l:?}");
+        assert!(b.processes.is_some_and(|p| p > 10) && b.threads >= b.processes, "{b:?}");
+        // The energy meter where the CPU has one (this machine's does; a
+        // virtual machine's often not): a CPU package awake draws 1 W to
+        // 1000 W (a figure in the wrong unit is thousands of times off).
+        if l.cpu_power.is_some() {
+            let spin = Instant::now();
+            while spin.elapsed() < Duration::from_secs(1) {
+                std::hint::black_box(spin.elapsed());
+            }
+            let c = counters();
+            let w = crate::sysinfo::load(&b, &c, spin.elapsed().as_secs_f64()).cpu_power.unwrap();
+            assert!((1.0..1000.0).contains(&w), "{w} W");
+        } else {
+            eprintln!("no CPU energy meter here");
+        }
+        assert_eq!(b.battery_draw.is_some(), battery_draw().is_some());
     }
 
     /// A sensor program's rows: the package wins, else the hottest CPU

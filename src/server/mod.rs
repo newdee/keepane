@@ -911,6 +911,8 @@ pub struct Server {
     shell_cache: crate::format::ShellCache,
     /// The machine's load for the clocks' animations, while one is drawn.
     meter: Option<Meter>,
+    /// Messages delivered into panes since the server started.
+    delivered: u64,
     shell_running: HashSet<String>,
     shell_last_refresh: Option<Instant>,
     /// Plugin directories loaded so far.
@@ -1313,6 +1315,7 @@ impl Server {
             in_hook: false,
             shell_cache: crate::format::ShellCache::default(),
             meter: None,
+            delivered: 0,
             shell_running: HashSet::new(),
             shell_last_refresh: None,
             plugins: Vec::new(),
@@ -8290,6 +8293,14 @@ impl Server {
         let load = self.meter_read(now);
         let mut next: Option<Duration> = None;
         for (id, kind) in kinds {
+            // What each pane of the clock's window has printed, in the
+            // layout's order.
+            let outs: Vec<u64> = self
+                .window_of_pane(id)
+                .and_then(|(sid, widx)| self.session(sid)?.windows.get(widx))
+                .map(|w| w.layout.panes().iter().filter_map(|&q| w.pane(q).map(|p| p.output_bytes)).collect())
+                .unwrap_or_default();
+            let messages = self.delivered;
             let Some(p) = self.find_pane_mut(id) else { continue };
             let Some(kind) = kind else {
                 p.clock_anim = None;
@@ -8298,7 +8309,7 @@ impl Server {
             if p.clock_anim.as_ref().is_none_or(|(a, _)| a.kind != kind) {
                 p.clock_anim = Some((clockanim::Anim::new(kind, u64::from(id)), now));
             }
-            let input = clockanim::Input { load: load.clone(), out_bytes: p.output_bytes };
+            let input = clockanim::Input { load: load.clone(), outs, messages };
             if let Some((a, last)) = p.clock_anim.as_mut() {
                 a.step(now.duration_since(*last).as_secs_f64(), input);
                 *last = now;

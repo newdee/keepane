@@ -265,13 +265,15 @@ keepane kill-server
 
 pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程序仅按动画结束后的尺寸调整，不必等待动画完成。用 `set -g animation off` 关闭动画，或通过 `animation-time` 调整时长（毫秒）。
 
-时钟（prefix t）下方剩余的行里有一段随机器负载变化的动画（`clock-mode-animation`）：
+时钟（prefix t）下方剩余的行里有一段随机器负载和 keepane 自身活动变化的动画（`clock-mode-animation`）：
 
-- `pulse`：监护仪。心跳频率随 CPU 变化，核心空闲时每分钟 60 下，全部满载时 150 下；网络波形的高度随流量变化；磁盘波形像呼吸，磁盘越忙，呼吸越快越深。每条波形旁边写着对应数字（`♥ 92  CPU 35%  61°C`、`NET ↓1.2M ↑80K`、`DISK r12M w0`）。
-- `matrix`：字符雨。CPU 越忙下落越快，内存占用越高下落的列越多，有网络流量时出现青色的列，磁盘越忙字符闪烁越快。
-- `bars`：均衡器。每个核心一根柱，然后是内存、磁盘（读、写）、网络（收、发）、温度和这个 pane 自己的输出量；每组下面有标签，峰值标记缓慢下落。
+- `pulse`：监护仪。心跳频率随 CPU 变化，核心空闲时每分钟 60 下，全部满载时 150 下；keepane 每送达 1 条消息，心脏提前跳 1 下（最多积攒 4 下）。网络波形的高度随流量变化；磁盘波形像呼吸，磁盘越忙，呼吸越快越深；系统波形随上下文切换变快，随中断变高。每条波形旁边写着对应数字（`♥ 92  CPU 35% 67W  61°C  ✉ 2`、`NET ↓1.2M ↑80K  3.1k pkt/s`、`DISK r12M w0`、`SYS 48k/s  312 proc 4.3k thr`）。`67W` 是 CPU 封装功耗；`PWR 20W` 是机器用电池运行时电池的输出功率；`✉ 2` 是这次打开时钟以来送达的消息数。
+- `matrix`：字符雨。CPU 越忙下落越快，内存占用越高下落的列越多，有网络流量时出现青色的列，磁盘越忙字符闪烁越快，中断越多散落的品红色字符越多；每送达 1 条消息，落下 1 列以 `✉` 开头的白色字符。
+- `bars`：均衡器。每个核心一根柱，然后是内存、磁盘（读、写）、网络（收、发）、温度，以及窗口里每个 pane 各一根的输出量柱；放得下时再加上消息（来一条打满，然后回落）、CPU 功耗、电池功耗、交换区，以及上下文切换和中断。每组下面有标签，峰值标记缓慢下落。
 
-`pulse` 和 `matrix` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`cycle`（默认）轮流使用这三种，每次打开时钟换一种；`off` 或 `animation off` 时钟就不动。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有磁盘数字；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。
+时钟下方信息行的最后一行是 keepane 自己的情况：会话数、pane 数，以及启动以来送达的消息数。
+
+`pulse` 和 `matrix` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`cycle`（默认）轮流使用这三种，每次打开时钟换一种；`off` 或 `animation off` 时钟就不动。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有磁盘、上下文切换、中断、线程和功耗数字；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
 
 <p align="center">
   <picture>

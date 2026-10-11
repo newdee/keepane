@@ -282,20 +282,29 @@ status line (`#{keepane_update}`) and in `show-messages`.
 `clock-mode` (prefix t) draws the time in big digits and under it the date
 (and UTC), the pane (its program, folder and branch, how long it has run and
 been quiet), its last command (how long it took, how it ended), its agent
-(model, cost, context) and the machine (CPU, memory, battery, time since
-boot). `clock-mode-info off` leaves the time alone, as tmux draws it;
+(model, cost, context), the machine (CPU, memory, battery, time since
+boot) and keepane (its sessions and panes, the messages it has delivered
+since it started). `clock-mode-info off` leaves the time alone, as tmux draws it;
 `clock-mode-style 12` counts the hours to 12; `clock-mode-colour` colours the
 digits (`default`: the active pane border's colour).
 
-Under that, in the rows left over, something moves with the machine
-(`clock-mode-animation`). `pulse` is a monitor: a heartbeat at 60 beats a
-minute with the cores idle, 150 with them all busy, a network wave as tall as
-the traffic is heavy, and a disk wave that breathes faster and deeper the
-more the disks do. `matrix` is falling characters: faster with the cores,
-more columns with memory, cyan ones with the network, quicker flicker with
-the disks. `bars` is an equalizer: a bar for each core, memory, the disks
-read and written, the network in and out, the temperature, and the pane's
-own output. In `pulse` and `matrix` the colour goes from green through
+Under that, in the rows left over, something moves with the machine and
+with keepane (`clock-mode-animation`). `pulse` is a monitor: a heartbeat at
+60 beats a minute with the cores idle, 150 with them all busy, once early for
+each message keepane delivers (at most four waiting); a network wave as tall as the traffic is
+heavy; a disk wave that breathes faster and deeper the more the disks do; a
+system wave that swings faster with the context switches and taller with the
+interrupts. Beside the heart: the CPU package's watts, the temperature, a
+battery's watts while the machine runs on it (`PWR`), and the messages
+delivered while the clock is up (`✉`); beside the others, packets a second,
+processes and threads. `matrix` is falling characters: faster with the
+cores, more columns with memory, cyan ones with the network, quicker flicker
+with the disks, stray magenta characters with the interrupts, and a white
+drop headed by `✉` for each message delivered. `bars` is an equalizer: a bar
+for each core, memory, the disks read and written, the network in and out,
+the temperature, and a bar for each pane of the window by what it prints;
+then, where they fit beside those, messages, the CPU's watts, the battery's,
+swap, and context switches with interrupts. In `pulse` and `matrix` the colour goes from green through
 yellow to red with the CPU's temperature, or with the cores' load when there
 is no temperature; the bars are green at the bottom, yellow higher up and red
 at the top. `cycle`
@@ -305,12 +314,15 @@ on a pane; `off`, or `animation off`, leaves the clock still.
 It is drawn in the 16 colours a theme sets with `pane-colours` (the
 terminal's own colours when the theme sets none), so each theme colours it.
 The machine is read twice a second, and only while a clock is on screen.
-Not every figure can be read everywhere: macOS gives no disk figure, and a
-figure the system does not give is left out, never made up. The temperature
-comes from a real CPU sensor only: on Linux the thermal zones and hwmon
-sensors; on Windows from LibreHardwareMonitor or OpenHardwareMonitor while
-one runs (Windows has none of its own: its ACPI thermal zone is a fixed figure
-on many machines); not on macOS.
+Not every figure can be read everywhere: macOS gives no disk figure, no
+context switches or interrupts, no threads and no power, and a figure the
+system does not give is left out, never made up. The temperature comes from
+a real CPU sensor only: on Linux the thermal zones and hwmon sensors; on
+Windows from LibreHardwareMonitor or OpenHardwareMonitor while one runs
+(Windows has none of its own: its ACPI thermal zone is a fixed figure on many
+machines); not on macOS. The CPU's power is its own meter (RAPL): Windows
+reads it for any user where the CPU has one; Linux (`/sys/class/powercap`)
+lets only root read it on most systems, so there it shows only when readable.
 
 While a pane runs an agent (Claude Code, Codex, pi), the server reads the
 transcript the agent writes and gives its figures to `list-agents`, the

@@ -27,6 +27,21 @@ pub struct Counters {
     pub net: Option<(u64, u64)>,
     /// The CPU's temperature in °C, from a real sensor only.
     pub temp: Option<f32>,
+    /// Context switches and interrupts since boot.
+    pub switches: Option<u64>,
+    pub interrupts: Option<u64>,
+    /// Processes and threads running now.
+    pub processes: Option<u64>,
+    pub threads: Option<u64>,
+    /// (total, free) swap (the paging files on Windows), in the system's
+    /// own unit: only the share is used.
+    pub swap: Option<(u64, u64)>,
+    /// Packets the network has received and sent (the adapters `net` counts).
+    pub packets: Option<(u64, u64)>,
+    /// Microjoules the CPU package has used (its own meter, RAPL).
+    pub cpu_energy: Option<u64>,
+    /// Watts the battery gives now, while the machine runs on it.
+    pub battery_draw: Option<f32>,
 }
 
 /// What the machine is doing, between two `Counters`.
@@ -43,12 +58,25 @@ pub struct Load {
     /// Bytes a second: (received, sent).
     pub net: Option<(f64, f64)>,
     pub temp: Option<f32>,
+    /// A second: context switches, interrupts.
+    pub switches: Option<f64>,
+    pub interrupts: Option<f64>,
+    pub processes: Option<u64>,
+    pub threads: Option<u64>,
+    /// The share of swap in use, 0 to 1; None with no swap at all.
+    pub swap: Option<f32>,
+    /// Packets a second: (received, sent).
+    pub packets: Option<(f64, f64)>,
+    /// Watts: the CPU package's, and the battery's while it runs the machine.
+    pub cpu_power: Option<f32>,
+    pub battery_draw: Option<f32>,
 }
 
 /// The load between `before` and `now`, `secs` apart. A total that went
 /// down (a disk or an adapter gone, a counter that wrapped) counts as
 /// nothing done, never as a huge number; the cores, when their count
-/// changed, as idle.
+/// changed, as idle. A figure that is a level now (memory, processes,
+/// swap, temperature, the battery) is `now`'s.
 pub fn load(before: &Counters, now: &Counters, secs: f64) -> Load {
     let share = |(b0, t0): (u64, u64), (b1, t1): (u64, u64)| match t1.checked_sub(t0) {
         Some(t) if t > 0 => (b1.saturating_sub(b0) as f64 / t as f64).clamp(0.0, 1.0) as f32,
@@ -68,13 +96,26 @@ pub fn load(before: &Counters, now: &Counters, secs: f64) -> Load {
         }
         _ => None,
     };
+    let rate1 = |a: Option<u64>, b: Option<u64>| rate(a.map(|a| (a, 0)), b.map(|b| (b, 0))).map(|r| r.0);
+    let used = |m: Option<(u64, u64)>| {
+        m.filter(|(t, _)| *t > 0).map(|(t, free)| (t.saturating_sub(free) as f64 / t as f64) as f32)
+    };
     Load {
         cpu: if same { share(sum(&before.cores), sum(&now.cores)) } else { 0.0 },
         cores,
-        memory: now.memory.filter(|(t, _)| *t > 0).map(|(t, a)| (t.saturating_sub(a) as f64 / t as f64) as f32),
+        memory: used(now.memory),
         disk: rate(before.disk, now.disk),
         net: rate(before.net, now.net),
         temp: now.temp,
+        switches: rate1(before.switches, now.switches),
+        interrupts: rate1(before.interrupts, now.interrupts),
+        processes: now.processes,
+        threads: now.threads,
+        swap: used(now.swap),
+        packets: rate(before.packets, now.packets),
+        // Microjoules a second are microwatts.
+        cpu_power: rate1(before.cpu_energy, now.cpu_energy).map(|uw| (uw / 1e6) as f32),
+        battery_draw: now.battery_draw,
     }
 }
 
@@ -166,6 +207,14 @@ mod tests {
             disk: Some((1_000, 2_000)),
             net: Some((5_000, 5_000)),
             temp: Some(50.0),
+            switches: Some(100),
+            interrupts: Some(5_000),
+            processes: Some(300),
+            threads: Some(4_000),
+            swap: Some((1_000, 1_000)),
+            packets: Some((10, 20)),
+            cpu_energy: Some(1_000_000),
+            battery_draw: None,
         };
         let b = Counters {
             cores: vec![(60, 200), (150, 200)],
@@ -173,6 +222,14 @@ mod tests {
             disk: Some((3_000, 2_000)),
             net: Some((4_000, 9_000)),
             temp: Some(61.5),
+            switches: Some(20_100),
+            interrupts: Some(4_000),
+            processes: Some(312),
+            threads: Some(4_300),
+            swap: Some((1_000, 900)),
+            packets: Some((30, 60)),
+            cpu_energy: Some(41_000_000),
+            battery_draw: Some(19.5),
         };
         let l = load(&a, &b, 2.0);
         assert_eq!(l.cores, vec![0.5, 1.0]);
@@ -181,9 +238,14 @@ mod tests {
         assert_eq!(l.disk, Some((1_000.0, 0.0)));
         assert_eq!(l.net, Some((0.0, 2_000.0)), "received went down: nothing, not a wrap");
         assert_eq!(l.temp, Some(61.5));
-        let fewer = Counters { cores: vec![(1, 1)], disk: None, ..b.clone() };
+        assert_eq!((l.switches, l.interrupts), (Some(10_000.0), Some(0.0)), "interrupts wrapped: nothing");
+        assert_eq!((l.processes, l.threads, l.swap), (Some(312), Some(4_300), Some(0.1)));
+        assert_eq!(l.packets, Some((10.0, 20.0)));
+        assert_eq!((l.cpu_power, l.battery_draw), (Some(20.0), Some(19.5)), "40 J in 2 s: 20 W");
+        assert_eq!(load(&a, &Counters { swap: Some((0, 0)), ..b.clone() }, 2.0).swap, None, "no swap at all");
+        let fewer = Counters { cores: vec![(1, 1)], disk: None, cpu_energy: None, ..b.clone() };
         let l = load(&a, &fewer, 2.0);
-        assert_eq!((l.cores, l.cpu, l.disk), (vec![0.0], 0.0, None));
+        assert_eq!((l.cores, l.cpu, l.disk, l.cpu_power), (vec![0.0], 0.0, None, None));
         // One reading against itself: every figure there, at nothing done.
         let l = load(&b, &b, 1.0);
         assert_eq!((l.cpu, l.disk, l.net, l.memory), (0.0, Some((0.0, 0.0)), Some((0.0, 0.0)), Some(0.75)));

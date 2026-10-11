@@ -441,6 +441,7 @@ impl Server {
         let text = m.wrapped(p.syntax, style);
         p.deliver(&text);
         self.observe.delivered(m.id);
+        self.delivered += 1;
     }
 
     /// keepane's prompt marker, as it arrives: the pane is at its prompt.

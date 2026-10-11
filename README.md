@@ -434,17 +434,30 @@ waits for the animation. `set -g animation off` turns it off, and
 `animation-time` sets the milliseconds.
 
 Under the clock (prefix t), in the rows the time and its lines leave, something
-moves with the machine (`clock-mode-animation`):
+moves with the machine and with keepane (`clock-mode-animation`):
 
 - `pulse`: a monitor. The heart beats at 60 a minute with the cores idle and
-  150 with them all busy; a network wave stands as tall as the traffic; a disk
-  wave breathes faster and deeper the more the disks do. Each trace has its
-  figures beside it (`♥ 92  CPU 35%  61°C`, `NET ↓1.2M ↑80K`, `DISK r12M w0`).
+  150 with them all busy, and once early for each message keepane delivers (at
+  most four waiting); a
+  network wave stands as tall as the traffic; a disk wave breathes faster and
+  deeper the more the disks do; a system wave swings faster with the context
+  switches and taller with the interrupts. Each trace has its figures beside
+  it (`♥ 92  CPU 35% 67W  61°C  ✉ 2`, `NET ↓1.2M ↑80K  3.1k pkt/s`,
+  `DISK r12M w0`, `SYS 48k/s  312 proc 4.3k thr`). `67W` is the CPU
+  package's power; `PWR 20W`, what a battery gives while the machine runs on
+  it; `✉ 2`, the messages delivered while this clock is up.
 - `matrix`: falling characters. Faster with the cores, more columns with
-  memory, cyan columns with the network, quicker flicker with the disks.
+  memory, cyan columns with the network, quicker flicker with the disks, stray
+  magenta characters with the interrupts; each message delivered falls as a
+  white drop headed by `✉`.
 - `bars`: an equalizer with a bar for each core, then memory, the disks (read,
-  written), the network (in, out), the temperature and the pane's own output,
-  each group labelled, peaks falling slowly.
+  written), the network (in, out), the temperature and a bar for each pane of
+  the window by what it prints; then, where they fit beside those, messages
+  (full on one, falling back), the CPU's watts, the battery's, swap, and
+  context switches with interrupts. Each group labelled, peaks falling slowly.
+
+The lines over it end with keepane's own: its sessions and panes, and the
+messages it has delivered since it started.
 
 In `pulse` and `matrix` the colour goes from green through yellow to red with
 the CPU's temperature, or with the cores' load when there is no temperature;
@@ -454,10 +467,13 @@ takes the three in turn, a new one each time the clock is put on; `off`, or
 sets (`pane-colours`; the terminal's own when the theme sets none), so each
 theme colours it. The machine is read twice a second, only while a clock is on
 screen. A figure the system does not give is left out, never made up: macOS
-gives no disk figure; the temperature comes from a real CPU sensor only (Linux:
-thermal zones and hwmon; Windows: LibreHardwareMonitor or OpenHardwareMonitor
-while one runs, since Windows' own ACPI thermal zone is a fixed figure on many
-machines; macOS: none).
+gives no disk figure, no context switches or interrupts, no threads and no
+power; the temperature comes from a real CPU sensor only (Linux: thermal
+zones and hwmon; Windows: LibreHardwareMonitor or OpenHardwareMonitor while
+one runs, since Windows' own ACPI thermal zone is a fixed figure on many
+machines; macOS: none). The CPU's power is its own meter (RAPL): Windows reads
+it for anyone, where the CPU has one; Linux lets only root read it on most
+systems (`/sys/class/powercap`), so there it shows only when readable.
 
 <p align="center">
   <picture>

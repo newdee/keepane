@@ -1,8 +1,9 @@
 //! What `clock-mode` (prefix t) shows under the time, with `clock-mode-info`
 //! on: the date (and UTC), the pane (its program, folder and branch, how long
 //! it has run and been quiet), its last command (how long it took, how it
-//! ended), its agent (model, cost, context) and the machine (CPU, memory,
-//! battery, time since boot). Each line only when there is something to say.
+//! ended), its agent (model, cost, context), the machine (CPU, memory,
+//! battery, time since boot) and keepane (its sessions and panes, the
+//! messages it has delivered). Each line only when there is something to say.
 
 use super::layout::PaneId;
 use super::pane::Pane;
@@ -155,6 +156,18 @@ pub(super) fn clock_lines(
     lines
 }
 
+/// The line about keepane itself, last under the clock: its sessions and
+/// panes, the messages it has delivered since it started.
+pub(super) fn keepane_line(sessions: usize, panes: usize, messages: u64) -> String {
+    let n = |n: u64, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    format!(
+        "keepane: {} · {} · {} delivered",
+        n(sessions as u64, "session"),
+        n(panes as u64, "pane"),
+        n(messages, "message")
+    )
+}
+
 /// The pane's newest command that was typed (an empty Enter is none),
 /// running or done: all of it, the rows it wrapped onto too.
 pub(super) fn last_command(p: &Pane) -> Option<LastCommand> {
@@ -170,7 +183,7 @@ pub(super) fn last_command(p: &Pane) -> Option<LastCommand> {
 
 impl Server {
     /// `clock_lines` for pane `id`, from what the server knows of it now,
-    /// for a pane `width` columns wide.
+    /// for a pane `width` columns wide, and `keepane_line` after them.
     pub(super) fn clock_info(
         &self,
         p: &Pane,
@@ -191,7 +204,7 @@ impl Server {
             quiet_secs: p.last_output.elapsed().as_secs() as i64,
         };
         let last = last_command(p);
-        clock_lines(
+        let mut lines = clock_lines(
             now,
             self.opts.clock_mode_style,
             &facts,
@@ -199,7 +212,10 @@ impl Server {
             self.agents.stats.get(&id),
             &crate::sysinfo::system(),
             width,
-        )
+        );
+        let panes = self.sessions.iter().flat_map(|s| &s.windows).map(|w| w.panes.len()).sum();
+        lines.push((keepane_line(self.sessions.len(), panes, self.delivered), None));
+        lines
     }
 }
 
@@ -278,6 +294,11 @@ mod tests {
         assert_eq!(lines[2].1, Some(Color::Idx(1)), "a failure in red");
         assert_eq!(text[3], "CPU 12% · memory 41% · since boot 2d4h", "no battery: not said");
         assert_eq!(lines.len(), 4, "no agent: no agent line");
+        // What keepane itself has: its sessions and panes, the messages
+        // it has delivered; one of each said as one.
+        assert_eq!(keepane_line(2, 7, 12), "keepane: 2 sessions · 7 panes · 12 messages delivered");
+        assert_eq!(keepane_line(1, 1, 1), "keepane: 1 session · 1 pane · 1 message delivered");
+        assert_eq!(keepane_line(1, 1, 0), "keepane: 1 session · 1 pane · 0 messages delivered");
     }
 
     #[test]
