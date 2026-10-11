@@ -114,6 +114,13 @@ pub fn command_of(line: &str, col: u16) -> String {
     String::new()
 }
 
+/// Whether a row reading `text` goes on in the next: the terminal wrapped
+/// it, and it does not end in a blank (ConPTY pads a line to the width and
+/// so marks it wrapped). The one rule for a line over several rows.
+pub fn continues(text: &str, wrapped: bool) -> bool {
+    wrapped && !text.ends_with(' ')
+}
+
 /// The prompt on a line: the part before column `col`, blanks trimmed.
 pub fn prompt_of(line: &str, col: u16) -> String {
     let mut width = 0;
@@ -155,7 +162,11 @@ pub struct Mark {
     pub exit: Option<i32>,
     /// What the line read when the command finished. A line that no longer
     /// reads so was cleared or written over, and the mark is no longer shown.
+    /// Its first row only: the command may go on in rows below.
     pub text: String,
+    /// What was typed, all of it (the rows it wrapped onto joined), taken
+    /// when it finished: what is told of it and shown for it.
+    pub command: String,
 }
 
 /// Whether a line reading `now` is still the line a mark saw as `then`:
@@ -1029,6 +1040,7 @@ impl Pane {
                             end: None,
                             exit: None,
                             text: String::new(),
+                            command: String::new(),
                         },
                     };
                     // Its first line: where it was said to start; else (a
@@ -1046,10 +1058,19 @@ impl Pane {
                     self.marks.push_back(mark);
                 }
                 MarkEvent::Start(t) => {
-                    if let Some(m) = self.marks.back_mut()
-                        && m.end.is_none()
-                    {
+                    // Its output starts: what was typed is all there, for
+                    // what shows a command still running (the clock).
+                    let typed = match self.marks.back() {
+                        Some(m) if m.end.is_none() => {
+                            let m = m.clone();
+                            let end_line = self.line_end(m.line, self.cursor_line() + 1);
+                            Some(self.command_at(&m, end_line))
+                        }
+                        _ => None,
+                    };
+                    if let (Some(m), Some(typed)) = (self.marks.back_mut(), typed) {
                         m.start = Some(t);
+                        m.command = typed;
                     }
                 }
                 MarkEvent::End(t, code) => {
@@ -1101,6 +1122,11 @@ impl Pane {
         let Some(line) = self.marks.back().map(|m| m.line) else { return };
         match self.text_at(line) {
             Some(text) if !text.is_empty() => {
+                let typed = {
+                    let m = self.marks.back().unwrap().clone();
+                    let end_line = self.line_end(m.line, self.cursor_line() + 1);
+                    self.command_at(&m, end_line)
+                };
                 let m = self.marks.back_mut().unwrap();
                 if start.is_some() {
                     m.start = start;
@@ -1108,10 +1134,11 @@ impl Pane {
                 m.end = Some(end);
                 m.exit = exit;
                 m.text = text;
+                m.command = typed;
                 // A command with its start known, told once.
                 if let Some(start) = m.start {
                     let secs = (end - start).num_milliseconds().max(0) as u64 / 1000;
-                    let command = command_of(&m.text, m.col);
+                    let command = m.command.clone();
                     let failed = exit.is_some_and(|c| c != 0);
                     self.finished.push(Finished { command, secs, failed, exit: exit.filter(|_| exact) });
                 }
@@ -1317,7 +1344,7 @@ impl Pane {
         (abs < kept + u64::from(self.rows)).then_some(abs as usize)
     }
 
-    /// Command `m` as typed (all of it: a mark keeps only its first row) and
+    /// Command `m` as typed (all of it, read off the screen now) and
     /// what it printed: the lines after the command up to the next prompt,
     /// or to the cursor for the last one; at most `max` bytes, and whether
     /// that was cut.
@@ -1366,13 +1393,18 @@ impl Pane {
         let mut end = line;
         while end + 1 < limit {
             let Some(abs) = self.abs_of_line(end) else { break };
-            let (text, wrapped) = self.line_text(abs);
-            if !wrapped || text.ends_with(' ') {
+            if !self.goes_on(abs) {
                 break;
             }
             end += 1;
         }
         end
+    }
+
+    /// Whether row `abs` (as copy mode counts) goes on in the next.
+    pub fn goes_on(&mut self, abs: usize) -> bool {
+        let (text, wrapped) = self.line_text(abs);
+        continues(&text, wrapped)
     }
 
     /// The last command the shell ran that is still readable and had
@@ -1386,7 +1418,7 @@ impl Pane {
             .readable_marks()
             .into_iter()
             .rev()
-            .find(|m| !command_of(&m.text, m.col).is_empty())
+            .find(|m| !m.command.is_empty())
             .ok_or("no finished command here (or its shell does not report its commands)")?;
         Ok(self.output_of(&m, max))
     }
@@ -1464,11 +1496,22 @@ impl Pane {
         let (row, _) = s.cursor_position();
         let top = s.scrolled_total();
         let rows: Vec<String> = s.rows(0, s.size().1).take(usize::from(row) + 1).collect();
-        // The prompts' lines on the screen, all of each (marks run oldest
-        // first; a prompt can take more than one line).
-        let prompts: Vec<(u64, u64)> =
-            self.marks.iter().rev().take_while(|m| m.line >= top).map(|m| (m.top, m.line)).collect();
         let at = |i: usize| top + i as u64;
+        // The prompts' lines on the screen, all of each, and the rows what
+        // was typed at them wrapped onto: none of it is output (marks run
+        // oldest first; a prompt can take more than one line, a command
+        // more than one row).
+        let typed_end = |line: u64| {
+            let mut last = line;
+            while let Some(i) = last.checked_sub(top).map(|i| i as usize).filter(|&i| i < usize::from(row))
+                && continues(&rows[i], s.row_wrapped(i as u16))
+            {
+                last += 1;
+            }
+            last
+        };
+        let prompts: Vec<(u64, u64)> =
+            self.marks.iter().rev().take_while(|m| m.line >= top).map(|m| (m.top, typed_end(m.line))).collect();
         let marked = |i: usize| prompts.iter().any(|&(first, last)| (first..=last).contains(&at(i)));
         // The first line of the prompt waiting at the cursor: its lines are
         // neither output nor the command's prompt.
@@ -2252,6 +2295,64 @@ mod tests {
         let mut q = quiet_pane(40, 6, 100);
         q.process_output(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\false\x1b]133;C\x1b\\\r\n\x1b]133;D;3\x1b\\");
         assert_eq!((q.finished[0].failed, q.finished[0].exit), (true, Some(3)));
+    }
+
+    /// A command wider than the pane (after a long prompt, a long folder or
+    /// host name): told and kept whole, the rows it wrapped onto joined,
+    /// whichever way the shell says it ran.
+    #[test]
+    fn a_command_that_wraps_is_kept_whole() {
+        let (a, b, c) = ("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07");
+        let d = |code: u8| format!("\x1b]133;D;{code}\x1b\\");
+        // 20 columns: the prompt takes 25 (two rows), the command 22 more.
+        let mut p = quiet_pane(20, 8, 100);
+        let prompt = "me@a-long-host:/x/y/z/w$ ";
+        p.process_output(
+            format!("{a}{prompt}{b}echo two-and-more-words{c}\r\nout\r\n{}{a}{prompt}{b}", d(0)).as_bytes(),
+        );
+        assert_eq!(p.finished.len(), 1, "{:?}", p.marks);
+        assert_eq!(p.finished[0].command, "echo two-and-more-words");
+        let m = p.marks.iter().find(|m| m.end.is_some()).unwrap().clone();
+        assert_eq!(m.command, "echo two-and-more-words", "the mark keeps it whole too");
+        assert_eq!(p.last_output(1000).unwrap().0, "echo two-and-more-words");
+        assert_eq!(p.last_lines(5, true), ["out"], "the rows it wrapped onto are not its output");
+        assert_eq!(p.last_output(1000).unwrap().1, "out");
+        // Running: whole from its start on (the clock shows it so).
+        p.process_output(format!("sleep 100 && echo a-long-tail{c}\r\n").as_bytes());
+        let running = p.marks.back().unwrap();
+        assert!(running.start.is_some() && running.end.is_none());
+        assert_eq!(running.command, "sleep 100 && echo a-long-tail");
+        // The clock's last command: the running one, all of it.
+        assert_eq!(
+            super::super::clock::last_command(&p).map(|l| l.command).as_deref(),
+            Some("sleep 100 && echo a-long-tail")
+        );
+        // PowerShell says it ran only once it is over.
+        let mut q = quiet_pane(20, 8, 100);
+        q.process_output(
+            format!(
+                "PS C:\\a\\long\\path> {B}Write-Output a-long-one\r\na-long-one\r\n{}PS C:\\a\\long\\path> {B}",
+                ran(1_000, 2_000, true)
+            )
+            .as_bytes(),
+        );
+        assert_eq!(q.finished[0].command, "Write-Output a-long-one");
+    }
+
+    /// A row goes on in the next when the terminal wrapped it, unless it
+    /// ends in a blank: ConPTY pads a line to the width and so marks it
+    /// wrapped.
+    #[test]
+    fn a_row_goes_on_when_wrapped_and_not_padded() {
+        assert!(continues("echo do", true));
+        assert!(!continues("echo do", false), "not wrapped: its own line");
+        assert!(!continues("echo done   ", true), "padded to the width: its own line");
+        // In a pane: 20 columns of text then more wraps; 3 and 17 blanks
+        // then more is a padded line.
+        let mut p = quiet_pane(20, 4, 10);
+        p.process_output(format!("abcdefghijklmnopqrstUVW\r\nabc{}next", " ".repeat(17)).as_bytes());
+        assert!(p.goes_on(0) && !p.goes_on(1));
+        assert!(!p.goes_on(2), "padded");
     }
 
     /// The last lines: `own` stops at the last command's prompt, so what

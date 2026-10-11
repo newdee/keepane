@@ -437,7 +437,8 @@ Copy mode, the keys used most:
 
 - Moving: `h` `j` `k` `l` or the arrows; `w` `b` `e` by word; `0` `^` `$`,
   `H` `M` `L`, `{` `}`, `g` `G` jump; `[` `]` go to the previous / next
-  command the shell ran, where it was typed.
+  command the shell ran, where it was typed. `0` and `$` go to the ends of
+  the line the program printed, across the rows a long one wrapped onto.
 - Paging: `PageUp` / `PageDown` or `C-b` / `C-f`; `C-u` / `C-d` by half a
   page. Since `C-b` is also the prefix, `C-b C-b` pages up in copy mode. A
   number repeats a key, such as `3j`.

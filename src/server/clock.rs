@@ -5,7 +5,7 @@
 //! battery, time since boot). Each line only when there is something to say.
 
 use super::layout::PaneId;
-use super::pane::{Pane, command_of};
+use super::pane::Pane;
 use super::{Server, agents};
 use crate::format::{command_duration, human_count, human_duration};
 use chrono::{DateTime, Local, Utc};
@@ -155,6 +155,19 @@ pub(super) fn clock_lines(
     lines
 }
 
+/// The pane's newest command that was typed (an empty Enter is none),
+/// running or done: all of it, the rows it wrapped onto too.
+pub(super) fn last_command(p: &Pane) -> Option<LastCommand> {
+    p.marks.iter().rev().find_map(|m| {
+        (!m.command.is_empty() && (m.start.is_some() || m.end.is_some())).then(|| LastCommand {
+            command: m.command.clone(),
+            start: m.start,
+            end: m.end,
+            exit: m.exit,
+        })
+    })
+}
+
 impl Server {
     /// `clock_lines` for pane `id`, from what the server knows of it now,
     /// for a pane `width` columns wide.
@@ -177,16 +190,7 @@ impl Server {
             up_secs: p.spawned_at.elapsed().as_secs() as i64,
             quiet_secs: p.last_output.elapsed().as_secs() as i64,
         };
-        // The newest command that was typed (an empty Enter is none).
-        let last = p.marks.iter().rev().find_map(|m| {
-            let command = command_of(&m.text, m.col);
-            (!command.is_empty() && (m.start.is_some() || m.end.is_some())).then_some(LastCommand {
-                command,
-                start: m.start,
-                end: m.end,
-                exit: m.exit,
-            })
-        });
+        let last = last_command(p);
         clock_lines(
             now,
             self.opts.clock_mode_style,

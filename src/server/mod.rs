@@ -7640,9 +7640,13 @@ impl Server {
                 c.offset = 0;
                 c.cy = (rows - 1) as u16;
             }
-            (KeyCode::Home, _, _) | (KeyCode::Char('0'), false, false) | (KeyCode::Char('a'), true, _) => c.cx = 0,
+            // The line's ends, across the rows the terminal wrapped it onto
+            // (as tmux's start-of-line and end-of-line).
+            (KeyCode::Home, _, _) | (KeyCode::Char('0'), false, false) | (KeyCode::Char('a'), true, _) => {
+                copy_to_line_edge(p, false)
+            }
             (KeyCode::End, _, _) | (KeyCode::Char('$'), false, false) | (KeyCode::Char('e'), true, _) => {
-                c.cx = cols.saturating_sub(1)
+                copy_to_line_edge(p, true)
             }
             (KeyCode::Char(' '), false, false) | (KeyCode::Char('v'), false, false) => {
                 let abs = copy_abs(p);
@@ -9348,6 +9352,42 @@ const OUTPUT_MAX: usize = 4 << 20;
 
 /// Absolute line number under the copy-mode cursor. The scrollback can shrink
 /// under us (resize, clear-history), so the offset is re-clamped here.
+/// The copy cursor to the start (`end`: the end) of its line: up (down)
+/// through the rows the terminal wrapped it onto, then to the first (last)
+/// column.
+fn copy_to_line_edge(p: &mut Pane, end: bool) {
+    let rows = p.rows;
+    loop {
+        let abs = copy_abs(p);
+        let c = p.copy.as_ref().unwrap();
+        if end {
+            let can_move = c.cy + 1 < rows || c.offset > 0;
+            if !can_move || !p.goes_on(abs) {
+                break;
+            }
+            let c = p.copy.as_mut().unwrap();
+            if c.cy + 1 < rows {
+                c.cy += 1;
+            } else {
+                copy_scroll(p, -1);
+            }
+        } else {
+            if abs == 0 || !p.goes_on(abs - 1) {
+                break;
+            }
+            let c = p.copy.as_mut().unwrap();
+            if c.cy > 0 {
+                c.cy -= 1;
+            } else {
+                copy_scroll(p, 1);
+            }
+        }
+    }
+    let cols = p.cols;
+    let c = p.copy.as_mut().unwrap();
+    c.cx = if end { cols.saturating_sub(1) } else { 0 };
+}
+
 fn copy_abs(p: &mut Pane) -> usize {
     let max = p.scrollback_len();
     let rows = p.rows;
@@ -9479,6 +9519,47 @@ mod tests {
         assert_eq!(pick((1, 5), (2, 1), false), "ab😀cd e\u{301}f\n宽", "over two lines");
         assert_eq!(pick((2, 2), (3, 3), true), "字\n字", "a rectangle: the same columns of each line");
         assert_eq!(pick((1, 30), (1, 39), false), "", "past the end of the text: nothing");
+    }
+
+    /// `0` and `$` in copy mode go to the ends of the line, across the rows
+    /// the terminal wrapped it onto (as tmux's start-of-line and
+    /// end-of-line), so `0 v $` copies the whole line, joined.
+    #[test]
+    fn the_ends_of_a_line_are_past_the_rows_it_wrapped_onto() {
+        let argv: Vec<String> = if cfg!(windows) {
+            ["cmd.exe", "/c", "exit"].map(String::from).to_vec()
+        } else {
+            ["/bin/sh", "-c", "exit"].map(String::from).to_vec()
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut p = Pane::spawn(1, &argv, None, 20, 6, 100, &[], tx).unwrap();
+        // Rows 1 to 3 are one line of 45 characters.
+        let long = "printf-%s-second-1-second-2-and-more-of-it-x";
+        p.process_output(format!("short\r\n{long}\r\nnext").as_bytes());
+        enter_copy_mode(&mut p);
+        let place = |p: &mut Pane, row: u16, col: u16| {
+            let c = p.copy.as_mut().unwrap();
+            c.offset = 0;
+            (c.cy, c.cx) = (row, col);
+        };
+        let at = |p: &Pane| p.copy.as_ref().map(|c| (c.cy, c.cx)).unwrap();
+        place(&mut p, 2, 5);
+        copy_to_line_edge(&mut p, true);
+        assert_eq!(at(&p), (3, 19), "$: the last row of the line");
+        copy_to_line_edge(&mut p, false);
+        assert_eq!(at(&p), (1, 0), "0: its first row");
+        p.copy.as_mut().unwrap().anchor = Some((1, 0));
+        copy_to_line_edge(&mut p, true);
+        assert_eq!(selected_text(&mut p).unwrap(), long, "0 v $: the whole line, joined");
+        // A line of one row: its own ends, as before.
+        place(&mut p, 0, 2);
+        copy_to_line_edge(&mut p, true);
+        assert_eq!(at(&p), (0, 19));
+        copy_to_line_edge(&mut p, false);
+        assert_eq!(at(&p), (0, 0));
+        place(&mut p, 4, 1);
+        copy_to_line_edge(&mut p, false);
+        assert_eq!(at(&p), (4, 0), "the row after a wrapped line is a line of its own");
     }
 
     /// An ask on a thread answers, even when it panics: None then.

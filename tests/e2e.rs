@@ -226,6 +226,21 @@ impl Harness {
         Conn { rd, wr, screen: vt100::Parser::new(ROWS, COLS, 0) }
     }
 
+    /// `wait_capture` with rows the pane wrapped joined into the line that
+    /// was printed (`capture-pane -J`): for a line that may be wider than
+    /// the pane (a long prompt and what was typed after it).
+    async fn wait_joined(&self, target: &str, what: &str, pred: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (_, out, _) = self.cli(&["capture-pane", "-p", "-J", "-t", target]).await;
+            if pred(&out) {
+                return out;
+            }
+            assert!(Instant::now() < deadline, "timeout waiting for {what} in {target}; pane:\n{out}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Poll `capture-pane` until the pane's text satisfies `pred`.
     async fn wait_capture(&self, target: &str, what: &str, pred: impl Fn(&str) -> bool) -> String {
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -8469,7 +8484,7 @@ async fn each_shell_pane_keeps_its_own_command_history() {
     assert_eq!(code, 0, "{err}");
     at_hooked_prompt(&h, "hist:0.1").await;
     h.cli(&["send-keys", "-t", "hist:0.1", "Up"]).await;
-    h.wait_capture("hist:0.1", "the first pane's command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
+    h.wait_joined("hist:0.1", "the first pane's command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
     // From here on, each its own.
     h.cli(&["send-keys", "-t", "hist:0.1", "C-c"]).await;
     // The shell takes C-c in its own time: what is typed before its new
@@ -8480,7 +8495,7 @@ async fn each_shell_pane_keeps_its_own_command_history() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     h.cli(&["send-keys", "-t", "hist:0.0", "Up"]).await;
     let first =
-        h.wait_capture("hist:0.0", "its own last command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
+        h.wait_joined("hist:0.0", "its own last command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
     assert!(!first.contains(two.as_str()), "the other pane's command is not in this one's:\n{first}");
 
     // Started again in place, a pane keeps its file.
@@ -8490,7 +8505,7 @@ async fn each_shell_pane_keeps_its_own_command_history() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     at_hooked_prompt(&h, "hist:0.0").await;
     h.cli(&["send-keys", "-t", "hist:0.0", "Up"]).await;
-    h.wait_capture("hist:0.0", "its command after respawn", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
+    h.wait_joined("hist:0.0", "its command after respawn", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
     h.cli(&["send-keys", "-t", "hist:0.0", "C-c"]).await;
 
     // Saved, killed and resumed: each pane has its own history back.
@@ -8501,10 +8516,10 @@ async fn each_shell_pane_keeps_its_own_command_history() {
     assert_eq!(c.attach(&["resume", "hist"]).await, "hist");
     at_hooked_prompt(&h, "hist:0.1").await;
     h.cli(&["send-keys", "-t", "hist:0.1", "Up"]).await;
-    h.wait_capture("hist:0.1", "its own last command", |t| last_line(t).ends_with(&format!("echo {two}"))).await;
+    h.wait_joined("hist:0.1", "its own last command", |t| last_line(t).ends_with(&format!("echo {two}"))).await;
     at_hooked_prompt(&h, "hist:0.0").await;
     h.cli(&["send-keys", "-t", "hist:0.0", "Up"]).await;
-    h.wait_capture("hist:0.0", "its own last command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
+    h.wait_joined("hist:0.0", "its own last command", |t| last_line(t).ends_with(&format!("echo {one}"))).await;
 
     // A saved pane whose file is gone starts over from PowerShell's shared
     // file, under the same name, rather than from nothing.
