@@ -1,6 +1,7 @@
 //! The machine as the status line shows it, on Windows: CPU and memory in
 //! use, the battery, the time since boot (Win32), the program a pane is
-//! running (a toolhelp snapshot), and a directory with the home written `~`.
+//! running (a toolhelp snapshot), and a directory with the home written `~`;
+//! for the clock's animation, the cores, disks, network and temperature.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -281,9 +282,322 @@ fn newest_descendant(pid: u32) -> Option<String> {
     Some(current.trim_end_matches(".exe").trim_end_matches(".EXE").to_string())
 }
 
+/// The machine's running totals for the clock's animation: each core
+/// (`NtQuerySystemInformation`), memory, the disks (PDH, by the counters'
+/// English names, so a Windows in another language finds them too), the
+/// network adapters (`GetIfTable2`) and the CPU's temperature when a sensor
+/// program gives it (see `temperature`). Each a call or two; asked twice a
+/// second at most, and only while a clock is drawn.
+pub fn counters() -> crate::sysinfo::Counters {
+    let mut m: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    m.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    let memory = (unsafe { GlobalMemoryStatusEx(&mut m) } != 0).then_some((m.ullTotalPhys, m.ullAvailPhys));
+    crate::sysinfo::Counters { cores: cores(), memory, disk: disk(), net: net(), temp: temperature() }
+}
+
+/// Each core's (busy, total) time in 100 ns ticks, those of this process's
+/// processor group (all of them, up to 64 cores).
+fn cores() -> Vec<(u64, u64)> {
+    use windows_sys::Wdk::System::SystemInformation::{
+        NtQuerySystemInformation, SystemProcessorPerformanceInformation,
+    };
+    use windows_sys::Win32::System::WindowsProgramming::SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION as Info;
+    let mut buf = vec![Info::default(); 64];
+    let mut got = 0u32;
+    let size = (buf.len() * std::mem::size_of::<Info>()) as u32;
+    let status = unsafe {
+        NtQuerySystemInformation(SystemProcessorPerformanceInformation, buf.as_mut_ptr().cast(), size, &mut got)
+    };
+    if status < 0 {
+        return Vec::new();
+    }
+    buf.truncate(got as usize / std::mem::size_of::<Info>());
+    // Kernel time includes idle time.
+    buf.iter()
+        .map(|i| {
+            let total = (i.KernelTime.max(0) as u64).saturating_add(i.UserTime.max(0) as u64);
+            (total.saturating_sub(i.IdleTime.max(0) as u64), total)
+        })
+        .collect()
+}
+
+/// A PDH query for the disks' bytes read and written, opened once.
+struct DiskQuery {
+    query: windows_sys::Win32::System::Performance::PDH_HQUERY,
+    read: windows_sys::Win32::System::Performance::PDH_HCOUNTER,
+    write: windows_sys::Win32::System::Performance::PDH_HCOUNTER,
+}
+// The handles are PDH's, used under the lock only.
+unsafe impl Send for DiskQuery {}
+
+/// Bytes all the disks have read and written: the raw value of a
+/// "bytes/sec" counter is its running total.
+fn disk() -> Option<(u64, u64)> {
+    use windows_sys::Win32::System::Performance::{
+        PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_RAW_COUNTER, PdhAddEnglishCounterW, PdhCollectQueryData,
+        PdhGetRawCounterValue, PdhOpenQueryW,
+    };
+    // None: not tried yet; Some(None): PDH said no, and is not asked again.
+    static QUERY: Mutex<Option<Option<DiskQuery>>> = Mutex::new(None);
+    let mut q = QUERY.lock().unwrap_or_else(|e| e.into_inner());
+    let q = q.get_or_insert_with(|| {
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let mut query = std::ptr::null_mut();
+        if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut query) } != 0 {
+            return None;
+        }
+        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+        let r = wide(r"\PhysicalDisk(_Total)\Disk Read Bytes/sec");
+        let w = wide(r"\PhysicalDisk(_Total)\Disk Write Bytes/sec");
+        let ok = unsafe { PdhAddEnglishCounterW(query, r.as_ptr(), 0, &mut read) } == 0
+            && unsafe { PdhAddEnglishCounterW(query, w.as_ptr(), 0, &mut write) } == 0;
+        if !ok {
+            unsafe { windows_sys::Win32::System::Performance::PdhCloseQuery(query) };
+            return None;
+        }
+        Some(DiskQuery { query, read, write })
+    });
+    let q = q.as_ref()?;
+    if unsafe { PdhCollectQueryData(q.query) } != 0 {
+        return None;
+    }
+    let raw = |c| {
+        let mut v = PDH_RAW_COUNTER::default();
+        let ok = unsafe { PdhGetRawCounterValue(c, std::ptr::null_mut(), &mut v) } == 0
+            && (v.CStatus == PDH_CSTATUS_VALID_DATA || v.CStatus == PDH_CSTATUS_NEW_DATA);
+        ok.then_some(v.FirstValue.max(0) as u64)
+    };
+    Some((raw(q.read)?, raw(q.write)?))
+}
+
+/// Bytes received and sent by the network adapters that are hardware:
+/// not loopback, not a virtual switch (Hyper-V's, WSL's, which carry what a
+/// real adapter carries again), not a filter layered on an adapter (the
+/// same bytes once more).
+fn net() -> Option<(u64, u64)> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2,
+    };
+    let mut table: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
+    if unsafe { GetIfTable2(&mut table) } != 0 || table.is_null() {
+        return None;
+    }
+    let rows = unsafe { std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize) };
+    let mut sum: Option<(u64, u64)> = None;
+    for r in rows {
+        // HardwareInterface is the first bit, FilterInterface the second.
+        let flags = r.InterfaceAndOperStatusFlags._bitfield;
+        if flags & 1 != 0 && flags & 2 == 0 && r.Type != IF_TYPE_SOFTWARE_LOOPBACK {
+            let (rx, tx) = sum.unwrap_or_default();
+            sum = Some((rx.saturating_add(r.InOctets), tx.saturating_add(r.OutOctets)));
+        }
+    }
+    unsafe { FreeMibTable(table.cast()) };
+    sum
+}
+
+/// Where the temperature thread is.
+struct TempState {
+    /// When the clock last asked; the thread stops 5 s after.
+    asked: Option<Instant>,
+    running: bool,
+    /// The last reading, and when it was taken.
+    value: Option<(Instant, f32)>,
+}
+
+static TEMP: Mutex<TempState> = Mutex::new(TempState { asked: None, running: false, value: None });
+
+/// The CPU's temperature, from LibreHardwareMonitor (or OpenHardwareMonitor)
+/// while one runs. Windows has no real sensor to read without a driver: its
+/// ACPI thermal zone is a fixed figure on many machines (27.9 °C on one we
+/// looked at), so it is not used. WMI can take a while to answer, so a
+/// thread of its own asks every 2 s, while the clock asked within 5 s; the
+/// server never waits for it.
+fn temperature() -> Option<f32> {
+    let mut t = TEMP.lock().unwrap_or_else(|e| e.into_inner());
+    t.asked = Some(Instant::now());
+    if !t.running {
+        t.running = std::thread::Builder::new().name("keepane-temperature".into()).spawn(temperature_thread).is_ok();
+    }
+    t.value.filter(|(at, _)| at.elapsed() < Duration::from_secs(10)).map(|(_, v)| v)
+}
+
+fn temperature_thread() {
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+    let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    loop {
+        let v = ["root\\LibreHardwareMonitor", "root\\OpenHardwareMonitor"].iter().find_map(|ns| {
+            let rows =
+                wmi_rows(ns, "SELECT Name, Identifier, Value FROM Sensor WHERE SensorType='Temperature'").ok()?;
+            pick_temperature(&rows)
+        });
+        let mut t = TEMP.lock().unwrap_or_else(|e| e.into_inner());
+        t.value = v.map(|v| (Instant::now(), v));
+        if t.asked.is_none_or(|a| a.elapsed() > Duration::from_secs(5)) {
+            t.running = false;
+            break;
+        }
+        drop(t);
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    if com {
+        unsafe { CoUninitialize() };
+    }
+}
+
+/// The CPU's temperature among a sensor program's (name, identifier, °C):
+/// the package's (Intel's "CPU Package", AMD's "Core (Tctl/Tdie)"), else
+/// the hottest under a CPU, else none (a disk's or a GPU's is not the
+/// machine's).
+fn pick_temperature(rows: &[(String, String, f64)]) -> Option<f32> {
+    let cpu: Vec<&(String, String, f64)> =
+        rows.iter().filter(|(_, id, v)| id.contains("cpu") && v.is_finite() && *v > 0.0).collect();
+    let package = cpu.iter().find(|(name, _, _)| name == "CPU Package" || name.starts_with("Core (Tctl"));
+    package.map(|r| r.2).or_else(|| cpu.iter().map(|r| r.2).reduce(f64::max)).map(|v| v as f32)
+}
+
+/// (Name, Identifier, Value) of each row a WMI query gives.
+fn wmi_rows(namespace: &str, query: &str) -> windows::core::Result<Vec<(String, String, f64)>> {
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, CoCreateInstance, CoSetProxyBlanket, CoTaskMemFree, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL,
+        RPC_C_IMP_LEVEL_IMPERSONATE,
+    };
+    use windows::Win32::System::Variant::{VARIANT, VariantClear, VariantToDouble, VariantToStringAlloc};
+    use windows::Win32::System::Wmi::{
+        IWbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE, WbemLocator,
+    };
+    use windows::core::{BSTR, PCWSTR, w};
+    unsafe {
+        let locator: IWbemLocator = CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER)?;
+        let services = locator.ConnectServer(
+            &BSTR::from(namespace),
+            &BSTR::new(),
+            &BSTR::new(),
+            &BSTR::new(),
+            0,
+            &BSTR::new(),
+            None,
+        )?;
+        // RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE.
+        CoSetProxyBlanket(
+            &services,
+            10,
+            0,
+            PCWSTR::null(),
+            RPC_C_AUTHN_LEVEL_CALL,
+            RPC_C_IMP_LEVEL_IMPERSONATE,
+            None,
+            EOAC_NONE,
+        )?;
+        let rows = services.ExecQuery(
+            &BSTR::from("WQL"),
+            &BSTR::from(query),
+            WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+            None,
+        )?;
+        let mut out = Vec::new();
+        loop {
+            let mut row = [None];
+            let mut n = 0;
+            let _ = rows.Next(WBEM_INFINITE, &mut row, &mut n);
+            let Some(obj) = row[0].take().filter(|_| n == 1) else { break };
+            let text = |name: PCWSTR| -> String {
+                let mut v = VARIANT::default();
+                if obj.Get(name, 0, &mut v, None, None).is_err() {
+                    return String::new();
+                }
+                let s = match VariantToStringAlloc(&v) {
+                    Ok(p) => {
+                        let s = p.to_string().unwrap_or_default();
+                        CoTaskMemFree(Some(p.0 as _));
+                        s
+                    }
+                    Err(_) => String::new(),
+                };
+                let _ = VariantClear(&mut v);
+                s
+            };
+            let mut v = VARIANT::default();
+            let value = match obj.Get(w!("Value"), 0, &mut v, None, None) {
+                Ok(()) => VariantToDouble(&v).unwrap_or(f64::NAN),
+                Err(_) => f64::NAN,
+            };
+            let _ = VariantClear(&mut v);
+            out.push((text(w!("Name")), text(w!("Identifier")), value));
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The running totals come back, and grow: the cores (as many as the
+    /// machine has), memory, the disks, the network.
+    #[test]
+    fn the_counters_come_back_and_grow() {
+        let a = counters();
+        let n = std::thread::available_parallelism().map_or(1, |n| n.get()).min(64);
+        assert_eq!(a.cores.len(), n, "{a:?}");
+        assert!(a.cores.iter().all(|(busy, total)| busy <= total && *total > 0), "{a:?}");
+        assert!(a.memory.is_some_and(|(t, av)| t > 0 && av <= t), "{a:?}");
+        assert!(a.disk.is_some(), "PDH gives the disks: {a:?}");
+        // Make the disk and the cores do something.
+        let f = std::env::temp_dir().join(format!("keepane-counters-{}", std::process::id()));
+        std::fs::write(&f, vec![7u8; 4 << 20]).unwrap();
+        let _ = std::fs::File::open(&f).and_then(|f| f.sync_all());
+        let _ = std::fs::remove_file(&f);
+        let spin = Instant::now();
+        while spin.elapsed() < Duration::from_millis(200) {
+            std::hint::black_box(spin.elapsed());
+        }
+        let b = counters();
+        assert!(a.cores.iter().zip(&b.cores).all(|(x, y)| y.1 >= x.1 && y.0 >= x.0), "never backwards");
+        let (da, db) = (a.disk.unwrap(), b.disk.unwrap());
+        assert!(db.0 >= da.0 && db.1 >= da.1, "{da:?} {db:?}");
+        if let (Some(na), Some(nb)) = (a.net, b.net) {
+            assert!(nb.0 >= na.0 && nb.1 >= na.1, "{na:?} {nb:?}");
+        }
+        let l = crate::sysinfo::load(&a, &b, 0.2);
+        assert!(l.cpu > 0.0 && l.cpu <= 1.0, "a core was busy: {l:?}");
+    }
+
+    /// A sensor program's rows: the package wins, else the hottest CPU
+    /// sensor; a GPU or a disk is never the CPU.
+    #[test]
+    fn the_cpu_temperature_is_picked_from_the_sensors() {
+        let row = |n: &str, id: &str, v: f64| (n.to_string(), id.to_string(), v);
+        let intel = [
+            row("CPU Core #1", "/intelcpu/0/temperature/0", 61.0),
+            row("CPU Package", "/intelcpu/0/temperature/4", 64.0),
+            row("CPU Core #2", "/intelcpu/0/temperature/1", 70.0),
+            row("GPU Core", "/gpu-nvidia/0/temperature/0", 80.0),
+        ];
+        assert_eq!(pick_temperature(&intel), Some(64.0));
+        let amd =
+            [row("Core (Tctl/Tdie)", "/amdcpu/0/temperature/2", 55.5), row("CCD1", "/amdcpu/0/temperature/3", 58.0)];
+        assert_eq!(pick_temperature(&amd), Some(55.5));
+        let cores =
+            [row("Core #1", "/intelcpu/0/temperature/0", 50.0), row("Core #2", "/intelcpu/0/temperature/1", 52.0)];
+        assert_eq!(pick_temperature(&cores), Some(52.0), "no package: the hottest core");
+        let none =
+            [row("GPU Core", "/gpu-nvidia/0/temperature/0", 80.0), row("Temperature", "/hdd/0/temperature/0", 35.0)];
+        assert_eq!(pick_temperature(&none), None);
+        assert_eq!(pick_temperature(&[row("CPU Package", "/intelcpu/0/temperature/4", f64::NAN)]), None);
+    }
+
+    /// WMI answers through the same code the sensor program is read with
+    /// (a namespace every Windows has); a namespace that is not there is
+    /// an error, not a hang or a panic.
+    #[test]
+    fn wmi_is_read_and_a_missing_namespace_is_none() {
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let rows = wmi_rows("root\\cimv2", "SELECT Name, DeviceID, NumberOfCores FROM Win32_Processor").unwrap();
+        assert!(!rows.is_empty() && !rows[0].0.is_empty(), "{rows:?}");
+        assert!(wmi_rows("root\\NoSuchNamespaceForKeepane", "SELECT Name FROM Sensor").is_err());
+    }
 
     #[test]
     fn readings_come_back_and_are_cached() {

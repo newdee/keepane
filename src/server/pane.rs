@@ -406,6 +406,14 @@ pub struct CopyMode {
     pub rect: bool,
 }
 
+/// The lines under a pane's clock, worked out at `at` for a pane `width`
+/// columns wide.
+pub struct ClockLines {
+    pub at: std::time::Instant,
+    pub width: usize,
+    pub lines: Vec<(String, Option<vt100::Color>)>,
+}
+
 pub struct Pane {
     pub id: PaneId,
     /// Bumped by `respawn`; events from an older generation are ignored.
@@ -435,6 +443,14 @@ pub struct Pane {
     pub exit_code: Option<u32>,
     /// `clock-mode`: a clock is drawn over this pane until a key arrives.
     pub clock: bool,
+    /// How many times a clock was put here (`clock-mode-animation cycle`
+    /// takes the next kind each time), what moves under it (and when it
+    /// last moved), and the lines under it as last worked out.
+    pub clock_turns: u32,
+    pub clock_anim: Option<(super::clockanim::Anim, std::time::Instant)>,
+    pub clock_lines: Option<ClockLines>,
+    /// Bytes it has printed (the clock's `OUT`).
+    pub output_bytes: u64,
     pub copy: Option<CopyMode>,
     pub bell: bool,
     pub cols: u16,
@@ -750,6 +766,10 @@ impl Pane {
             replay_done: false,
             exit_code: None,
             clock: false,
+            clock_turns: 0,
+            clock_anim: None,
+            clock_lines: None,
+            output_bytes: 0,
             copy: None,
             bell: false,
             cols,

@@ -68,6 +68,10 @@ pub struct Options {
     pub clock_mode_style: u8,
     pub clock_mode_colour: Option<Color>,
     pub clock_mode_info: bool,
+    /// What moves under the clock (`clock-mode-animation`): `pulse`,
+    /// `matrix`, `bars`, `cycle` (the next of them each time a clock is
+    /// put on a pane) or `off`; `animation off` stops it too.
+    pub clock_mode_animation: String,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
     pub status_left: String,
@@ -182,6 +186,9 @@ pub struct Options {
     /// a `keepane` root, one a line) or `list` (tmux's lines).
     pub choose_tree_style: String,
 }
+
+/// What `clock-mode-animation` can be.
+pub const CLOCK_ANIMATIONS: &[&str] = &["bars", "cycle", "matrix", "off", "pulse"];
 
 /// What a pane can be done with (`done-events`).
 pub const DONE_EVENTS: &[&str] = &["command", "agent", "task", "exit"];
@@ -324,6 +331,7 @@ pub const SHOWABLE: &[&str] = &[
     "clock-mode-style",
     "clock-mode-colour",
     "clock-mode-info",
+    "clock-mode-animation",
     "base-index",
     "remain-on-exit",
     "save-history",
@@ -420,6 +428,7 @@ impl Default for Options {
             clock_mode_style: 24,
             clock_mode_colour: None,
             clock_mode_info: true,
+            clock_mode_animation: "cycle".into(),
             pane_border_fg: Color::Rgb(0x3b, 0x42, 0x61),
             // The session name on a blue block.
             status_left: "#[fg=#1a1b26,bg=#7aa2f7,bold] #S #[default] ".into(),
@@ -567,6 +576,7 @@ pub const KNOWN: &[&str] = &[
     "autosave",
     "base-index",
     "choose-tree-style",
+    "clock-mode-animation",
     "clock-mode-colour",
     "clock-mode-info",
     "clock-mode-style",
@@ -752,6 +762,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "theme" => THEME_NAMES,
         "choose-tree-style" => &["chart", "list", "tree"],
         "clock-mode-style" => &["12", "24"],
+        "clock-mode-animation" => CLOCK_ANIMATIONS,
         "done-events" => &["all", "none", "command agent"],
         _ => &[],
     }
@@ -846,6 +857,7 @@ impl Options {
                 }
             }
             "clock-mode-info" => self.clock_mode_info = parse_bool(value)?,
+            "clock-mode-animation" => self.clock_mode_animation = one_of(name, value, CLOCK_ANIMATIONS)?,
             "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
                 if let (Some(c), _) = parse_style(value)? {
@@ -1132,6 +1144,7 @@ impl Options {
             "clock-mode-style" => self.clock_mode_style.to_string(),
             "clock-mode-colour" => self.clock_mode_colour.map_or("default".into(), color_name),
             "clock-mode-info" => onoff(self.clock_mode_info),
+            "clock-mode-animation" => self.clock_mode_animation.clone(),
             "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
         })
@@ -1427,6 +1440,17 @@ mod tests {
         assert!(o.set("clock-mode-style", "13").unwrap_err().contains("12 or 24"));
         assert!(o.set("clock-mode-colour", "nocolour").is_err());
         assert_eq!(option_values("clock-mode-style"), ["12", "24"]);
+        // What moves under it: each in turn by default, one of them, or none.
+        assert_eq!(o.get("clock-mode-animation").as_deref(), Some("cycle"));
+        for kind in ["pulse", "matrix", "bars", "off", "cycle"] {
+            o.set("clock-mode-animation", kind).unwrap();
+            assert_eq!(o.get("clock-mode-animation").as_deref(), Some(kind));
+        }
+        let e = o.set("clock-mode-animation", "fireworks").unwrap_err();
+        assert!(e.contains("one of bars, cycle, matrix, off, pulse"), "{e}");
+        assert_eq!(o.clock_mode_animation, "cycle", "a refused value leaves the old one");
+        assert_eq!(option_values("clock-mode-animation"), CLOCK_ANIMATIONS);
+        assert_eq!(resolve_name("clock-mode-a").as_deref(), Ok("clock-mode-animation"));
     }
 
     #[test]

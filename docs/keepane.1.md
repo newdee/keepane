@@ -287,6 +287,31 @@ boot). `clock-mode-info off` leaves the time alone, as tmux draws it;
 `clock-mode-style 12` counts the hours to 12; `clock-mode-colour` colours the
 digits (`default`: the active pane border's colour).
 
+Under that, in the rows left over, something moves with the machine
+(`clock-mode-animation`). `pulse` is a monitor: a heartbeat at 60 beats a
+minute with the cores idle, 150 with them all busy, a network wave as tall as
+the traffic is heavy, and a disk wave that breathes faster and deeper the
+more the disks do. `matrix` is falling characters: faster with the cores,
+more columns with memory, cyan ones with the network, quicker flicker with
+the disks. `bars` is an equalizer: a bar for each core, memory, the disks
+read and written, the network in and out, the temperature, and the pane's
+own output. In `pulse` and `matrix` the colour goes from green through
+yellow to red with the CPU's temperature, or with the cores' load when there
+is no temperature; the bars are green at the bottom, yellow higher up and red
+at the top. `cycle`
+(the default) takes the three in turn, a new one each time the clock is put
+on a pane; `off`, or `animation off`, leaves the clock still.
+
+It is drawn in the 16 colours a theme sets with `pane-colours` (the
+terminal's own colours when the theme sets none), so each theme colours it.
+The machine is read twice a second, and only while a clock is on screen.
+Not every figure can be read everywhere: macOS gives no disk figure, and a
+figure the system does not give is left out, never made up. The temperature
+comes from a real CPU sensor only: on Linux the thermal zones and hwmon
+sensors; on Windows from LibreHardwareMonitor or OpenHardwareMonitor while
+one runs (Windows has none of its own: its ACPI thermal zone is a fixed figure
+on many machines); not on macOS.
+
 While a pane runs an agent (Claude Code, Codex, pi), the server reads the
 transcript the agent writes and gives its figures to `list-agents`, the
 dashboard, the phone page and the formats `agent`, `agent_model`,

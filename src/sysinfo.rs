@@ -3,11 +3,80 @@
 //! since boot, the git branch of a directory, and the program a pane is
 //! running right now. All of it is a system call or a small file read, so
 //! the status line can ask every second. The machine and the processes are
-//! the platform's (`platform::sysinfo`); the rest is here.
+//! the platform's (`platform::sysinfo`); the rest is here, with what the
+//! clock's animation moves by: the machine's running totals (`counters`)
+//! and the load two of them give (`load`).
 
 use std::path::{Path, PathBuf};
 
-pub use crate::platform::sysinfo::{System, hostname, program_of, short_path, system, tree_of, usage_of};
+pub use crate::platform::sysinfo::{System, counters, hostname, program_of, short_path, system, tree_of, usage_of};
+
+/// What the machine has done since it started, as running totals, read as
+/// often as the clock's animation asks (`counters`): two readings apart in
+/// time give a `Load`. A figure the system cannot give is None (no cores:
+/// none).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Counters {
+    /// (busy, total) time of each core, in the system's own ticks.
+    pub cores: Vec<(u64, u64)>,
+    /// (total, available) bytes of memory.
+    pub memory: Option<(u64, u64)>,
+    /// Bytes the disks have read and written.
+    pub disk: Option<(u64, u64)>,
+    /// Bytes the network has received and sent, loopback left out.
+    pub net: Option<(u64, u64)>,
+    /// The CPU's temperature in °C, from a real sensor only.
+    pub temp: Option<f32>,
+}
+
+/// What the machine is doing, between two `Counters`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Load {
+    /// Each core's busy share, 0 to 1.
+    pub cores: Vec<f32>,
+    /// All the cores together, 0 to 1.
+    pub cpu: f32,
+    /// The share of memory in use, 0 to 1.
+    pub memory: Option<f32>,
+    /// Bytes a second: (read, written).
+    pub disk: Option<(f64, f64)>,
+    /// Bytes a second: (received, sent).
+    pub net: Option<(f64, f64)>,
+    pub temp: Option<f32>,
+}
+
+/// The load between `before` and `now`, `secs` apart. A total that went
+/// down (a disk or an adapter gone, a counter that wrapped) counts as
+/// nothing done, never as a huge number; the cores, when their count
+/// changed, as idle.
+pub fn load(before: &Counters, now: &Counters, secs: f64) -> Load {
+    let share = |(b0, t0): (u64, u64), (b1, t1): (u64, u64)| match t1.checked_sub(t0) {
+        Some(t) if t > 0 => (b1.saturating_sub(b0) as f64 / t as f64).clamp(0.0, 1.0) as f32,
+        _ => 0.0,
+    };
+    let same = before.cores.len() == now.cores.len();
+    let cores: Vec<f32> = if same {
+        before.cores.iter().zip(&now.cores).map(|(a, b)| share(*a, *b)).collect()
+    } else {
+        vec![0.0; now.cores.len()]
+    };
+    let sum =
+        |c: &[(u64, u64)]| c.iter().fold((0u64, 0u64), |(b, t), (x, y)| (b.saturating_add(*x), t.saturating_add(*y)));
+    let rate = |a: Option<(u64, u64)>, b: Option<(u64, u64)>| match (a, b) {
+        (Some(a), Some(b)) if secs > 0.0 => {
+            Some((b.0.saturating_sub(a.0) as f64 / secs, b.1.saturating_sub(a.1) as f64 / secs))
+        }
+        _ => None,
+    };
+    Load {
+        cpu: if same { share(sum(&before.cores), sum(&now.cores)) } else { 0.0 },
+        cores,
+        memory: now.memory.filter(|(t, _)| *t > 0).map(|(t, a)| (t.saturating_sub(a) as f64 / t as f64) as f32),
+        disk: rate(before.disk, now.disk),
+        net: rate(before.net, now.net),
+        temp: now.temp,
+    }
+}
 
 /// The address this machine reaches the network from (IPv4), empty when it
 /// has none. The system is asked which address a UDP socket "connected" to
@@ -84,6 +153,43 @@ fn head_of(gitdir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two readings give each core's share, all of them together, memory
+    /// in use and bytes a second; a total that went down is nothing done,
+    /// cores that changed in number are idle, a figure missing from either
+    /// reading is missing.
+    #[test]
+    fn two_readings_give_the_load() {
+        let a = Counters {
+            cores: vec![(10, 100), (50, 100)],
+            memory: Some((1000, 600)),
+            disk: Some((1_000, 2_000)),
+            net: Some((5_000, 5_000)),
+            temp: Some(50.0),
+        };
+        let b = Counters {
+            cores: vec![(60, 200), (150, 200)],
+            memory: Some((1000, 250)),
+            disk: Some((3_000, 2_000)),
+            net: Some((4_000, 9_000)),
+            temp: Some(61.5),
+        };
+        let l = load(&a, &b, 2.0);
+        assert_eq!(l.cores, vec![0.5, 1.0]);
+        assert_eq!(l.cpu, 0.75);
+        assert_eq!(l.memory, Some(0.75));
+        assert_eq!(l.disk, Some((1_000.0, 0.0)));
+        assert_eq!(l.net, Some((0.0, 2_000.0)), "received went down: nothing, not a wrap");
+        assert_eq!(l.temp, Some(61.5));
+        let fewer = Counters { cores: vec![(1, 1)], disk: None, ..b.clone() };
+        let l = load(&a, &fewer, 2.0);
+        assert_eq!((l.cores, l.cpu, l.disk), (vec![0.0], 0.0, None));
+        // One reading against itself: every figure there, at nothing done.
+        let l = load(&b, &b, 1.0);
+        assert_eq!((l.cpu, l.disk, l.net, l.memory), (0.0, Some((0.0, 0.0)), Some((0.0, 0.0)), Some(0.75)));
+        assert_eq!(load(&a, &b, 0.0).disk, None, "no time between them: no rate");
+        assert_eq!(load(&Counters::default(), &Counters::default(), 1.0), Load::default());
+    }
 
     #[test]
     fn the_branch_is_read_from_the_head_file() {

@@ -1,8 +1,9 @@
 //! The machine as the status line shows it: CPU and memory in use, the
 //! battery, the time since boot (Linux: `/proc`, `/sys`); the program a pane
 //! is running (its newest descendant, from `/proc/<pid>/stat`); a directory
-//! with the home written `~`. macOS reads the same through `sysctl`, mach
-//! and `proc_pidinfo`.
+//! with the home written `~`; for the clock's animation, the cores, disks,
+//! network and temperature. macOS reads the same through `sysctl`, mach and
+//! `proc_pidinfo` (no disks, no temperature).
 
 use crate::sysinfo::human_bytes;
 use std::collections::HashMap;
@@ -44,15 +45,121 @@ static CACHE: std::sync::LazyLock<Mutex<Cache>> = std::sync::LazyLock::new(|| Mu
 /// Linux: `/proc` and `/sys`.
 #[cfg(not(target_os = "macos"))]
 mod readings {
-    /// (idle, total) CPU time since boot, from `/proc/stat`'s first line.
-    pub fn cpu_times() -> Option<(u64, u64)> {
-        let text = std::fs::read_to_string("/proc/stat").ok()?;
-        let line = text.lines().next()?.strip_prefix("cpu ")?;
-        let v: Vec<u64> = line.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+    use std::path::Path;
+
+    /// (idle, total) of a `/proc/stat` CPU line's numbers.
+    fn ticks(numbers: &str) -> Option<(u64, u64)> {
+        let v: Vec<u64> = numbers.split_whitespace().filter_map(|x| x.parse().ok()).collect();
         // user nice system idle iowait irq softirq steal
         let idle = v.get(3)? + v.get(4).copied().unwrap_or(0);
         let total = v.iter().take(8).sum();
         Some((idle, total))
+    }
+
+    /// (idle, total) CPU time since boot, from `/proc/stat`'s first line.
+    pub fn cpu_times() -> Option<(u64, u64)> {
+        let text = std::fs::read_to_string("/proc/stat").ok()?;
+        ticks(text.lines().next()?.strip_prefix("cpu ")?)
+    }
+
+    /// Each core's (busy, total) time, from `/proc/stat`'s `cpuN` lines.
+    pub fn cores() -> Vec<(u64, u64)> {
+        let Ok(text) = std::fs::read_to_string("/proc/stat") else { return Vec::new() };
+        text.lines()
+            .filter_map(|l| {
+                let rest = l.strip_prefix("cpu")?;
+                let numbers = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                (numbers.len() < rest.len()).then_some(numbers)
+            })
+            .filter_map(ticks)
+            .map(|(idle, total)| (total.saturating_sub(idle), total))
+            .collect()
+    }
+
+    /// Bytes the disks have read and written, from `/proc/diskstats`
+    /// (sectors there are 512 bytes, whatever the disk's own are). Only
+    /// disks that are hardware (`/sys/block/<name>/device`): a partition,
+    /// a loop or RAM device, device-mapper or RAID would count the same
+    /// bytes again.
+    pub fn disk() -> Option<(u64, u64)> {
+        let text = std::fs::read_to_string("/proc/diskstats").ok()?;
+        let mut sum: Option<(u64, u64)> = None;
+        for l in text.lines() {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            let (Some(name), Some(r), Some(w)) = (f.get(2), f.get(5), f.get(9)) else { continue };
+            if !Path::new("/sys/block").join(name).join("device").exists() {
+                continue;
+            }
+            let sectors = |s: &str| s.parse::<u64>().unwrap_or(0).saturating_mul(512);
+            let (a, b) = sum.unwrap_or_default();
+            sum = Some((a.saturating_add(sectors(r)), b.saturating_add(sectors(w))));
+        }
+        sum
+    }
+
+    /// Bytes received and sent, from `/proc/net/dev`: the adapters that are
+    /// hardware (`/sys/class/net/<name>/device`) when there are any (a
+    /// bridge or a container's veth carries their bytes again), else every
+    /// one but loopback.
+    pub fn net() -> Option<(u64, u64)> {
+        let text = std::fs::read_to_string("/proc/net/dev").ok()?;
+        let rows: Vec<(&str, u64, u64)> = text
+            .lines()
+            .skip(2)
+            .filter_map(|l| {
+                let (name, rest) = l.split_once(':')?;
+                let v: Vec<u64> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                Some((name.trim(), *v.first()?, *v.get(8)?))
+            })
+            .collect();
+        let hardware = |n: &str| Path::new("/sys/class/net").join(n).join("device").exists();
+        let any = rows.iter().any(|r| hardware(r.0));
+        let picked: Vec<_> = rows.iter().filter(|r| r.0 != "lo" && (!any || hardware(r.0))).collect();
+        (!picked.is_empty())
+            .then(|| picked.iter().fold((0u64, 0u64), |(a, b), r| (a.saturating_add(r.1), b.saturating_add(r.2))))
+    }
+
+    /// The CPU's temperature, from the thermal zones and the hwmon sensors.
+    pub fn temperature() -> Option<f32> {
+        let read = |p: &Path| std::fs::read_to_string(p).ok().map(|s| s.trim().to_string());
+        let mut found = Vec::new();
+        for e in std::fs::read_dir("/sys/class/thermal").into_iter().flatten().flatten() {
+            let p = e.path();
+            if e.file_name().to_string_lossy().starts_with("thermal_zone")
+                && let (Some(kind), Some(t)) = (read(&p.join("type")), read(&p.join("temp")))
+                && let Ok(milli) = t.parse::<i64>()
+            {
+                found.push((kind, milli as f32 / 1000.0));
+            }
+        }
+        // temp1 is the package's (coretemp) or Tctl (k10temp).
+        for e in std::fs::read_dir("/sys/class/hwmon").into_iter().flatten().flatten() {
+            let p = e.path();
+            if let (Some(name), Some(t)) = (read(&p.join("name")), read(&p.join("temp1_input")))
+                && let Ok(milli) = t.parse::<i64>()
+            {
+                found.push((name, milli as f32 / 1000.0));
+            }
+        }
+        pick_temperature(&found)
+    }
+
+    /// The CPU's temperature among (sensor, °C): the first CPU sensor in
+    /// `CPU`'s order; none when no sensor is a CPU's (a chipset's, a
+    /// disk's or ACPI's `acpitz` is not it), or its figure is no
+    /// temperature.
+    pub fn pick_temperature(found: &[(String, f32)]) -> Option<f32> {
+        const CPU: &[&str] = &[
+            "x86_pkg_temp",
+            "coretemp",
+            "k10temp",
+            "zenpower",
+            "cpu_thermal",
+            "cpu-thermal",
+            "soc_thermal",
+            "soc-thermal",
+        ];
+        CPU.iter().find_map(|kind| found.iter().find(|(k, t)| k == kind && *t > 0.0 && *t < 150.0).map(|(_, t)| *t))
     }
 
     /// (total, available) bytes of memory, from `/proc/meminfo`.
@@ -180,6 +287,87 @@ mod readings {
         None
     }
 
+    unsafe extern "C" {
+        fn host_processor_info(host: u32, flavor: i32, count: *mut u32, info: *mut *mut i32, size: *mut u32) -> i32;
+        fn vm_deallocate(task: u32, address: usize, size: usize) -> i32;
+        static mach_task_self_: u32;
+    }
+    const PROCESSOR_CPU_LOAD_INFO: i32 = 2;
+
+    /// Each core's (busy, total) ticks, from mach (user, system, idle, nice).
+    pub fn cores() -> Vec<(u64, u64)> {
+        static HOST: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        let host = *HOST.get_or_init(|| unsafe { mach_host_self() });
+        let (mut count, mut info, mut size) = (0u32, std::ptr::null_mut::<i32>(), 0u32);
+        if unsafe { host_processor_info(host, PROCESSOR_CPU_LOAD_INFO, &mut count, &mut info, &mut size) } != 0
+            || info.is_null()
+        {
+            return Vec::new();
+        }
+        let ticks = unsafe { std::slice::from_raw_parts(info, size as usize) };
+        let out = ticks
+            .as_chunks::<CPU_STATE_MAX>()
+            .0
+            .iter()
+            .take(count as usize)
+            .map(|t| {
+                let t: Vec<u64> = t.iter().map(|&x| u64::from(x as u32)).collect();
+                (t[0] + t[1] + t[3], t.iter().sum())
+            })
+            .collect();
+        unsafe { vm_deallocate(mach_task_self_, info as usize, size as usize * std::mem::size_of::<i32>()) };
+        out
+    }
+
+    /// The disks need IOKit: not read.
+    pub fn disk() -> Option<(u64, u64)> {
+        None
+    }
+
+    /// Bytes received and sent by the Ethernet and Wi-Fi adapters (a VPN's
+    /// tunnel or a bridge carries their bytes again; loopback is not the
+    /// network), from the routing socket's 64-bit counters.
+    pub fn net() -> Option<(u64, u64)> {
+        const IFT_ETHER: u8 = 0x6;
+        let mut mib = [libc::CTL_NET, libc::PF_ROUTE, 0, 0, libc::NET_RT_IFLIST2, 0];
+        let mut len = 0usize;
+        let mut sysctl = |buf: *mut libc::c_void, len: &mut usize| unsafe {
+            libc::sysctl(mib.as_mut_ptr(), mib.len() as u32, buf, len, std::ptr::null_mut(), 0)
+        };
+        if sysctl(std::ptr::null_mut(), &mut len) != 0 {
+            return None;
+        }
+        // Room for an adapter that comes meanwhile.
+        len += 4096;
+        let mut buf = vec![0u8; len];
+        if sysctl(buf.as_mut_ptr().cast(), &mut len) != 0 {
+            return None;
+        }
+        let (mut at, mut sum) = (0usize, None::<(u64, u64)>);
+        while at + std::mem::size_of::<libc::if_msghdr2>() <= len {
+            let m: libc::if_msghdr2 = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(at).cast()) };
+            let step = usize::from(m.ifm_msglen);
+            if step == 0 {
+                break;
+            }
+            let data = m.ifm_data;
+            if i32::from(m.ifm_type) == libc::RTM_IFINFO2
+                && m.ifm_flags & libc::IFF_LOOPBACK == 0
+                && data.ifi_type == IFT_ETHER
+            {
+                let (a, b) = sum.unwrap_or_default();
+                sum = Some((a.saturating_add(data.ifi_ibytes), b.saturating_add(data.ifi_obytes)));
+            }
+            at += step;
+        }
+        sum
+    }
+
+    /// No public interface gives it.
+    pub fn temperature() -> Option<f32> {
+        None
+    }
+
     /// Seconds since `kern.boottime`.
     pub fn uptime() -> Option<i64> {
         let boot: libc::timeval = sysctl("kern.boottime")?;
@@ -265,6 +453,20 @@ mod readings {
 
 pub use readings::usage_of;
 use readings::{battery, cpu_times, memory, processes};
+
+/// The machine's running totals for the clock's animation: each core,
+/// memory, the disks, the network and the CPU's temperature, as far as the
+/// system gives them. Asked twice a second at most, and only while a clock
+/// is drawn.
+pub fn counters() -> crate::sysinfo::Counters {
+    crate::sysinfo::Counters {
+        cores: readings::cores(),
+        memory: memory(),
+        disk: readings::disk(),
+        net: readings::net(),
+        temp: readings::temperature(),
+    }
+}
 
 /// `pid` and every process under it, (pid, name).
 pub fn tree_of(pid: u32) -> Vec<(u32, String)> {
@@ -401,6 +603,47 @@ mod tests {
         assert!(a.ram_used.ends_with('G') || a.ram_used.ends_with('M'), "{a:?}");
         assert!(a.uptime > 0);
         assert_eq!(a, system(), "within a second the same reading is handed back");
+    }
+
+    /// The running totals come back and never go backwards; the cores are
+    /// as many as the machine has.
+    #[test]
+    fn the_counters_come_back_and_grow() {
+        let a = counters();
+        assert_eq!(a.cores.len(), std::thread::available_parallelism().map_or(1, |n| n.get()), "{a:?}");
+        assert!(a.cores.iter().all(|(busy, total)| busy <= total), "{a:?}");
+        assert!(a.memory.is_some_and(|(t, av)| t > 0 && av <= t), "{a:?}");
+        let spin = Instant::now();
+        while spin.elapsed() < Duration::from_millis(200) {
+            std::hint::black_box(spin.elapsed());
+        }
+        let b = counters();
+        assert!(a.cores.iter().zip(&b.cores).all(|(x, y)| y.1 >= x.1 && y.0 >= x.0), "never backwards");
+        for (x, y) in [(a.disk, b.disk), (a.net, b.net)] {
+            if let (Some(x), Some(y)) = (x, y) {
+                assert!(y.0 >= x.0 && y.1 >= x.1, "{x:?} {y:?}");
+            }
+        }
+        let l = crate::sysinfo::load(&a, &b, 0.2);
+        assert!(l.cpu > 0.0 && l.cpu <= 1.0, "a core was busy: {l:?}");
+    }
+
+    /// The CPU's sensor, by kind: the package's first; none when no sensor
+    /// is a CPU's, or its figure is no temperature.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_cpu_temperature_is_picked_from_the_sensors() {
+        use readings::pick_temperature;
+        let s = |k: &str, t: f32| (k.to_string(), t);
+        assert_eq!(pick_temperature(&[s("acpitz", 27.8), s("coretemp", 61.0), s("x86_pkg_temp", 64.0)]), Some(64.0));
+        assert_eq!(pick_temperature(&[s("nvme", 40.0), s("k10temp", 55.5)]), Some(55.5));
+        assert_eq!(pick_temperature(&[s("acpitz", 27.8), s("pch_cannonlake", 50.0)]), None, "no CPU sensor");
+        assert_eq!(
+            pick_temperature(&[s("coretemp", -273.0), s("cpu_thermal", 48.2)]),
+            Some(48.2),
+            "a broken one skipped"
+        );
+        assert_eq!(pick_temperature(&[]), None);
     }
 
     #[test]

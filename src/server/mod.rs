@@ -4,6 +4,7 @@
 pub mod actor;
 mod agents;
 mod clock;
+mod clockanim;
 mod digits;
 mod done;
 mod hints;
@@ -908,6 +909,8 @@ pub struct Server {
     in_hook: bool,
     /// Output of status-line `#(command)` pieces and what is being run.
     shell_cache: crate::format::ShellCache,
+    /// The machine's load for the clocks' animations, while one is drawn.
+    meter: Option<Meter>,
     shell_running: HashSet<String>,
     shell_last_refresh: Option<Instant>,
     /// Plugin directories loaded so far.
@@ -1076,14 +1079,16 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     let mut tick = tokio::time::interval(Duration::from_millis(1000));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_render = Instant::now() - FRAME;
-    let mut render_due = false;
+    // When the next frame is due though nothing happens: one held back
+    // (below), or one an animation asks for.
+    let mut due: Option<Instant> = None;
     loop {
-        // A frame due later (see below) is a wake-up of its own.
-        let wait = if render_due { FRAME.saturating_sub(last_render.elapsed()) } else { Duration::from_secs(3600) };
+        // A frame due later is a wake-up of its own.
+        let wait = due.map_or(Duration::from_secs(3600), |d| d.saturating_duration_since(Instant::now()));
         let ev = tokio::select! {
             ev = rx.recv() => match ev { Some(ev) => Some(ev), None => break },
             _ = tick.tick() => Some(Event::Tick),
-            _ = tokio::time::sleep(wait), if render_due => None,
+            _ = tokio::time::sleep(wait), if due.is_some() => None,
         };
         // A bug in one command must not take every session down with it:
         // log the panic and keep serving (the panic hook writes the details).
@@ -1101,11 +1106,12 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
             // screen is never left behind; a key after a pause is drawn
             // at once.
             if last_render.elapsed() >= FRAME {
-                // A moving focus frame asks for the next frame by itself.
-                render_due = srv.render_all();
+                // An animation asks for the next frame by itself.
                 last_render = Instant::now();
+                due = srv.render_all().map(|after| last_render + after);
             } else {
-                render_due = true;
+                // No animation asks for one sooner than this.
+                due = Some(last_render + FRAME);
             }
         }));
         if r.is_err() {
@@ -1133,6 +1139,14 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
 /// The shortest time between two frames sent to the clients: 60 a second,
 /// what a terminal shows anyway.
 const FRAME: Duration = Duration::from_millis(16);
+
+/// The machine's running totals at the last reading, when that was, and
+/// its load since the reading before.
+struct Meter {
+    counters: crate::sysinfo::Counters,
+    at: Instant,
+    load: crate::sysinfo::Load,
+}
 
 /// Keys that keep working without the prefix for `repeat-time`: moving
 /// between panes, resizing them and walking the window list, the things one
@@ -1298,6 +1312,7 @@ impl Server {
             done: done::DoneLog::default(),
             in_hook: false,
             shell_cache: crate::format::ShellCache::default(),
+            meter: None,
             shell_running: HashSet::new(),
             shell_last_refresh: None,
             plugins: Vec::new(),
@@ -1937,6 +1952,7 @@ impl Server {
                     // not the screen.
                     let slow = p.pipe_write(&bytes);
                     p.record_write(&bytes);
+                    p.output_bytes = p.output_bytes.wrapping_add(bytes.len() as u64);
                     p.process_output(&bytes);
                     let prompted = std::mem::take(&mut p.prompted);
                     // Commands that ended; not those a resumed pane prints back.
@@ -2478,6 +2494,11 @@ impl Server {
     }
     fn session_mut(&mut self, id: SessionId) -> Option<&mut Session> {
         self.sessions.iter_mut().find(|s| s.id == id)
+    }
+
+    /// A pane in some window, by id.
+    fn find_pane(&self, id: PaneId) -> Option<&Pane> {
+        self.sessions.iter().flat_map(|s| s.windows.iter()).find_map(|w| w.pane(id))
     }
 
     fn find_pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
@@ -4949,8 +4970,12 @@ impl Server {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
-                if let Some(p) = self.find_pane_mut(pid) {
+                if let Some(p) = self.find_pane_mut(pid)
+                    && !p.clock
+                {
                     p.clock = true;
+                    p.clock_turns = p.clock_turns.wrapping_add(1);
+                    (p.clock_anim, p.clock_lines) = (None, None);
                 }
                 Outcome::Ok
             }
@@ -6229,6 +6254,7 @@ impl Server {
             && p.clock
         {
             p.clock = false;
+            (p.clock_anim, p.clock_lines) = (None, None);
             if let Some(c) = self.clients.get_mut(&cid) {
                 c.swallow_up.insert(rec.vk);
                 c.last_grid = None;
@@ -8171,11 +8197,12 @@ impl Server {
             .any(|w| w.anim.is_some_and(|a| a.start().elapsed() < last))
     }
 
-    /// Draw every attached client; true while an animation wants the next
-    /// frame soon.
-    fn render_all(&mut self) -> bool {
+    /// Draw every attached client; how soon an animation wants the next
+    /// frame, if one does.
+    fn render_all(&mut self) -> Option<Duration> {
         let now = Instant::now();
         self.sweep_alerts();
+        let clocks = self.clock_step(now);
         // display-time 0 means "until the next key press" (see handle_key).
         if self.opts.display_time_ms > 0 {
             let ttl = Duration::from_millis(self.opts.display_time_ms);
@@ -8192,7 +8219,115 @@ impl Server {
         for cid in ids {
             self.render_client(cid);
         }
-        self.animating()
+        let focus = self.animating().then_some(FRAME);
+        focus.into_iter().chain(clocks).min()
+    }
+
+    /// The panes with a clock on some attached client's screen, and how
+    /// wide each is drawn.
+    fn clocks_in_view(&self) -> Vec<(PaneId, u16)> {
+        let mut out: Vec<(PaneId, u16)> = Vec::new();
+        for sid in self.clients.values().filter_map(|c| c.session) {
+            let Some(w) = self.session(sid).and_then(|s| s.windows.get(s.cur)) else { continue };
+            for (id, rect) in &w.rects {
+                if w.pane(*id).is_some_and(|p| p.clock) && !out.iter().any(|(p, _)| p == id) {
+                    out.push((*id, rect.w));
+                }
+            }
+        }
+        out
+    }
+
+    /// Before a frame: for each clock on screen, the lines under it (worked
+    /// out again once a second, or for a new width) and its animation moved
+    /// on, the machine read twice a second for it. How soon the next frame
+    /// is due, while one moves. No clock on screen: nothing is read.
+    fn clock_step(&mut self, now: Instant) -> Option<Duration> {
+        let view = self.clocks_in_view();
+        if view.is_empty() {
+            self.meter = None;
+            return None;
+        }
+        let wall = chrono::Local::now();
+        for &(id, w) in &view {
+            let width = usize::from(w);
+            let stale = self.find_pane(id).is_some_and(|p| {
+                p.clock_lines
+                    .as_ref()
+                    .is_none_or(|l| l.width != width || now.duration_since(l.at) >= Duration::from_secs(1))
+            });
+            if stale {
+                let lines = match self.find_pane(id) {
+                    Some(p) if self.opts.clock_mode_info => self.clock_info(p, id, wall, width),
+                    _ => Vec::new(),
+                };
+                if let Some(p) = self.find_pane_mut(id) {
+                    p.clock_lines = Some(pane::ClockLines { at: now, width, lines });
+                }
+            }
+        }
+        let kind_for = |turns: u32| -> Option<clockanim::Kind> {
+            match self.opts.clock_mode_animation.as_str() {
+                _ if !self.opts.animation => None,
+                "pulse" => Some(clockanim::Kind::Pulse),
+                "matrix" => Some(clockanim::Kind::Matrix),
+                "bars" => Some(clockanim::Kind::Bars),
+                "cycle" => Some(clockanim::Kind::ALL[turns.saturating_sub(1) as usize % clockanim::Kind::ALL.len()]),
+                _ => None,
+            }
+        };
+        let kinds: Vec<(PaneId, Option<clockanim::Kind>)> =
+            view.iter().map(|&(id, _)| (id, self.find_pane(id).and_then(|p| kind_for(p.clock_turns)))).collect();
+        if kinds.iter().all(|(_, k)| k.is_none()) {
+            self.meter = None;
+            for (id, _) in &kinds {
+                if let Some(p) = self.find_pane_mut(*id) {
+                    p.clock_anim = None;
+                }
+            }
+            return None;
+        }
+        let load = self.meter_read(now);
+        let mut next: Option<Duration> = None;
+        for (id, kind) in kinds {
+            let Some(p) = self.find_pane_mut(id) else { continue };
+            let Some(kind) = kind else {
+                p.clock_anim = None;
+                continue;
+            };
+            if p.clock_anim.as_ref().is_none_or(|(a, _)| a.kind != kind) {
+                p.clock_anim = Some((clockanim::Anim::new(kind, u64::from(id)), now));
+            }
+            let input = clockanim::Input { load: load.clone(), out_bytes: p.output_bytes };
+            if let Some((a, last)) = p.clock_anim.as_mut() {
+                a.step(now.duration_since(*last).as_secs_f64(), input);
+                *last = now;
+            }
+            next = Some(next.map_or(kind.frame(), |n| n.min(kind.frame())));
+        }
+        next
+    }
+
+    /// The machine's load, read again when the last reading is half a
+    /// second old; nothing to go by yet on the first reading.
+    fn meter_read(&mut self, now: Instant) -> crate::sysinfo::Load {
+        match &mut self.meter {
+            Some(m) if now.duration_since(m.at) < Duration::from_millis(500) => m.load.clone(),
+            Some(m) => {
+                let counters = crate::sysinfo::counters();
+                m.load = crate::sysinfo::load(&m.counters, &counters, now.duration_since(m.at).as_secs_f64());
+                (m.counters, m.at) = (counters, now);
+                m.load.clone()
+            }
+            None => {
+                // Every figure there is, at nothing done: what is drawn for
+                // it is in place from the first frame.
+                let counters = crate::sysinfo::counters();
+                let load = crate::sysinfo::load(&counters, &counters, 1.0);
+                self.meter = Some(Meter { counters, at: now, load: load.clone() });
+                load
+            }
+        }
     }
 
     /// The status line of session `spos` as drawn for client `cid` (None:
@@ -8497,18 +8632,40 @@ impl Server {
             }
             cursor = None;
         }
-        // `clock-mode`: a big clock over the panes that asked for one, and
-        // under it what is worth a glance (`clock-mode-info`, `clock`).
+        // `clock-mode`: a big clock over the panes that asked for one, under
+        // it what is worth a glance (`clock-mode-info`, `clock`) and, below,
+        // what moves with the machine (`clock-mode-animation`, `clockanim`).
         {
             let now = chrono::Local::now();
             let w = &self.sessions[spos].windows[self.sessions[spos].cur];
             let colour = self.opts.clock_mode_colour.unwrap_or(self.opts.pane_border_active_fg);
+            let palette = clockanim::Palette { colours: self.opts.pane_colours.clone(), bg: self.opts.window_bg };
             for (id, rect) in w.rects.iter().filter(|(id, _)| w.pane(*id).is_some_and(|p| p.clock)) {
-                let lines = match w.pane(*id) {
-                    Some(p) if self.opts.clock_mode_info => self.clock_info(p, *id, now, usize::from(rect.w)),
-                    _ => Vec::new(),
+                let Some(p) = w.pane(*id) else { continue };
+                // As worked out before the frame (`clock_step`), unless the
+                // pane's width changed since.
+                let fresh;
+                let lines = match &p.clock_lines {
+                    Some(l) if l.width == usize::from(rect.w) => &l.lines,
+                    _ if self.opts.clock_mode_info => {
+                        fresh = self.clock_info(p, *id, now, usize::from(rect.w));
+                        &fresh
+                    }
+                    _ => &Vec::new(),
                 };
-                render::draw_clock(&mut grid, *rect, now, self.opts.clock_mode_style, colour, &lines);
+                let anim = p.clock_anim.as_ref().map(|(a, _)| a);
+                let band = render::draw_clock(
+                    &mut grid,
+                    *rect,
+                    now,
+                    self.opts.clock_mode_style,
+                    colour,
+                    lines,
+                    anim.is_some(),
+                );
+                if let (Some(a), Some(band)) = (anim, band) {
+                    a.draw(&mut grid, band, &palette);
+                }
                 cursor = None;
             }
         }
@@ -9483,6 +9640,21 @@ fn selected_text(p: &mut Pane) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No clock on any screen: the machine is not read, and what was read
+    /// for the last clock is dropped; no frame is asked for.
+    #[test]
+    fn with_no_clock_on_screen_the_machine_is_not_read() {
+        let (pane_tx, _p) = std::sync::mpsc::channel::<PaneEvent>();
+        let (events, _e) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        let mut s = Server::new(pane_tx, "t".into(), events);
+        let now = Instant::now();
+        s.meter = Some(Meter { counters: Default::default(), at: now, load: Default::default() });
+        assert_eq!(s.clock_step(now), None);
+        assert!(s.meter.is_none(), "the last reading dropped");
+        assert_eq!(s.clock_step(now + Duration::from_secs(1)), None);
+        assert!(s.meter.is_none(), "and none taken");
+    }
 
     /// A selection copies the characters drawn in the columns it covers:
     /// wide ones (Chinese, an emoji) two columns each, an accent with its

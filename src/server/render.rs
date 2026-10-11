@@ -937,6 +937,11 @@ pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, colour: Color, 
 /// each with its colour (None: the pane's own). The whole block is centred
 /// in `rect`; lines that do not fit go from the last up, so the time stays.
 /// Too small for the big digits: the time as text in the corner.
+///
+/// `below`: something is to be drawn under it (an animation): the block
+/// sits a third of the free rows down instead of half, and the rows under
+/// it, past a blank one, are given back; whatever room the time and the
+/// lines take comes first.
 pub fn draw_clock(
     g: &mut Grid,
     rect: Rect,
@@ -944,7 +949,8 @@ pub fn draw_clock(
     hours: u8,
     colour: Color,
     lines: &[(String, Option<Color>)],
-) {
+    below: bool,
+) -> Option<Rect> {
     let (time, ampm) = if hours == 12 {
         (now.format("%-I:%M").to_string(), now.format("%p").to_string())
     } else {
@@ -953,19 +959,20 @@ pub fn draw_clock(
     let style = Style::colors(colour, Color::Default);
     g.fill(rect, Style::default());
     if rect.w == 0 || rect.h == 0 {
-        return;
+        return None;
     }
     let big_w = time.chars().count() as u16 * 4;
     if rect.w < big_w || rect.h < 5 {
         let text = if ampm.is_empty() { time } else { format!("{time} {ampm}") };
         g.put_str(rect.x, rect.y, &text, style, rect.w);
-        return;
+        return None;
     }
     // A blank row between the digits and the lines, when there are any.
     let room = usize::from(rect.h.saturating_sub(6));
     let shown = &lines[..lines.len().min(room)];
     let total = 5 + if shown.is_empty() { 0 } else { 1 + shown.len() as u16 };
-    let y0 = rect.y + (rect.h - total) / 2;
+    let free = rect.h - total;
+    let y0 = rect.y + if below { free / 3 } else { free / 2 };
     draw_big_text(g, Rect { x: rect.x, y: y0, w: rect.w, h: 5 }, &time, style);
     let x_end = rect.x + (rect.w - big_w) / 2 + big_w;
     if !ampm.is_empty() && x_end + 2 <= rect.x + rect.w {
@@ -977,6 +984,8 @@ pub fn draw_clock(
         let line_style = fg.map_or(Style::default(), |c| Style::colors(c, Color::Default));
         g.put_str(x, y0 + 6 + i as u16, text, line_style, rect.x + rect.w - x);
     }
+    let y = y0 + total + 1;
+    (below && y < rect.y + rect.h).then(|| Rect { x: rect.x, y, w: rect.w, h: rect.y + rect.h - y })
 }
 
 /// Draw digits and `:` as 3x5 blocks centred in `rect`; false when there is
@@ -1676,7 +1685,7 @@ mod tests {
         };
         // Room for all: digits, a blank row, the three lines, centred.
         let mut g = Grid::new(30, 12);
-        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 12 }, now, 24, Color::Idx(4), &lines);
+        assert_eq!(draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 12 }, now, 24, Color::Idx(4), &lines, false), None);
         let b = blocks(&g);
         assert!(!b.is_empty() && b.iter().all(|c| *c == Color::Idx(4)), "the digits in the clock's colour");
         let text: Vec<String> = (0..12).map(|y| row(&g, y).trim().to_string()).collect();
@@ -1687,18 +1696,44 @@ mod tests {
         assert_eq!(g.get(x, at as u16 + 1).style.fg, Color::Idx(1), "a line in its own colour");
         // Short: the last lines go, the time stays.
         let mut g = Grid::new(30, 7);
-        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 7 }, now, 24, Color::Idx(4), &lines);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 7 }, now, 24, Color::Idx(4), &lines, false);
         let text: Vec<String> = (0..7).map(|y| row(&g, y).trim().to_string()).collect();
         assert!(!blocks(&g).is_empty() && text.contains(&"first".to_string()), "{text:?}");
         assert!(!text.contains(&"second".to_string()) && !text.contains(&"third".to_string()), "{text:?}");
         // 12 hours: 2:25, PM beside it.
         let mut g = Grid::new(30, 6);
-        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 6 }, now, 12, Color::Idx(4), &[]);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 6 }, now, 12, Color::Idx(4), &[], false);
         assert!((0..6).any(|y| row(&g, y).contains("PM")), "AM / PM beside the digits");
         // Too small for the digits: the time as text.
         let mut g = Grid::new(12, 3);
-        draw_clock(&mut g, Rect { x: 0, y: 0, w: 12, h: 3 }, now, 12, Color::Idx(4), &lines);
+        assert_eq!(draw_clock(&mut g, Rect { x: 0, y: 0, w: 12, h: 3 }, now, 12, Color::Idx(4), &lines, true), None);
         assert_eq!(row(&g, 0).trim_end(), "2:25 PM");
+    }
+
+    /// Something to draw under the clock: the block goes a third of the
+    /// free rows down, not half, and the rows under it (past a blank one)
+    /// are given back; the time and every line that fits come first, and
+    /// with nothing under it the clock is where it always was.
+    #[test]
+    fn the_clock_leaves_the_rows_under_it_for_an_animation() {
+        use chrono::TimeZone;
+        let now = chrono::Local.with_ymd_and_hms(2026, 10, 10, 14, 25, 0).unwrap();
+        let lines = vec![("first".to_string(), None), ("second".to_string(), None)];
+        let digits_at = |g: &Grid| (0..g.rows).find(|&y| (0..g.cols).any(|x| g.get(x, y).text() == "█")).unwrap();
+        let rect = Rect { x: 1, y: 2, w: 40, h: 30 };
+        let (mut plain, mut room) = (Grid::new(42, 34), Grid::new(42, 34));
+        assert_eq!(draw_clock(&mut plain, rect, now, 24, Color::Idx(4), &lines, false), None);
+        let band = draw_clock(&mut room, rect, now, 24, Color::Idx(4), &lines, true).unwrap();
+        // 30 rows, 8 taken (digits, a blank, two lines): 22 free, 7 above.
+        assert_eq!((digits_at(&plain), digits_at(&room)), (2 + 11, 2 + 7));
+        assert_eq!(band, Rect { x: 1, y: 2 + 7 + 8 + 1, w: 40, h: 30 - 7 - 8 - 1 });
+        let line_y = (0..room.rows)
+            .find(|&y| (0..room.cols).map(|x| room.get(x, y).text()).collect::<String>().contains("second"))
+            .unwrap();
+        assert_eq!(line_y + 2, band.y, "a blank row between the last line and the band");
+        // A pane just tall enough for the time and the lines: no rows left.
+        let mut g = Grid::new(42, 10);
+        assert_eq!(draw_clock(&mut g, Rect { x: 0, y: 0, w: 40, h: 8 }, now, 24, Color::Idx(4), &lines, true), None);
     }
 
     /// A pane's name and mode go under its number, centred, in the same

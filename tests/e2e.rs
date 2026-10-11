@@ -460,6 +460,25 @@ impl Conn {
         self.screen.screen().contents()
     }
 
+    /// How many frames (output messages) arrive in `ms` milliseconds, each
+    /// drawn on the screen.
+    async fn frames_for(&mut self, ms: u64) -> usize {
+        let end = Instant::now() + Duration::from_millis(ms);
+        let mut n = 0;
+        while let Some(left) = end.checked_duration_since(Instant::now()) {
+            match tokio::time::timeout(left, read_frame::<_, ServerMsg>(&mut self.rd)).await {
+                Ok(Ok(Some(ServerMsg::Output(b)))) => {
+                    self.screen.process(&b);
+                    n += 1;
+                }
+                Ok(Ok(Some(_))) => {}
+                Ok(_) => panic!("server closed"),
+                Err(_) => break,
+            }
+        }
+        n
+    }
+
     fn row(&self, y: u16) -> String {
         self.screen.screen().rows(0, COLS).nth(y as usize).unwrap_or_default()
     }
@@ -2075,6 +2094,84 @@ async fn copy_mode_vi_motions_and_modes() {
     let out = h.wait_buffer("the rectangle copied", |out| out != three).await;
     assert!(out.lines().all(|l| l.chars().count() <= 3), "a rectangle is narrow: {out:?}");
     h.cli(&["kill-server"]).await;
+}
+
+/// Under the clock something moves with the machine: `cycle` (the default)
+/// takes pulse, matrix and bars in turn, one each time the clock is put
+/// on; frames come while it is up and stop when it goes; `off`, or
+/// `animation off`, leaves the clock as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn under_the_clock_something_moves_with_the_machine() {
+    let h = Harness::start("clockanim").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "a"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let (_, out, _) = h.cli(&["show-options", "-gv", "clock-mode-animation"]).await;
+    assert_eq!(out.trim(), "cycle");
+    let braille = |s: &vt100::Screen| s.contents().chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
+    let katakana = |s: &vt100::Screen| s.contents().chars().any(|c| ('\u{ff66}'..='\u{ff9d}').contains(&c));
+    let bars = |s: &vt100::Screen| s.contents().contains("OUT ") && s.contents().contains("MEM ");
+    for (kind, seen) in [("pulse", &braille as &dyn Fn(&vt100::Screen) -> bool), ("matrix", &katakana), ("bars", &bars)]
+    {
+        c.prefix('t').await;
+        c.wait_for(kind, |s| s.contents().contains("███") && seen(s)).await;
+        if kind == "pulse" {
+            c.wait_for("the heart and the CPU", |s| s.contents().contains("♥") && s.contents().contains("CPU ")).await;
+            // The lines over it still change while it moves (worked out
+            // once a second, not once).
+            let up = |s: &vt100::Screen| {
+                let t = s.contents();
+                t.split(" · up ").nth(1).map(|r| r.split(' ').next().unwrap_or("").to_string())
+            };
+            let first = up(c.screen.screen()).expect("the pane line");
+            c.wait_for("the pane line, a second on", |s| up(s).is_some_and(|u| u != first)).await;
+        }
+        let moving = c.frames_for(800).await;
+        assert!(moving >= 5, "{kind}: {moving} frames in 0.8 s");
+        c.type_str("x").await;
+        c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+        let still = c.frames_for(800).await;
+        assert!(still <= 1, "{kind}: {still} frames after the clock went");
+    }
+    // The pane's own output moves `OUT`: a short burst printed under the
+    // clock (sent to the pane; the clock only takes the client's keys).
+    // Short, and it ends by itself: the tests running beside this one keep
+    // their timing.
+    h.cli(&["set", "-g", "clock-mode-animation", "bars"]).await;
+    c.prefix('t').await;
+    c.wait_for("bars", |s| s.contents().contains("OUT 0")).await;
+    let burst = if cfg!(windows) { "for /L %i in (1,1,2000) do @echo %i" } else { "seq 1 20000" };
+    h.cli(&["send-keys", "-t", "a", burst, "Enter"]).await;
+    c.wait_for("OUT with the pane's output", |s| {
+        s.contents().split("OUT ").nth(1).is_some_and(|r| r.starts_with(|ch: char| ch.is_ascii_digit() && ch != '0'))
+    })
+    .await;
+    c.type_str("x").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    h.wait_capture("a", "the burst over", |t| t.trim_end().ends_with("keepane>")).await;
+    // A kind set: that one, every time.
+    h.cli(&["set", "-g", "clock-mode-animation", "matrix"]).await;
+    c.prefix('t').await;
+    c.wait_for("matrix again", |s| s.contents().contains("███") && katakana(s)).await;
+    c.type_str("x").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    // off, and animation off: the clock alone, still.
+    for (option, value) in [("clock-mode-animation", "off"), ("animation", "off")] {
+        if option == "animation" {
+            h.cli(&["set", "-g", "clock-mode-animation", "pulse"]).await;
+        }
+        h.cli(&["set", "-g", option, value]).await;
+        c.prefix('t').await;
+        c.wait_for("the clock", |s| s.contents().contains("███") && s.contents().contains(" · UTC ")).await;
+        let still = c.frames_for(800).await;
+        let s = c.screen.screen();
+        assert!(!braille(s) && !katakana(s) && !s.contents().contains("OUT "), "{option} {value}: {}", c.text());
+        assert!(still <= 1, "{option} {value}: {still} frames");
+        c.type_str("x").await;
+        c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    }
+    let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "fireworks"]).await;
+    assert!(code != 0 && err.contains("one of bars, cycle, matrix, off, pulse"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

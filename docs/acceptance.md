@@ -3887,3 +3887,35 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 6 | 全量 + 复现 | fmt、clippy 两平台 0；Windows 371 + 10 + 120；Linux 348 + 120；两种模拟都是 120/120 | 干净（1/3） |
 | 7 | 可复现性 | 受影响的 4 个 e2e 在长主机名下连跑 10 次 40/40，Windows 连跑 10 次 40/40 | 干净（2/3） |
 | 8 | 静态一致性 + 全量 | 命令文本的读取都走 `Mark.command` 或 `command_at`；剩下的 1 处 `command_of`（pane.rs:1090）只判断是否输入了内容，读第一行就够；README 中英的 `0`/`$` 说明与行为一致。fmt、clippy 两平台 0；Windows 371 + 10 + 120；Linux 348 + 120 | 干净（3/3），验收通过 |
+## 123. 时钟页的动画：随机器负载变化，颜色跟随主题
+
+用户："i wanna add some ascii animation on the bottom of ctrl b t … very cool"，"it can dancing with the usage of cpu/mem/io/network … and temperature"，"the color should adjust with the theme"；温度选 A（只用真实传感器）。
+
+- 设计：新选项 `clock-mode-animation pulse|matrix|bars|cycle|off`（默认 `cycle`：每次在这个 pane 打开时钟换下一种）；`animation off` 也关掉它。时间和信息行优先，动画只用剩下的行（少于 3 行或 20 列就不画）。
+  - `pulse`：监护仪。心跳 60–150 次/分随 CPU；网络波形高度随流量；磁盘波形像呼吸，越忙越快越深。每条波形旁写数字。
+  - `matrix`：字符雨。CPU 越忙越快；内存越高列越多；网络流量带来青色的列；磁盘越忙闪烁越快。
+  - `bars`：均衡器。每核一根柱、内存、磁盘读/写、网络收/发、温度、本 pane 输出量；峰值标记缓落。
+  - 颜色只用 16 色（主题的 `pane-colours` 经 `recolor` 着色；没设时用终端自己的颜色）；尾巴在主题给出 RGB 时混入背景色，否则用 dim。
+- 结构：
+  1. 平台层新增 `counters()`（累计值）：Windows 用 `NtQuerySystemInformation`（每核）、PDH 英文计数器名的原始值（磁盘）、`GetIfTable2`（只算硬件网卡，去掉虚拟交换机和过滤层）、温度由独立线程经 WMI 读 LibreHardwareMonitor/OpenHardwareMonitor（ACPI thermal zone 在这台机器上恒为 27.9 °C，不用）；Linux 用 `/proc/stat`、`/proc/diskstats`（只算有 `device` 的整盘）、`/proc/net/dev`（有硬件网卡时只算硬件）、thermal zone 与 hwmon 里的 CPU 传感器；macOS 用 mach 每核、`NET_RT_IFLIST2` 的 64 位计数，磁盘与温度没有。
+  2. 平台无关的 `sysinfo::load(前, 后, 秒)` 算负载；计数回退算 0，核数变化算空闲。
+  3. `server/clockanim.rs`：`Anim` 只随 `step(dt, input)` 前进，同样的步进给出同样的画面。
+  4. 服务器：只在有时钟显示时每 0.5 秒读一次机器（`Meter`），没有时钟就丢掉；`render_all` 返回下一帧的时间（pulse 50 ms、matrix 80 ms、bars 66 ms），主循环按它唤醒；时钟下的信息行每秒算一次（原来每帧算，动画后每秒算 20 次会读 20 次 git 分支和进程目录）。
+- 开发中发现并修掉：150 次/分时一个采样跨 0.0625 个心跳，而 QRS 尖峰只有约 0.01 宽，尖峰会落在两个采样之间消失（单测发现）→ 每个采样取区间内 8 个点中幅度最大的；空闲核的峰值标记落在最底行，像噪点（看画面发现）→ 标记只画在柱顶以上且不在底行；macOS 的 clippy `chunks_exact_to_as_chunks`（本地 `--target aarch64-apple-darwin` 发现，否则 CI 才会报）。
+- 行为变化：`clock-mode-animation off` 时画面与原来一致（原有渲染测试不变，`below = false` 的位置不变）；信息行最多晚 1 秒更新（原来每帧现算）。
+- 代价（release，e2e 进程内含测试客户端，5 秒平均）：off 1.0 帧/秒、0.1 KB/s、CPU 0.9%；pulse 16.4 帧/秒、3.8 KB/s、2.8%；matrix 11.4 帧/秒、15.7 KB/s、1.2%；bars 13.4 帧/秒、2.5 KB/s、2.5%（一个核的百分比）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性 | 选项登记 7 处（字段、默认值、SHOWABLE、KNOWN、取值表、set、get）齐全，补全脚本从同一张表生成；文档说法与代码逐条对照 14 条，2 条不符：network 带来的是青色的列（文档写"亮色"）；"颜色随温度从绿到红"只对 pulse 和 matrix 成立，bars 按高度着色 | **有问题**：README 中英与手册 3 处改正（不计数） |
+| 2 | 机制通路（变异） | 16 个变异（每个切断一条"输入→输出"）：抓到 9 个；漏掉 7 个：磁盘→字符闪烁、磁盘→呼吸、温度→颜色（这三个输入没有测试）；没有时钟时仍读机器、pane 输出没计数（`OUT`）、信息行永不刷新（这三个服务器层机制没有测试）；"宽度变了仍用旧行"不改变画面（渲染处宽度不符时会现算），只多花代价，记为等价变异 | **有问题**：补单测 `the_disks_quicken_the_breath_and_the_flicker`（12 秒 2 次 / 8 次呼吸，深度 <0.1 / >0.95，闪烁 >5 倍）、`the_colour_follows_the_temperature_else_the_cores`、服务器单测 `with_no_clock_on_screen_the_machine_is_not_read`，e2e 补"刷屏命令使 `OUT` 非零"和"时钟显示时 `up` 会变"；重跑 6 个漏掉的变异 6/6 被抓到（不计数） |
+| 3 | 全量 | fmt、clippy 三平台 0（Windows、Linux、`--target aarch64-apple-darwin`）；Windows 387 + 10 + 121；Linux 363 + 121 | 干净（1/3） |
+| 4 | 边界与退化输入 | 逐条看 18 个边界（3 行 3 条波形、标签放不下、32/64 核放不下、超宽 2048 列以上、NaN 温度、计数回退、核数变化、窗口隐藏后 dt 截到 0.5 秒、选项在时钟显示中改变、无主题调色板等）；新增单测 `every_size_draws_inside_its_band`：3 种 × 4 种负载（满、空、64 核、NaN/∞/越界）× 19 种宽 × 14 种高 = 798 个组合，无 panic，带外没有一个字符 | 干净（2/3） |
+| 5 | 代码正确性 | 数值对照：Windows 写 256 MiB 并 sync，PDH 原始值计到 256 MiB；网卡累计与 `Get-NetAdapterStatistics` 的硬件网卡相差约 600 字节（两次读取的间隔），过滤层没有重复计；Linux 写 256 MiB 计到 256 MiB，网络等于 eth0（docker0 未计）；温度线程最后一次被问后 9.5 秒 `running` 为 false；资源：PDH 查询一个句柄常驻、`FreeMibTable`、`vm_deallocate`、COM 对象在 `CoUninitialize` 前释放 | 干净（3/3） |
+| 6 | 可复现性 + 全量 | 新 e2e 单跑 Windows 10/10、Linux 10/10；macOS 长 `TMPDIR`、长主机名两种模拟 121/121；但 Windows 全量一次 120/121：`a_late_key_after_the_prefix_gets_a_panel` 要求 3 次里 2 次在 360 ms 内出提示面板，失败；单跑通过。面板由自己的事件唤醒，这条路径没改；第 2 轮加的 e2e 在并行全量里跑 `for /L … 300000` 刷屏，给并行的计时测试加了负载（4 次全量出现 1 次，未能证实是唯一原因） | **有问题**：改成先开时钟、再用 `send-keys` 发 2000 行（sh 用 `seq 1 20000`）的短输出，自己结束，不用 Ctrl-C；单跑 5/5，对应变异仍被抓到；Windows 全量 e2e 连跑 2 次 121/121（不计数，重新计数） |
+| 7 | 全量 | fmt、clippy 三平台 0；Windows 388 + 10 + 121（e2e 连跑 2 次）；Linux 364 + 121 | 干净（1/3） |
+| 8 | 可复现性 | Windows 全量 e2e 再连跑 3 次（加上第 6 轮后的 2 次，连续 5 次）121/121；Linux 全量 e2e 连跑 3 次 121/121；`a_late_key_after_the_prefix_gets_a_panel` 5 次全过 | 干净（2/3） |
+| 9 | 静态一致性（整个改动） | 代码注释里的 19 条数字/行为说法逐条对照（阈值、频率、对数刻度两端、半秒截断、2 秒/5 秒线程节奏等），18 条一致；`draw_matrix` 的注释仍写网络带来"bright ones"，与第 1 轮改过的文档同一个错 | **有问题**：改注释为"越多越青"（不计数，重新计数） |
+| 10 | 全量 | fmt、clippy 三平台 0；Windows 388 + 10 + 121；Linux 364 + 121 | 干净（1/3） |
+| 11 | 逻辑正确与不变量 | 写时钟状态的 13 处逐一对照 5 条不变量：时钟关掉必清动画和信息行（唯一一处置 false 时同时清）；打开时重置且只在原来没开时轮换；只有在屏时钟且动画开着才读机器（`meter` 两处置空覆盖"无时钟"和"全部 off"）；只有在动的时候才要下一帧；信息行先于动画占位 | 干净（2/3） |
+| 12 | 可复现性（逐字节） | 三种动画各步进 200 次后的画面（文字和每格样式）取指纹：Windows 3 次、Linux 3 次都是 `d9f86857e314d349`，跨进程、跨平台一致 | 干净（3/3），验收通过 |

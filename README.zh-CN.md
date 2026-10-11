@@ -246,7 +246,7 @@ keepane kill-server
 | `m` / `M` | 标记这个 pane / 取消标记（`join-pane` 默认搬走被标记的那个） |
 | `T` / `f` | 给这个 pane 起名 / 按名字或标题找窗口 |
 | `#` / `-` / `=` | 列出粘贴缓冲区 / 删掉最新的 / 挑一个粘贴 |
-| `t` / `~` / `r` | 时钟，下面写着日期（和 UTC 时间）、这个 pane（程序、目录、分支、跑了多久、安静了多久）、它的上一条命令（花了多久、结果；目录或命令太长时用 `…` 缩短，保证后面的内容显示完整）、它的 agent（模型、花费、上下文）和这台机器（`clock-mode-info off` 只显示时间；`clock-mode-style 12`、`clock-mode-colour`）/ 最近的提示消息 / 重画 |
+| `t` / `~` / `r` | 时钟，下面写着日期（和 UTC 时间）、这个 pane（程序、目录、分支、跑了多久、安静了多久）、它的上一条命令（花了多久、结果；目录或命令太长时用 `…` 缩短，保证后面的内容显示完整）、它的 agent（模型、花费、上下文）和这台机器（`clock-mode-info off` 只显示时间；`clock-mode-style 12`、`clock-mode-colour`）；再往下是随机器负载变化的动画（见下文）/ 最近的提示消息 / 重画 |
 | `S` | 开关 `synchronize-panes`：敲的东西同时进这个窗口的所有 pane，状态栏会多个 `S` |
 | `[` / `PgUp` | copy mode（下面单独说） |
 | `]` | 粘贴剪贴板 |
@@ -264,6 +264,14 @@ keepane kill-server
 开着中文、日文、韩文输入法时，按出来的全角字符（`[` 出来 `【`，`:` 出来 `：`，`y` 出来 `ｙ`）照样当作那个键：前缀之后、copy mode、选择列表和菜单、y/n 确认、dashboard 里都是。打进 pane 的字，以及提示框里输入的文字（比如窗口名）保持原样；如果你把全角字符本身绑成了键，就按你的绑定来。
 
 pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程序仅按动画结束后的尺寸调整，不必等待动画完成。用 `set -g animation off` 关闭动画，或通过 `animation-time` 调整时长（毫秒）。
+
+时钟（prefix t）下方剩余的行里有一段随机器负载变化的动画（`clock-mode-animation`）：
+
+- `pulse`：监护仪。心跳频率随 CPU 变化，核心空闲时每分钟 60 下，全部满载时 150 下；网络波形的高度随流量变化；磁盘波形像呼吸，磁盘越忙，呼吸越快越深。每条波形旁边写着对应数字（`♥ 92  CPU 35%  61°C`、`NET ↓1.2M ↑80K`、`DISK r12M w0`）。
+- `matrix`：字符雨。CPU 越忙下落越快，内存占用越高下落的列越多，有网络流量时出现青色的列，磁盘越忙字符闪烁越快。
+- `bars`：均衡器。每个核心一根柱，然后是内存、磁盘（读、写）、网络（收、发）、温度和这个 pane 自己的输出量；每组下面有标签，峰值标记缓慢下落。
+
+`pulse` 和 `matrix` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`cycle`（默认）轮流使用这三种，每次打开时钟换一种；`off` 或 `animation off` 时钟就不动。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有磁盘数字；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。
 
 copy mode 的常用操作：
 
@@ -624,6 +632,7 @@ set -g log-history-days 30        # 留几天；0 永久保留（log-history-dir
 set -g undo-kill-time 10          # 关掉的 pane / 窗口保留几秒可以找回（prefix u）；0 不保留
 set -g keep-zoom off              # 切到别的 pane 就取消最大化，和 tmux 一样（on：最大化跟着走）
 set -g animation off              # 不要焦点框飞过去的动画（animation-time 160：毫秒数，0 到 10000）
+set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、cycle（默认：轮流）或 off
 
 bind | split-window -h
 bind - split-window -v

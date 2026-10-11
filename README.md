@@ -409,7 +409,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `T` / `f` | name this pane / find a window by name or title |
 | `[` / `PgUp` | copy mode (see below) |
 | `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
-| `t` / `~` / `r` | clock, and under it the date (and UTC), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`) / recent messages / redraw |
+| `t` / `~` / `r` | clock, and under it the date (and UTC), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`); below, something that moves with the machine (see below) / recent messages / redraw |
 | `]` | paste the clipboard |
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names) |
 | `d` | detach |
@@ -432,6 +432,32 @@ Zooming, unzooming and moving the focus are animated, for 160 ms by
 default. Programs are resized once, to the size they end up at, so nothing
 waits for the animation. `set -g animation off` turns it off, and
 `animation-time` sets the milliseconds.
+
+Under the clock (prefix t), in the rows the time and its lines leave, something
+moves with the machine (`clock-mode-animation`):
+
+- `pulse`: a monitor. The heart beats at 60 a minute with the cores idle and
+  150 with them all busy; a network wave stands as tall as the traffic; a disk
+  wave breathes faster and deeper the more the disks do. Each trace has its
+  figures beside it (`♥ 92  CPU 35%  61°C`, `NET ↓1.2M ↑80K`, `DISK r12M w0`).
+- `matrix`: falling characters. Faster with the cores, more columns with
+  memory, cyan columns with the network, quicker flicker with the disks.
+- `bars`: an equalizer with a bar for each core, then memory, the disks (read,
+  written), the network (in, out), the temperature and the pane's own output,
+  each group labelled, peaks falling slowly.
+
+In `pulse` and `matrix` the colour goes from green through yellow to red with
+the CPU's temperature, or with the cores' load when there is no temperature;
+the bars are green at the bottom, yellow higher up and red at the top. `cycle` (the default)
+takes the three in turn, a new one each time the clock is put on; `off`, or
+`animation off`, leaves the clock still. It is drawn in the 16 colours a theme
+sets (`pane-colours`; the terminal's own when the theme sets none), so each
+theme colours it. The machine is read twice a second, only while a clock is on
+screen. A figure the system does not give is left out, never made up: macOS
+gives no disk figure; the temperature comes from a real CPU sensor only (Linux:
+thermal zones and hwmon; Windows: LibreHardwareMonitor or OpenHardwareMonitor
+while one runs, since Windows' own ACPI thermal zone is a fixed figure on many
+machines; macOS: none).
 
 Copy mode, the keys used most:
 
@@ -1143,6 +1169,7 @@ set -g log-history-days 30        # for how long; 0 keeps everything (log-histor
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
 set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
+set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, cycle (the default: each in turn) or off
 set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
