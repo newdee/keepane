@@ -3,7 +3,7 @@
   Re-record the demos and re-cut every picture in docs/img from them.
 
 .DESCRIPTION
-  1. tests/demo_frames.rs plays four scripted sessions into the real keepane.exe
+  1. tests/demo_frames.rs plays scripted sessions into the real keepane.exe
      and writes each screen as JSON: f0001.json ... for the animation, and
      still-<name>.json wherever the script marks a picture.
   2. tools/render-frames.ps1 draws them as PNGs.
@@ -45,6 +45,8 @@ $takes = @(
     @{ Env = "KEEPANE_DEMO_OUT7"; Test = "record_agents"; Name = "keepane-agents" },
     @{ Env = "KEEPANE_DEMO_OUT8"; Test = "record_fix"; Name = "keepane-fix" },
     @{ Env = "KEEPANE_DEMO_OUT9"; Test = "record_resume"; Name = "keepane-resume" },
+    # The clock and what moves under it, over a stand-in build.
+    @{ Env = "KEEPANE_DEMO_OUT10"; Test = "record_clock"; Name = "keepane-clock" },
     # The tour: a panel beside the terminal, and the phone (Edge through
     # puppeteer-core, as tools/make-phone-shots.ps1 does).
     @{ Env = "KEEPANE_DEMO_OUT5"; Test = "record_tour"; Name = "keepane-tour"; Panel = 380 }

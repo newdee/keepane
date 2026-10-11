@@ -273,6 +273,14 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 
 `pulse` 和 `matrix` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`cycle`（默认）轮流使用这三种，每次打开时钟换一种；`off` 或 `animation off` 时钟就不动。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有磁盘数字；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-clock-light.gif">
+    <img src="docs/img/keepane-clock.gif" width="880"
+         alt="一个正在编译的 pane 上打开三次时钟：心跳随 CPU 加快、放慢的监护仪，字符雨，以及每个核心、内存、磁盘、网络和 pane 输出的柱状图">
+  </picture>
+</p>
+
 copy mode 的常用操作：
 
 - 移动：`h` `j` `k` `l` 或方向键；`w` `b` `e` 按词移动；`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转；`[` `]` 跳到上一条 / 下一条命令输入的位置。`0` 和 `$` 跳到这一行的开头和结尾；一行太长折成几行显示时，也跳到整行的开头和结尾。

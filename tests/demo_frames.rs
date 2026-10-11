@@ -879,6 +879,90 @@ fn record_tour() {
     d.finish();
 }
 
+/// The clock (prefix t) over a pane running a build: each time it is put
+/// on, the next of what moves under it (`clock-mode-animation cycle`), the
+/// monitor, the rain, the bars, all going with the machine.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_clock() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT10").unwrap_or_else(|_| "target/demo-frames-10".into());
+    let mut d = Demo::start("clockdemo", &out_dir, "");
+    // A stand-in build: lines to print, cores kept busy (each thread in a
+    // rhythm of its own, so the load rises and falls), a file written now
+    // and then for the disks.
+    std::fs::write(
+        d.tmp.join("project").join("build.ps1"),
+        r#"$t0 = [DateTime]::UtcNow
+$n = [Environment]::ProcessorCount
+$jobs = 1..$n | ForEach-Object {
+    Start-ThreadJob -ThrottleLimit $n -ArgumentList $_, $n, $t0 {
+        param($k, $n, $t0)
+        while (($s = ([DateTime]::UtcNow - $t0).TotalSeconds) -lt 70) {
+            # One load for all: up and down every 10 s, more cores busy the higher it is.
+            $level = (1 - [Math]::Cos($s / 10 * 2 * [Math]::PI)) / 2
+            if ($k / $n -le $level) {
+                $busy = [DateTime]::UtcNow.AddMilliseconds(100)
+                while ([DateTime]::UtcNow -lt $busy) { $x = 0; for ($i = 0; $i -lt 5000; $i++) { $x += $i } }
+            } else {
+                Start-Sleep -Milliseconds 100
+            }
+        }
+    }
+}
+$file = Join-Path $env:TEMP "keepane-demo-build.bin"
+$block = [byte[]]::new(16MB)
+$crates = 'serde', 'tokio', 'vt100', 'chrono', 'unicode-width', 'portable-pty', 'sha2', 'qrcode', 'ed25519-dalek', 'keepane'
+for ($i = 1; $i -le 800; $i++) {
+    "   Compiling $($crates[$i % $crates.Count]) v0.$($i % 9).$($i % 7)"
+    if ($i % 10 -eq 0) {
+        # Through to the disk, not into the cache: the disks' bar moves.
+        $fs = [IO.FileStream]::new($file, 'Create', 'Write', 'None', 4096, [IO.FileOptions]::WriteThrough)
+        $fs.Write($block, 0, $block.Length)
+        $fs.Dispose()
+    }
+    Start-Sleep -Milliseconds 80
+}
+$jobs | Stop-Job
+Remove-Item $file -ErrorAction SilentlyContinue
+"    Finished release""#,
+    )
+    .expect("build script");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s build"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(3);
+    rec.type_line(".\\build.ps1");
+    rec.until("the build", |s| s.contents().contains("Compiling"), 30);
+    rec.hold(6);
+
+    // The monitor: the heart beats with the cores, the disk breathes.
+    rec.key("\x02t");
+    rec.until("the monitor", |s| s.contents().contains("♥"), 10);
+    rec.hold(40);
+    // Any key puts the clock away; the build went on under it.
+    rec.key("q");
+    rec.hold(4);
+
+    // The rain.
+    rec.key("\x02t");
+    rec.until("the rain", |s| s.contents().chars().any(|c| ('\u{ff66}'..='\u{ff9d}').contains(&c)), 10);
+    rec.hold(35);
+    rec.key("q");
+    rec.hold(4);
+
+    // The bars: a bar a core, memory, the disks, the network, the pane's output.
+    rec.key("\x02t");
+    rec.until("the bars", |s| s.contents().contains("OUT "), 10);
+    rec.hold(40);
+    rec.key("q");
+    rec.hold(5);
+
+    d.finish();
+}
+
 /// Everything a recording needs: a pty running a plain shell with keepane on
 /// the PATH, a scratch directory, and the frame recorder itself.
 struct Demo {
@@ -1179,7 +1263,7 @@ impl Recorder {
             json.push('[');
             let mut first = true;
             let mut run = String::new();
-            let mut run_style: Option<(String, String, bool, bool)> = None;
+            let mut run_style: Option<(String, String, bool, bool, bool)> = None;
             let mut x = 0;
             while x < cols {
                 let Some(cell) = screen.cell(y, x) else {
@@ -1187,7 +1271,7 @@ impl Recorder {
                     continue;
                 };
                 let wide = cell.is_wide();
-                let style = (color(cell.fgcolor()), color(cell.bgcolor()), cell.bold(), cell.inverse());
+                let style = (color(cell.fgcolor()), color(cell.bgcolor()), cell.bold(), cell.inverse(), cell.dim());
                 let text = cell.contents();
                 let text = if text.is_empty() { " ".to_string() } else { text.to_string() };
                 match &run_style {
@@ -1304,18 +1388,19 @@ impl Drop for Phone {
     }
 }
 
-fn push_run(json: &mut String, first: &mut bool, style: &(String, String, bool, bool), text: &str) {
+fn push_run(json: &mut String, first: &mut bool, style: &(String, String, bool, bool, bool), text: &str) {
     if !*first {
         json.push(',');
     }
     *first = false;
     let _ = write!(
         json,
-        "{{\"fg\":\"{}\",\"bg\":\"{}\",\"b\":{},\"i\":{},\"t\":{}}}",
+        "{{\"fg\":\"{}\",\"bg\":\"{}\",\"b\":{},\"i\":{},\"d\":{},\"t\":{}}}",
         style.0,
         style.1,
         style.2,
         style.3,
+        style.4,
         json_string(text)
     );
 }

@@ -475,8 +475,12 @@ impl Anim {
             bars.push(self.bars.get(at..end).map(<[Bar]>::to_vec).unwrap_or_default());
             at += levels.len();
         }
-        // The widest look that fits: wide bars, narrow ones, the cores as
-        // one bar, then the last groups left out.
+        // The widest look that fits, a gap always between two bars (with no
+        // gap the cores run together into one block): two columns a bar,
+        // then one; the cores taken two, four… together (their height and
+        // their peak the average: never under the bar, and one busy core in
+        // the group does not pin the mark to the top) until they fit; then
+        // the last groups left out.
         let width = |groups: &[(String, Vec<f32>)], bars: &[Vec<Bar>], bw: u16, gap: u16| -> u16 {
             let each = groups.iter().zip(bars).map(|((label, _), b)| {
                 let n = b.len() as u16;
@@ -485,18 +489,21 @@ impl Anim {
             each.sum::<u16>() + 2 * (groups.len() as u16).saturating_sub(1)
         };
         let fits = |groups: &[(String, Vec<f32>)], bars: &[Vec<Bar>]| {
-            [(2, 1), (1, 1), (1, 0)].into_iter().find(|&(bw, gap)| width(groups, bars, bw, gap) <= band.w)
+            [(2, 1), (1, 1)].into_iter().find(|&(bw, gap)| width(groups, bars, bw, gap) <= band.w)
         };
+        let cores = bars.first().cloned().unwrap_or_default();
         let mut look = fits(&groups, &bars);
-        if look.is_none() && bars.first().is_some_and(|b| b.len() > 1) {
-            let cores = &bars[0];
-            let n = cores.len() as f32;
-            let one = Bar {
-                h: cores.iter().map(|b| b.h).sum::<f32>() / n,
-                peak: cores.iter().map(|b| b.peak).fold(0.0, f32::max),
-                hold: 0.0,
-            };
-            bars[0] = vec![one];
+        let mut n = cores.len();
+        while look.is_none() && n > 1 {
+            n = n.div_ceil(2);
+            bars[0] = cores
+                .chunks(cores.len().div_ceil(n))
+                .map(|c| Bar {
+                    h: c.iter().map(|b| b.h).sum::<f32>() / c.len() as f32,
+                    peak: c.iter().map(|b| b.peak).sum::<f32>() / c.len() as f32,
+                    hold: 0.0,
+                })
+                .collect();
             look = fits(&groups, &bars);
         }
         while look.is_none() && groups.len() > 1 {
@@ -819,12 +826,24 @@ mod tests {
         assert!((0..g.cols).any(|x| g.get(x, band().y).text() == "▔"), "{}", text(&g));
         let g = drawn(&run(Kind::Bars, &idle, 30, 0.066), band(), &pal);
         assert!(!text(&g).contains('▔'), "{}", text(&g));
-        // 32 cores in 40 columns: one CPU bar, the rest still there.
+        // 32 cores in 40 columns: taken four together, 8 bars with a gap
+        // between each (never a solid block), the other groups still there.
         let many = Load { cores: vec![0.5; 32], cpu: 0.5, memory: Some(0.3), ..Load::default() };
         let a = run(Kind::Bars, &many, 30, 0.066);
         let narrow = Rect { x: 0, y: 0, w: 40, h: 6 };
-        let t = text(&drawn(&a, narrow, &pal));
+        let g = drawn(&a, narrow, &pal);
+        let t = text(&g);
         assert!(t.contains("CPU 50%") && t.contains("MEM 30%") && t.contains("OUT"), "{t}");
+        let bottom: String = (0..g.cols).map(|x| g.get(x, 4).text()).collect();
+        let runs: Vec<usize> = bottom.split(' ').filter(|r| !r.is_empty()).map(|r| r.chars().count()).collect();
+        assert_eq!(runs, vec![1; 10], "8 core bars, memory, output, each alone: {t}");
+        // Cores taken together stand at their average, not their highest:
+        // half of them full and half idle make bars half way up.
+        let half = Load { cores: (0..32).map(|i| (i % 2) as f32).collect(), cpu: 0.5, ..many.clone() };
+        let g = drawn(&run(Kind::Bars, &half, 30, 0.066), Rect { h: 10, ..narrow }, &pal);
+        let rows: Vec<String> = (0..9).map(|y| (0..22).map(|x| g.get(x, y).text()).collect()).collect();
+        assert!(rows[0].trim().is_empty() && rows[1].trim().is_empty(), "no core bar near the top: {rows:#?}");
+        assert!(rows[8].contains('█') && rows[5].contains('█'), "half way up: {rows:#?}");
     }
 
     /// Colours are the theme's: the 16 by index (the theme's palette maps

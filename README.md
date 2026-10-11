@@ -459,6 +459,14 @@ thermal zones and hwmon; Windows: LibreHardwareMonitor or OpenHardwareMonitor
 while one runs, since Windows' own ACPI thermal zone is a fixed figure on many
 machines; macOS: none).
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-clock-light.gif">
+    <img src="docs/img/keepane-clock.gif" width="880"
+         alt="The clock over a pane running a build, three times: a monitor whose heartbeat speeds up and slows down with the CPU, falling characters, and bars for each core, memory, the disks, the network and the pane's output">
+  </picture>
+</p>
+
 Copy mode, the keys used most:
 
 - Moving: `h` `j` `k` `l` or the arrows; `w` `b` `e` by word; `0` `^` `$`,

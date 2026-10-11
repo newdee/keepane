@@ -94,6 +94,13 @@ $sample = "M" * 40
 $cellW = [math]::Round($pg.MeasureString($sample, $font, [System.Drawing.PointF]::new(0, 0), $fmt).Width / 40, 2)
 $cellH = [math]::Ceiling($font.GetHeight($pg)) + 2
 $pg.Dispose(); $probe.Dispose()
+# Block elements drawn as rectangles: the share of the cell each fills, from
+# the bottom (negative: from the top).
+$blocks = @{
+    "█" = 1.0; "▁" = 0.125; "▂" = 0.25; "▃" = 0.375; "▄" = 0.5; "▅" = 0.625; "▆" = 0.75; "▇" = 0.875
+    "▀" = -0.5; "▔" = -0.125
+}
+$blockChars = [char[]]($blocks.Keys -join '')
 
 $pad = 18            # padding around the grid
 $barH = 30           # window title bar
@@ -182,6 +189,10 @@ foreach ($file in $frames) {
             $fg = To-Color $run.fg $defaultFg
             $bg = To-Color $run.bg $defaultBg
             if ($run.i) { $tmp = $fg; $fg = $bg; $bg = $tmp }
+            # Dim (SGR 2), as terminals draw it: the colour half way to the background.
+            if ($run.d) {
+                $fg = [System.Drawing.Color]::FromArgb(($fg.R + $bg.R) / 2, ($fg.G + $bg.G) / 2, ($fg.B + $bg.B) / 2)
+            }
             $w = $cellW * $text.Length
             if ("$($run.bg)" -ne "default" -or $run.i) {
                 $b = New-Object System.Drawing.SolidBrush $bg
@@ -190,7 +201,32 @@ foreach ($file in $frames) {
             }
             $b = New-Object System.Drawing.SolidBrush $fg
             $f = if ($run.b) { $fontBold } else { $font }
-            $g.DrawString($text, $f, $b, [float]($pad + $x), [float]($barH + $pad + $y * $cellH), $fmt)
+            $top = [float]($barH + $pad + $y * $cellH)
+            if ($text.IndexOfAny($blockChars) -ge 0) {
+                # Block elements filled to the cell's edges, as terminals draw
+                # them: a font's glyph is shorter than the cell and leaves a
+                # stripe between rows (the clock's digits, the bars).
+                for ($k = 0; $k -lt $text.Length; $k++) {
+                    $ch = $text[$k]
+                    $cx = [float]($pad + $x + $k * $cellW)
+                    $share = $blocks[[string]$ch]
+                    if ($null -ne $share) {
+                        # Whole pixels, not smoothed: smoothed edges on the
+                        # row boundaries leave a faint seam between rows.
+                        $h = [int][math]::Round($cellH * [math]::Abs($share))
+                        $cy = if ($share -lt 0) { [int]$top } else { [int]$top + $cellH - $h }
+                        $x0 = [int][math]::Round($cx)
+                        $x1 = [int][math]::Round($cx + $cellW)
+                        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
+                        $g.FillRectangle($b, $x0, $cy, $x1 - $x0, $h)
+                        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+                    } elseif ($ch -ne ' ') {
+                        $g.DrawString([string]$ch, $f, $b, $cx, $top, $fmt)
+                    }
+                }
+            } else {
+                $g.DrawString($text, $f, $b, [float]($pad + $x), $top, $fmt)
+            }
             $b.Dispose()
             $x += $w
         }
