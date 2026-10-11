@@ -7,6 +7,7 @@ mod clock;
 pub(crate) mod clockanim;
 mod digits;
 mod done;
+mod gitstate;
 mod hints;
 pub mod import;
 pub mod input;
@@ -131,6 +132,11 @@ enum Event {
     LinkAnswer(Box<link_out::LinkAnswer>),
     /// `done-webhook` could not be told (`done`): why.
     DoneWebhookFailed(String),
+    /// git said a repository's status (nothing, when it failed): which git
+    /// (`gitstate`), the repository, its status.
+    GitStatus(u64, std::path::PathBuf, Option<crate::git::Status>),
+    /// What an agent's work did in its repository was measured.
+    GitWork(u64, Option<Box<crate::git::Work>>),
 }
 
 /// Runs `ask` on a thread of its own and sends its answer as `answer`. A
@@ -916,6 +922,8 @@ pub struct Server {
     /// Where `clock-mode-animation random` starts from: another each time
     /// the server starts.
     clock_seed: u64,
+    /// The panes' repositories (`gitstate`).
+    git: gitstate::GitState,
     shell_running: HashSet<String>,
     shell_last_refresh: Option<Instant>,
     /// Plugin directories loaded so far.
@@ -1323,6 +1331,7 @@ impl Server {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos() as u64)
                 ^ (u64::from(std::process::id()) << 32),
+            git: gitstate::GitState::default(),
             shell_running: HashSet::new(),
             shell_last_refresh: None,
             plugins: Vec::new(),
@@ -1987,10 +1996,15 @@ impl Server {
                     if self.opts.log_history {
                         self.log_output(id);
                     }
+                    // A command ended: its repository may have changed.
+                    if !finished.is_empty() && !replaying {
+                        self.git_moved(id);
+                    }
                     let after = self.opts.done_after;
                     for f in finished.into_iter().filter(|f| !replaying && f.secs >= after) {
                         let text = done::command_text(&f.command, f.secs, f.failed, f.exit);
-                        self.pane_done(id, done::Kind::Command, text, Some(!f.failed), f.exit, Some(f.secs));
+                        let ended = done::Ended { ok: Some(!f.failed), exit: f.exit, secs: Some(f.secs), git: None };
+                        self.pane_done(id, done::Kind::Command, text, ended);
                     }
                     if prompted {
                         self.pane_prompt_seen(id);
@@ -2064,9 +2078,7 @@ impl Server {
                     id,
                     done::Kind::Exit,
                     format!("{name} exited with {code}"),
-                    Some(code == 0),
-                    Some(code as i32),
-                    None,
+                    done::Ended { ok: Some(code == 0), exit: Some(code as i32), ..Default::default() },
                 );
                 if self.opts.remain_on_exit {
                     // Keep the pane and what it printed; say why it stopped.
@@ -2207,6 +2219,8 @@ impl Server {
                 log::warn!("done-webhook: {why}");
                 self.note_message(&format!("done-webhook: {why}"));
             }
+            Event::GitStatus(generation, root, status) => self.git_status_heard(generation, root, status),
+            Event::GitWork(token, work) => self.git_work_measured(token, work),
             // The frame after every event draws it.
             Event::PrefixHintDue => {}
             Event::DragScroll(cid) => {
@@ -2233,6 +2247,7 @@ impl Server {
                 self.prices_tick();
                 self.web_tick();
                 self.web_fit_tick();
+                self.git_tick();
                 self.forget_due();
                 // An open chart keeps the paired machines' panes fresh.
                 if self.a_chart_is_open() {
@@ -3713,6 +3728,13 @@ impl Server {
                     for (sid, widx) in windows {
                         let ids = self.session(sid).unwrap().windows[widx].layout.panes();
                         for id in ids {
+                            // Asked for what git says (the dashboard): looked
+                            // at, so it is there on the next ask.
+                            if fmt.contains("git_")
+                                && let Some(path) = self.find_pane(id).and_then(|p| p.current_path())
+                            {
+                                self.git_look(&path);
+                            }
                             let ctx = self.context(sid, widx, Some(id), cid);
                             lines.push(self.expand_with_shells(&fmt, &ctx, id));
                         }
@@ -5227,7 +5249,11 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::SetOption { name, value, .. } => {
+                let git_was = self.opts.git_command.clone();
                 let r = self.opts.set(&name, &value);
+                if self.opts.git_command != git_was {
+                    self.git_command_changed();
+                }
                 if r.is_ok() {
                     // The event log follows its options at once, not at the
                     // next tick: `event-log off` means nothing more is written.
@@ -5999,7 +6025,16 @@ impl Server {
             ctx.pane_path_short = crate::sysinfo::short_path(&ctx.pane_path);
             ctx.pane_last_line = p.last_line();
             ctx.git_branch =
-                if ctx.pane_path.is_empty() { String::new() } else { crate::sysinfo::git_branch(&ctx.pane_path) };
+                if ctx.pane_path.is_empty() { String::new() } else { crate::git::branch_of(&ctx.pane_path) };
+            if let Some(s) = self.git_status(&ctx.pane_path) {
+                let some = |n: u32| if n == 0 { String::new() } else { n.to_string() };
+                ctx.git_head = s.head.clone();
+                ctx.git_changed = some(s.changed + s.untracked);
+                ctx.git_ahead = some(s.ahead);
+                ctx.git_behind = some(s.behind);
+                ctx.git_conflicts = some(s.conflicts);
+                ctx.git_marks = s.marks();
+            }
             ctx.pane_pid_command = p.pid.map(crate::sysinfo::program_of).unwrap_or_default();
             ctx.pane_width = p.cols;
             ctx.pane_height = p.rows;

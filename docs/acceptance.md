@@ -4026,3 +4026,38 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 9 | 边界与退化输入 | 同第 3 轮的边界测试，两个平台各跑 1 次：9 种动画的点亮格数逐个一致（如 fire 38902、weather 26672），界外 0 格，1 个月后和 pane 降到 0 个时都有内容 | 干净（2/3） |
 | 10 | 全量 + 文档复查 | 文档里的数字和说法复查一致（站点 533 = 402 + 10 + 121）；fmt、clippy 三平台 0；Windows 402 + 10 + 121，Linux 379 + 121，`npm run check` 通过。注：第一次跑时 lib 测试显示 2 个 ignored，原因是用 `Copy-Item` 恢复 `tests.rs` 时保留了旧的修改时间，cargo 用了带临时测试的旧编译结果；更新文件时间后两个平台重跑，都是 0 ignored、全过。这是验证脚本的问题，被测代码没有变 | 干净（3/3），验收通过 |
 | 11 | CI 与发布（0.35.8） | master `fb50fb5` CI 全过（run 38146638459）；打 `v0.35.8` 后 Release 13 个资产（run 38146925572）；Homebrew 公式（run 38147318206）3 个 `url`/`sha256` 与资产 digest 全部一致；发布机器人提交 `b974942`；winget PR #441466 改为 0.35.8（分支 `d28c346`，只剩 0.35.8 一个目录） | 发布完成 |
+
+## 128. pane 所在仓库的 git 信息：状态显示，以及 agent 一次工作做了什么
+
+用户："is there any good rust lib to show the git branch, commit, graph?"；讨论后说"改吧，先做 2 和 1"（2：agent 的完成消息带上 git 上下文；1：每个 pane 的 git 状态）。之前问过没装 git 怎么办，定的是分层降级。
+
+- 新模块 `src/git.rs`（不依赖服务端）：
+  - 读文件就能拿到：仓库位置（含 worktree 的 `commondir`）、分支、HEAD 的完整提交号（松散 ref、packed-refs、worktree 自己的 HEAD）。原来的 `sysinfo::git_branch` 收进这里，避免两套读法。
+  - 找 git：`git-command` 选项 > PATH > Git for Windows、GitHub Desktop、Homebrew 的安装位置。macOS 上只有 `/usr/bin/git` 占位程序（未装命令行工具）时当作没有，避免弹出安装对话框。
+  - 运行 git：后台线程、每次最多 10 秒（超时就结束进程）、`--no-optional-locks`（不抢 agent 的 index 锁）、`--no-pager`、`core.fsmonitor=false`，`diff` 加 `--no-ext-diff --no-textconv`。
+  - 解析 `status --porcelain=v2 --branch -z` 和 `diff --numstat -z`（含改名、二进制文件）。
+  - 一次工作 = 从起点提交到现在：新提交（`log`）、工作区与起点的差异（`diff --numstat`）、未跟踪的新文件（`ls-files --others`）。
+- 第 1 项（状态）：
+  - 按仓库缓存（`src/server/gitstate.rs`）。有东西显示时最多每 10 秒问一次；命令或 agent 一轮结束后标记过期，下次显示时立即重问。渲染时只读缓存，不运行 git。
+  - 新格式变量 `git_head`、`git_changed`、`git_ahead`、`git_behind`、`git_conflicts`、`git_marks`（`●3 ↑2 ↓1 !1`）。
+  - 默认状态栏和两个内置主题在分支后显示标记，时钟的 pane 行也显示。dashboard 选中 pane 的信息里多一行 `git main ●3 ↑2`。
+- 第 2 项（agent 的工作）：
+  - 只用于 `ai` 模式：消息送达 agent 时，或 agent 空闲时有人给它打字时，记下当时的提交作为起点。
+  - agent 一轮结束（`pane-ready`）时，先在后台算出这次工作做了什么，再记消息完成、发通知。所以 `trace-message -w` 等到的结果里带着 `git:` 段。
+  - 同样的内容进入 `trace-message` 的 JSON（`git`）、事件日志（重启后读回）、`list-done -J`、webhook、桌面通知、`KEEPANE_DONE_GIT`。
+  - shell 模式的任务不带。
+- 没有 git：分支和提交号照样读出；`git_*` 数字留空；工作写 `changes unknown (git not found)`。
+- 注意：统计的是工作区里所有的改动，不区分是谁改的。两个 agent 共用一个工作区时会混在一起，文档建议各用一个 worktree。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路（变异 30 个） | 解析（暂存列、领先/落后、未跟踪、改名的旧名、numstat 改名）、读文件（packed-refs、worktree）、工作的起点、新文件、`measured`、标记、`git-command`、送达和打字时的起点、延后完成、shell 任务不带、轮结束和命令结束后立即重问、`list-panes` 触发读取、时钟、通知、hook、记录、trace、日志读回、`full()`、改选项后重找、dashboard 两处：29 个被抓到；`git_changed` 漏掉（e2e 只检查了 `git_marks`）。同时审查发现：① 安全：keepane 会在 pane 所在的任何仓库里自动运行 git，仓库自己的 `.git/config` 可以让 git 启动任意程序（`core.fsmonitor`、外部 diff、textconv）；② 竞态：改 `git-command` 时还在途的旧回答会写回缓存，git 不可用后最多显示 5 分钟；③ 文档没写明一次工作最多 3 条 git 命令 | **有问题**：e2e 加上 5 个 `git_*` 变量的检查；运行 git 一律加 `core.fsmonitor=false`、`--no-pager`，diff 加 `--no-ext-diff --no-textconv`，真实 git 测试先确认 git 自己会启动仓库配置的程序（对照），再确认 keepane 的运行不会；状态回答带代号，改 `git-command` 后旧代号的回答丢弃；README 中英和 man page 写明（不计数） || 2 | 全量三平台 + 全部变异 | fmt、clippy 三平台 0；Windows 409 + 10 + 122，Linux 386 + 122；变异 32/32 被抓到（含新增的`fsmonitor 没关`、`git_head 为空`）。另：第 1 轮加的`没有 git 时格式变量不读缓存`是多余的（那时缓存一定是空的：第一次查找失败时还没有缓存，改选项时已清空），删掉 | 干净（1/3） |
+| 3 | 边界与退化输入 | 临时测试，用真实 git：还没有提交的仓库（`no commit yet: 1 new file`）、文件名带空格和中文、删除的文件（`+0 -1`）、二进制（`(binary)`）、detached（分支写提交号）、3000 个新文件（status 70 ms，work 143 ms）、pane 停在 `.git` 里面（找到外层工作区）都对；起点不在这个仓库时（agent 中途 `cd` 到别的仓库，或起点被 rebase 掉）输出`changes unknown (git not found)`，说法错误。定性：边界遗漏，`work` 把`git 在但命令失败`当成了`没有 git` | **有问题**：`log` 失败后用 `cat-file -e` 查起点：起点不在就从当前提交算并写 `(start unknown)`，仍然统计；git 在但失败写 `changes unknown (git failed)`；`Work` 加 `serde(default)`，旧日志照样读回；单测覆盖这三种和旧日志；README 中英写明（不计数） |
+| 4 | 全量三平台 + 全部变异 | fmt、clippy 三平台 0；Windows 409 + 10 + 122，Linux 386 + 122；变异 35/35 被抓到（新增`起点丢失没标`、`起点丢失就停`、`git 失败说成没有`）。注：第一次跑时，变异脚本恢复 `observe.rs` 失败（文件被别的进程映射占用），后面的变异是在它没恢复的状态下跑的；另有 2 个变异的原文跟不上第 3 轮的改动（MISSING）。手工恢复 `observe.rs`，脚本加上`占用时重试、恢复后核对`和 `-Check`（核对每个变异的原文都在），修正 2 个原文后 35 个全部重跑。这是验证脚本的问题，被测代码没有问题 | 干净（1/3） |
+| 5 | 可复现性 | 新 e2e 在 Windows 连跑 5 次（7.31 到 7.38 s）、Linux 5 次（5.76 到 6.02 s），全过；真实 git 单测在两个平台都确认对照组触发了仓库配置的程序（没有打印`moot`），所以加固在两个平台都验证过 | 干净（2/3） |
+| 6 | 静态一致性（文档对代码） | README 中英写`一次工作最多运行 3 次 git`，第 3 轮加了 `cat-file` 后最多 4 次；站点首页测试数 533，实际 541 | **有问题**：改为 4 次和 541（不计数） |
+| 7 | 边界与退化输入 | 第 3 轮的探测测试在两个平台各跑 1 次，输出逐字一致且正确：还没有提交（`●1`，`no commit yet: 1 new file`）、空格和中文文件名、删除、二进制、起点不在仓库（`(start unknown): 3 files +1 -1, 1 new file`）、detached（分支等于短提交号）、git 坏了（`changes unknown (git failed)`） | 干净（1/3） |
+| 8 | 静态一致性（逐句对照） | README 的 git 一节逐句对照代码和实测：`大仓库约一秒`（中英）没有数据支撑，实测只有`3000 个新文件约 0.1 秒`；`Without git, the branch and the commits are still read`（英文 README 和 man page）不准，读到的只是提交号 | **有问题**：改为实测数字和`commit ids`（不计数） |
+| 9 | 全量三平台 | fmt、clippy 三平台 0；Windows 409 + 10 + 122，Linux 386 + 122，`npm run check` 0 | 干净（1/3） |
+| 10 | 可复现性 | 新 e2e 在 Windows 连跑 3 次（7.29 到 7.31 s）、Linux 3 次（5.83 到 5.99 s），全过 | 干净（2/3） |
+| 11 | 静态一致性（复查） | 中文 README 的 git 一节、man page、tmux-parity 与代码和英文 README 一致（4 次、实测 0.1 秒、提交号、`(start unknown)`、`git failed`、加固的四项）；站点 541 = 409 + 10 + 122 | 干净（3/3），验收通过 |

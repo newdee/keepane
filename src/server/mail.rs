@@ -439,6 +439,10 @@ impl Server {
         }
         let Some(m) = p.actor.next_delivery() else { return };
         let text = m.wrapped(p.syntax, style);
+        // An agent's work begins: where its repository stands.
+        if m.via == WorkMode::Ai {
+            p.git_base = p.git_head();
+        }
         p.deliver(&text);
         self.observe.delivered(m.id);
         self.delivered += 1;
@@ -499,19 +503,27 @@ impl Server {
             }
             output = Some((body, cut));
         }
-        self.observe.ended(m.id, end, ok, output);
-        self.task_done(pid, &m, end, ok);
+        let message = super::gitstate::MessageEnd { m, end, ok, output };
+        self.finish(super::gitstate::Finish { pid, turn: None, message: Some(message) });
         self.deliver(pid);
     }
 
-    /// A message's task ended in pane `pid` (`done-events` `task`).
-    fn task_done(&mut self, pid: PaneId, m: &Message, end: End, ok: Option<bool>) {
+    /// A message's task ended in pane `pid` (`done-events` `task`), with
+    /// what an agent's work on it did in its repository.
+    pub(super) fn task_done(
+        &mut self,
+        pid: PaneId,
+        m: &Message,
+        end: End,
+        ok: Option<bool>,
+        git: Option<crate::git::Work>,
+    ) {
         let text = match (end, ok) {
             (End::Abandoned, _) => format!("#{} ended unfinished: {}", m.id, super::done::gist(&m.text)),
             (_, Some(false)) => format!("#{} failed: {}", m.id, super::done::gist(&m.text)),
             _ => format!("#{} done: {}", m.id, super::done::gist(&m.text)),
         };
-        self.pane_done(pid, super::done::Kind::Task, text, ok, None, None);
+        self.pane_done(pid, super::done::Kind::Task, text, super::done::Ended { ok, git, ..Default::default() });
     }
 
     fn pane_ready(&mut self, cid: Option<ClientId>, quiet: bool, target: Option<&Target>) -> Outcome {
@@ -546,16 +558,15 @@ impl Server {
             // also runs in panes that are not `ai`, quietly.
             return Outcome::Ok;
         }
-        if turn {
-            let text = match &done {
-                Some((m, _)) => format!("the agent finished #{}: {}", m.id, super::done::gist(&m.text)),
-                None => "the agent finished its turn".to_string(),
-            };
-            self.pane_done(me, super::done::Kind::Agent, text, None, None, None);
-        }
-        if let Some((m, end)) = done {
-            self.observe.ended(m.id, end, None, None);
-            self.task_done(me, &m, end, None);
+        // Told and recorded once what the work did in its repository is
+        // known (`finish`); the pane is free for its next message now.
+        let turn = turn.then(|| match &done {
+            Some((m, _)) => format!("the agent finished #{}: {}", m.id, super::done::gist(&m.text)),
+            None => "the agent finished its turn".to_string(),
+        });
+        let message = done.map(|(m, end)| super::gitstate::MessageEnd { m, end, ok: None, output: None });
+        if turn.is_some() || message.is_some() {
+            self.finish(super::gitstate::Finish { pid: me, turn, message });
         }
         let addr = self.address_of(me);
         self.observe.pane(&addr, "idle", "");

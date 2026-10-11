@@ -1047,7 +1047,8 @@ program exited. It tells you where you are:
   last, a line each), `KEEPANE_DONE_PANE`, `KEEPANE_DONE_NAME`,
   `KEEPANE_DONE_OK` (1 or 0, when known), `KEEPANE_DONE_EXIT` (the exit code,
   when the shell gave it: PowerShell says only whether a command failed),
-  `KEEPANE_DONE_SECONDS`, and `KEEPANE_DONE_JSON`.
+  `KEEPANE_DONE_SECONDS`, `KEEPANE_DONE_GIT` (an agent's work in its
+  repository, in a line; see below), and `KEEPANE_DONE_JSON`.
 
 ```sh
 set -g done-webhook https://open.feishu.cn/open-apis/bot/v2/hook/<token>
@@ -1073,6 +1074,65 @@ as `output` in keepane's JSON.
 
 A pane is told of once in three seconds: an agent's turn and the task it
 finished are one telling. `keepane list-done` lists the last hundred.
+
+## What a pane's repository says
+
+When a pane's directory is in a git repository, keepane reads it for two
+things: what is there now, and what an agent's work did.
+
+What is there now shows after the branch in the status line and on the
+clock: `main ●3 ↑2 ↓1 !1` is 3 files changed (new ones too), 2 commits
+ahead of the upstream, 1 behind, 1 file in conflict; nothing is shown for
+what there is none of. The variables are `git_branch`, `git_head` (the
+commit, short), `git_changed`, `git_ahead`, `git_behind`, `git_conflicts`
+(each empty at none) and `git_marks` (all of it as above), for a
+`pane-border-format` or a status line of your own. The dashboard shows the
+same on a line of the chosen pane.
+
+What an agent's work did goes with its end, in an `ai` pane: measured from
+the commit the repository was at when the work began (its message was
+delivered, or someone typed to it while it was free), it is the commits
+made since, what in the working tree differs from that commit (each file's
+lines added and removed) and the new files git does not track yet:
+
+```text
+git:
+main 1a2b3c4..5d6e7f8: 1 commit, 2 files +40 -12, 1 new file
+  5d6e7f8 parse the header
+  src/parser.rs +38 -12
+  src/lib.rs +2 -0
+  new notes.md
+```
+
+It is under the message in `trace-message` (and `git` in its JSON), so a
+lead that waits with `trace-message <id> -w` gets it with the answer; and
+it goes with the telling (`list-done`, the webhook, the desktop
+notification, `KEEPANE_DONE_GIT` and `git` in `KEEPANE_DONE_JSON`). The
+message counts as done, and is told of, once this is read: git runs on a
+thread of its own, so nothing else waits (here, a tenth of a second with
+3000 new files in the repository). A work that ends in another repository than it began in, or
+whose first commit was rebased away, is measured from where it ends and
+says `(start unknown)`; when git is there but cannot answer, it says
+`changes unknown (git failed)`. It is what changed in the working tree
+since the work began, whoever changed it: two agents in one working tree share it, so give each
+its own worktree (`git worktree add`) when that matters.
+
+git is run only for what it alone can say, never while the server waits
+for it, each time for at most 10 seconds (an agent's work takes up to
+four), and never taking the index's lock from an agent at work in the
+same repository (`--no-optional-locks`). keepane runs it on its own, in
+whatever repository a pane is in, so it turns off the programs a
+repository's own config can name for it to start: the file watcher
+(`core.fsmonitor`), an external diff, text conversion and the pager. What
+`git status` of your own would still run there (a filter such as Git
+LFS's) it runs too. The status
+is asked again at most every 10 seconds while something shows it, and at
+once after a command or a turn ends there. keepane uses the git on the
+PATH, else where Git for Windows, GitHub Desktop or Homebrew put it; `set
+-g git-command <path>` names another. Without git, the branch and the
+commit ids are still read from the repository's own files, the figures are
+left empty, and an agent's work says `changes unknown (git not found)`.
+
 ## Across machines
 
 Panes on two computers can message each other the same way panes on one do,
@@ -1218,6 +1278,7 @@ set -g keep-zoom off              # moving to another pane unzooms, as in tmux (
 set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
 set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, random (the default), cycle or off
 set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
+set -g git-command C:\Tools\git\cmd\git.exe  # the git to run for the panes' repositories (default: the one found)
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
 bind -r j select-pane -D
@@ -1315,7 +1376,8 @@ The machine, read in-process with no `#(command)` needed: `cpu_percentage`
 `ram_percentage` `ram_used` `battery_percentage` (empty without a battery)
 `battery_charging` `uptime`. Other variables used often: `git_branch` (the
 branch of the pane's directory, read from `.git`, empty outside a
-repository), `pane_current_path_short` (`~` for home), `pane_pid_command`
+repository; `git_marks` and the other `git_*` in
+[What a pane's repository says](#what-a-panes-repository-says)), `pane_current_path_short` (`~` for home), `pane_pid_command`
 (the program the pane is running right now, `cargo` during a build) and
 `pane_output_count` (how many times the pane has printed; a script can
 compare two readings to tell whether anything changed, which

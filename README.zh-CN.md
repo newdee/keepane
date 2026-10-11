@@ -533,7 +533,7 @@ keepane 知道 pane 什么时候"完成"了：一条跑了一段时间的命令�
 - **手机页**（页面开着的时候）：顶部弹出一条横幅（点一下就跳到那个 pane），响一声，安卓手机会震动，标签页标题上显示未读数。页面在后台时完成的，切回页面时会补告诉你。普通 HTTP 的页面没法弹系统通知，手机锁屏或切走后浏览器也会暂停页面，所以锁屏也要收到的话，用 hook 或 webhook。
 - **电脑桌面**：`set -g notify on`。
 - **webhook**：`set -g done-webhook <地址>`，keepane 每次都用 `curl` 往这个地址发一条，格式由 `done-webhook-format` 决定：`json`（keepane 自己的格式）、`text`（只有那一行文字：ntfy、Bark）、`feishu`（飞书）、`wecom`（企业微信）、`dingtalk`（钉钉）、`slack`、`discord`（聊天工具的群机器人 webhook）。发到聊天工具的消息以 `keepane` 开头，飞书、钉钉机器人的"关键词"安全设置可以填它；对方拒收的话，`show-messages` 里能看到原因。
-- **`pane-done` hook**：想接别的服务就用它。这次完成的信息在环境变量里：`KEEPANE_DONE_KIND`（`command`、`agent`、`task`、`exit`）、`KEEPANE_DONE_TEXT`（那一行文字）、`KEEPANE_DONE_OUTPUT`（pane 最后输出的几行）、`KEEPANE_DONE_PANE`、`KEEPANE_DONE_NAME`、`KEEPANE_DONE_OK`（成功 1、失败 0，知道时才有）、`KEEPANE_DONE_EXIT`（退出码，shell 报告了才有：PowerShell 只说成功还是失败）、`KEEPANE_DONE_SECONDS`，以及 `KEEPANE_DONE_JSON`。
+- **`pane-done` hook**：想接别的服务就用它。这次完成的信息在环境变量里：`KEEPANE_DONE_KIND`（`command`、`agent`、`task`、`exit`）、`KEEPANE_DONE_TEXT`（那一行文字）、`KEEPANE_DONE_OUTPUT`（pane 最后输出的几行）、`KEEPANE_DONE_PANE`、`KEEPANE_DONE_NAME`、`KEEPANE_DONE_OK`（成功 1、失败 0，知道时才有）、`KEEPANE_DONE_EXIT`（退出码，shell 报告了才有：PowerShell 只说成功还是失败）、`KEEPANE_DONE_SECONDS`、`KEEPANE_DONE_GIT`（agent 这次工作在仓库里做了什么，一行，见下文），以及 `KEEPANE_DONE_JSON`。
 
 ```sh
 set -g done-webhook https://open.feishu.cn/open-apis/bot/v2/hook/<token>
@@ -556,6 +556,28 @@ set -g done-lines 5               # 一起带上 pane 最后输出的几行（0 
 每条通知都带上 pane 最后输出的几行（命令自己的输出；agent 则是它最后一次 `pane-status` 说的话），聊天工具和桌面通知里写在那一行下面，keepane 的 JSON 里是 `output`。
 
 同一个 pane 三秒内只通知一次：agent 这一轮结束和它完成的任务算一次。`keepane list-done` 列出最近 100 条。
+
+## pane 所在仓库的 git 信息
+
+pane 的目录在 git 仓库里时，keepane 读两样东西：仓库现在的状态，以及 agent 这次工作做了什么。
+
+现在的状态显示在状态栏和时钟的分支名后面：`main ●3 ↑2 ↓1 !1` 表示改了 3 个文件（含新文件）、比上游领先 2 个提交、落后 1 个、1 个文件有冲突；没有的项不显示。对应的变量是 `git_branch`、`git_head`（提交号，短）、`git_changed`、`git_ahead`、`git_behind`、`git_conflicts`（为 0 时为空），以及把上面合在一起的 `git_marks`，可以用在 `pane-border-format` 或自己的状态栏里。dashboard 在选中 pane 的信息里也有一行显示同样的内容。
+
+agent 这次工作做了什么，在 `ai` 模式的 pane 里随工作结束一起给出。起点是工作开始时仓库所在的提交（消息送达时，或者 agent 空闲时有人给它打字时）。内容包括之后新增的提交、工作区与起点相比改了哪些文件（每个文件增删的行数），以及 git 还没跟踪的新文件：
+
+```text
+git:
+main 1a2b3c4..5d6e7f8: 1 commit, 2 files +40 -12, 1 new file
+  5d6e7f8 parse the header
+  src/parser.rs +38 -12
+  src/lib.rs +2 -0
+  new notes.md
+```
+
+它出现在 `trace-message` 里消息的下面（JSON 里是 `git`），所以 lead 用 `trace-message <id> -w` 等结果时会一起拿到；也随完成通知一起发出（`list-done`、webhook、桌面通知、`KEEPANE_DONE_GIT`、`KEEPANE_DONE_JSON` 里的 `git`）。消息要等这些读完才算完成并发出通知。git 在单独的线程里运行，不会让其他事情等待（实测：仓库里有 3000 个新文件时约 0.1 秒）。如果工作结束时所在的仓库不是开始时的那个，或者起点提交已被 rebase 掉，就从结束时的提交算起，并注明 `(start unknown)`；git 在但回答不了时写 `changes unknown (git failed)`。它统计的是工作开始以来工作区里所有的改动，不管是谁改的：两个 agent 共用一个工作区时会混在一起，需要分开时给每个 agent 一个独立的 worktree（`git worktree add`）。
+
+只有 git 才能回答的问题才运行 git。git 不在 server 等待时运行，每次最多 10 秒（agent 的一次工作最多运行 4 次），也不会抢 agent 正在用的 index 锁（`--no-optional-locks`）。keepane 会自己在 pane 所在的任何仓库里运行 git，所以关掉了仓库配置可以让 git 启动的程序：文件监视（`core.fsmonitor`）、外部 diff、文本转换和分页器。你自己运行 `git status` 时仍会运行的程序（例如 Git LFS 的 filter），keepane 运行时也会运行。有东西在显示状态时，最多每 10 秒重新读一次；pane 里的命令或 agent 一轮结束后立即重新读。keepane 先用 PATH 上的 git，找不到再去 Git for Windows、GitHub Desktop、Homebrew 的安装位置找；`set -g git-command <路径>` 可以指定。没有 git 时，分支和提交号照样从仓库文件里读出，其他数字留空，agent 的工作写 `changes unknown (git not found)`。
+
 ## 跨电脑
 
 两台电脑上的 pane 也能像同一台上那样互发消息，走的是 `keepane web` 监听的那个端口，前提是两边的 keepane server 配过对。做法和 SSH 的公钥一样：每个 server 有自己的一对密钥，还有一张“允许哪些机器进来”的表；配对就是把双方的公钥各写进对方的表里，只做一次。在要配对的那台机器上运行 `keepane web`，拿到它打出的地址（就是手机扫的那个，带密钥）；然后在这台上：
@@ -640,6 +662,7 @@ set -g monitor-bell on            # 响铃标 `!`；默认就是开的
 set -g monitor-silence 60         # 60 秒没动静标 `~`；0 是关掉
 set -g visual-bell on             # 用状态栏提示代替真的响铃
 set -g agent-cost off             # 不下载价目表，pane 里的 agent 不显示花费（默认开）
+set -g git-command C:\Tools\git\cmd\git.exe  # 读仓库信息用的 git（默认：自动找）
 set -g done-after 60              # 命令跑满一分钟才通知（见"pane 完成时通知你"）
 
 set -g pane-timestamps on         # 每条命令的时间显示在行尾（prefix C-t 切换）
@@ -706,7 +729,7 @@ set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm
 - client：`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`
 - server：`host` `host_short` `socket_path` `version` `pid`。另外还有 `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`。
 
-系统信息直接从进程读取，无需 `#(命令)`：`cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`（没电池就是空）`battery_charging` `uptime`。其他常用变量：`git_branch`（pane 所在目录的分支，读 `.git` 得来，不在仓库里就是空）、`pane_current_path_short`（家目录写成 `~`）、`pane_pid_command`（pane 里此刻在跑的程序，编译时是 `cargo`）、`pane_output_count`（pane 输出过多少次；脚本比较前后两次的值就知道有没有新输出，只精确到秒的 `pane_activity` 做不到）。`keepane_update` 是每日检查发现的新版本号。`agent_*` 变量说的是 pane 里跑的 agent（见 [agent 用了多少、花了多少](#agent-用了多少花了多少)）。
+系统信息直接从进程读取，无需 `#(命令)`：`cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`（没电池就是空）`battery_charging` `uptime`。其他常用变量：`git_branch`（pane 所在目录的分支，读 `.git` 得来，不在仓库里就是空；`git_marks` 等其他 `git_*` 见 [pane 所在仓库的 git 信息](#pane-所在仓库的-git-信息)）、`pane_current_path_short`（家目录写成 `~`）、`pane_pid_command`（pane 里此刻在跑的程序，编译时是 `cargo`）、`pane_output_count`（pane 输出过多少次；脚本比较前后两次的值就知道有没有新输出，只精确到秒的 `pane_activity` 做不到）。`keepane_update` 是每日检查发现的新版本号。`agent_*` 变量说的是 pane 里跑的 agent（见 [agent 用了多少、花了多少](#agent-用了多少花了多少)）。
 
 网络：`local_ip` 是本机上网所用的地址（向系统查询，不发送任何数据），`public_ip` 是外网看到的地址。后者只有外部服务知道，所以只有当某个正在显示的格式用到 `#{public_ip}` 时，keepane 才会去问（`api.ipify.org`，每 10 分钟一次）；没用到就不会问任何人。默认外观里两者都没有，想显示就加上：
 

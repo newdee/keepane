@@ -64,6 +64,8 @@ pub struct Done {
     /// What it printed last (`done-lines`), oldest first; for an agent, what
     /// it last said it is doing (`pane-status`).
     pub output: Vec<String>,
+    /// What an agent's work did in its repository.
+    pub git: Option<crate::git::Work>,
 }
 
 /// The most of a pane's last lines a telling carries, in characters.
@@ -95,9 +97,15 @@ impl Done {
         format!("{}: {}", self.who(), self.text)
     }
 
-    /// The line, and what the pane printed last under it.
+    /// The line, what the pane printed last under it, and what the work
+    /// did in its repository.
     pub fn full(&self) -> String {
-        if self.output.is_empty() { self.line() } else { format!("{}\n{}", self.line(), self.output.join("\n")) }
+        let mut out = vec![self.line()];
+        out.extend(self.output.iter().cloned());
+        if let Some(g) = &self.git {
+            out.push(format!("git: {}", g.lines().join("\n")));
+        }
+        out.join("\n")
     }
 
     pub fn json(&self, host: &str) -> Value {
@@ -114,8 +122,19 @@ impl Done {
             "exit": self.exit,
             "seconds": self.secs,
             "output": self.output,
+            "git": self.git,
         })
     }
+}
+
+/// How it ended, as far as that is known: whether it went well, its exit
+/// code, how long it took, what an agent's work did in its repository.
+#[derive(Default)]
+pub struct Ended {
+    pub ok: Option<bool>,
+    pub exit: Option<i32>,
+    pub secs: Option<u64>,
+    pub git: Option<crate::git::Work>,
 }
 
 /// What is kept: the latest ones, the next number, when each pane was last
@@ -269,15 +288,8 @@ impl Server {
 
     /// A pane is done: kept and told, if `done-events` has this kind, the
     /// pane is one `done-panes` covers, and it was not told of a moment ago.
-    pub(super) fn pane_done(
-        &mut self,
-        pane: PaneId,
-        kind: Kind,
-        text: String,
-        ok: Option<bool>,
-        exit: Option<i32>,
-        secs: Option<u64>,
-    ) {
+    pub(super) fn pane_done(&mut self, pane: PaneId, kind: Kind, text: String, ended: Ended) {
+        let Ended { ok, exit, secs, git } = ended;
         if !self.opts.done_events.split_whitespace().any(|e| e == kind.as_str()) {
             return;
         }
@@ -316,6 +328,7 @@ impl Server {
             exit,
             secs,
             output,
+            git,
         };
         self.done.list.push_back(d.clone());
         while self.done.list.len() > KEPT {
@@ -334,6 +347,7 @@ impl Server {
             ("KEEPANE_DONE_OK".into(), d.ok.map(|o| if o { "1" } else { "0" }).unwrap_or_default().into()),
             ("KEEPANE_DONE_EXIT".into(), d.exit.map(|c| c.to_string()).unwrap_or_default()),
             ("KEEPANE_DONE_SECONDS".into(), d.secs.map(|s| s.to_string()).unwrap_or_default()),
+            ("KEEPANE_DONE_GIT".into(), d.git.as_ref().map(|g| g.summary()).unwrap_or_default()),
             ("KEEPANE_DONE_JSON".into(), d.json(&host).to_string()),
         ];
         self.fire_hook("pane-done", None);
@@ -341,8 +355,11 @@ impl Server {
         if self.opts.notify {
             let go = crate::notify::go_to_pane_url(&self.socket, pane);
             // The line, and the last two the pane printed: what a notification shows.
-            let tail = d.output.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join("\n");
-            let body = if tail.is_empty() { d.text.clone() } else { format!("{}\n{tail}", d.text) };
+            // With what the work did in its repository, in a line, first.
+            let mut lines: Vec<String> = vec![d.text.clone()];
+            lines.extend(d.git.as_ref().map(|g| g.summary()));
+            lines.extend(d.output.iter().rev().take(2).rev().cloned());
+            let body = lines.join("\n");
             crate::notify::notify_with(&format!("keepane: {}", d.who()), &body, Some(&go));
         }
         if !self.opts.done_webhook.is_empty() {
@@ -394,6 +411,7 @@ mod tests {
             exit: Some(0),
             secs: Some(312),
             output: Vec::new(),
+            git: None,
         }
     }
 
@@ -417,6 +435,35 @@ mod tests {
         assert!(kept.iter().map(|l| l.chars().count() + 1).sum::<usize>() <= OUTPUT_MAX);
         assert_eq!(kept.last().map(|l| &l[..2]), Some("39"), "the last lines are kept");
         assert_eq!(trim_output(vec!["a".into()]), ["a"]);
+    }
+
+    /// What an agent's work did in its repository goes under the line (after
+    /// what the pane printed) in every channel that shows text, and whole in
+    /// keepane's JSON; none, nothing.
+    #[test]
+    fn an_agents_work_goes_with_the_telling() {
+        let mut d = done(Kind::Agent, "agent", "the agent finished #4: fix the parser");
+        assert_eq!(d.json("desk")["git"], Value::Null);
+        d.output = vec!["fixed".into()];
+        d.git = Some(crate::git::Work {
+            branch: "main".into(),
+            to: Some("5d6e7f8a".repeat(5)),
+            from: Some("5d6e7f8a".repeat(5)),
+            file_count: 1,
+            added: 3,
+            removed: 1,
+            files: vec![crate::git::File { path: "src/a.rs".into(), added: Some(3), removed: Some(1) }],
+            measured: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            d.full(),
+            "agent (work:0.1): the agent finished #4: fix the parser\nfixed\ngit: main 5d6e7f8: 1 file +3 -1\n  src/a.rs +3 -1"
+        );
+        assert_eq!(webhook_body("text", &d, "desk").1, d.full());
+        let j: Value = serde_json::from_str(&webhook_body("json", &d, "desk").1).unwrap();
+        assert_eq!((j["git"]["branch"].as_str(), j["git"]["file_count"].as_u64()), (Some("main"), Some(1)));
+        assert_eq!(j["text"], d.line(), "the line stays one line");
     }
 
     #[test]

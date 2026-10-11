@@ -128,6 +128,16 @@ pub struct Context {
     /// The branch (or short commit) of the repository the pane's directory
     /// is in, empty outside one.
     pub git_branch: String,
+    /// What git last said of that repository (`crate::git::Status`), each
+    /// empty when there is none of it or git has not said: its commit
+    /// (short), files changed (new ones too), commits ahead of and behind
+    /// its upstream, files in conflict, and all of it in marks (`●3 ↑2`).
+    pub git_head: String,
+    pub git_changed: String,
+    pub git_ahead: String,
+    pub git_behind: String,
+    pub git_conflicts: String,
+    pub git_marks: String,
     /// A newer keepane's version when the daily check found one
     /// (`update-check`), else empty.
     pub keepane_update: String,
@@ -351,6 +361,12 @@ impl Context {
             "battery_charging" => flag(self.battery_charging),
             "uptime" => human_duration(self.uptime),
             "git_branch" => self.git_branch.clone(),
+            "git_head" => self.git_head.clone(),
+            "git_changed" => self.git_changed.clone(),
+            "git_ahead" => self.git_ahead.clone(),
+            "git_behind" => self.git_behind.clone(),
+            "git_conflicts" => self.git_conflicts.clone(),
+            "git_marks" => self.git_marks.clone(),
             "keepane_update" => self.keepane_update.clone(),
             "local_ip" => self.local_ip.clone(),
             "public_ip" => self.public_ip.clone(),
@@ -867,6 +883,15 @@ mod tests {
         // A bare name is true when it is neither empty nor "0".
         assert_eq!(text("#{?window_flags,busy,idle}", &c), "busy");
         assert_eq!(text("#{?pane_current_path,has cwd,no cwd}", &c), "has cwd");
+        // The branch, and git's marks after it only when there are some
+        // (the default `status-right`); a figure of none is empty.
+        let branch = "#{?git_branch,#{git_branch}#{?git_marks, #{git_marks},} ,}";
+        let mut g = Context { git_branch: "main".into(), ..ctx() };
+        assert_eq!(text(branch, &g), "main ");
+        (g.git_marks, g.git_changed, g.git_ahead) = ("●3 ↑2".into(), "3".into(), "2".into());
+        assert_eq!(text(branch, &g), "main ●3 ↑2 ");
+        assert_eq!(text("#{git_changed}/#{git_ahead}/#{git_behind}", &g), "3/2/");
+        assert_eq!(text(branch, &ctx()), "", "outside a repository: nothing");
         // Comparisons.
         assert_eq!(text("#{?session_name==main,yes,no}", &c), "yes");
         assert_eq!(text("#{?session_name==other,yes,no}", &c), "no");

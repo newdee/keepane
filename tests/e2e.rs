@@ -8186,6 +8186,187 @@ async fn a_pane_done_is_told_to_the_page_the_hook_and_a_webhook() {
     h.cli(&["kill-server"]).await;
 }
 
+/// An agent's work is told with what it did in its repository: measured
+/// from the commit it began at (when its message was delivered), the
+/// commits it made, the files it changed, the new ones; in the message's
+/// trace (`trace-message -w` waits for it), `list-done -J` and the status
+/// line's figures, from git. With no git to run, the branch and the
+/// commits' ids only, and it says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_work_is_told_with_what_it_did_in_its_repository() {
+    let Some(git) = keepane::git::command("") else {
+        eprintln!("no git here: skipped");
+        return;
+    };
+    let repo = std::env::temp_dir().join(format!("keepane-e2e-git-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
+    let g = |args: &[&str]| {
+        let o = std::process::Command::new(&git)
+            .arg("-C")
+            .arg(&repo)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    g(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    g(&["add", "."]);
+    g(&["commit", "-q", "-m", "first"]);
+    let h = Harness::start("gitwork").await;
+    let dir = repo.to_string_lossy().to_string();
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "gw", "-c", &dir]).await;
+    assert_eq!(code, 0, "{err}");
+    let a = pane_id(&h, "gw:0.0").await;
+    let t = format!("%{a}");
+    h.cli(&["rename-pane", "-t", &t, "agent"]).await;
+    h.cli(&["set-work-mode", "-t", &t, "ai"]).await;
+    h.cli(&["set", "-g", "done-events", "agent task"]).await;
+    // The `pane-done` hook is told it in a line.
+    let said = std::env::temp_dir().join(format!("keepane-git-hook-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&said);
+    let write = if cfg!(windows) {
+        format!("Set-Content -LiteralPath '{}' -Value $env:KEEPANE_DONE_GIT", said.display())
+    } else {
+        format!("printf '%s' \"$KEEPANE_DONE_GIT\" > '{}'", said.display())
+    };
+    assert_eq!(h.cli(&["set-hook", "-g", "pane-done", "run-shell", &write]).await.0, 0);
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    // What git says, asked when it is shown (here: listed), within `secs`.
+    let figures = |want: &'static str, secs: u64| {
+        let h = &h;
+        async move {
+            let deadline = Instant::now() + Duration::from_secs(secs);
+            loop {
+                let (_, out, _) = h.cli(&["list-panes", "-t", "gw:0", "-F", "#{git_branch}|#{git_marks}"]).await;
+                if out.trim() == want {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "git's figures: {out:?}, waiting for {want:?}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+    figures("main|", 30).await;
+    // The agent is given a message; while it works it commits, changes a
+    // file and makes a new one; it says it is done.
+    let (_, sent, _) = h.cli(&["send-message", "-t", &t, "add b and note it"]).await;
+    let id = msg_id(&sent);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !h.cli(&["trace-message", &id]).await.1.starts_with(&format!("#{id} delivered")) {
+        assert!(Instant::now() < deadline, "#{id} never delivered");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(repo.join("b.txt"), "two\n").unwrap();
+    g(&["add", "b.txt"]);
+    g(&["commit", "-q", "-m", "add b"]);
+    std::fs::write(repo.join("a.txt"), "one\nmore\n").unwrap();
+    std::fs::write(repo.join("notes.md"), "n\n").unwrap();
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    let (code, trace, err) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
+    for part in [
+        "\ngit:\nmain ",
+        ": 1 commit, 2 files +2 -0, 1 new file",
+        " add b\n",
+        "\n  a.txt +1 -0",
+        "\n  b.txt +1 -0",
+        "\n  new notes.md",
+    ] {
+        assert!(trace.contains(part), "{part:?} in:\n{trace}");
+    }
+    let (_, json, _) = h.cli(&["list-done", "-J"]).await;
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let told = v["done"].as_array().unwrap().iter().find(|d| d["kind"] == "agent").expect("the turn told");
+    let w = &told["git"];
+    assert_eq!(
+        (w["branch"].as_str(), w["commit_count"].as_u64(), w["file_count"].as_u64(), w["new_count"].as_u64()),
+        (Some("main"), Some(1), Some(2), Some(1)),
+        "{told}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let hooked = loop {
+        if let Ok(s) = std::fs::read_to_string(&said)
+            && !s.trim().is_empty()
+        {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "the hook never wrote {}", said.display());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(
+        hooked.trim().starts_with("main ") && hooked.trim().ends_with(": 1 commit, 2 files +2 -0, 1 new file"),
+        "{hooked}"
+    );
+    h.cli(&["set-hook", "-gu", "pane-done"]).await;
+    let _ = std::fs::remove_file(&said);
+    // Asked again at once after the turn, not 10 seconds on.
+    figures("main|●2", 8).await;
+    // Each figure on its own: none ahead or behind (no upstream), none in
+    // conflict, the commit short.
+    let head = keepane::git::find(&dir).unwrap().head().unwrap();
+    let fields = "#{git_changed}|#{git_ahead}|#{git_behind}|#{git_conflicts}|#{git_head}";
+    let (_, out, _) = h.cli(&["list-panes", "-t", "gw:0", "-F", fields]).await;
+    assert_eq!(out.trim(), format!("2||||{}", &head[..7]));
+    // A command that ends in a shell in the same repository: asked again
+    // at once too.
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "gs", "-c", &dir], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    at_hooked_prompt(&h, "gs:0.0").await;
+    h.cli(&["send-keys", "-t", "gs:0.0", "echo x > made.txt", "Enter"]).await;
+    figures("main|●3", 5).await;
+    // A shell's task is no agent's work: nothing of git with it.
+    let (_, sent, _) = h.cli(&["send-message", "-t", "gs:0.0", "echo shell-task"]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &msg_id(&sent), "-w", "30"]).await;
+    assert!(trace.contains("shell-task") && trace.contains("#") && !trace.contains("git:"), "{trace}");
+    // Someone types to the agent while it is free: its work is measured
+    // from there (past the per-pane gate, so its turn is told).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    h.cli(&["send-keys", "-t", &t, "x"]).await;
+    g(&["add", "made.txt"]);
+    g(&["commit", "-q", "-m", "keep made"]);
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, json, _) = h.cli(&["list-done", "-J"]).await;
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let last = v["done"].as_array().unwrap().iter().rev().find(|d| d["kind"] == "agent").cloned();
+        if let Some(d) = last.filter(|d| d["git"]["commits"][0][1] == "keep made") {
+            assert_eq!(d["git"]["commit_count"], 1, "from where it was typed to, not from the message: {d}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the typed-to turn not told: {json}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The clock says it after the branch.
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "gw"]).await;
+    c.prefix('t').await;
+    c.wait_for("the branch and git's marks on the clock", |s| s.contents().contains("(main ●2")).await;
+    c.type_str("q").await;
+    // No git to run: the branch and the commits' ids, said to be all.
+    let missing = repo.join(if cfg!(windows) { "no-git.exe" } else { "no-git" });
+    h.cli(&["set", "-g", "git-command", &missing.to_string_lossy()]).await;
+    figures("main|", 30).await;
+    let (_, sent, _) = h.cli(&["send-message", "-t", &t, "once more"]).await;
+    let id = msg_id(&sent);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !h.cli(&["trace-message", &id]).await.1.starts_with(&format!("#{id} delivered")) {
+        assert!(Instant::now() < deadline, "#{id} never delivered");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    g(&["add", "."]);
+    g(&["commit", "-q", "-m", "the rest"]);
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    let (_, trace, _) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert!(trace.contains("\ngit:\nmain ") && trace.contains(": changes unknown (git not found)"), "{trace}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// What counts: a pane with no name in `normal` mode only with `done-panes
 /// all`; a command shorter than `done-after` not at all; a program exiting
 /// only when `done-events` has `exit`; nothing with `none`.

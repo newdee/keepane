@@ -164,6 +164,9 @@ pub struct Options {
     /// An HTTP(S) address told each time, and how its body is written.
     pub done_webhook: String,
     pub done_webhook_format: String,
+    /// The git to run for the panes' repositories (`crate::git::command`):
+    /// a path or a name on the PATH; empty, the one found.
+    pub git_command: String,
     /// Keep what happens to messages and panes in a JSON Lines file a day.
     pub event_log: bool,
     /// Days the event log keeps.
@@ -383,6 +386,7 @@ pub const SHOWABLE: &[&str] = &[
     "event-log",
     "event-log-days",
     "event-log-max",
+    "git-command",
     "hint-open",
     "theme",
     "window-style",
@@ -436,10 +440,11 @@ impl Default for Options {
             // The session name on a blue block.
             status_left: "#[fg=#1a1b26,bg=#7aa2f7,bold] #S #[default] ".into(),
             // What is useful at a glance and costs nothing to read: a newer
-            // keepane when there is one, the branch when in a repository,
+            // keepane when there is one, the branch when in a repository
+            // (and what git last said is changed there, `●3 ↑2`),
             // where the pane is, the machine's load, the battery when there
             // is one, then the time on a blue block.
-            status_right: "#{?keepane_update,#[fg=#1a1b26,bg=#e0af68,bold] ⇡ #{keepane_update} #[default] ,}#{?web_url,#[fg=#1a1b26,bg=#9ece6a,bold] web #{web_clients} #[default] ,}#{?#{==:#{pane_work_mode},normal},#[fg=#565f89]normal ,#[fg=#1a1b26,bg=#bb9af7,bold] #{pane_work_mode} #[default] }#{?git_branch,#[fg=#bb9af7]#{git_branch} ,}#[fg=#7dcfff]#{pane_current_path_short} #[fg=#9ece6a]CPU #{cpu_percentage} #[fg=#e0af68]MEM #{ram_percentage} #{?battery_percentage,#[fg=#9ece6a]BAT #{battery_percentage} ,}#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M ".into(),
+            status_right: "#{?keepane_update,#[fg=#1a1b26,bg=#e0af68,bold] ⇡ #{keepane_update} #[default] ,}#{?web_url,#[fg=#1a1b26,bg=#9ece6a,bold] web #{web_clients} #[default] ,}#{?#{==:#{pane_work_mode},normal},#[fg=#565f89]normal ,#[fg=#1a1b26,bg=#bb9af7,bold] #{pane_work_mode} #[default] }#{?git_branch,#[fg=#bb9af7]#{git_branch}#{?git_marks, #{git_marks},} ,}#[fg=#7dcfff]#{pane_current_path_short} #[fg=#9ece6a]CPU #{cpu_percentage} #[fg=#e0af68]MEM #{ram_percentage} #{?battery_percentage,#[fg=#9ece6a]BAT #{battery_percentage} ,}#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M ".into(),
             status_left_length: 40,
             status_right_length: 100, // the default right side is a long one; it gives way only to the current window and its marks
             status_justify: "left".into(),
@@ -477,6 +482,7 @@ impl Default for Options {
             done_panes: "named".into(),
             done_webhook: String::new(),
             done_webhook_format: "json".into(),
+            git_command: String::new(),
             event_log: true,
             event_log_days: 30,
             event_log_max: 20 * 1024 * 1024,
@@ -598,6 +604,7 @@ pub const KNOWN: &[&str] = &[
     "event-log",
     "event-log-days",
     "event-log-max",
+    "git-command",
     "hint-open",
     "history-limit",
     "keep-zoom",
@@ -962,6 +969,12 @@ impl Options {
             "done-panes" => {
                 self.done_panes = one_of(name, value, &["named", "all"])?;
             }
+            "git-command" => {
+                if value.contains(['\n', '\r', '\0']) {
+                    return Err("bad git-command: one line, a path or a program's name".into());
+                }
+                self.git_command = value.trim().to_string();
+            }
             "done-webhook" => {
                 let v = value.trim();
                 let ok = v.is_empty()
@@ -1122,6 +1135,7 @@ impl Options {
             "done-lines" => self.done_lines.to_string(),
             "done-panes" => self.done_panes.clone(),
             "done-webhook" => self.done_webhook.clone(),
+            "git-command" => self.git_command.clone(),
             "done-webhook-format" => self.done_webhook_format.clone(),
             "event-log" => onoff(self.event_log),
             "event-log-days" => self.event_log_days.to_string(),

@@ -449,6 +449,10 @@ pub struct Pane {
     /// last moved), and the lines under it as last worked out.
     pub clock_turns: u32,
     pub clock_pick: Option<super::clockanim::Kind>,
+    /// The commit its repository was at when its agent began the work in
+    /// hand (a message delivered, or someone typing to it while it was
+    /// free): what that work did is measured from here (`crate::git::work`).
+    pub git_base: Option<String>,
     pub clock_anim: Option<(super::clockanim::Anim, std::time::Instant)>,
     pub clock_lines: Option<ClockLines>,
     /// Bytes it has printed (the clock's `OUT`).
@@ -770,6 +774,7 @@ impl Pane {
             clock: false,
             clock_turns: 0,
             clock_pick: None,
+            git_base: None,
             clock_anim: None,
             clock_lines: None,
             output_bytes: 0,
@@ -1616,6 +1621,10 @@ impl Pane {
     /// Input from a person or a command acting for one (keys, a paste,
     /// `send-keys`): it also makes the pane busy for its messages.
     pub fn type_input(&mut self, bytes: &[u8]) {
+        // Someone sets a free agent to work: where its repository stood.
+        if self.actor.mode == super::actor::WorkMode::Ai && self.actor.idle() {
+            self.git_base = self.git_head();
+        }
         self.actor.input();
         self.write_input(bytes);
     }
@@ -1821,6 +1830,11 @@ impl Pane {
             return self.cwd.clone();
         }
         self.pid.filter(|_| self.exit_code.is_none()).and_then(crate::proccwd::process_cwd).or_else(|| self.cwd.clone())
+    }
+
+    /// The commit the repository its directory is in is at, if any.
+    pub fn git_head(&self) -> Option<String> {
+        crate::git::find(&self.current_path()?)?.head()
     }
 
     /// Display name for the status line.

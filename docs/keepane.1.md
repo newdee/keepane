@@ -279,6 +279,22 @@ request with `curl`, nothing about you in it); a newer one shows on the
 status line (`#{keepane_update}`) and in `show-messages`.
 `set -g update-check off` stops it.
 
+In a git repository the status line and the clock show, after the branch,
+what git last said is there: `main ●3 ↑2 ↓1 !1` (files changed, commits
+ahead of and behind the upstream, files in conflict; the formats
+`git_head`, `git_changed`, `git_ahead`, `git_behind`, `git_conflicts`,
+`git_marks`). In an `ai` pane, a message's end and the agent's turn carry
+what the work did in the repository since it began: the commits made, the
+files changed with their lines, the new files (under `git:` in
+`trace-message`, `git` in its JSON and in `list-done -J`,
+`KEEPANE_DONE_GIT` for the `pane-done` hook). git runs on a thread of its
+own, at most 10 seconds a run, without the index's lock, and without the
+file watcher, external diff, text conversion or pager a repository's
+config may name; `git-command` names
+the git to run (by default the one on the PATH, else where Git for
+Windows, GitHub Desktop or Homebrew put it). Without git, the branch and
+the commit ids are read from the repository's files and the rest is left out.
+
 `clock-mode` (prefix t) draws the time in big digits and under it the date
 (and UTC), the pane (its program, folder and branch, how long it has run and
 been quiet), its last command (how long it took, how it ended), its agent

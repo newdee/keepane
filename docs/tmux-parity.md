@@ -226,7 +226,7 @@ times and flags (`session_activity` `session_last_attached` `window_activity` `w
 `socket_path` `version` `pid`), plus the one-letter forms `#S #W #I #P #T
 #H #F #D #h`. keepane's own, read in-process rather than through `#()`:
 `cpu_percentage` `ram_percentage` `ram_used` `battery_percentage`
-`battery_charging` `uptime` `git_branch` `pane_current_path_short`
+`battery_charging` `uptime` `git_branch` (and from git: `git_head` `git_changed` `git_ahead` `git_behind` `git_conflicts` `git_marks`) `pane_current_path_short`
 `pane_pid_command` (tmux users get these from plugins such as tmux-cpu
 and tmux-battery), and `pane_output_count` (how many times the pane has
 printed, which `keepane web` watches), and for pane messages `pane_name` `pane_address` `pane_work_mode`
@@ -248,7 +248,7 @@ Accepted and ignored: `bell-action`, `escape-time`,
 the session file, colours kept; `all` for the whole scrollback), `autosave`, `restore-on-start`, `sessions-dir`,
 `plugin-path`, `pane-timestamps` (each reported command's time at the end of its
 line), `log-history`, `log-history-days`, `log-history-dir` (the history
-log), `undo-kill-time`, `keep-zoom`, `animation`, `animation-time` (a zoom grows the pane to the window, and a
+log), `undo-kill-time`, `keep-zoom`, `git-command` (the git keepane runs for the panes' repositories), `animation`, `animation-time` (a zoom grows the pane to the window, and a
 frame flies to where the keys go otherwise), `message-hop-limit`, `message-inbox-limit`, `message-max-size`,
 `message-wait-max`, `agent-pane-limit`, `agent-commands`, `event-log`, `event-log-days`, `event-log-max`
 (pane messages), and `@user` options.

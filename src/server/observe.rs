@@ -85,6 +85,8 @@ pub struct Record {
     pub cut: bool,
     /// Why it was rejected or dropped, and by whom.
     pub why: Option<String>,
+    /// What an agent's work on it did in its repository.
+    pub git: Option<crate::git::Work>,
 }
 
 /// Records kept in memory; older finished ones are only in the files.
@@ -173,6 +175,7 @@ impl Store {
                 output: None,
                 cut: false,
                 why: rejected.map(String::from),
+                git: None,
             },
         );
         self.trim();
@@ -204,6 +207,18 @@ impl Store {
 
     /// The pane is done with it: `ok` and `output` for a shell command.
     pub fn ended(&mut self, id: MsgId, end: End, ok: Option<bool>, output: Option<(String, bool)>) {
+        self.ended_with(id, end, ok, output, None);
+    }
+
+    /// The same, with what an agent's work on it did in its repository.
+    pub fn ended_with(
+        &mut self,
+        id: MsgId,
+        end: End,
+        ok: Option<bool>,
+        output: Option<(String, bool)>,
+        git: Option<&crate::git::Work>,
+    ) {
         let t = now();
         let stage = match (end, ok) {
             (End::Abandoned, _) => Stage::Abandoned,
@@ -217,11 +232,15 @@ impl Store {
         if let Some((text, cut)) = &output {
             fields.push_str(&format!(",\"output\":{},\"cut\":{cut}", js(text)));
         }
+        if let Some(g) = git {
+            fields.push_str(&format!(",\"git\":{}", serde_json::to_string(g).expect("a git work serializes")));
+        }
         self.write(t, stage.as_str(), &fields);
         self.update(id, |r| {
             r.stage = stage;
             r.ended = Some(t);
             r.ok = ok;
+            r.git = git.cloned();
             if let Some((text, cut)) = output {
                 r.output = Some(text);
                 r.cut = cut;
@@ -343,6 +362,7 @@ impl Store {
                             output: None,
                             cut: false,
                             why: v["why"].as_str().map(String::from),
+                            git: None,
                             msg: m,
                         },
                     );
@@ -368,6 +388,7 @@ impl Store {
                         r.output = v["output"].as_str().map(String::from);
                         r.cut = v["cut"].as_bool().unwrap_or(false);
                         r.why = v["why"].as_str().map(String::from);
+                        r.git = serde_json::from_value(v["git"].clone()).ok();
                     }
                 }
             }
@@ -398,6 +419,10 @@ impl Store {
             out.push(format!("output{}:", if r.cut { " (cut)" } else { "" }));
             out.push(o.clone());
         }
+        if let Some(g) = &r.git {
+            out.push("git:".into());
+            out.extend(g.lines());
+        }
         Some(out.join("\n"))
     }
 
@@ -427,6 +452,7 @@ impl Store {
             "text": m.text,
             "output": r.output,
             "cut": r.cut,
+            "git": r.git,
         })
     }
 
@@ -637,6 +663,53 @@ mod tests {
         assert_eq!(back.get(8).unwrap().stage, Stage::Dropped);
         assert_eq!(back.get(8).unwrap().why.as_deref(), Some("the server restarted"));
         assert_eq!(back.get(9).unwrap().stage, Stage::Rejected);
+        crate::histlog::flush(std::time::Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What an agent's work on a message did in its repository goes with
+    /// its end: in the trace (under `git:`), in the JSON, and back from the
+    /// files after a restart. A message ended without it has none.
+    #[test]
+    fn an_agents_work_in_its_repository_goes_with_the_message() {
+        let dir = std::env::temp_dir().join(format!("keepane-observe-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Store { dir: Some(dir.clone()), ..Default::default() };
+        let work = crate::git::Work {
+            branch: "main".into(),
+            from: Some("1a2b3c4d".repeat(5)),
+            to: Some("5d6e7f8a".repeat(5)),
+            commits: vec![("5d6e7f8".into(), "parse the header".into())],
+            commit_count: 1,
+            files: vec![crate::git::File { path: "src/a.rs".into(), added: Some(30), removed: Some(2) }],
+            file_count: 1,
+            added: 30,
+            removed: 2,
+            measured: true,
+            ..Default::default()
+        };
+        s.sent(&msg(4, 4, "fix the parser"), None);
+        s.delivered(4);
+        s.ended_with(4, End::Done, None, None, Some(&work));
+        s.sent(&msg(5, 5, "plain"), None);
+        s.delivered(5);
+        s.ended(5, End::Done, None, None);
+        let t = s.trace(4, EnvelopeStyle::Fields).unwrap();
+        assert!(
+            t.ends_with(
+                "git:\nmain 1a2b3c4..5d6e7f8: 1 commit, 1 file +30 -2\n  5d6e7f8 parse the header\n  src/a.rs +30 -2"
+            ),
+            "{t}"
+        );
+        let j = Store::record_json(s.get(4).unwrap());
+        assert_eq!((j["git"]["branch"].as_str(), j["git"]["added"].as_u64()), (Some("main"), Some(30)), "{j}");
+        assert!(!s.trace(5, EnvelopeStyle::Fields).unwrap().contains("git:"));
+        assert!(Store::record_json(s.get(5).unwrap())["git"].is_null());
+        crate::histlog::flush(std::time::Duration::from_secs(5));
+        let mut back = Store { dir: Some(dir.clone()), ..Default::default() };
+        back.load(1);
+        assert_eq!(back.get(4).unwrap().git.as_ref(), Some(&work));
+        assert_eq!(back.get(5).unwrap().git, None);
         crate::histlog::flush(std::time::Duration::from_secs(5));
         let _ = std::fs::remove_dir_all(&dir);
     }

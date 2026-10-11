@@ -198,7 +198,11 @@ impl Server {
                 .map(crate::sysinfo::program_of)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| p.command.clone()),
-            branch: if path.is_empty() { String::new() } else { crate::sysinfo::git_branch(&path) },
+            // The branch, and what git last said is changed there (`●3 ↑2`).
+            branch: match (crate::git::branch_of(&path), self.git_status(&path).map(|s| s.marks())) {
+                (b, Some(m)) if !b.is_empty() && !m.is_empty() => format!("{b} {m}"),
+                (b, _) => b,
+            },
             path: crate::sysinfo::short_path(&path),
             up_secs: p.spawned_at.elapsed().as_secs() as i64,
             quiet_secs: p.last_output.elapsed().as_secs() as i64,

@@ -54,7 +54,7 @@ pub fn needs_yes(argv: &[String]) -> bool {
 }
 
 /// `list-panes -F` for the board: one pane a line, tab-separated.
-pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}";
+pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}";
 
 /// The agent a pane runs, its figures as the `agent_*` formats write them.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -162,6 +162,9 @@ pub struct PaneRow {
     pub unheard: bool,
     /// The agent it runs, if any (`list-agents`).
     pub agent: Option<AgentRow>,
+    /// Its repository's branch and what git last said is changed there
+    /// (`main ●3 ↑2`), empty outside one.
+    pub git: String,
 }
 
 impl PaneRow {
@@ -191,6 +194,13 @@ impl PaneRow {
             exit: f[18].into(),
             unheard: f.get(19) == Some(&"1"),
             agent: f.get(20..).and_then(AgentRow::parse),
+            git: [f.get(29), f.get(30)]
+                .into_iter()
+                .flatten()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" "),
         })
     }
 
@@ -1412,6 +1422,9 @@ impl Board {
                     ),
                 ];
                 head.extend(p.agent.as_ref().map(AgentRow::line));
+                if !p.git.is_empty() {
+                    head.push(format!("{} {}", label("git"), paint("35", &p.git)));
+                }
                 head.push(format!("{} {}", label("doing:"), p.doing()));
                 // The mode and the state when they say something.
                 let mut title = format!("[0] {}{name}", p.id);
@@ -2147,6 +2160,20 @@ mod tests {
         rows
     }
 
+    /// The chosen pane in a repository: a line with its branch and git's
+    /// marks over the screen; outside one, no such line.
+    #[test]
+    fn the_chosen_panes_repository_shows_over_it() {
+        let mut b = board();
+        let mut rows = b.rows.clone();
+        rows[0].git = "main ●3 ↑2".into();
+        b.set_rows(rows);
+        let shown = strip(&b.frame());
+        assert!(shown.contains("git main ●3 ↑2"), "{shown}");
+        b.key(Key::ch('j'));
+        assert!(!strip(&b.frame()).contains("git main"), "the next pane is in none");
+    }
+
     #[test]
     fn a_pane_line_reads_back() {
         let line =
@@ -2166,6 +2193,15 @@ mod tests {
         let r = PaneRow::parse(&unheard.replace("\t1\t2\t", "\t1\t0\t")).unwrap();
         assert_eq!(r.doing(), "\"running 3/10\"");
         assert_eq!(PaneRow::parse("too\tshort"), None);
+        // Its repository: the branch and git's marks, after the agent's
+        // nine figures; in a repository with nothing changed, the branch;
+        // outside one, or from an older server, nothing.
+        let agent = "\tclaude\tsonnet\t$1.20\t12k\t34%\t2.1%\t80M\t9\t3";
+        let r = PaneRow::parse(&format!("{line}\t0{agent}\tmain\t●3 ↑2")).unwrap();
+        assert_eq!((r.git.as_str(), r.agent.map(|a| a.model)), ("main ●3 ↑2", Some("sonnet".to_string())));
+        assert_eq!(PaneRow::parse(&format!("{line}\t0{agent}\tmain\t")).unwrap().git, "main");
+        assert_eq!(PaneRow::parse(&format!("{line}\t0{agent}\t\t")).unwrap().git, "");
+        assert_eq!(PaneRow::parse(&format!("{line}\t0{agent}")).unwrap().git, "");
         let q = Queued::parse("  #6  from %lead  waiting 3s  second  with  gaps").unwrap();
         assert_eq!(
             (q.id.as_str(), q.from.as_str(), q.waiting.as_str(), q.text.as_str()),
