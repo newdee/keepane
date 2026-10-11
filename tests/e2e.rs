@@ -2096,10 +2096,11 @@ async fn copy_mode_vi_motions_and_modes() {
     h.cli(&["kill-server"]).await;
 }
 
-/// Under the clock something moves with the machine: `cycle` (the default)
-/// takes pulse, matrix and bars in turn, one each time the clock is put
-/// on; frames come while it is up and stop when it goes; `off`, or
-/// `animation off`, leaves the clock as it was.
+/// Under the clock something moves with the machine: `random` (the
+/// default) one kind or another each time the clock is put on; `cycle`
+/// takes them in turn, pulse, matrix and bars first; frames come while it
+/// is up and stop when it goes; each kind set by its name draws its own;
+/// `off`, or `animation off`, leaves the clock as it was.
 #[tokio::test(flavor = "multi_thread")]
 async fn under_the_clock_something_moves_with_the_machine() {
     let h = Harness::start("clockanim").await;
@@ -2107,7 +2108,9 @@ async fn under_the_clock_something_moves_with_the_machine() {
     c.attach(&["new", "-s", "a"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
     let (_, out, _) = h.cli(&["show-options", "-gv", "clock-mode-animation"]).await;
-    assert_eq!(out.trim(), "cycle");
+    assert_eq!(out.trim(), "random");
+    // In turn from the pane's first clock: pulse, matrix, bars.
+    h.cli(&["set", "-g", "clock-mode-animation", "cycle"]).await;
     let braille = |s: &vt100::Screen| s.contents().chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
     let katakana = |s: &vt100::Screen| s.contents().chars().any(|c| ('\u{ff66}'..='\u{ff9d}').contains(&c));
     let bars = |s: &vt100::Screen| s.contents().contains("OUT ") && s.contents().contains("MEM ");
@@ -2128,7 +2131,7 @@ async fn under_the_clock_something_moves_with_the_machine() {
         }
         let moving = c.frames_for(800).await;
         assert!(moving >= 5, "{kind}: {moving} frames in 0.8 s");
-        c.type_str("x").await;
+        c.type_str("q").await;
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
         let still = c.frames_for(800).await;
         assert!(still <= 1, "{kind}: {still} frames after the clock went");
@@ -2150,7 +2153,7 @@ async fn under_the_clock_something_moves_with_the_machine() {
         s.contents().split("OUT ").nth(1).is_some_and(|r| r.starts_with(|ch: char| ch.is_ascii_digit() && ch != '0'))
     })
     .await;
-    c.type_str("x").await;
+    c.type_str("q").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     h.wait_capture("a:0.1", "the burst over", |t| t.trim_end().ends_with("keepane>")).await;
     h.cli(&["kill-pane", "-t", "a:0.1"]).await;
@@ -2183,14 +2186,54 @@ async fn under_the_clock_something_moves_with_the_machine() {
     if cfg!(not(target_os = "macos")) {
         c.wait_for("the system's wave", |s| s.contents().contains("SYS ") && s.contents().contains(" proc")).await;
     }
-    c.type_str("x").await;
+    c.type_str("q").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     // A kind set: that one, every time.
     h.cli(&["set", "-g", "clock-mode-animation", "matrix"]).await;
     c.prefix('t').await;
     c.wait_for("matrix again", |s| s.contents().contains("███") && katakana(s)).await;
-    c.type_str("x").await;
+    c.type_str("q").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    // Each of the others by its name: its own marks in the pane's last
+    // rows (under the clock's lines), and it moves.
+    let last_rows =
+        |s: &vt100::Screen| s.rows(0, COLS).skip(usize::from(ROWS) - 4).take(3).collect::<Vec<_>>().join("\n");
+    for (kind, marks) in [
+        ("fire", &["#", "%"][..]),
+        ("aquarium", &["░"]),
+        ("starfield", &["*", "+"]),
+        ("life", &["▀", "▄"]),
+        ("donut", &[]),
+        ("weather", &["~"]),
+    ] {
+        h.cli(&["set", "-g", "clock-mode-animation", kind]).await;
+        c.prefix('t').await;
+        c.wait_for(kind, |s| {
+            let (all, low) = (s.contents(), last_rows(s));
+            all.contains("███")
+                && if kind == "donut" {
+                    all.contains('!') || all.contains(';')
+                } else {
+                    marks.iter().any(|m| low.contains(m))
+                }
+        })
+        .await;
+        let moving = c.frames_for(1000).await;
+        assert!(moving >= 3, "{kind}: {moving} frames in 1 s");
+        c.type_str("q").await;
+        c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    }
+    // At random: something moves each time (which kind: the server's unit
+    // test `each_clock_takes_its_kind`).
+    h.cli(&["set", "-g", "clock-mode-animation", "random"]).await;
+    for turn in 0..3 {
+        c.prefix('t').await;
+        c.wait_for("the clock", |s| s.contents().contains("███")).await;
+        let moving = c.frames_for(1000).await;
+        assert!(moving >= 3, "random, turn {turn}: {moving} frames in 1 s");
+        c.type_str("q").await;
+        c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    }
     // off, and animation off: the clock alone, still.
     for (option, value) in [("clock-mode-animation", "off"), ("animation", "off")] {
         if option == "animation" {
@@ -2203,11 +2246,11 @@ async fn under_the_clock_something_moves_with_the_machine() {
         let s = c.screen.screen();
         assert!(!braille(s) && !katakana(s) && !s.contents().contains("OUT "), "{option} {value}: {}", c.text());
         assert!(still <= 1, "{option} {value}: {still} frames");
-        c.type_str("x").await;
+        c.type_str("q").await;
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     }
     let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "fireworks"]).await;
-    assert!(code != 0 && err.contains("one of bars, cycle, matrix, off, pulse"), "{err}");
+    assert!(code != 0 && err.contains("one of aquarium, bars, cycle, donut, fire, life, matrix, off, pulse"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2219,7 +2262,7 @@ async fn clock_conditionals_and_client_commands() {
 
     // prefix t draws a clock, with what is worth a glance under it: the
     // date and UTC, the pane (its program, how long it ran and has been
-    // quiet), the machine; any key puts it away.
+    // quiet), the machine; q puts it away.
     let weekday = chrono::Local::now().format("%A").to_string();
     c.prefix('t').await;
     c.wait_for("clock", |s| s.contents().contains("███")).await;
@@ -2229,8 +2272,44 @@ async fn clock_conditionals_and_client_commands() {
     })
     .await;
     assert!(c.text().contains(&weekday) || !chrono::Local::now().format("%A").to_string().eq(&weekday), "{}", c.text());
+    // Only q puts it away: another key is swallowed (not typed into the
+    // pane under it); the prefix still works (a window more, and back).
     c.type_str("x").await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(c.text().contains("███"), "x left the clock: {}", c.text());
+    c.prefix('c').await;
+    h.wait_for_cli("a new window", &["list-windows", "-t", "c1"], |_, out| out.lines().count() == 2).await;
+    c.wait_for("the new window, no clock", |s| !s.contents().contains("███")).await;
+    c.prefix('p').await;
+    c.wait_for("the clock still there", |s| s.contents().contains("███")).await;
+    c.type_str("q").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    // A `bind -r` key in its repeat time goes on past a clock: o, o, o from
+    // the clock's pane over two ends on the other one.
+    h.cli(&["bind", "-r", "o", "select-pane", "-t", ":.+"]).await;
+    let (code, _, err) = h.cli(&["split-window", "-d", "-h", "-t", "c1:0"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.prefix('t').await;
+    c.wait_for("the clock again", |s| s.contents().contains("███")).await;
+    c.prefix('o').await;
+    c.type_str("o").await;
+    c.type_str("o").await;
+    h.wait_for_cli("on the other pane", &["display-message", "-p", "-t", "c1:0", "#{pane_index}"], |_, out| {
+        out.trim() == "1"
+    })
+    .await;
+    h.cli(&["select-pane", "-t", "c1:0.0"]).await;
+    c.wait_for("back on the clock", |s| s.contents().contains("███")).await;
+    c.type_str("q").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    h.cli(&["kill-pane", "-t", "c1:0.1"]).await;
+    h.cli(&["unbind", "o"]).await;
+    let (_, typed, _) = h.cli(&["capture-pane", "-p", "-t", "c1:0"]).await;
+    assert!(
+        !typed.lines().any(|l| l.contains("keepane>") && l.trim_end().ends_with('x')),
+        "x reached the pane: {typed}"
+    );
+    h.cli(&["kill-window", "-t", "c1:1"]).await;
     // A folder too long for the pane: its start gives way (`…`), so how
     // long the pane has run and been quiet still shows.
     let deep = std::env::temp_dir().join(format!(
@@ -2246,7 +2325,7 @@ async fn clock_conditionals_and_client_commands() {
         s.contents().lines().any(|l| l.contains(" in …") && l.contains(" · quiet "))
     })
     .await;
-    c.type_str("x").await;
+    c.type_str("q").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     h.cli(&["kill-window", "-t", "c1:1"]).await;
     let _ = std::fs::remove_dir_all(&deep);
@@ -2259,7 +2338,7 @@ async fn clock_conditionals_and_client_commands() {
     })
     .await;
     assert!(!c.text().contains(" · UTC "), "{}", c.text());
-    c.type_str("x").await;
+    c.type_str("q").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     let (code, _, err) = h.cli(&["set", "-g", "clock-mode-style", "13"]).await;
     assert!(code != 0 && err.contains("12 or 24"), "{err}");
@@ -2274,7 +2353,7 @@ async fn clock_conditionals_and_client_commands() {
         })
     })
     .await;
-    c.type_str("x").await;
+    c.type_str("q").await;
 
     // if-shell -F takes the branch the format says.
     h.cli(&["if-shell", "-F", "#{?session_name,yes,}", "set -g @cond true", "set -g @cond false"]).await;

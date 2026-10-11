@@ -441,12 +441,14 @@ pub struct Pane {
     /// marker came through); the pane's program can start.
     pub replay_done: bool,
     pub exit_code: Option<u32>,
-    /// `clock-mode`: a clock is drawn over this pane until a key arrives.
+    /// `clock-mode`: a clock is drawn over this pane until `q`.
     pub clock: bool,
     /// How many times a clock was put here (`clock-mode-animation cycle`
-    /// takes the next kind each time), what moves under it (and when it
+    /// takes the next kind each time), the kind picked at random for it
+    /// (`random`: never the one before), what moves under it (and when it
     /// last moved), and the lines under it as last worked out.
     pub clock_turns: u32,
+    pub clock_pick: Option<super::clockanim::Kind>,
     pub clock_anim: Option<(super::clockanim::Anim, std::time::Instant)>,
     pub clock_lines: Option<ClockLines>,
     /// Bytes it has printed (the clock's `OUT`).
@@ -767,6 +769,7 @@ impl Pane {
             exit_code: None,
             clock: false,
             clock_turns: 0,
+            clock_pick: None,
             clock_anim: None,
             clock_lines: None,
             output_bytes: 0,

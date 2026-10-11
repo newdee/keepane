@@ -69,8 +69,10 @@ pub struct Options {
     pub clock_mode_colour: Option<Color>,
     pub clock_mode_info: bool,
     /// What moves under the clock (`clock-mode-animation`): `pulse`,
-    /// `matrix`, `bars`, `cycle` (the next of them each time a clock is
-    /// put on a pane) or `off`; `animation off` stops it too.
+    /// `matrix`, `bars`, `fire`, `aquarium`, `starfield`, `life`, `donut`,
+    /// `weather`; `random` (the default: one of them at random each time a
+    /// clock is put on a pane, never the one before), `cycle` (the next of
+    /// them each time) or `off`; `animation off` stops it too.
     pub clock_mode_animation: String,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
@@ -188,7 +190,8 @@ pub struct Options {
 }
 
 /// What `clock-mode-animation` can be.
-pub const CLOCK_ANIMATIONS: &[&str] = &["bars", "cycle", "matrix", "off", "pulse"];
+pub const CLOCK_ANIMATIONS: &[&str] =
+    &["aquarium", "bars", "cycle", "donut", "fire", "life", "matrix", "off", "pulse", "random", "starfield", "weather"];
 
 /// What a pane can be done with (`done-events`).
 pub const DONE_EVENTS: &[&str] = &["command", "agent", "task", "exit"];
@@ -428,7 +431,7 @@ impl Default for Options {
             clock_mode_style: 24,
             clock_mode_colour: None,
             clock_mode_info: true,
-            clock_mode_animation: "cycle".into(),
+            clock_mode_animation: "random".into(),
             pane_border_fg: Color::Rgb(0x3b, 0x42, 0x61),
             // The session name on a blue block.
             status_left: "#[fg=#1a1b26,bg=#7aa2f7,bold] #S #[default] ".into(),
@@ -1440,15 +1443,19 @@ mod tests {
         assert!(o.set("clock-mode-style", "13").unwrap_err().contains("12 or 24"));
         assert!(o.set("clock-mode-colour", "nocolour").is_err());
         assert_eq!(option_values("clock-mode-style"), ["12", "24"]);
-        // What moves under it: each in turn by default, one of them, or none.
-        assert_eq!(o.get("clock-mode-animation").as_deref(), Some("cycle"));
-        for kind in ["pulse", "matrix", "bars", "off", "cycle"] {
+        // What moves under it: one at random by default, each in turn, one
+        // of them, or none; every kind by its name.
+        assert_eq!(o.get("clock-mode-animation").as_deref(), Some("random"));
+        let kinds = crate::server::clockanim::Kind::ALL.map(|k| k.name());
+        for kind in kinds.into_iter().chain(["off", "cycle", "random"]) {
+            assert!(CLOCK_ANIMATIONS.contains(&kind), "{kind}");
             o.set("clock-mode-animation", kind).unwrap();
             assert_eq!(o.get("clock-mode-animation").as_deref(), Some(kind));
         }
+        assert_eq!(CLOCK_ANIMATIONS.len(), kinds.len() + 3);
         let e = o.set("clock-mode-animation", "fireworks").unwrap_err();
-        assert!(e.contains("one of bars, cycle, matrix, off, pulse"), "{e}");
-        assert_eq!(o.clock_mode_animation, "cycle", "a refused value leaves the old one");
+        assert!(e.contains("one of aquarium, bars, cycle, donut, fire, life, matrix, off, pulse, random"), "{e}");
+        assert_eq!(o.clock_mode_animation, "random", "a refused value leaves the old one");
         assert_eq!(option_values("clock-mode-animation"), CLOCK_ANIMATIONS);
         assert_eq!(resolve_name("clock-mode-a").as_deref(), Ok("clock-mode-animation"));
     }

@@ -880,7 +880,7 @@ fn record_tour() {
 }
 
 /// The clock (prefix t) over a pane running a build: each time it is put
-/// on, the next of what moves under it (`clock-mode-animation cycle`), the
+/// on, the next of what moves under it (`clock-mode-animation cycle`, set), the
 /// monitor, the rain, the bars, all going with the machine.
 #[test]
 #[ignore = "recording, not an assertion; run with --ignored"]
@@ -942,6 +942,8 @@ Remove-Item $file -ErrorAction SilentlyContinue
     kp(&["new", "-d", "-s", "ops"]);
     kp(&["rename-pane", "-t", "ops:0.0", "tests"]);
     kp(&["set-work-mode", "-t", "ops:0.0", "shell"]);
+    // The kinds in turn, not at random: the same film each time.
+    kp(&["set", "-g", "clock-mode-animation", "cycle"]);
     rec.hold(3);
     rec.type_line(".\\build.ps1");
     rec.until("the build", |s| s.contents().contains("Compiling"), 30);
@@ -956,7 +958,7 @@ Remove-Item $file -ErrorAction SilentlyContinue
     rec.hold(12);
     kp(&["send-message", "-t", "%tests", "echo 'lint: clean'"]);
     rec.hold(12);
-    // Any key puts the clock away; the build went on under it.
+    // q puts the clock away; the build went on under it.
     rec.key("q");
     rec.hold(4);
 

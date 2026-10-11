@@ -304,12 +304,26 @@ drop headed by `✉` for each message delivered. `bars` is an equalizer: a bar
 for each core, memory, the disks read and written, the network in and out,
 the temperature, and a bar for each pane of the window by what it prints;
 then, where they fit beside those, messages, the CPU's watts, the battery's,
-swap, and context switches with interrupts. In `pulse` and `matrix` the colour goes from green through
-yellow to red with the CPU's temperature, or with the cores' load when there
-is no temperature; the bars are green at the bottom, yellow higher up and red
-at the top. `cycle`
-(the default) takes the three in turn, a new one each time the clock is put
-on a pane; `off`, or `animation off`, leaves the clock still.
+swap, and context switches with interrupts. `fire` is a flame for each
+core, as tall as the core is busy, its tip whiter the hotter the CPU, sparks
+with the interrupts. `aquarium` is a fish for each pane of the window,
+faster the more it prints, bubbles with the disks, weed taller with memory
+and swaying with the context switches. `starfield` is a flight through
+stars, more with the processes, faster with the network. `life` is Conway's
+game of life, more generations with the cores, sown with the context
+switches up to a share the memory in use sets. `donut` is a turning torus,
+faster with the cores, thicker with memory. `weather` is clouds with the
+cores, rain with the disks slanting in the network's wind, lightning with
+the interrupts, water as deep as the memory in use. In each of these six a
+message delivered shows as an `✉` (rising, a comet, on a glider, in the
+torus's hole, falling). In `pulse`, `matrix`, `starfield`, `life` and
+`donut` the colour goes from green through yellow to red with the CPU's
+temperature, or with the cores' load when there is no temperature; the bars
+are green at the bottom, yellow higher up and red at the top. `random` (the
+default) picks one of the nine each time the clock is put on a pane, never
+the one it had before; `cycle` takes them in turn; a name sets that one;
+`off`, or `animation off`, leaves the clock still. The clock stays until
+`q` (tmux's goes at any key); the prefix still works under it.
 
 It is drawn in the 16 colours a theme sets with `pane-colours` (the
 terminal's own colours when the theme sets none), so each theme colours it.

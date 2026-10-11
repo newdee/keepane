@@ -246,7 +246,7 @@ keepane kill-server
 | `m` / `M` | 标记这个 pane / 取消标记（`join-pane` 默认搬走被标记的那个） |
 | `T` / `f` | 给这个 pane 起名 / 按名字或标题找窗口 |
 | `#` / `-` / `=` | 列出粘贴缓冲区 / 删掉最新的 / 挑一个粘贴 |
-| `t` / `~` / `r` | 时钟，下面写着日期（和 UTC 时间）、这个 pane（程序、目录、分支、跑了多久、安静了多久）、它的上一条命令（花了多久、结果；目录或命令太长时用 `…` 缩短，保证后面的内容显示完整）、它的 agent（模型、花费、上下文）和这台机器（`clock-mode-info off` 只显示时间；`clock-mode-style 12`、`clock-mode-colour`）；再往下是随机器负载变化的动画（见下文）/ 最近的提示消息 / 重画 |
+| `t` / `~` / `r` | 时钟，下面写着日期（和 UTC 时间）、这个 pane（程序、目录、分支、跑了多久、安静了多久）、它的上一条命令（花了多久、结果；目录或命令太长时用 `…` 缩短，保证后面的内容显示完整）、它的 agent（模型、花费、上下文）和这台机器（`clock-mode-info off` 只显示时间；`clock-mode-style 12`、`clock-mode-colour`）；再往下是随机器负载变化的动画（见下文）；按 `q` 退出 / 最近的提示消息 / 重画 |
 | `S` | 开关 `synchronize-panes`：敲的东西同时进这个窗口的所有 pane，状态栏会多个 `S` |
 | `[` / `PgUp` | copy mode（下面单独说） |
 | `]` | 粘贴剪贴板 |
@@ -270,10 +270,16 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 - `pulse`：监护仪。心跳频率随 CPU 变化，核心空闲时每分钟 60 下，全部满载时 150 下；keepane 每送达 1 条消息，心脏提前跳 1 下（最多积攒 4 下）。网络波形的高度随流量变化；磁盘波形像呼吸，磁盘越忙，呼吸越快越深；系统波形随上下文切换变快，随中断变高。每条波形旁边写着对应数字（`♥ 92  CPU 35% 67W  61°C  ✉ 2`、`NET ↓1.2M ↑80K  3.1k pkt/s`、`DISK r12M w0`、`SYS 48k/s  312 proc 4.3k thr`）。`67W` 是 CPU 封装功耗；`PWR 20W` 是机器用电池运行时电池的输出功率；`✉ 2` 是这次打开时钟以来送达的消息数。
 - `matrix`：字符雨。CPU 越忙下落越快，内存占用越高下落的列越多，有网络流量时出现青色的列，磁盘越忙字符闪烁越快，中断越多散落的品红色字符越多；每送达 1 条消息，落下 1 列以 `✉` 开头的白色字符。
 - `bars`：均衡器。每个核心一根柱，然后是内存、磁盘（读、写）、网络（收、发）、温度，以及窗口里每个 pane 各一根的输出量柱；放得下时再加上消息（来一条打满，然后回落）、CPU 功耗、电池功耗、交换区，以及上下文切换和中断。每组下面有标签，峰值标记缓慢下落。
+- `fire`：火焰。每个核心一簇火苗，核心越忙火苗越高；CPU 越热，火尖从黄色变为亮黄色再变为白色；中断越多火星越多；每送达 1 条消息，有 1 个 `✉` 从火里升起。
+- `aquarium`：鱼缸。窗口里每个 pane 一条鱼，pane 输出越多鱼游得越快；磁盘越忙气泡越多；内存占用越高水草越高，上下文切换越多水草摆得越快；CPU 越忙水面波浪越快；每送达 1 条消息，有 1 个 `✉` 从沙底升起。
+- `starfield`：星空穿梭。进程越多星星越多；网络流量越大飞得越快（高速时拖出光线）；每送达 1 条消息，飞过 1 颗以 `✉` 为头的彗星。
+- `life`：康威生命游戏。CPU 越忙每秒演化的代数越多；上下文切换越多补种越快，存活细胞数的上限由内存占用决定；新生细胞高亮；每送达 1 条消息，在中央放出 1 个 glider，上面短暂显示 `✉`。
+- `donut`：旋转的圆环。CPU 越忙转得越快，内存占用越高圆环越粗；每送达 1 条消息，多转 1 圈，中间的洞里显示 `✉`。
+- `weather`：天气。CPU 越忙云越多；磁盘越忙雨越大，网络流量大时雨被风吹斜；中断越多闪电越多；内存占用越高积水越深；每送达 1 条消息，有 1 个 `✉` 落进水里。
 
 时钟下方信息行的最后一行是 keepane 自己的情况：会话数、pane 数，以及启动以来送达的消息数。
 
-`pulse` 和 `matrix` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`cycle`（默认）轮流使用这三种，每次打开时钟换一种；`off` 或 `animation off` 时钟就不动。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有磁盘、上下文切换、中断、线程和功耗数字；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
+`pulse`、`matrix`、`starfield`、`life` 和 `donut` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 9 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有磁盘、上下文切换、中断、线程和功耗数字；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
 
 <p align="center">
   <picture>
@@ -642,7 +648,7 @@ set -g log-history-days 30        # 留几天；0 永久保留（log-history-dir
 set -g undo-kill-time 10          # 关掉的 pane / 窗口保留几秒可以找回（prefix u）；0 不保留
 set -g keep-zoom off              # 切到别的 pane 就取消最大化，和 tmux 一样（on：最大化跟着走）
 set -g animation off              # 不要焦点框飞过去的动画（animation-time 160：毫秒数，0 到 10000）
-set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、cycle（默认：轮流）或 off
+set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、fire、aquarium、starfield、life、donut、weather、random（默认）、cycle 或 off
 
 bind | split-window -h
 bind - split-window -v

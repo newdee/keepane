@@ -4,7 +4,7 @@
 pub mod actor;
 mod agents;
 mod clock;
-mod clockanim;
+pub(crate) mod clockanim;
 mod digits;
 mod done;
 mod hints;
@@ -913,6 +913,9 @@ pub struct Server {
     meter: Option<Meter>,
     /// Messages delivered into panes since the server started.
     delivered: u64,
+    /// Where `clock-mode-animation random` starts from: another each time
+    /// the server starts.
+    clock_seed: u64,
     shell_running: HashSet<String>,
     shell_last_refresh: Option<Instant>,
     /// Plugin directories loaded so far.
@@ -1316,6 +1319,10 @@ impl Server {
             shell_cache: crate::format::ShellCache::default(),
             meter: None,
             delivered: 0,
+            clock_seed: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos() as u64)
+                ^ (u64::from(std::process::id()) << 32),
             shell_running: HashSet::new(),
             shell_last_refresh: None,
             plugins: Vec::new(),
@@ -4973,12 +4980,11 @@ impl Server {
                     Ok(r) => r,
                     Err(e) => return Outcome::Error(e),
                 };
+                let seed = self.clock_seed;
                 if let Some(p) = self.find_pane_mut(pid)
                     && !p.clock
                 {
-                    p.clock = true;
-                    p.clock_turns = p.clock_turns.wrapping_add(1);
-                    (p.clock_anim, p.clock_lines) = (None, None);
+                    clock_on(p, seed);
                 }
                 Outcome::Ok
             }
@@ -6251,16 +6257,39 @@ impl Server {
             return;
         }
 
-        // A clock swallows the next key and goes away, as tmux does.
-        if key.is_some()
+        // A clock stays until `q` (tmux's goes at any key): the other keys
+        // are swallowed, not typed into the pane under it. The prefix and
+        // the key after it still work (`prefix d` detaches from under a
+        // clock), and a picker or popup over it keeps its keys, as does a
+        // `bind -r` key still in its repeat time.
+        let over = self.clients.get(&cid).is_some_and(|c| c.prefix || c.chooser.is_some() || c.popup.is_some());
+        let repeats = key.is_some_and(|k| {
+            self.clients.get(&cid).is_some_and(|c| c.repeat_until.is_some_and(|t| Instant::now() < t))
+                && self
+                    .prefix_binds
+                    .get(&k)
+                    .or_else(|| self.prefix_binds.get(&crate::keys::ascii_form(k)))
+                    .is_some_and(|b| b.repeat)
+        });
+        if let Some(k) = key
+            && !over
+            && !repeats
+            && k != self.opts.prefix
             && let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.active_pane_mut())
             && p.clock
+            && p.copy.is_none()
         {
-            p.clock = false;
-            (p.clock_anim, p.clock_lines) = (None, None);
+            let q = crate::keys::ascii_form(k);
+            let leave = q.code == KeyCode::Char('q') && !q.ctrl && !q.alt;
+            if leave {
+                p.clock = false;
+                (p.clock_anim, p.clock_lines) = (None, None);
+            }
             if let Some(c) = self.clients.get_mut(&cid) {
                 c.swallow_up.insert(rec.vk);
-                c.last_grid = None;
+                if leave {
+                    c.last_grid = None;
+                }
             }
             return;
         }
@@ -8269,18 +8298,8 @@ impl Server {
                 }
             }
         }
-        let kind_for = |turns: u32| -> Option<clockanim::Kind> {
-            match self.opts.clock_mode_animation.as_str() {
-                _ if !self.opts.animation => None,
-                "pulse" => Some(clockanim::Kind::Pulse),
-                "matrix" => Some(clockanim::Kind::Matrix),
-                "bars" => Some(clockanim::Kind::Bars),
-                "cycle" => Some(clockanim::Kind::ALL[turns.saturating_sub(1) as usize % clockanim::Kind::ALL.len()]),
-                _ => None,
-            }
-        };
         let kinds: Vec<(PaneId, Option<clockanim::Kind>)> =
-            view.iter().map(|&(id, _)| (id, self.find_pane(id).and_then(|p| kind_for(p.clock_turns)))).collect();
+            view.iter().map(|&(id, _)| (id, self.find_pane(id).and_then(|p| clock_kind(&self.opts, p)))).collect();
         if kinds.iter().all(|(_, k)| k.is_none()) {
             self.meter = None;
             for (id, _) in &kinds {
@@ -9648,9 +9667,83 @@ fn selected_text(p: &mut Pane) -> Result<String, String> {
     Ok(text)
 }
 
+/// Put a clock on `p`: a turn more (`cycle`'s next kind), and a kind picked
+/// at random for it, never the one it had before (`random`).
+fn clock_on(p: &mut Pane, seed: u64) {
+    p.clock = true;
+    p.clock_turns = p.clock_turns.wrapping_add(1);
+    let r = seed ^ (u64::from(p.id) << 40) ^ u64::from(p.clock_turns);
+    p.clock_pick = Some(clockanim::Kind::random(p.clock_pick, r));
+    (p.clock_anim, p.clock_lines) = (None, None);
+}
+
+/// What moves under `p`'s clock, by `clock-mode-animation`: none when it is
+/// `off` or `animation` is.
+fn clock_kind(opts: &Options, p: &Pane) -> Option<clockanim::Kind> {
+    let all = clockanim::Kind::ALL;
+    match opts.clock_mode_animation.as_str() {
+        _ if !opts.animation => None,
+        "cycle" => Some(all[p.clock_turns.saturating_sub(1) as usize % all.len()]),
+        "random" => p.clock_pick,
+        name => clockanim::Kind::named(name),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each clock put on a pane: `random` a kind other than the last, all
+    /// of them in time; `cycle` the next in turn; a name that one; `off`
+    /// and `animation off` none.
+    #[test]
+    fn each_clock_takes_its_kind() {
+        let argv: Vec<String> = if cfg!(windows) {
+            ["cmd.exe", "/c", "exit"].map(String::from).to_vec()
+        } else {
+            ["/bin/sh", "-c", "exit"].map(String::from).to_vec()
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut p = Pane::spawn(3, &argv, None, 40, 6, 100, &[], tx).unwrap();
+        let mut opts = Options::default();
+        assert_eq!(opts.clock_mode_animation, "random");
+        let all = clockanim::Kind::ALL;
+        let (mut last, mut seen) = (None, std::collections::HashSet::new());
+        for turn in 1..=60u32 {
+            clock_on(&mut p, 0x5eed);
+            assert_eq!(p.clock_turns, turn);
+            let k = clock_kind(&opts, &p).expect("random draws one");
+            assert_ne!(Some(k), last, "turn {turn}: the same kind again");
+            (last, _) = (Some(k), seen.insert(k));
+        }
+        assert_eq!(seen.len(), all.len(), "every kind in 60 turns: {seen:?}");
+        // Another seed (another start of the server): another order, for the
+        // same pane from the same start.
+        let fresh = || Pane::spawn(3, &argv, None, 40, 6, 100, &[], std::sync::mpsc::channel().0).unwrap();
+        let order = |p: &mut Pane, seed: u64| -> Vec<_> {
+            (0..8)
+                .map(|_| {
+                    clock_on(p, seed);
+                    clock_kind(&Options::default(), p)
+                })
+                .collect()
+        };
+        assert_eq!(order(&mut fresh(), 1), order(&mut fresh(), 1), "the same seed: the same order");
+        assert_ne!(order(&mut fresh(), 1), order(&mut fresh(), 2));
+        opts.clock_mode_animation = "cycle".into();
+        p.clock_turns = 0;
+        for k in all.into_iter().chain(all) {
+            clock_on(&mut p, 0x5eed);
+            assert_eq!(clock_kind(&opts, &p), Some(k));
+        }
+        opts.clock_mode_animation = "donut".into();
+        assert_eq!(clock_kind(&opts, &p), Some(clockanim::Kind::Donut));
+        opts.clock_mode_animation = "off".into();
+        assert_eq!(clock_kind(&opts, &p), None);
+        opts.clock_mode_animation = "random".into();
+        opts.animation = false;
+        assert_eq!(clock_kind(&opts, &p), None);
+    }
 
     /// No clock on any screen: the machine is not read, and what was read
     /// for the last clock is dropped; no frame is asked for.

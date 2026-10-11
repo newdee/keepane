@@ -409,7 +409,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `T` / `f` | name this pane / find a window by name or title |
 | `[` / `PgUp` | copy mode (see below) |
 | `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
-| `t` / `~` / `r` | clock, and under it the date (and UTC), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`); below, something that moves with the machine (see below) / recent messages / redraw |
+| `t` / `~` / `r` | clock, and under it the date (and UTC), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`); below, something that moves with the machine (see below); `q` leaves it / recent messages / redraw |
 | `]` | paste the clipboard |
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names) |
 | `d` | detach |
@@ -455,15 +455,38 @@ moves with the machine and with keepane (`clock-mode-animation`):
   the window by what it prints; then, where they fit beside those, messages
   (full on one, falling back), the CPU's watts, the battery's, swap, and
   context switches with interrupts. Each group labelled, peaks falling slowly.
+- `fire`: a flame for each core across the rows, as tall as the core is busy;
+  its tip yellow, bright yellow or white as the CPU gets hotter; sparks with
+  the interrupts; each message an `✉` rising through it.
+- `aquarium`: a fish for each pane of the window, swimming faster the more
+  the pane prints; bubbles with the disks; weed taller with memory, swaying
+  with the context switches; waves quicker with the cores; each message an
+  `✉` rising from the sand.
+- `starfield`: a flight through stars, more of them the more processes run,
+  faster (streaking, at a warp) the more the network carries; each message
+  a comet with `✉` at its head.
+- `life`: Conway's game of life, more generations a second the busier the
+  cores, sown again with the context switches up to a share of the board set
+  by the memory in use; new cells bright; each message a glider by the
+  middle, `✉` on it a moment.
+- `donut`: a turning torus, faster with the cores, its tube thicker with
+  memory; each message turns it once more, `✉` in its hole.
+- `weather`: clouds covering more of the sky the busier the cores, rain
+  heavier with the disks and slanting in the network's wind, lightning with
+  the interrupts, water as deep as the memory in use; each message an `✉`
+  falling into it.
 
 The lines over it end with keepane's own: its sessions and panes, and the
 messages it has delivered since it started.
 
-In `pulse` and `matrix` the colour goes from green through yellow to red with
-the CPU's temperature, or with the cores' load when there is no temperature;
-the bars are green at the bottom, yellow higher up and red at the top. `cycle` (the default)
-takes the three in turn, a new one each time the clock is put on; `off`, or
-`animation off`, leaves the clock still. It is drawn in the 16 colours a theme
+In `pulse`, `matrix`, `starfield`, `life` and `donut` the colour goes from
+green through yellow to red with the CPU's temperature, or with the cores'
+load when there is no temperature; the bars are green at the bottom, yellow
+higher up and red at the top. `random` (the default) picks one of the nine
+each time the clock is put on a pane, never the one it had before; `cycle`
+takes them in turn; a name sets that one; `off`, or `animation off`, leaves
+the clock still. The clock stays until `q` (tmux's goes at any key); the
+prefix still works under it. It is drawn in the 16 colours a theme
 sets (`pane-colours`; the terminal's own when the theme sets none), so each
 theme colours it. The machine is read twice a second, only while a clock is on
 screen. A figure the system does not give is left out, never made up: macOS
@@ -1193,7 +1216,7 @@ set -g log-history-days 30        # for how long; 0 keeps everything (log-histor
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
 set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
-set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, cycle (the default: each in turn) or off
+set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, random (the default), cycle or off
 set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
