@@ -2270,8 +2270,16 @@ async fn under_the_clock_something_moves_with_the_machine() {
             let moving = c.frames_for(800).await;
             assert!(moving >= 3, "off, then /: {moving} frames");
         } else {
-            let still = c.frames_for(800).await;
-            assert!(still <= 1 && !braille(c.screen.screen()), "animation off, then /: {still} frames");
+            // Nothing drawn under the clock's lines, and no name. (Not a
+            // count of frames: the lines' second and the key may each
+            // make one.)
+            c.frames_for(800).await;
+            let s = c.screen.screen();
+            assert!(
+                last_rows(s).trim().is_empty() && !braille(s) && !s.contents().contains(" pulse "),
+                "animation off, then /: {}",
+                c.text()
+            );
         }
         c.type_str("q").await;
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;

@@ -74,6 +74,14 @@ pub fn short(commit: &str) -> &str {
 }
 
 impl Repo {
+    /// Which repository this is, whatever the path it was found by: the
+    /// same one reached by two spellings (a Windows short name such as
+    /// `RUNNER~1`, which a shell may report long; another case; a link) is
+    /// one. Its root as found when the filesystem cannot say.
+    pub fn key(&self) -> PathBuf {
+        std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone())
+    }
+
     fn head_file(&self) -> Option<String> {
         std::fs::read_to_string(self.gitdir.join("HEAD")).ok().map(|h| h.trim().to_string())
     }
@@ -567,6 +575,39 @@ mod tests {
         assert_eq!(branch_of(&dir.to_string_lossy()), "", "no repository above");
         let nowhere = if cfg!(windows) { r"Z:\no\such\place" } else { "/no/such/place" };
         assert_eq!((branch_of(nowhere), find("src"), find("")), (String::new(), None, None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// One repository, however the path it is found by is spelt: through
+    /// `..`, in another case (Windows), through a link (Unix); another
+    /// repository is another; a root that is gone is kept as found.
+    #[test]
+    fn one_repository_however_its_path_is_spelt() {
+        let dir = scratch("key");
+        let repo = dir.join("Repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let key = |p: &Path| find(&p.to_string_lossy()).unwrap().key();
+        let plain = key(&repo);
+        let mut spellings = vec![repo.join("src").join("..")];
+        if cfg!(windows) {
+            spellings.push(PathBuf::from(repo.to_string_lossy().to_uppercase()));
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&repo, dir.join("link")).unwrap();
+            spellings.push(dir.join("link"));
+        }
+        for s in &spellings {
+            let r = find(&s.to_string_lossy()).unwrap();
+            assert_ne!(r.root, repo, "{s:?} is spelt otherwise");
+            assert_eq!(r.key(), plain, "{s:?}");
+        }
+        let other = dir.join("other");
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        assert_ne!(key(&other), plain);
+        let gone = Repo { root: dir.join("gone"), gitdir: dir.join("gone/.git"), common: dir.join("gone/.git") };
+        assert_eq!(gone.key(), dir.join("gone"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -24,6 +24,7 @@ pub struct GitState {
     /// Which git it is, counted up each time `git-command` changes: an
     /// answer from the one before is let go.
     generation: u64,
+    /// By repository (`Repo::key`: one entry however its path is spelt).
     statuses: HashMap<PathBuf, Seen>,
     /// Work ended whose repository is being looked at: what is left to do
     /// with it once that is known.
@@ -84,7 +85,7 @@ impl Server {
     /// kept went when `git-command` changed.)
     pub(super) fn git_status(&self, path: &str) -> Option<&git::Status> {
         let repo = git::find(path)?;
-        self.git.statuses.get(&repo.root)?.status.as_ref()
+        self.git.statuses.get(&repo.key())?.status.as_ref()
     }
 
     /// Something shows the repository `path` is in: git is asked for its
@@ -92,18 +93,18 @@ impl Server {
     /// being asked already.
     pub(super) fn git_look(&mut self, path: &str) {
         let Some(repo) = git::find(path) else { return };
-        let seen = self.git.statuses.entry(repo.root.clone()).or_default();
+        let key = repo.key();
+        let seen = self.git.statuses.entry(key.clone()).or_default();
         let old = seen.at.is_none_or(|at| at.elapsed() >= FRESH);
         if seen.asking || !(old || seen.stale) {
             return;
         }
         let Some(command) = self.git_command() else { return };
-        let (tx, generation) = (self.events.clone(), self.git.generation);
-        let (key, root) = (repo.root.clone(), repo.root.clone());
+        let (tx, generation, answer) = (self.events.clone(), self.git.generation, key.clone());
         let asked = std::thread::Builder::new().name("git-status".into()).spawn(move || {
             let status =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| git::status(&command, &repo))).unwrap_or(None);
-            let _ = tx.send(Event::GitStatus(generation, root, status));
+            let _ = tx.send(Event::GitStatus(generation, answer, status));
         });
         if let Some(seen) = self.git.statuses.get_mut(&key) {
             seen.asking = asked.is_ok();
@@ -113,11 +114,11 @@ impl Server {
 
     /// git answered for a repository (nothing, when it failed); an answer
     /// from the git before `git-command` changed is let go.
-    pub(super) fn git_status_heard(&mut self, generation: u64, root: PathBuf, status: Option<git::Status>) {
+    pub(super) fn git_status_heard(&mut self, generation: u64, key: PathBuf, status: Option<git::Status>) {
         if generation != self.git.generation {
             return;
         }
-        let seen = self.git.statuses.entry(root).or_default();
+        let seen = self.git.statuses.entry(key).or_default();
         seen.asking = false;
         seen.at = Some(Instant::now());
         seen.status = status;
@@ -129,7 +130,7 @@ impl Server {
     pub(super) fn git_moved(&mut self, pid: PaneId) {
         let Some(path) = self.pane_ref(pid).and_then(|p| p.current_path()) else { return };
         if let Some(repo) = git::find(&path)
-            && let Some(seen) = self.git.statuses.get_mut(&repo.root)
+            && let Some(seen) = self.git.statuses.get_mut(&repo.key())
         {
             seen.stale = true;
         }
