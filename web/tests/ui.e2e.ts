@@ -68,6 +68,27 @@ test("desktop: send, menus, themes, rename, switch, fold, history, inbox, done",
     kp("rename-window", "-t", "work:1", "logs");
   }
 
+  // Rename this pane (⋯): a name keepane does not take says why and
+  // changes nothing; empty takes the name away.
+  const named = () => kp("display", "-p", "-t", B(), "#{pane_name}").trim();
+  try {
+    await screen.getByRole("button", "更多").tap();
+    await entry(screen, "重命名这个 pane").tap();
+    let box2 = dialog(screen, "重命名 pane").getByRole("textbox");
+    await box2.fill("not a name");
+    await box2.press("Enter");
+    await expect.poll(() => pageText(browser)).toContain("bad pane name");
+    expect(named()).toBe("builder");
+    await screen.getByRole("button", "更多").tap();
+    await entry(screen, "重命名这个 pane").tap();
+    box2 = dialog(screen, "重命名 pane").getByRole("textbox");
+    await box2.fill("");
+    await box2.press("Enter");
+    await expect.poll(named, { message: "empty takes the name away" }).toBe("");
+  } finally {
+    kp("rename-pane", "-t", B(), "builder");
+  }
+
   // The switcher: to notes' pane.
   await browser.locator('button:has-text("work:0.1")').tap();
   await dialog(screen, "切换到 pane").getByRole("button", { name: /notes:0\.0/ }).tap();

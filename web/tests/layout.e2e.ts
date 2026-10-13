@@ -9,10 +9,10 @@ import type { Browser } from "@e2e-dev/web";
 const cards = (browser: Browser) => browser.locator("[data-pane]").count();
 const rails = (browser: Browser) => browser.locator("[data-rail]").count();
 const card = (browser: Browser, name: string) => browser.locator(`[data-pane][data-name="${name}"]`);
-// A card's menu, open and taking keys: its 11 entries shown, the focus on
+// A card's menu, open and taking keys: its 12 entries shown, the focus on
 // the first (Escape before then goes to the page, and the menu stays).
 const cardMenu = async (screen: Screen) => {
-  await expect(screen.getByRole("menuitem")).toHaveCount(11);
+  await expect(screen.getByRole("menuitem")).toHaveCount(12);
   await expect(entry(screen, "打开")).toBeFocused();
 };
 const onList = (browser: Browser) => browser.evaluate(() => !document.querySelector("#screen") && document.querySelectorAll("[data-pane]").length >= 4);
@@ -28,14 +28,29 @@ test("desktop: right click, Shift+F10, closing a pane, the strip", async ({ app,
   await expect(browser.locator("#screen")).toBeVisible();
   await expect(screen.getByRole("button", "重命名")).toHaveCount(0);
 
-  // A card's menu: 8 entries and the 3 modes.
+  // A card's menu: 9 entries and the 3 modes.
   await card(browser, "builder").secondaryTap();
-  await expect(screen.getByRole("menuitem")).toHaveCount(11);
+  await expect(screen.getByRole("menuitem")).toHaveCount(12);
   await entry(screen, "重命名所在窗口").tap();
   const shown = dialog(screen, "重命名窗口");
   await expect(shown.getByRole("textbox")).toBeVisible();
   await browser.keyboard.press("Escape");
   await expect(shown).toHaveCount(0);
+
+  // The pane itself, from its card: the name keepane has, and on the card.
+  const B = `%${paneNumber("work:0.1")}`;
+  try {
+    await card(browser, "builder").secondaryTap();
+    await entry(screen, "重命名这个 pane").tap();
+    const name = dialog(screen, "重命名 pane").getByRole("textbox");
+    await expect(name).toHaveValue("builder");
+    await name.fill("builder-2");
+    await name.press("Enter");
+    await expect.poll(() => kp("display", "-p", "-t", B, "#{pane_name}").trim()).toBe("builder-2");
+    await expect(card(browser, "builder-2")).toBeVisible();
+  } finally {
+    kp("rename-pane", "-t", B, "builder");
+  }
 
   // A session's row: fold every window, unfold them.
   const work = browser.locator("button[aria-expanded]").filter({ hasText: "work" }).first();
@@ -63,8 +78,9 @@ test("desktop: right click, Shift+F10, closing a pane, the strip", async ({ app,
   await expect(card(browser, "builder")).toBeFocused();
   // Through the menu to a dialog and out: the focus ends on the card too.
   await browser.keyboard.press("Shift+F10");
-  await expect(screen.getByRole("menuitem")).toHaveCount(11);
-  for (let i = 0; i < 5; i++) await browser.keyboard.press("ArrowDown");
+  await expect(screen.getByRole("menuitem")).toHaveCount(12);
+  // Down to "重命名所在窗口", after "重命名这个 pane".
+  for (let i = 0; i < 6; i++) await browser.keyboard.press("ArrowDown");
   await browser.keyboard.press("Enter");
   await expect(shown.getByRole("textbox")).toBeVisible();
   await browser.keyboard.press("Escape");
@@ -74,7 +90,8 @@ test("desktop: right click, Shift+F10, closing a pane, the strip", async ({ app,
   kp("split-window", "-d", "-t", "notes");
   await expect.poll(() => cards(browser)).toBeGreaterThanOrEqual(5);
   const spare = show("notes:0.1", "#{pane_id}");
-  const ask = screen.getByRole("alertdialog");
+  // (By its name: the toast of the rename above may still be there.)
+  const ask = screen.getByRole("alertdialog", /^关闭/);
   try {
     await browser.locator(`[data-pane="${spare}"]`).secondaryTap();
     await entry(screen, "关闭这个 pane").tap();
@@ -153,7 +170,7 @@ test("phone: the long press, the edge swipe, reloads", async ({ app, browser, sc
   await expect(screen.getByRole("menu")).toHaveCount(0);
 
   await finger.longPress(card(browser, "builder"));
-  await expect(screen.getByRole("menuitem")).toHaveCount(11);
+  await expect(screen.getByRole("menuitem")).toHaveCount(12);
   // The long press did not also open the pane.
   await expect(browser.locator("#screen")).toHaveCount(0);
   await finger.tap(entry(screen, "收件箱"));

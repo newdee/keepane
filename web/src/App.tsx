@@ -1,7 +1,7 @@
 import { Button, Chip, Dropdown, Header, Label, Separator, Toast, toast } from "@heroui/react";
 import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Plus, Sun, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getJson, keptPane, post, q, startPane, type DoneItem, type Info, type Pane } from "./api";
+import { getJson, keptPane, post, q, startPane, type DoneItem, type Info, type Pane, type Renamed } from "./api";
 import {
   useDone,
   useFullscreen,
@@ -59,7 +59,7 @@ export default function App() {
   const [ask, setAsk] = useState<{
     title: string;
     value: string;
-    kind: "session" | "window" | "new";
+    kind: Renamed | "new";
     pane: string;
     placeholder?: string;
     ok?: string;
@@ -146,18 +146,29 @@ export default function App() {
     return () => clearTimeout(id);
   }, [done]);
 
-  const rename = (kind: "session" | "window", p: Pane) =>
-    setAsk({
-      kind,
-      pane: p.id,
-      value: kind === "session" ? p.session : p.windowName,
-      title: kind === "session" ? t("Rename the session", "重命名 session") : t("Rename the window", "重命名窗口"),
-    });
+  const rename = (kind: Renamed, p: Pane) =>
+    setAsk(
+      kind === "pane"
+        ? {
+            kind,
+            pane: p.id,
+            value: p.name,
+            title: t("Rename the pane", "重命名 pane"),
+            placeholder: t("letters, digits, - and _; empty: no name", "字母、数字、- 和 _；留空即去掉名字"),
+          }
+        : {
+            kind,
+            pane: p.id,
+            value: kind === "session" ? p.session : p.windowName,
+            title: kind === "session" ? t("Rename the session", "重命名 session") : t("Rename the window", "重命名窗口"),
+          },
+    );
   const renamed = async (name: string | null) => {
     const a = ask;
     setAsk(null);
     if (a?.kind === "new" && name !== null) return made("/api/new-session", name);
-    if (!a || name === null || name === a.value || !name) return;
+    // An empty name takes a pane's away; a session and a window keep theirs.
+    if (!a || name === null || name === a.value || (!name && a.kind !== "pane")) return;
     try {
       await post(`/api/action?pane=${q(a.pane)}&do=rename-${a.kind}`, name);
       await reload();

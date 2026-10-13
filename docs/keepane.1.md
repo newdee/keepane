@@ -343,8 +343,11 @@ temperature, or with the cores' load when there is no temperature; the bars
 are green at the bottom, yellow higher up and red at the top. `random` (the
 default) picks one of the nine each time the clock is put on a pane, never
 the one it had before; `cycle` takes them in turn; a name sets that one;
-`off`, or `animation off`, leaves the clock still. The clock stays until
-`q` (tmux's goes at any key); the prefix still works under it.
+`off`, or `animation off`, leaves the clock still. Under a clock, `/` turns
+to the next kind and `?` to the one before, its name shown for a second;
+that holds until the clock goes, the option is not changed (`/` starts one
+under `clock-mode-animation off`, none under `animation off`). The clock
+stays until `q` (tmux's goes at any key); the prefix still works under it.
 
 It is drawn in the 16 colours a theme sets with `pane-colours` (the
 terminal's own colours when the theme sets none), so each theme colours it.

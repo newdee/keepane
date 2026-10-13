@@ -2192,6 +2192,22 @@ async fn under_the_clock_something_moves_with_the_machine() {
     h.cli(&["set", "-g", "clock-mode-animation", "matrix"]).await;
     c.prefix('t').await;
     c.wait_for("matrix again", |s| s.contents().contains("███") && katakana(s)).await;
+    // `/` and `?` turn it to the next kind and back, its name shown for a
+    // second; the keys are not typed into the pane, the option stays, and
+    // the next clock is the option's again.
+    c.type_str("/").await;
+    c.wait_for("bars, by /", |s| bars(s) && s.contents().contains(" bars ")).await;
+    c.wait_for("the name gone", |s| bars(s) && !s.contents().contains(" bars ")).await;
+    c.type_str("??").await;
+    c.wait_for("pulse, by ? twice", |s| braille(s) && s.contents().contains(" pulse ")).await;
+    let (_, out, _) = h.cli(&["show-options", "-gv", "clock-mode-animation"]).await;
+    assert_eq!(out.trim(), "matrix");
+    let (_, under, _) = h.cli(&["capture-pane", "-p", "-t", "a:0.0"]).await;
+    assert_eq!(under.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim), Some("keepane>"), "{under}");
+    c.type_str("q").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+    c.prefix('t').await;
+    c.wait_for("matrix, as set", |s| s.contents().contains("███") && katakana(s) && !braille(s)).await;
     c.type_str("q").await;
     c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     // Each of the others by its name: its own marks in the pane's last
@@ -2246,6 +2262,17 @@ async fn under_the_clock_something_moves_with_the_machine() {
         let s = c.screen.screen();
         assert!(!braille(s) && !katakana(s) && !s.contents().contains("OUT "), "{option} {value}: {}", c.text());
         assert!(still <= 1, "{option} {value}: {still} frames");
+        // `/` asks for one: it moves under `clock-mode-animation off`, not
+        // under `animation off`.
+        c.type_str("/").await;
+        if option == "clock-mode-animation" {
+            c.wait_for("pulse, by /", |s| braille(s) && s.contents().contains(" pulse ")).await;
+            let moving = c.frames_for(800).await;
+            assert!(moving >= 3, "off, then /: {moving} frames");
+        } else {
+            let still = c.frames_for(800).await;
+            assert!(still <= 1 && !braille(c.screen.screen()), "animation off, then /: {still} frames");
+        }
         c.type_str("q").await;
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     }
@@ -5284,9 +5311,34 @@ async fn the_phone_renames_sessions_windows_and_panes() {
     assert!(err.contains("bad session name"), "{err}");
     assert_eq!(http(addr, "POST", &at("window"), key, &"x".repeat(65)).await.0, 400);
     assert_eq!(http(addr, "POST", &at("window"), key, "two\nlines").await.0, 400);
-    // A pane is not renamed from the phone.
+    // The pane: its name in the list and for messages; keepane's rules (a
+    // name another pane has); empty takes it away.
     let (code, err) = http(addr, "POST", &at("pane"), key, "from_phone").await;
-    assert_eq!(code, 400, "{err}");
+    assert_eq!(code, 200, "{err}");
+    let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
+    assert!(list.contains("\"name\":\"from_phone\""), "{list}");
+    let (code, _, err) = h.cli(&["display-message", "-p", "-t", "%from_phone", "#{pane_id}"]).await;
+    assert_eq!(code, 0, "{err}");
+    // (The session is `-phone` now: the new pane by the old one's id.)
+    let (code, _, err) = h.cli(&["split-window", "-d", "-t", &format!("%{p}")]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, ids, _) = h.cli(&["list-panes", "-t", &format!("%{p}"), "-F", "#{pane_id}"]).await;
+    let other =
+        ids.lines().map(|l| l.trim().trim_start_matches('%')).find(|i| *i != p.to_string()).expect("the new pane");
+    let (code, err) =
+        http(addr, "POST", &format!("/api/action?pane=%25{other}&do=rename-pane"), key, "from_phone").await;
+    assert_eq!(code, 400);
+    assert!(err.contains("is taken by"), "{err}");
+    let (code, err) = http(addr, "POST", &at("pane"), key, "").await;
+    assert_eq!(code, 200, "{err}");
+    let (_, list) = http(addr, "GET", "/api/panes", key, "").await;
+    assert!(!list.contains("from_phone"), "{list}");
+    // A read-only page renames nothing.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ro = listener.local_addr().unwrap();
+    tokio::spawn(keepane::web::serve(listener, std::sync::Arc::new(keepane::web::State::new(&h.socket, key, true))));
+    let (code, _) = http(ro, "POST", &at("pane"), key, "looker").await;
+    assert_eq!(code, 403);
     h.cli(&["kill-server"]).await;
 }
 

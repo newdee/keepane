@@ -528,12 +528,16 @@ pub struct Pane {
     /// last moved), and the lines under it as last worked out.
     pub clock_turns: u32,
     pub clock_pick: Option<super::clockanim::Kind>,
+    pub clock_anim: Option<(super::clockanim::Anim, std::time::Instant)>,
+    pub clock_lines: Option<ClockLines>,
+    /// The kind `/` or `?` turned this clock to, and when: it stands in for
+    /// `clock-mode-animation` while this clock is up (the next clock starts
+    /// without it), and its name shows for a second.
+    pub clock_over: Option<(super::clockanim::Kind, std::time::Instant)>,
     /// The commit its repository was at when its agent began the work in
     /// hand (a message delivered, or someone typing to it while it was
     /// free): what that work did is measured from here (`crate::git::work`).
     pub git_base: Option<String>,
-    pub clock_anim: Option<(super::clockanim::Anim, std::time::Instant)>,
-    pub clock_lines: Option<ClockLines>,
     /// Bytes it has printed (the clock's `OUT`).
     pub output_bytes: u64,
     pub copy: Option<CopyMode>,
@@ -863,6 +867,7 @@ impl Pane {
             enter: None,
             clock_anim: None,
             clock_lines: None,
+            clock_over: None,
             output_bytes: 0,
             copy: None,
             bell: false,

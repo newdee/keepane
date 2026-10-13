@@ -17,12 +17,13 @@ import {
   SquareArrowOutUpRight,
   SquarePen,
   SquareTerminal,
+  Tag,
   Terminal,
   X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ContextMenu, useContextPress, type MenuAt, type MenuEntry } from "./ContextMenu";
-import type { Agent, Pane } from "../api";
+import type { Agent, Pane, Renamed } from "../api";
 import { bounced, headOf, quietFor, stateOf, under } from "../format";
 import { useStored } from "../hooks";
 import { t } from "../i18n";
@@ -35,7 +36,7 @@ type Props = {
   current: string | null;
   readOnly: boolean;
   onOpen: (id: string) => void;
-  onRename: (kind: "session" | "window", pane: Pane) => void;
+  onRename: (kind: Renamed, pane: Pane) => void;
   onInbox: (id: string) => void;
   /** A pane's menu entry that acts on the computer: split, new window, close. */
   onAction: (pane: Pane, what: string) => void;
@@ -75,6 +76,7 @@ export function PaneList({ panes, current, readOnly, onOpen, onRename, onInbox, 
         { id: "split-h", label: t("Split left | right", "左右分屏"), icon: <Columns2 className="size-4" /> },
         { id: "split-v", label: t("Split top / bottom", "上下分屏"), icon: <Rows2 className="size-4" /> },
         { id: "new-window", label: t("New window", "新窗口"), icon: <Plus className="size-4" /> },
+        { id: "rename-pane", label: t("Rename this pane", "重命名这个 pane"), icon: <Tag className="size-4" /> },
         { id: "rename-window", label: t("Rename its window", "重命名所在窗口"), icon: <SquarePen className="size-4" /> },
         { id: "rename-session", label: t("Rename its session", "重命名所在 session"), icon: <PanelBottom className="size-4" /> },
         { id: "kill-pane", label: t("Close this pane", "关闭这个 pane"), icon: <X className="size-4" />, danger: true },
@@ -99,6 +101,7 @@ export function PaneList({ panes, current, readOnly, onOpen, onRename, onInbox, 
       onPick: (k) => {
         if (k === "open") onOpen(p.id);
         else if (k === "inbox") onInbox(p.id);
+        else if (k === "rename-pane") onRename("pane", p);
         else if (k === "rename-window") onRename("window", p);
         else if (k === "rename-session") onRename("session", p);
         else onAction(p, k);

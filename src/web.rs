@@ -13,7 +13,7 @@
 //! the phone in the address a QR code in the terminal carries, after the `#`
 //! so that it is never part of a request line. The phone can only look,
 //! type into a pane, and run the few fixed actions of the page (new
-//! window, split, close a pane; rename a session or window): no
+//! window, split, close a pane; rename a session, window or pane): no
 //! command of its own reaches the server. Plain HTTP, so for a network you trust; over anything else, a
 //! private network such as Tailscale in between.
 
@@ -66,8 +66,17 @@ const KEYS: &[&str] = &[
 ];
 
 /// What the page's ⋯ menu and its names can do, and nothing else.
-const ACTIONS: &[&str] =
-    &["new-window", "split-h", "split-v", "kill-pane", "rename-session", "rename-window", "mode", "respawn"];
+const ACTIONS: &[&str] = &[
+    "new-window",
+    "split-h",
+    "split-v",
+    "kill-pane",
+    "rename-session",
+    "rename-window",
+    "rename-pane",
+    "mode",
+    "respawn",
+];
 
 /// How `web-start` serves: its flags (`keepane web` passes its own on).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1052,10 +1061,11 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                     }
                     _ => return Response::text(400, "mode: normal, shell or ai"),
                 },
-                // The pane's session or its window, by the pane: the
+                // The pane, its session or its window, by the pane: the
                 // new name is the body, after `--` so that one starting with
-                // `-` is a name. keepane says what a name may be.
-                "rename-session" | "rename-window" => {
+                // `-` is a name. keepane says what a name may be (a pane's
+                // empty one takes its name away).
+                "rename-session" | "rename-window" | "rename-pane" => {
                     let name = match rename_body(&req.body) {
                         Ok(n) => n,
                         Err(e) => return Response::text(400, e),

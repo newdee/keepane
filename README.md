@@ -499,8 +499,11 @@ load when there is no temperature; the bars are green at the bottom, yellow
 higher up and red at the top. `random` (the default) picks one of the nine
 each time the clock is put on a pane, never the one it had before; `cycle`
 takes them in turn; a name sets that one; `off`, or `animation off`, leaves
-the clock still. The clock stays until `q` (tmux's goes at any key); the
-prefix still works under it. It is drawn in the 16 colours a theme
+the clock still. Under a clock, `/` turns to the next kind and `?` to the
+one before, its name shown for a second; that holds until the clock goes,
+the option is not changed (`/` starts one under `clock-mode-animation off`,
+none under `animation off`). The clock stays until `q` (tmux's goes at any
+key); the prefix still works under it. It is drawn in the 16 colours a theme
 sets (`pane-colours`; the terminal's own when the theme sets none), so each
 theme colours it. The machine is read twice a second, only while a clock is on
 screen. A figure the system does not give is left out, never made up: macOS
@@ -939,7 +942,8 @@ under ⋯; Ctrl+C and Enter stay in view at its end); Ctrl, Alt or Shift (any of
 them together), then a key of the row or a letter typed, sends it with them
 (Shift then → is Shift+Right). The ⋯ menu in the pane's bar, and a right click
 (a long press on a phone) on a pane in the list, split the pane, open a
-window, rename, close the pane or show its inbox (also a tap on a card's
+window, rename the pane, its window or its session (a pane's name empty takes
+it away), close the pane or show its inbox (also a tap on a card's
 "queued" or "on #N" mark): the message it works on, each waiting one whole, to
 put first, up, down or delete (and undo), and the last few it finished. The
 view menu holds the rest: When each command ran adds a column with the time

@@ -6296,9 +6296,10 @@ impl Server {
             return;
         }
 
-        // A clock stays until `q` (tmux's goes at any key): the other keys
-        // are swallowed, not typed into the pane under it. The prefix and
-        // the key after it still work (`prefix d` detaches from under a
+        // A clock stays until `q` (tmux's goes at any key): `/` and `?`
+        // turn what moves under it to the next kind and back, the other
+        // keys are swallowed, not typed into the pane under it. The prefix
+        // and the key after it still work (`prefix d` detaches from under a
         // clock), and a picker or popup over it keeps its keys, as does a
         // `bind -r` key still in its repeat time.
         let over = self.clients.get(&cid).is_some_and(|c| c.prefix || c.chooser.is_some() || c.popup.is_some());
@@ -6319,10 +6320,20 @@ impl Server {
             && p.copy.is_none()
         {
             let q = crate::keys::ascii_form(k);
-            let leave = q.code == KeyCode::Char('q') && !q.ctrl && !q.alt;
+            let plain = !q.ctrl && !q.alt;
+            let leave = q.code == KeyCode::Char('q') && plain;
+            let turn = match q.code {
+                KeyCode::Char('/') if plain => Some(true),
+                KeyCode::Char('?') if plain => Some(false),
+                _ => None,
+            };
             if leave {
                 p.clock = false;
                 (p.clock_anim, p.clock_lines) = (None, None);
+            }
+            let id = p.id;
+            if let Some(next) = turn {
+                self.clock_turn(id, next);
             }
             if let Some(c) = self.clients.get_mut(&cid) {
                 c.swallow_up.insert(rec.vk);
@@ -8377,6 +8388,16 @@ impl Server {
         next
     }
 
+    /// `/` (`next`) or `?` under `id`'s clock: what moves under it turns to
+    /// the next kind or the one before, until the clock is put on again
+    /// (`clock_on`); `animation off` still moves nothing (`clock_kind`).
+    fn clock_turn(&mut self, id: PaneId, next: bool) {
+        let Some(from) = self.find_pane(id).map(|p| clock_kind(&self.opts, p)) else { return };
+        if let Some(p) = self.find_pane_mut(id) {
+            p.clock_over = Some((clockanim::Kind::turned(from, next), Instant::now()));
+        }
+    }
+
     /// The machine's load, read again when the last reading is half a
     /// second old; nothing to go by yet on the first reading.
     fn meter_read(&mut self, now: Instant) -> crate::sysinfo::Load {
@@ -8734,6 +8755,20 @@ impl Server {
                 );
                 if let (Some(a), Some(band)) = (anim, band) {
                     a.draw(&mut grid, band, &palette);
+                    // Its name for a second after `/` or `?` turned it, in
+                    // the band's top right corner (the bottom row holds
+                    // figures: the bars' names and numbers).
+                    if let Some((k, at)) = p.clock_over
+                        && at.elapsed() < Duration::from_secs(1)
+                        && band.w >= clockanim::MIN_W
+                        && band.h >= clockanim::MIN_H
+                    {
+                        let name = format!(" {} ", k.name());
+                        let style =
+                            render::Style { inverse: true, ..render::Style::colors(colour, vt100::Color::Default) };
+                        let x = band.x + band.w - name.len() as u16;
+                        grid.put_str(x, band.y, &name, style, name.len() as u16);
+                    }
                 }
                 cursor = None;
             }
@@ -9713,15 +9748,17 @@ fn clock_on(p: &mut Pane, seed: u64) {
     p.clock_turns = p.clock_turns.wrapping_add(1);
     let r = seed ^ (u64::from(p.id) << 40) ^ u64::from(p.clock_turns);
     p.clock_pick = Some(clockanim::Kind::random(p.clock_pick, r));
-    (p.clock_anim, p.clock_lines) = (None, None);
+    (p.clock_anim, p.clock_lines, p.clock_over) = (None, None, None);
 }
 
-/// What moves under `p`'s clock, by `clock-mode-animation`: none when it is
-/// `off` or `animation` is.
+/// What moves under `p`'s clock: the kind `/` or `?` turned it to, else by
+/// `clock-mode-animation`; none when that is `off` (and no key turned it)
+/// or `animation` is.
 fn clock_kind(opts: &Options, p: &Pane) -> Option<clockanim::Kind> {
     let all = clockanim::Kind::ALL;
     match opts.clock_mode_animation.as_str() {
         _ if !opts.animation => None,
+        _ if p.clock_over.is_some() => p.clock_over.map(|(k, _)| k),
         "cycle" => Some(all[p.clock_turns.saturating_sub(1) as usize % all.len()]),
         "random" => p.clock_pick,
         name => clockanim::Kind::named(name),
@@ -9781,6 +9818,39 @@ mod tests {
         assert_eq!(clock_kind(&opts, &p), None);
         opts.clock_mode_animation = "random".into();
         opts.animation = false;
+        assert_eq!(clock_kind(&opts, &p), None);
+    }
+
+    /// `/` and `?`: the next kind and the one before, round the ends; the
+    /// kind they turn to stands in for the option until the clock is put on
+    /// again; `animation off` still wins.
+    #[test]
+    fn a_key_turns_the_clocks_kind() {
+        use clockanim::Kind;
+        assert_eq!(Kind::turned(Some(Kind::Pulse), true), Kind::Matrix);
+        assert_eq!(Kind::turned(Some(Kind::Pulse), false), Kind::Weather);
+        assert_eq!(Kind::turned(Some(Kind::Weather), true), Kind::Pulse);
+        assert_eq!(Kind::turned(None, true), Kind::Pulse);
+        assert_eq!(Kind::turned(None, false), Kind::Weather);
+        for k in Kind::ALL {
+            assert_eq!(Kind::turned(Some(Kind::turned(Some(k), true)), false), k);
+        }
+        let argv: Vec<String> = if cfg!(windows) {
+            ["cmd.exe", "/c", "exit"].map(String::from).to_vec()
+        } else {
+            ["/bin/sh", "-c", "exit"].map(String::from).to_vec()
+        };
+        let mut p = Pane::spawn(3, &argv, None, 40, 6, 100, &[], std::sync::mpsc::channel().0).unwrap();
+        let mut opts = Options { clock_mode_animation: "off".into(), ..Options::default() };
+        clock_on(&mut p, 1);
+        assert_eq!(clock_kind(&opts, &p), None);
+        p.clock_over = Some((Kind::Life, Instant::now()));
+        assert_eq!(clock_kind(&opts, &p), Some(Kind::Life));
+        opts.animation = false;
+        assert_eq!(clock_kind(&opts, &p), None);
+        opts.animation = true;
+        clock_on(&mut p, 1);
+        assert_eq!(p.clock_over, None);
         assert_eq!(clock_kind(&opts, &p), None);
     }
 

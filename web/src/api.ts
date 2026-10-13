@@ -64,6 +64,9 @@ export type Pane = {
   title: string;
 };
 
+/** What the page renames, by one of its panes (`/api/action?do=rename-…`). */
+export type Renamed = "session" | "window" | "pane";
+
 /** A pane's agent (`list-agents`): `cost` "$2.10" and `context` "34%"
  *  (or its size when the window is not known) may be empty. */
 export type Agent = {

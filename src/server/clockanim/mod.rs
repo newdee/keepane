@@ -92,6 +92,19 @@ impl Kind {
         }
     }
 
+    /// The kind after `from` in `ALL` (`next`), or the one before it, round
+    /// the end; from none, the first or the last.
+    pub fn turned(from: Option<Kind>, next: bool) -> Kind {
+        let n = Kind::ALL.len();
+        let i = match (from.and_then(|f| Kind::ALL.iter().position(|&k| k == f)), next) {
+            (Some(i), true) => (i + 1) % n,
+            (Some(i), false) => (i + n - 1) % n,
+            (None, true) => 0,
+            (None, false) => n - 1,
+        };
+        Kind::ALL[i]
+    }
+
     /// The time between two frames: enough for each to look smooth, no more.
     pub fn frame(self) -> Duration {
         Duration::from_millis(match self {

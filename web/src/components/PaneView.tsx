@@ -30,11 +30,12 @@ import {
   Rows2,
   SendHorizontal,
   SquarePen,
+  Tag,
   WrapText,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { getJson, post, q, type Pane, type Theme } from "../api";
+import { getJson, post, q, type Pane, type Renamed, type Theme } from "../api";
 import { ansiToHtml, blank } from "../ansi";
 import { bounced, headOf, stampDetail, stampText, under, where } from "../format";
 import { useScreen, useStatusLine, useStored, useVisible } from "../hooks";
@@ -92,7 +93,7 @@ type Props = {
   onGo: (id: string) => void;
   onMade: (id: string) => void;
   reloadPanes: () => Promise<void>;
-  onRename: (kind: "session" | "window", p: Pane) => void;
+  onRename: (kind: Renamed, p: Pane) => void;
   onInbox: (id: string) => void;
   /** The latency, where the page's own header is not shown. */
   status?: ReactNode;
@@ -404,6 +405,7 @@ export function PaneView(props: Props) {
   const action = async (what: string) => {
     if (acting || !p) return;
     if (what === "inbox") return props.onInbox(id);
+    if (what === "rename-pane") return props.onRename("pane", p);
     if (what === "rename-window") return props.onRename("window", p);
     if (what === "rename-session") return props.onRename("session", p);
     if (what === "kill-pane") return setClosing(true);
@@ -592,6 +594,7 @@ export function PaneView(props: Props) {
                 <Item id="split-h" icon={<Columns2 className="size-4" />}>{t("Split left | right", "左右分屏")}</Item>
                 <Item id="split-v" icon={<Rows2 className="size-4" />}>{t("Split top / bottom", "上下分屏")}</Item>
                 <Item id="new-window" icon={<Plus className="size-4" />}>{t("New window", "新窗口")}</Item>
+                <Item id="rename-pane" icon={<Tag className="size-4" />}>{t("Rename this pane", "重命名这个 pane")}</Item>
                 <Item id="rename-window" icon={<SquarePen className="size-4" />}>{t("Rename this window", "重命名这个窗口")}</Item>
                 <Item id="rename-session" icon={<PanelBottom className="size-4" />}>{t("Rename this session", "重命名这个 session")}</Item>
                 <Item id="kill-pane" danger icon={<X className="size-4" />}>{t("Close this pane", "关闭这个 pane")}</Item>

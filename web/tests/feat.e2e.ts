@@ -355,7 +355,7 @@ test("the status line under the screen: its windows open, the menu hides it", as
 test("desktop: a card's menu has the modes, the pane's ticked", async ({ app, browser, screen }) => {
   await app.open(page(portOf(app.baseUrl)));
   await browser.locator('[data-pane][data-name="builder"]').secondaryTap();
-  await expect(screen.getByRole("menuitem")).toHaveCount(11);
+  await expect(screen.getByRole("menuitem")).toHaveCount(12);
   await expect(ticked(browser)).toHaveText("shell：在提示符下执行");
   await entry(screen, "normal：消息留着等").tap();
   try {
