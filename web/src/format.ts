@@ -18,8 +18,10 @@ export function titleOf(p: Pane) {
 
 export type State = { tone: "success" | "warning" | "danger" | null; label: string };
 
-/** A pane's state, as the dashboard gives it: an agent or shell pane is free
- *  or busy; a normal pane is neither; a pane whose program ended has exited. */
+/** A pane's state, as the dashboard gives it: an agent or shell pane is free,
+ *  busy, or has someone at its line; an agent pane whose agent is gone has
+ *  none; a shell pane that never said it is at its prompt cannot be told; a
+ *  normal pane is neither; a pane whose program ended has exited. */
 export function stateOf(p: Pane): State {
   if (p.dead)
     return {
@@ -27,7 +29,18 @@ export function stateOf(p: Pane): State {
       label: p.exit != null ? t(`exited (exit ${p.exit})`, `已退出（退出码 ${p.exit}）`) : t("exited", "已退出"),
     };
   if (!p.mode || p.mode === "normal") return { tone: null, label: "" };
+  switch (p.state) {
+    case "no-agent":
+      return { tone: null, label: t("no agent", "没有 agent") };
+    case "unknown":
+      return { tone: null, label: t("unknown", "未知") };
+    case "typing":
+      return { tone: null, label: t("typing", "输入中") };
+    case "idle":
+      return { tone: "success", label: t("free", "空闲") };
+  }
   if (p.unheard) return { tone: "warning", label: t("never said it is free", "没报告过空闲") };
+  // `busy`, or a server too old to say more than free or not.
   return p.idle ? { tone: "success", label: t("free", "空闲") } : { tone: "warning", label: t("busy", "忙") };
 }
 

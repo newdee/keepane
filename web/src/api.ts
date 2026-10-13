@@ -50,6 +50,11 @@ export type Pane = {
   quiet: number;
   last: string;
   idle: boolean;
+  /** What it is up to, in a word: idle, busy, typing (someone is at its
+   *  line), no-agent (an ai pane back at its shell), unknown (a shell pane
+   *  whose prompt hook was never heard), exited, or `-` (normal mode).
+   *  Missing from an older server. */
+  state?: string;
   inbox: number;
   unheard: boolean;
   working: number;

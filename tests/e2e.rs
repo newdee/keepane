@@ -8186,6 +8186,247 @@ async fn a_pane_done_is_told_to_the_page_the_hook_and_a_webhook() {
     h.cli(&["kill-server"]).await;
 }
 
+/// A stand-in agent that drops an Enter coming within 80 ms of the keys
+/// before it, as Codex's input box drops one on the heels of a paste; it
+/// says `SUBMITTED` (and whether the whole message was in) for one it
+/// takes. `deaf`: it takes none. Run as the pane's program.
+fn fussy_agent(deaf: bool) -> Vec<String> {
+    let dir = std::env::temp_dir().join(format!("keepane-fussy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    if cfg!(windows) {
+        let script = dir.join(if deaf { "deaf.ps1" } else { "fussy.ps1" });
+        let take = if deaf { "continue" } else { "" };
+        std::fs::write(
+            &script,
+            format!(
+                r#"[Console]::Out.Write("$([char]27)[?2004h"); Write-Host READY
+$buf = [Text.StringBuilder]::new(); $last = [DateTime]::MinValue
+while ($true) {{
+  $k = [Console]::ReadKey($true); $now = [DateTime]::UtcNow
+  if ($k.Key -eq 'Enter') {{
+    if (($now - $last).TotalMilliseconds -lt 80) {{ $last = $now; continue }}
+    {take}
+    $s = $buf.ToString(); [void]$buf.Clear()
+    $n = ([regex]::Matches($s, 'keepane end=')).Count
+    Write-Host ('SUBMITTED ' + $(if ($n -gt 1) {{ 'merged' }} elseif ($n -eq 1) {{ 'whole' }} else {{ 'part' }}))
+  }} else {{ [void]$buf.Append($k.KeyChar); $last = $now }}
+}}"#
+            ),
+        )
+        .unwrap();
+        ["pwsh", "-NoLogo", "-NoProfile", "-File"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain([script.display().to_string()])
+            .collect()
+    } else {
+        let script = dir.join(if deaf { "deaf.pl" } else { "fussy.pl" });
+        let take = if deaf { "next;" } else { "" };
+        std::fs::write(
+            &script,
+            format!(
+                r#"use Time::HiRes qw(time); $| = 1; system("stty raw -echo");
+print "\e[?2004hREADY\r\n"; my ($buf, $last) = ("", 0);
+while (sysread(STDIN, my $c, 1)) {{
+  my $now = time;
+  if ($c eq "\r") {{
+    if ($now - $last < 0.08) {{ $last = $now; next; }}
+    {take}
+    my $n = () = $buf =~ /keepane end=/g;
+    print "SUBMITTED " . ($n > 1 ? "merged" : $n == 1 ? "whole" : "part") . "\r\n"; $buf = "";
+  }} else {{ $buf .= $c; $last = $now; }}
+}}"#
+            ),
+        )
+        .unwrap();
+        vec!["perl".to_string(), script.display().to_string()]
+    }
+}
+
+/// A message typed into an agent is submitted even by one that drops an
+/// Enter on the heels of a paste: its Enter comes on its own once the
+/// paste has settled, once; the next message is not typed in on top of it;
+/// one never taken is pressed once more, then said in the messages. (Keys
+/// typed meanwhile take the Enter: n_agents_message_leaves_its_enter_to_come.)
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_message_is_submitted_by_an_enter_of_its_own() {
+    let h = Harness::start("enter").await;
+    let run = |deaf: bool, name: &'static str| {
+        let h = &h;
+        async move {
+            let argv = fussy_agent(deaf);
+            let args: Vec<&str> =
+                ["new", "-d", "-s", name].into_iter().chain(argv.iter().map(String::as_str)).collect();
+            let (code, _, err) = h.cli(&args).await;
+            assert_eq!(code, 0, "{err}");
+            let target = format!("{name}:0.0");
+            h.wait_capture(&target, "the stand-in agent", |t| t.contains("READY")).await;
+            let p = pane_id(h, &target).await;
+            h.cli(&["set-work-mode", "-t", &format!("%{p}"), "ai"]).await;
+            (p, target)
+        }
+    };
+    let submitted = |s: &str| s.lines().filter(|l| l.contains("SUBMITTED")).count();
+    let (p, target) = run(false, "fu").await;
+    let t = format!("%{p}");
+    h.cli(&["send-message", "-t", &t, "first line\nsecond line"]).await;
+    h.cli(&["pane-ready", "-t", &t]).await;
+    h.wait_capture(&target, "the message submitted", |s| s.contains("SUBMITTED whole")).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", &target]).await;
+    assert_eq!(submitted(&screen), 1, "one Enter taken, none more: {screen}");
+    // While a message's Enter is still to come, the next one is not typed
+    // in on top of it, even with the pane said free again at once: each
+    // goes in on its own, after the one before is taken.
+    h.cli(&["send-message", "-t", &t, "third"]).await;
+    h.cli(&["send-message", "-t", &t, "fourth"]).await;
+    h.cli(&["pane-ready", "-t", &t]).await;
+    h.cli(&["pane-ready", "-t", &t]).await;
+    h.wait_capture(&target, "the third and the fourth submitted", |s| submitted(s) == 3).await;
+    let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", &target]).await;
+    assert!(!screen.contains("merged"), "one on top of the other: {screen}");
+    // One that takes no Enter: pressed twice, then said.
+    let (p, target) = run(true, "fd").await;
+    let t = format!("%{p}");
+    h.cli(&["send-message", "-t", &t, "never taken"]).await;
+    h.cli(&["pane-ready", "-t", &t]).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, msgs, _) = h.cli(&["show-messages"]).await;
+        if msgs.contains(&format!("%{p}: message #")) && msgs.contains("its Enter was not taken") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "not said: {msgs}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", &target]).await;
+    assert_eq!(submitted(&screen), 0, "{screen}");
+    h.cli(&["kill-server"]).await;
+}
+
+/// An agent pane is told free by its agent's own transcript, with no hook
+/// at all: a turn over (the first one seen only says where it stands, it is
+/// not told); a message's turn over ends the message, told; one broken off
+/// by the person ends it unfinished, not told as finished; keys with no
+/// Enter are someone at the line (`typing`), and a turn that ended before
+/// them frees nothing; a turn the agent begins on its own makes it busy.
+/// (keepane itself, copied as `codex`, plays Codex; the transcript is
+/// written as Codex writes it.) An agent pane back at its shell's prompt
+/// has no agent.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_transcript_says_when_it_is_free() {
+    let root = std::env::temp_dir().join(format!("keepane-turns-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (home, work, bin) = (root.join("codex-home"), root.join("work"), root.join("bin"));
+    for d in [&home, &work, &bin] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let fake = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+    std::fs::copy(env!("CARGO_BIN_EXE_keepane"), &fake).unwrap();
+    unsafe { std::env::set_var("CODEX_HOME", &home) };
+    let h = Harness::start("turns").await;
+    h.cli(&["set", "-g", "done-events", "agent task"]).await;
+    let (code, _, err) =
+        h.cli(&["new", "-d", "-s", "tw", "-c", &work.to_string_lossy(), &fake.to_string_lossy(), "mcp"]).await;
+    assert_eq!(code, 0, "{err}");
+    let p = pane_id(&h, "tw:0.0").await;
+    let t = format!("%{p}");
+    h.cli(&["set-work-mode", "-t", &t, "ai"]).await;
+    wait_format(&h, p, "#{pane_state}", "busy").await;
+    // The session's file, where Codex keeps today's, saying where it works.
+    let day = chrono::Local::now();
+    let dir = home
+        .join("sessions")
+        .join(day.format("%Y").to_string())
+        .join(day.format("%m").to_string())
+        .join(day.format("%d").to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("rollout-keepane-test.jsonl");
+    let cwd = ask_pane(&h, p, "#{pane_current_path}").await;
+    std::fs::write(&file, format!("{}\n", serde_json::json!({"type": "session_meta", "payload": {"cwd": cwd}})))
+        .unwrap();
+    let write = |kind: &str, at: chrono::DateTime<chrono::Utc>| {
+        use std::io::Write;
+        let line = serde_json::json!({
+            "timestamp": at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "type": "event_msg",
+            "payload": {"type": kind}
+        });
+        let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(f, "{line}").unwrap();
+    };
+    let now = chrono::Utc::now;
+    let delivered = |id: String| {
+        let h = &h;
+        async move {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !h.cli(&["trace-message", &id]).await.1.starts_with(&format!("#{id} delivered")) {
+                assert!(Instant::now() < deadline, "#{id} never delivered");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
+    // No hook: a turn over in the transcript frees it; the first one seen
+    // is not told.
+    write("task_started", now());
+    write("task_complete", now());
+    wait_format(&h, p, "#{pane_state}", "idle").await;
+    assert!(!h.cli(&["list-done"]).await.1.contains(" agent "), "the first turn seen is not told");
+    // A message: delivered, its turn over: done, and told.
+    let (_, sent, _) = h.cli(&["send-message", "-t", &t, "do it"]).await;
+    let id = msg_id(&sent);
+    delivered(id.clone()).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_state}").await, "busy");
+    write("task_started", now());
+    write("task_complete", now());
+    let (_, trace, _) = h.cli(&["trace-message", &id, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{id} done")), "{trace}");
+    wait_done(&h, &format!("the agent finished #{id}")).await;
+    wait_format(&h, p, "#{pane_state}", "idle").await;
+    // Broken off by the person: unfinished, not told as finished.
+    tokio::time::sleep(Duration::from_secs(3)).await; // past the per-pane gate
+    let (_, sent, _) = h.cli(&["send-message", "-t", &t, "stop me"]).await;
+    let id2 = msg_id(&sent);
+    delivered(id2.clone()).await;
+    write("task_started", now());
+    write("turn_aborted", now());
+    let (_, trace, _) = h.cli(&["trace-message", &id2, "-w", "30"]).await;
+    assert!(trace.starts_with(&format!("#{id2} abandoned")), "{trace}");
+    wait_format(&h, p, "#{pane_state}", "idle").await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!h.cli(&["list-done"]).await.1.contains(&format!("finished #{id2}")));
+    // Someone at the line: typing; a turn that ended before the keys
+    // frees nothing.
+    let before = now();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    h.cli(&["send-keys", "-t", &t, "x"]).await;
+    wait_format(&h, p, "#{pane_state}", "typing").await;
+    write("task_complete", before);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_state}").await, "typing");
+    // A turn it begins on its own while free: busy.
+    h.cli(&["pane-ready", "-t", &t]).await;
+    wait_format(&h, p, "#{pane_state}", "idle").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let began = now();
+    write("task_started", began);
+    wait_format(&h, p, "#{pane_state}", "busy").await;
+    // Its end at the very millisecond it began (read on a later look): a
+    // turn over all the same, not one already seen.
+    write("task_complete", began);
+    wait_format(&h, p, "#{pane_state}", "idle").await;
+    // An agent pane back at its shell's prompt: no agent there.
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "ts"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    at_hooked_prompt(&h, "ts:0.0").await;
+    let s = pane_id(&h, "ts:0.0").await;
+    h.cli(&["set-work-mode", "-t", &format!("%{s}"), "ai"]).await;
+    wait_format(&h, s, "#{pane_state}", "no-agent").await;
+    h.cli(&["kill-server"]).await;
+    unsafe { std::env::remove_var("CODEX_HOME") };
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// An agent's work is told with what it did in its repository: measured
 /// from the commit it began at (when its message was delivered), the
 /// commits it made, the files it changed, the new ones; in the message's

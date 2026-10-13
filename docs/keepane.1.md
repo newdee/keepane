@@ -109,7 +109,12 @@ and each window's pane, which the phone page draws under the screen).
 `list-events`, `create-pane`, `mcp` (MCP for an agent in a pane), `setup`
 (`setup` alone lists the agents and what each lacks; `setup claude`, `codex`,
 `gemini`, `cursor` or `opencode` with `--install` adds the hook that says when
-the agent is free, and keepane's MCP server).
+the agent is free, and keepane's MCP server). Claude Code's, Codex's and pi's
+transcripts say it too, about 3 seconds late at the most, with no hook. A message to an
+`ai` pane is pasted, and its Enter comes on its own once the paste has
+settled. What a pane is up to is `#{pane_state}`: idle, busy, typing (keys
+with no Enter), no-agent (an `ai` pane back at its shell), unknown (a shell
+whose prompt hook was never heard), exited, or `-`.
 
 ### Resuming after a reboot
 

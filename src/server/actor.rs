@@ -373,6 +373,20 @@ pub struct Actor {
     /// prompt when typed-ahead text comes in: bash does, and says so each
     /// time) until someone types again: runs it, or clears it.
     line_left: bool,
+    /// When something last went in (keys, a paste, a message delivered):
+    /// a turn the agent's transcript says ended before it is no word on
+    /// what came after.
+    pub last_input: Option<chrono::DateTime<chrono::Local>>,
+    /// The last thing that went in was keys with no Enter: someone is at
+    /// the line (`typing`), not the program at work.
+    typed: bool,
+    /// The last turn of the transcript's acted on (`Server::turns_seen`):
+    /// when, and whether it was over (a turn begun and over in the same
+    /// millisecond are two).
+    pub turn_seen: Option<(chrono::DateTime<chrono::Local>, bool)>,
+    /// keepane's prompt hook has been heard here at least once: a shell
+    /// pane without it (cmd) cannot be told free.
+    prompts_heard: bool,
 }
 
 impl Actor {
@@ -389,6 +403,30 @@ impl Actor {
             self.heard = false;
         }
         self.mode = mode;
+    }
+
+    /// What the pane is up to, in a word (`pane_state`): `idle` (free for
+    /// its next message), `busy`, `typing` (someone is at its line),
+    /// `no-agent` (an `ai` pane back at its shell's prompt: its agent is
+    /// gone), `unknown` (a `shell` pane whose prompt hook was never heard),
+    /// `exited` (its program); `-` for a pane in `normal` mode, which is
+    /// never free nor busy.
+    pub fn state(&self, exited: bool) -> &'static str {
+        match self.mode {
+            _ if exited => "exited",
+            WorkMode::Normal => "-",
+            WorkMode::Shell if !self.prompts_heard => "unknown",
+            WorkMode::Ai if self.at_prompt => "no-agent",
+            _ if self.idle() => "idle",
+            _ if self.typing() => "typing",
+            _ => "busy",
+        }
+    }
+
+    /// Someone is at the line: keys went in, no Enter yet, and the pane is
+    /// not free.
+    pub fn typing(&self) -> bool {
+        self.typed && !self.idle()
     }
 
     /// Free to take the next message, by the one signal this mode trusts.
@@ -414,6 +452,8 @@ impl Actor {
         if self.current.is_some() && std::mem::take(&mut self.typed_while_working) {
             self.line_left = true;
         }
+        self.prompts_heard = true;
+        self.typed = self.line_left;
         self.at_prompt = !self.line_left;
         self.ready = false;
         // In an agent's pane a shell prompt means the agent is gone: the
@@ -442,12 +482,30 @@ impl Actor {
         }
         self.ready = true;
         self.heard = true;
+        self.typed = false;
+        // An agent spoke: it is there, whatever prompt its shell showed.
+        self.at_prompt = false;
         (true, self.current.take().map(|m| (m, End::Done)))
+    }
+
+    /// The agent's transcript says it began a turn of its own while it was
+    /// free (nothing typed since): it is busy.
+    pub fn turn_began(&mut self) {
+        if self.mode == WorkMode::Ai {
+            self.ready = false;
+            self.typed = false;
+            self.at_prompt = false;
+        }
     }
 
     /// Someone typed, pasted or sent keys into the pane: it is busy until
     /// the next signal, so a message does not land in a line being typed.
-    pub fn input(&mut self) {
+    /// With an Enter among them, what was typed went in (the program is at
+    /// it); without, someone is still at the line. (An Enter inside a
+    /// bracketed paste is the paste's line break: `typed_enter`.)
+    pub fn input(&mut self, enter: bool) {
+        self.last_input = Some(chrono::Local::now());
+        self.typed = !enter;
         self.at_prompt = false;
         self.ready = false;
         // Someone is at the line now: its next prompt is a free one.
@@ -492,6 +550,8 @@ impl Actor {
         let m = self.inbox.remove(i)?;
         self.at_prompt = false;
         self.ready = false;
+        self.typed = false;
+        self.last_input = Some(chrono::Local::now());
         self.typed_while_working = false;
         self.current = Some(m.clone());
         Some(m)
@@ -598,6 +658,63 @@ mod tests {
 
     fn actor(mode: WorkMode) -> Actor {
         Actor { mode, ..Default::default() }
+    }
+
+    /// What a pane is up to, in a word: keys with no Enter are someone at
+    /// the line (`typing`, held back from messages), with an Enter the
+    /// program at work (`busy`); an agent pane back at its shell's prompt has
+    /// no agent; a shell pane never heard at its prompt cannot be told.
+    #[test]
+    fn a_pane_is_free_busy_typing_or_without_its_agent() {
+        assert_eq!(actor(WorkMode::Normal).state(false), "-");
+        assert_eq!(actor(WorkMode::Ai).state(true), "exited");
+        // A shell: not known until its prompt hook is heard.
+        let mut sh = actor(WorkMode::Shell);
+        assert_eq!(sh.state(false), "unknown");
+        sh.prompt_seen();
+        assert_eq!(sh.state(false), "idle");
+        sh.input(false);
+        assert_eq!((sh.state(false), sh.idle()), ("typing", false), "keys, no Enter: someone at the line");
+        sh.input(true);
+        assert_eq!(sh.state(false), "busy", "with an Enter: it runs");
+        sh.prompt_seen();
+        assert_eq!(sh.state(false), "idle");
+        // An agent: busy until it says (or its transcript says) it is free.
+        let mut ai = actor(WorkMode::Ai);
+        assert_eq!(ai.state(false), "busy");
+        ai.ready();
+        assert_eq!(ai.state(false), "idle");
+        ai.input(false);
+        assert_eq!(ai.state(false), "typing");
+        assert!(ai.last_input.is_some());
+        ai.input(true);
+        assert_eq!(ai.state(false), "busy");
+        ai.ready();
+        ai.turn_began();
+        assert_eq!(ai.state(false), "busy", "a turn begun on its own");
+        // A message delivered: busy, not typing, the time it went in kept.
+        ai.ready();
+        ai.enqueue(msg(4, WorkMode::Ai), 10).unwrap();
+        ai.input(false);
+        ai.ready();
+        let before = ai.last_input;
+        assert!(ai.next_delivery().is_some());
+        assert_eq!(ai.state(false), "busy");
+        assert!(ai.last_input >= before);
+        // Its agent gone, its shell at the prompt.
+        ai.prompt_seen();
+        assert_eq!(ai.state(false), "no-agent");
+        // Switched to ai at a shell's prompt: no agent there yet; one that
+        // then speaks (started without a key: a script) is there.
+        let mut at_shell = actor(WorkMode::Shell);
+        at_shell.prompt_seen();
+        at_shell.set_mode(WorkMode::Ai);
+        assert_eq!(at_shell.state(false), "no-agent");
+        at_shell.ready();
+        assert_eq!(at_shell.state(false), "idle", "its agent said it is free: it is there");
+        at_shell.prompt_seen();
+        at_shell.turn_began();
+        assert_eq!(at_shell.state(false), "busy", "a turn begun: it is there");
     }
 
     #[test]
@@ -790,7 +907,7 @@ mod tests {
         a.enqueue(msg(2, WorkMode::Shell), 10).unwrap();
         a.prompt();
         assert_eq!(a.next_delivery().map(|m| m.id), Some(1));
-        a.input(); // typed ahead while #1 runs
+        a.input(false); // typed ahead while #1 runs
         assert_eq!(a.prompt().map(|(m, _)| m.id), Some(1), "#1 is over");
         assert!(!a.idle());
         for _ in 0..3 {
@@ -799,12 +916,12 @@ mod tests {
             assert_eq!(a.next_delivery(), None);
         }
         // Someone clears the line and presses Enter: the next prompt is free.
-        a.input();
+        a.input(false);
         a.prompt();
         assert!(a.idle());
         assert_eq!(a.next_delivery().map(|m| m.id), Some(2));
         // force_idle and a restart forget it too.
-        a.input();
+        a.input(false);
         a.prompt();
         assert!(!a.idle());
         a.force_idle();
@@ -851,7 +968,7 @@ mod tests {
         assert_eq!(a.prompt(), None);
         assert!(a.idle());
         // Typing at the prompt makes it busy again.
-        a.input();
+        a.input(false);
         assert_eq!(a.next_delivery(), None);
         a.prompt();
         assert_eq!(a.next_delivery().map(|m| m.id), Some(1));
@@ -865,7 +982,7 @@ mod tests {
     fn typing_right_after_the_prompt_mark_keeps_the_pane_busy() {
         let mut a = actor(WorkMode::Shell);
         a.prompt_seen();
-        a.input();
+        a.input(false);
         assert_eq!(a.command_over(), None);
         assert!(!a.idle(), "typed after the marker: busy, whatever comes after");
     }
@@ -878,11 +995,11 @@ mod tests {
         a.prompt();
         a.next_delivery().unwrap();
         // Typed while #1 runs: the prompt that ends it shows that text.
-        a.input();
+        a.input(false);
         assert_eq!(a.prompt().map(|(m, _)| m.id), Some(1));
         assert!(!a.idle(), "#2 is not typed after what is on the line");
         // The person's own Enter brings a clean prompt: free again.
-        a.input();
+        a.input(false);
         a.prompt();
         assert_eq!(a.next_delivery().map(|m| m.id), Some(2));
         // Nothing typed while #2 runs: free at its end.
@@ -980,7 +1097,7 @@ mod tests {
     #[test]
     fn force_idle_unsticks_a_busy_pane() {
         let mut a = actor(WorkMode::Ai);
-        a.input();
+        a.input(false);
         assert!(!a.idle());
         a.force_idle();
         assert!(a.idle());
@@ -997,7 +1114,7 @@ mod tests {
         assert!(a.unheard(), "a person's word is not the agent's");
         a.ready();
         assert!(!a.unheard());
-        a.input();
+        a.input(false);
         assert!(!a.unheard(), "typing is not the agent leaving");
         a.prompt_seen();
         assert!(a.unheard(), "a shell prompt: the agent is gone");

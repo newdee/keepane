@@ -26,6 +26,85 @@ pub const REPLAY_MARKER: &str = "\x1b]7777;keepane-replayed\x1b\\";
 /// pane's own: its exit is not the pane's program exiting.
 pub const HELPER_GEN: u32 = u32::MAX;
 
+/// A message typed into an agent, its Enter waited on: when it was typed;
+/// when the Enter went, and how many times the pane had printed then;
+/// whether it went a second time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Enter {
+    pub typed: std::time::Instant,
+    pub sent: Option<(std::time::Instant, u64)>,
+    pub again: bool,
+}
+
+/// Whether keys going in hold an Enter that sends what was typed: one
+/// outside a bracketed paste (inside, it is a line break of the paste).
+pub fn typed_enter(bytes: &[u8]) -> bool {
+    const START: &[u8] = b"\x1b[200~";
+    const END: &[u8] = b"\x1b[201~";
+    let (mut i, mut pasting) = (0, false);
+    while i < bytes.len() {
+        if bytes[i..].starts_with(START) {
+            (pasting, i) = (true, i + START.len());
+        } else if bytes[i..].starts_with(END) {
+            (pasting, i) = (false, i + END.len());
+        } else {
+            if bytes[i] == b'\r' && !pasting {
+                return true;
+            }
+            i += 1;
+        }
+    }
+    false
+}
+
+/// What to do about an `Enter` now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EnterNext {
+    Press,
+    Wait(std::time::Duration),
+    /// The pane answered it: done.
+    Taken,
+    /// Pressed twice and never answered: left to the person.
+    GiveUp,
+}
+
+impl Enter {
+    /// How long after the paste the Enter comes at the soonest (Codex let
+    /// one through 100 ms after and dropped one 30 ms after), how long the
+    /// pane must have been quiet by then, and the latest it comes however
+    /// busy the pane is.
+    pub const AFTER: std::time::Duration = std::time::Duration::from_millis(300);
+    pub const QUIET: std::time::Duration = std::time::Duration::from_millis(150);
+    pub const LATEST: std::time::Duration = std::time::Duration::from_secs(2);
+    /// How long the pane has to answer an Enter (anything at all printed):
+    /// when it prints nothing, its screen did not change, so nothing (a
+    /// question, a choice) came up that a second Enter could answer.
+    pub const ANSWER: std::time::Duration = std::time::Duration::from_millis(2500);
+    /// How often the pane is looked at for that answer meanwhile.
+    pub const LOOK: std::time::Duration = std::time::Duration::from_millis(200);
+
+    pub fn next(&self, now: std::time::Instant, last_output: std::time::Instant, output_count: u64) -> EnterNext {
+        match self.sent {
+            None => {
+                let since = now.saturating_duration_since(self.typed);
+                let quiet = now.saturating_duration_since(last_output);
+                if since >= Self::LATEST || (since >= Self::AFTER && quiet >= Self::QUIET) {
+                    EnterNext::Press
+                } else {
+                    let wait = Self::AFTER.saturating_sub(since).max(Self::QUIET.saturating_sub(quiet));
+                    EnterNext::Wait(wait.min(Self::LATEST - since))
+                }
+            }
+            Some((_, count)) if output_count != count => EnterNext::Taken,
+            Some((at, _)) if now.saturating_duration_since(at) < Self::ANSWER => {
+                EnterNext::Wait(Self::LOOK.min(Self::ANSWER - now.saturating_duration_since(at)))
+            }
+            Some(_) if !self.again => EnterNext::Press,
+            Some(_) => EnterNext::GiveUp,
+        }
+    }
+}
+
 /// vt100 callbacks: collects terminal replies ConPTY expects from a real
 /// terminal, the window title and bells.
 #[derive(Default)]
@@ -514,6 +593,12 @@ pub struct Pane {
     /// keepane's prompt came and the server waits a moment before taking
     /// the command as done (`PROMPT_SETTLE`); nothing is typed in meanwhile.
     pub settle: bool,
+    /// A message typed into an agent, its Enter still to come
+    /// (`Server::enter_step`): an agent's input box can drop an Enter that
+    /// comes right on the heels of a paste (Codex does), so it comes on its
+    /// own once the paste has settled, and once more if nothing at all
+    /// answered it.
+    pub enter: Option<Enter>,
     /// The file its PowerShell keeps command history in (`KEEPANE_SHELL_HISTORY`),
     /// by name under the sessions directory: its own, so Up in a resumed pane
     /// gives what that pane ran. None for a pane that is not an interactive
@@ -775,6 +860,7 @@ impl Pane {
             clock_turns: 0,
             clock_pick: None,
             git_base: None,
+            enter: None,
             clock_anim: None,
             clock_lines: None,
             output_bytes: 0,
@@ -1621,19 +1707,22 @@ impl Pane {
     /// Input from a person or a command acting for one (keys, a paste,
     /// `send-keys`): it also makes the pane busy for its messages.
     pub fn type_input(&mut self, bytes: &[u8]) {
+        // Someone is at the keys: the Enter a message waits for is theirs.
+        self.enter = None;
         // Someone sets a free agent to work: where its repository stood.
         if self.actor.mode == super::actor::WorkMode::Ai && self.actor.idle() {
             self.git_base = self.git_head();
         }
-        self.actor.input();
+        self.actor.input(typed_enter(bytes));
         self.write_input(bytes);
     }
 
     /// Type a message into the pane and press Enter: as a paste when the
     /// program asked for bracketed paste, so a text of several lines
     /// arrives as one. (A shell's command of several lines comes here as
-    /// one line already: `Message::wrapped`.)
-    pub fn deliver(&mut self, text: &str) {
+    /// one line already: `Message::wrapped`.) For an agent (`enter_later`)
+    /// the Enter is left for later (`enter`): the server presses it.
+    pub fn deliver(&mut self, text: &str, enter_later: bool) {
         // The rows the command takes as typed, from the cursor on: what the
         // shell prints starts after them. Counted, not read back from the
         // screen, where a row's wrap cannot be told from ConPTY's padding.
@@ -1651,7 +1740,11 @@ impl Pane {
         self.delivered_line = Some((self.cursor_line(), self.cursor_line() + rows));
         self.delivered_text = (!text.contains('\n')).then(|| text.to_string());
         let mut bytes = super::input::encode_paste(text, self.screen().bracketed_paste());
-        bytes.push(b'\r');
+        if enter_later {
+            self.enter = Some(Enter { typed: std::time::Instant::now(), sent: None, again: false });
+        } else {
+            bytes.push(b'\r');
+        }
         self.write_input(&bytes);
     }
     /// The bytes a typed key is to this pane's program (the platform's
@@ -1886,6 +1979,50 @@ impl Drop for Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A message's Enter for an agent: never sooner than 300 ms after the
+    /// paste, and only once the pane has been quiet 150 ms, but at 2 s
+    /// however busy it is; taken once the pane prints anything; pressed
+    /// again only after 2.5 s of nothing at all, then left.
+    #[test]
+    fn an_agents_enter_waits_for_the_paste_to_settle() {
+        use std::time::{Duration, Instant};
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        let e = Enter { typed: t0, sent: None, again: false };
+        // The paste's own output 50 ms in: 250 ms to go, then quiet.
+        assert_eq!(e.next(t0 + ms(50), t0 + ms(50), 1), EnterNext::Wait(ms(250)));
+        // At 300 ms, the pane printed 100 ms ago: 50 ms more of quiet.
+        assert_eq!(e.next(t0 + ms(300), t0 + ms(200), 1), EnterNext::Wait(ms(50)));
+        assert_eq!(e.next(t0 + ms(350), t0 + ms(200), 1), EnterNext::Press);
+        // Never sooner than 300 ms, quiet or not.
+        assert_eq!(e.next(t0 + ms(100), t0, 1), EnterNext::Wait(ms(200)));
+        assert_eq!(e.next(t0 + ms(200), t0, 1), EnterNext::Wait(ms(100)), "quiet 200 ms, but only 200 ms on");
+        // Printing all along: at 2 s all the same, never a wait past it.
+        assert_eq!(e.next(t0 + ms(1990), t0 + ms(1980), 1), EnterNext::Wait(ms(10)));
+        assert_eq!(e.next(t0 + ms(2000), t0 + ms(1999), 1), EnterNext::Press);
+        // Sent at 400 ms with 1 print so far.
+        let sent = Enter { sent: Some((t0 + ms(400), 1)), ..e };
+        assert_eq!(sent.next(t0 + ms(500), t0 + ms(400), 2), EnterNext::Taken, "anything printed: taken");
+        assert_eq!(sent.next(t0 + ms(1400), t0 + ms(400), 1), EnterNext::Wait(ms(200)), "looked at again soon");
+        assert_eq!(sent.next(t0 + ms(2850), t0 + ms(400), 1), EnterNext::Wait(ms(50)));
+        assert_eq!(sent.next(t0 + ms(2900), t0 + ms(400), 1), EnterNext::Press, "nothing at all: once more");
+        let again = Enter { again: true, ..sent };
+        assert_eq!(again.next(t0 + ms(2900), t0 + ms(400), 1), EnterNext::GiveUp);
+        assert_eq!(again.next(t0 + ms(2900), t0 + ms(400), 3), EnterNext::Taken);
+    }
+
+    /// An Enter sends what was typed; one inside a bracketed paste is the
+    /// paste's line break.
+    #[test]
+    fn an_enter_inside_a_paste_sends_nothing() {
+        assert!(typed_enter(b"ls\r"));
+        assert!(!typed_enter(b"ls"));
+        assert!(!typed_enter(b"\x1b[200~one\rtwo\x1b[201~"), "a pasted line break");
+        assert!(typed_enter(b"\x1b[200~one\rtwo\x1b[201~\r"), "an Enter after the paste");
+        assert!(!typed_enter(b"\x1b[200~one\r"), "a paste not over yet");
+        assert!(!typed_enter(b""));
+    }
 
     #[test]
     fn a_captured_line_has_blanks_not_cursor_moves() {
@@ -2270,6 +2407,20 @@ mod tests {
         Pane::spawn(12, &argv, None, cols, rows, history, &[], tx).unwrap()
     }
 
+    /// A message for an agent leaves its Enter to come; one for a shell
+    /// takes it along. Someone typing has the waiting Enter left to them.
+    #[test]
+    fn an_agents_message_leaves_its_enter_to_come() {
+        let mut p = quiet_pane(40, 5, 100);
+        p.deliver("for a shell", false);
+        assert_eq!(p.enter, None);
+        p.deliver("for an agent", true);
+        let e = p.enter.expect("its Enter waits");
+        assert_eq!((e.sent, e.again), (None, false));
+        p.type_input(b"y");
+        assert_eq!(p.enter, None, "someone at the keys: theirs");
+    }
+
     #[test]
     fn a_delivered_command_takes_the_rows_it_is_typed_over() {
         let mut p = quiet_pane(10, 5, 100);
@@ -2277,12 +2428,12 @@ mod tests {
         // Up to the right edge exactly: the one row it fills; the output
         // begins on the next (a blank row PSReadLine may add before it is
         // dropped from the output, not counted here).
-        p.deliver("abcdef");
+        p.deliver("abcdef", false);
         assert_eq!(p.delivered_line, Some((0, 1)));
         p.process_output(b"\r\n\r\nPS> ");
-        p.deliver("ab");
+        p.deliver("ab", false);
         assert_eq!(p.delivered_line, Some((2, 3)), "short of the edge: its own row");
-        p.deliver(&"x".repeat(17));
+        p.deliver(&"x".repeat(17), false);
         assert_eq!(p.delivered_line, Some((2, 5)), "4 + 17 columns: over three rows");
     }
 
@@ -2570,7 +2721,7 @@ mod tests {
     fn a_command_is_found_where_it_was_drawn() {
         let mut p = quiet_pane(10, 8, 100);
         p.process_output(b"PS> ");
-        p.deliver("abcdefghij");
+        p.deliver("abcdefghij", false);
         assert_eq!(p.delivered_line, Some((0, 2)), "4 + 10 columns, counted from the cursor");
         // Drawn from row 1, not 0; then its output and the next prompt.
         p.process_output(b"\x1b[2;5Habcdefghij\r\nout1\r\nPS> ");

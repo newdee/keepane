@@ -60,9 +60,19 @@ pub(super) fn unheard_advice(pid: PaneId, program: Option<&str>) -> String {
         Some(a) => format!("keepane setup {} --install", a.word()),
         None => "keepane setup (it shows which agents lack it)".to_string(),
     };
+    // Claude Code's, Codex's and pi's transcripts say when a turn is over:
+    // free then, the hook only sooner. The others' are not read: without
+    // the hook, they wait.
+    let pi = program.is_some_and(|p| super::done::program_name(p) == "pi");
+    let read = pi || matches!(agent, Some(crate::setup::Agent::Claude | crate::setup::Agent::Codex));
+    let without = if read {
+        "without one keepane goes by its transcript, about 3 s late at the most, once its first turn is over"
+    } else {
+        "and without one its messages wait for ever"
+    };
     format!(
         "%{pid} has not said it is free since its agent started: an agent says so with a hook at the end of \
-         each turn (keepane pane-ready), and without one its messages wait for ever; to add it: {fix}"
+         each turn (keepane pane-ready), {without}; to add it: {fix}"
     )
 }
 
@@ -433,19 +443,68 @@ impl Server {
     pub(super) fn deliver(&mut self, pid: PaneId) {
         let style = self.opts.message_envelope;
         let Some(p) = self.find_pane_mut(pid) else { return };
-        // Not while a command's end is settling: its output is taken first.
-        if p.exit_code.is_some() || p.is_pending() || p.settle {
+        // Not while a command's end is settling (its output is taken
+        // first), nor while the last message's Enter is still to come.
+        if p.exit_code.is_some() || p.is_pending() || p.settle || p.enter.is_some() {
             return;
         }
         let Some(m) = p.actor.next_delivery() else { return };
         let text = m.wrapped(p.syntax, style);
+        let agent = m.via == WorkMode::Ai;
         // An agent's work begins: where its repository stands.
-        if m.via == WorkMode::Ai {
+        if agent {
             p.git_base = p.git_head();
         }
-        p.deliver(&text);
+        // An agent's Enter comes on its own, once the paste has settled.
+        p.deliver(&text, agent);
         self.observe.delivered(m.id);
         self.delivered += 1;
+        if agent {
+            self.enter_soon(pid, super::pane::Enter::AFTER);
+        }
+    }
+
+    /// Ask for `enter_step` on pane `pid` in `after`.
+    pub(super) fn enter_soon(&self, pid: PaneId, after: std::time::Duration) {
+        let tx = self.events.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            let _ = tx.send(super::Event::EnterDue(pid));
+        });
+    }
+
+    /// The Enter a message typed into an agent waits for: pressed once the
+    /// paste has settled, once more when the pane answered nothing at all,
+    /// then left (and said so).
+    pub(super) fn enter_step(&mut self, pid: PaneId) {
+        let Some(p) = self.find_pane_mut(pid) else { return };
+        let Some(e) = p.enter else { return };
+        // Its program ended: nothing to press.
+        if p.exit_code.is_some() {
+            p.enter = None;
+            return;
+        }
+        let now = Instant::now();
+        match e.next(now, p.last_output, p.output_count) {
+            super::pane::EnterNext::Wait(d) => self.enter_soon(pid, d),
+            super::pane::EnterNext::Press => {
+                p.write_input(b"\r");
+                p.enter = Some(super::pane::Enter { sent: Some((now, p.output_count)), again: e.sent.is_some(), ..e });
+                self.enter_soon(pid, super::pane::Enter::LOOK);
+            }
+            // Done with: a message that came meanwhile may go in now.
+            super::pane::EnterNext::Taken => {
+                p.enter = None;
+                self.deliver(pid);
+            }
+            super::pane::EnterNext::GiveUp => {
+                p.enter = None;
+                let id = p.actor.current.as_ref().map_or(String::new(), |m| format!("#{} ", m.id));
+                self.note_message(&format!(
+                    "%{pid}: message {id}typed in, but its Enter was not taken; press Enter there"
+                ));
+            }
+        }
     }
 
     /// keepane's prompt marker, as it arrives: the pane is at its prompt.
@@ -548,19 +607,32 @@ impl Server {
                 Outcome::Error("pane-ready: not run inside a keepane pane".into())
             };
         };
-        let Some(p) = self.find_pane_mut(me) else { return Outcome::Ok };
         // A turn that ended: the agent was heard from before (its first word
         // is its session starting) and was not already free.
-        let turn = !p.actor.unheard() && !p.actor.idle();
+        let turn = self.find_pane(me).is_some_and(|p| !p.actor.unheard() && !p.actor.idle());
+        self.agent_ready(me, turn, None);
+        Outcome::Ok
+    }
+
+    /// The agent in pane `me` is free: its hook said so (`pane-ready`), or
+    /// its transcript says its turn is over (`turns_seen`; `broken_off`:
+    /// the person broke it off). `turn`: a turn ended (told, unless broken
+    /// off); the message it worked on ends with it (unfinished, when broken
+    /// off), and the next one may go in.
+    pub(super) fn agent_ready(&mut self, me: PaneId, turn: bool, broken_off: Option<bool>) {
+        let Some(p) = self.find_pane_mut(me) else { return };
         let (taken, done) = p.actor.ready();
         if !taken {
             // Only an agent's word counts; a hook set up for every agent
             // also runs in panes that are not `ai`, quietly.
-            return Outcome::Ok;
+            return;
         }
+        let broken_off = broken_off == Some(true);
+        let done = done.map(|(m, end)| (m, if broken_off { End::Abandoned } else { end }));
         // Told and recorded once what the work did in its repository is
-        // known (`finish`); the pane is free for its next message now.
-        let turn = turn.then(|| match &done {
+        // known (`finish`); the pane is free for its next message now. A
+        // turn the person broke off is theirs: not told.
+        let turn = (turn && !broken_off).then(|| match &done {
             Some((m, _)) => format!("the agent finished #{}: {}", m.id, super::done::gist(&m.text)),
             None => "the agent finished its turn".to_string(),
         });
@@ -571,7 +643,6 @@ impl Server {
         let addr = self.address_of(me);
         self.observe.pane(&addr, "idle", "");
         self.deliver(me);
-        Outcome::Ok
     }
 
     fn read_message(&mut self, cid: Option<ClientId>, target: Option<&Target>, wait: Option<u64>) -> Outcome {
@@ -1273,6 +1344,11 @@ mod tests {
         let codex = unheard_advice(7, Some("codex"));
         assert!(codex.starts_with("%7 has not said it is free"), "{codex}");
         assert!(codex.ends_with("keepane setup codex --install, then trust it in Codex (/hooks)"), "{codex}");
+        // Its transcript is read: it is free without the hook too, later.
+        assert!(codex.contains("without one keepane goes by its transcript"), "{codex}");
+        assert!(unheard_advice(7, Some("claude")).contains("goes by its transcript"));
+        assert!(unheard_advice(7, Some("gemini")).contains("its messages wait for ever"));
+        assert!(unheard_advice(7, Some("/usr/local/bin/pi")).contains("goes by its transcript"));
         assert!(unheard_advice(7, Some("C:\\bin\\gemini.exe")).ends_with("keepane setup gemini --install"));
         assert!(unheard_advice(7, Some("cursor-agent")).ends_with("keepane setup cursor --install"));
         assert!(unheard_advice(7, Some("node")).ends_with("keepane setup (it shows which agents lack it)"));

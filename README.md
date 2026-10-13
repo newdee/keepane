@@ -77,18 +77,26 @@ A pane handles messages according to its work mode:
 |---|---|---|
 | `normal` (default) | never on its own | read with `read-message`; the window's flags show `@` |
 | `shell` | keepane's prompt hook sees the shell back at its prompt | typed in and run |
-| `ai` | the agent's end-of-turn hook runs `pane-ready` | typed in as a prompt |
+| `ai` | the agent's end-of-turn hook runs `pane-ready`, or its transcript says the turn is over (Claude Code, Codex, pi) | typed in as a prompt, then Enter on its own |
 
 The status line shows the current pane's mode (`ai` and `shell` marked out,
 `normal` dim), and `C-b q` writes each pane's name and mode under its
 number. A `status-right` of your own shows it with `#{pane_work_mode}`.
 
-After someone types into a pane, keepane treats it as busy until the next
+After someone types into a pane, keepane treats it as taken until the next
 ready signal, so a message never lands in the middle of what is being
 typed. If someone presses keys while a command keepane delivered is
 running, the prompt that ends that command does not trigger a new message
 either; what a user types ahead during a command of their own is beyond
 keepane's reach.
+
+What a pane is up to shows in a word (`#{pane_state}`, on the dashboard and
+the phone): `idle` (free for its next message), `busy` (its program at
+work), `typing` (keys went in with no Enter: someone is at its line, and
+messages wait), `no-agent` (an `ai` pane back at its shell's prompt: its
+agent has exited), `unknown` (a `shell` pane whose prompt hook was never
+heard, such as cmd's), `exited`; a `normal` pane is neither free nor busy
+(`-`). `#{pane_idle}` is 1 for `idle`.
 
 In `ai` mode, if the agent has exited and a shell prompt shows again,
 nothing is delivered. A message is delivered the way the recipient's mode
@@ -115,7 +123,13 @@ and zsh (`: 'keepane #12 from %lead'; cargo test`); `trace-message 12`
 shows the rest. Several lines are joined into one command
 that runs them together, with one result (in bash and zsh, the last
 line's). Delivered to an agent, it is the header, the text and the end
-line `[keepane end=12]`. `task` ties together the order, the work and the
+line `[keepane end=12]`, pasted in; its Enter comes on its own once the
+paste has settled (300 ms on at the soonest, after 150 ms with nothing
+printed, 2 s at the latest), since an agent's input box can drop an Enter
+that comes on the heels of a paste (Codex does). If nothing at all is
+printed in answer within 2.5 s, Enter goes once more; if still nothing,
+`show-messages` says so. Someone typing in the meantime has the Enter left
+to them. `task` ties together the order, the work and the
 replies; `hop` counts how many times a message was passed on, and past
 `message-hop-limit` (8 by default) it is refused, so agents cannot answer
 each other in a loop.
@@ -865,9 +879,12 @@ view. To keep their history in the pane instead, run them inline: for Codex,
 `~/.pi/agent/settings.json`.
 
 A message for an `ai` pane whose agent has never said it is free (since it
-started) would wait for ever, so `send-message` says so, with the `setup`
-that adds the hook; the dashboard and the phone page say it too
-(`#{pane_unheard}`).
+started) waits: `send-message` says so, with the `setup` that adds the hook;
+the dashboard and the phone page say it too (`#{pane_unheard}`). For Claude
+Code, Codex and pi keepane also reads the agent's transcript (as for what it
+costs, every 2 seconds): a turn over there frees the pane with no hook, about
+3 seconds late at the most, and a turn the person broke off (Esc), when no hook runs,
+frees it too, its message ending unfinished. The hook says it at once.
 
 The 24 tools:
 

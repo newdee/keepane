@@ -137,6 +137,8 @@ enum Event {
     GitStatus(u64, std::path::PathBuf, Option<crate::git::Status>),
     /// What an agent's work did in its repository was measured.
     GitWork(u64, Option<Box<crate::git::Work>>),
+    /// The Enter of a message typed into an agent is due (`enter_step`).
+    EnterDue(PaneId),
 }
 
 /// Runs `ask` on a thread of its own and sends its answer as `answer`. A
@@ -2221,6 +2223,7 @@ impl Server {
             }
             Event::GitStatus(generation, root, status) => self.git_status_heard(generation, root, status),
             Event::GitWork(token, work) => self.git_work_measured(token, work),
+            Event::EnterDue(pid) => self.enter_step(pid),
             // The frame after every event draws it.
             Event::PrefixHintDue => {}
             Event::DragScroll(cid) => {
@@ -6052,6 +6055,7 @@ impl Server {
             ctx.pane_address = format!("${}:@{}.%{pid}", sess.id, w.id);
             ctx.pane_work_mode = p.actor.mode.as_str().to_string();
             ctx.pane_idle = p.actor.idle();
+            ctx.pane_state = p.actor.state(p.exit_code.is_some()).to_string();
             ctx.pane_unheard = p.actor.unheard();
             ctx.pane_inbox = p.actor.inbox.len();
             ctx.pane_status = p.actor.status.as_ref().map(|(s, _)| s.clone()).unwrap_or_default();

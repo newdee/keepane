@@ -43,7 +43,7 @@ Codex 的 issue 里有人报告，在普通屏幕上它有时仍会整屏重画�
 
 **看到了什么。** 给 `ai` 模式的 pane 发消息，`send-message` 回复 `queued ... (ai, busy, ...)`，之后一直不投递；dashboard 或手机上看得到它在排队。看起来像是 agent 忘了查收件箱。
 
-**为什么。** agent 并不自己去读收件箱。它每轮结束时，由 hook 运行 `keepane pane-ready`，keepane 再把下一条消息当作提示词打进去。没有这个 hook，这个 pane 永远不算空闲。keepane 会直接说明：`send-message` 的回复多一行 `%N has not said it is free since its agent started ...`，dashboard 和手机上也会标出来。
+**为什么。** agent 并不自己去读收件箱。它每轮结束时，由 hook 运行 `keepane pane-ready`，keepane 再把下一条消息当作提示词打进去。对 Claude Code、Codex 和 pi，keepane 还会读 agent 的会话记录，记录里一轮结束后最多约 3 秒就把 pane 设为空闲；其他 agent 没有这个 hook 就永远不算空闲。keepane 会直接说明：`send-message` 的回复多一行 `%N has not said it is free since its agent started ...`，dashboard 和手机上也会标出来。
 
 **怎么办。**
 
@@ -56,9 +56,9 @@ keepane setup codex --install    # 或 claude、gemini、cursor、opencode
 
 ## pane 一直显示忙，消息投递不进去
 
-**看到了什么。** pane 里的 agent 或 shell 明明在等输入，keepane 却一直算它忙。
+**看到了什么。** pane 里的 agent 或 shell 明明在等输入，keepane 却不算它空闲（`#{pane_state}` 是 `typing` 或 `busy`）。
 
-**为什么。** 往 pane 里打字会让它变成忙，直到下一个信号（shell 的提示符、agent 的 hook）出现，这样消息不会插进正在输入的一行中间。输入了又删掉，或者提示符没有重画，就可能一直等不到那个信号。
+**为什么。** 往 pane 里打字后，消息会先等着，直到下一个信号（shell 的提示符、agent 的 hook，对 Claude Code、Codex 和 pi 还有会话记录里一轮的结束）出现，这样消息不会插进正在输入的一行中间：有按键但还没按回车时显示 `typing`（输入中）。输入了又删掉，或者提示符没有重画，就可能一直等不到那个信号。`ai` 模式的 pane 里 agent 已经退出时显示 `no-agent`（没有 agent），要等有 agent 在里面重新启动。
 
 **怎么办。** 在这个 pane 外面（另一个终端，或者 `C-b :` 提示符）运行：
 

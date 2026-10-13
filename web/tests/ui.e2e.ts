@@ -92,7 +92,9 @@ test("desktop: send, menus, themes, rename, switch, fold, history, inbox, done",
   await expect(dialog(screen, "发过的命令")).toHaveCount(0);
 
   // An agent pane that never said it is free: its messages wait in its inbox.
+  // (A shell at its prompt put in ai: no agent there, as its card's dot says.)
   kp("set-work-mode", "-t", "notes:0.0", "ai");
+  await expect(screen.getByRole("button", { name: /没有 agent/ })).toBeVisible();
   const [one, two] = [`waiting-one-${token()}`, `waiting-two-${token()}`];
   try {
     kp("send-message", "--to", "notes:0.0", one);

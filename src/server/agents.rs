@@ -112,6 +112,31 @@ pub struct Usage {
     /// Tools called, replies made.
     pub tools: u64,
     pub turns: u64,
+    /// The last turn it tells of: running or over, and when.
+    pub turn: Option<Turn>,
+}
+
+/// A turn of the agent's as its transcript tells it: begun (`over` none),
+/// or over, done or broken off by the person; when, as the line says (the
+/// time it was read when the line does not say).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Turn {
+    pub over: Option<TurnEnd>,
+    pub at: chrono::DateTime<chrono::Local>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnEnd {
+    Done,
+    Interrupted,
+}
+
+/// A transcript line's time, else now.
+fn line_time(v: &Value) -> chrono::DateTime<chrono::Local> {
+    v["timestamp"]
+        .as_str()
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map_or_else(chrono::Local::now, |t| t.with_timezone(&chrono::Local))
 }
 
 impl Usage {
@@ -133,6 +158,11 @@ impl Usage {
             self.model = other.model.clone();
             self.context = other.context;
             self.window = other.window;
+        }
+        // The agent's own turns (not a helper's), the latest of its
+        // transcripts'.
+        if latest && other.turn.is_some_and(|o| self.turn.is_none_or(|s| o.at >= s.at)) {
+            self.turn = other.turn;
         }
     }
 
@@ -182,10 +212,18 @@ pub fn feed(kind: Kind, line: &str, u: &mut Usage, seen: &mut HashSet<String>) {
 }
 
 fn claude(v: &Value, u: &mut Usage, seen: &mut HashSet<String>) {
+    if v["type"] == "user" {
+        claude_turn(v, u);
+        return;
+    }
     if v["type"] != "assistant" {
         return;
     }
     let m = &v["message"];
+    // A reply that ends the turn (not one that calls a tool and goes on).
+    if matches!(m["stop_reason"].as_str(), Some("end_turn" | "stop_sequence" | "max_tokens")) {
+        u.turn = Some(Turn { over: Some(TurnEnd::Done), at: line_time(v) });
+    }
     // Each line holds its own blocks: its tool calls count, whatever line.
     u.tools += m["content"].as_array().map_or(0, |c| c.iter().filter(|b| b["type"] == "tool_use").count() as u64);
     let id = m["id"].as_str().or_else(|| v["uuid"].as_str()).unwrap_or_default();
@@ -220,6 +258,33 @@ fn claude(v: &Value, u: &mut Usage, seen: &mut HashSet<String>) {
     u.turns += 1;
 }
 
+/// A Claude `user` line: the person's prompt begins a turn; their breaking
+/// it off ends one. A tool's result, a line keepane's agent adds itself
+/// (`isMeta`), and a command Claude Code answers on its own (`/model`,
+/// written `<command-name>…`, and what it printed) are no turn.
+fn claude_turn(v: &Value, u: &mut Usage) {
+    if v["isMeta"].as_bool() == Some(true) {
+        return;
+    }
+    let content = &v["message"]["content"];
+    let texts: Vec<&str> = match content {
+        Value::String(s) => vec![s.as_str()],
+        Value::Array(blocks) => {
+            blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect()
+        }
+        _ => Vec::new(),
+    };
+    let Some(first) = texts.first().map(|t| t.trim_start()) else { return };
+    let over = if first.starts_with("[Request interrupted by user") {
+        Some(TurnEnd::Interrupted)
+    } else if first.starts_with('<') {
+        return;
+    } else {
+        None
+    };
+    u.turn = Some(Turn { over, at: line_time(v) });
+}
+
 fn codex(v: &Value, u: &mut Usage) {
     let p = &v["payload"];
     match (v["type"].as_str(), p["type"].as_str()) {
@@ -243,7 +308,14 @@ fn codex(v: &Value, u: &mut Usage) {
             u.context = n(&p["info"]["last_token_usage"]["input_tokens"]);
             u.window = p["info"]["model_context_window"].as_u64();
         }
-        (Some("event_msg"), Some("task_started")) => u.turns += 1,
+        (Some("event_msg"), Some("task_started")) => {
+            u.turns += 1;
+            u.turn = Some(Turn { over: None, at: line_time(v) });
+        }
+        (Some("event_msg"), Some(end @ ("task_complete" | "turn_aborted"))) => {
+            let over = if end == "turn_aborted" { TurnEnd::Interrupted } else { TurnEnd::Done };
+            u.turn = Some(Turn { over: Some(over), at: line_time(v) });
+        }
         (Some("response_item"), Some("function_call" | "custom_tool_call" | "local_shell_call")) => u.tools += 1,
         _ => {}
     }
@@ -257,8 +329,22 @@ fn pi(v: &Value, u: &mut Usage) {
         return;
     }
     let m = &v["message"];
-    if v["type"] != "message" || m["role"] != "assistant" {
+    if v["type"] != "message" {
         return;
+    }
+    // The person's message begins a turn; a reply that calls no tool ends
+    // it (broken off: `aborted`).
+    if m["role"] == "user" {
+        u.turn = Some(Turn { over: None, at: line_time(v) });
+        return;
+    }
+    if m["role"] != "assistant" {
+        return;
+    }
+    match m["stopReason"].as_str() {
+        Some("toolUse") | None => {}
+        Some("aborted") => u.turn = Some(Turn { over: Some(TurnEnd::Interrupted), at: line_time(v) }),
+        Some(_) => u.turn = Some(Turn { over: Some(TurnEnd::Done), at: line_time(v) }),
     }
     let us = &m["usage"];
     let t = Tokens {
@@ -816,6 +902,43 @@ impl Server {
         } else {
             self.agents.stats = stats;
         }
+        self.turns_seen();
+    }
+
+    /// What the agents' transcripts say of their turns, for the panes in
+    /// `ai`, each turn acted on once, and only one newer than what last
+    /// went in (keys, a message): a turn over frees a pane that is not free,
+    /// as its hook would (with no hook, or broken off by the person, when
+    /// no hook runs); a turn begun while the pane was free makes it busy.
+    /// The first turn seen in a pane only says where it stands: it is not
+    /// told as just ended (a transcript taken up again holds old turns).
+    pub(super) fn turns_seen(&mut self) {
+        let turns: Vec<(PaneId, Turn)> =
+            self.agents.stats.iter().filter_map(|(id, s)| s.usage.turn.map(|t| (*id, t))).collect();
+        for (pid, turn) in turns {
+            let Some(p) = self.find_pane_mut(pid) else { continue };
+            let seen = (turn.at, turn.over.is_some());
+            if p.actor.mode != super::actor::WorkMode::Ai || p.actor.turn_seen == Some(seen) {
+                continue;
+            }
+            let first = p.actor.turn_seen.is_none();
+            p.actor.turn_seen = Some(seen);
+            // To the millisecond, as transcripts write it: one in the same
+            // millisecond as what went in counts as after it.
+            if p.actor.last_input.is_some_and(|i| turn.at.timestamp_millis() < i.timestamp_millis()) {
+                continue;
+            }
+            match turn.over {
+                None if p.actor.idle() => {
+                    p.actor.turn_began();
+                    let addr = self.address_of(pid);
+                    self.observe.pane(&addr, "busy", "");
+                }
+                None => {}
+                Some(_) if p.actor.idle() => {}
+                Some(end) => self.agent_ready(pid, !first, Some(end == TurnEnd::Interrupted)),
+            }
+        }
     }
 }
 
@@ -837,6 +960,88 @@ mod tests {
             r#"{{"type":"assistant","message":{{"id":"{id}","model":"{model}","content":[{}],"usage":{usage}}}}}"#,
             blocks.join(",")
         )
+    }
+
+    /// Each agent's transcript says when a turn began and ended, and how
+    /// (done, or broken off by the person), at the time its line says: the
+    /// last one counts. What is no turn says nothing.
+    #[test]
+    fn the_transcripts_tell_the_turns() {
+        let at = |t: &str| chrono::DateTime::parse_from_rfc3339(t).unwrap().with_timezone(&chrono::Local);
+        let turn = |kind: Kind, lines: &[&str]| feed_all(kind, lines).turn.map(|t| (t.over, t.at));
+        let (t1, t2) = ("2026-10-13T06:03:09.951Z", "2026-10-13T06:03:15.099Z");
+        // Claude: the person's prompt; a reply that calls a tool goes on;
+        // one that ends the turn; the person breaking it off.
+        let prompt = format!(r#"{{"type":"user","message":{{"role":"user","content":"fix it"}},"timestamp":"{t1}"}}"#);
+        let tool = format!(
+            r#"{{"type":"assistant","message":{{"id":"m1","stop_reason":"tool_use","content":[]}},"timestamp":"{t2}"}}"#
+        );
+        let end = format!(
+            r#"{{"type":"assistant","message":{{"id":"m2","stop_reason":"end_turn","content":[]}},"timestamp":"{t2}"}}"#
+        );
+        let broke = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"[Request interrupted by user]"}}]}},"timestamp":"{t2}"}}"#
+        );
+        assert_eq!(turn(Kind::Claude, &[&prompt]), Some((None, at(t1))));
+        assert_eq!(turn(Kind::Claude, &[&prompt, &tool]), Some((None, at(t1))), "a tool call: still going");
+        assert_eq!(turn(Kind::Claude, &[&prompt, &tool, &end]), Some((Some(TurnEnd::Done), at(t2))));
+        assert_eq!(turn(Kind::Claude, &[&prompt, &broke]), Some((Some(TurnEnd::Interrupted), at(t2))));
+        // No turn: a tool's result, a line it adds itself, a command Claude
+        // Code answers on its own and what that printed.
+        for none in [
+            format!(
+                r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","content":"ok"}}]}},"timestamp":"{t2}"}}"#
+            ),
+            format!(r#"{{"type":"user","isMeta":true,"message":{{"content":"Caveat"}},"timestamp":"{t2}"}}"#),
+            format!(
+                r#"{{"type":"user","message":{{"content":"<command-name>/model</command-name>"}},"timestamp":"{t2}"}}"#
+            ),
+            format!(
+                r#"{{"type":"user","message":{{"content":"<local-command-stdout>Set model</local-command-stdout>"}},"timestamp":"{t2}"}}"#
+            ),
+        ] {
+            assert_eq!(turn(Kind::Claude, &[&end, &none]), Some((Some(TurnEnd::Done), at(t2))), "{none}");
+        }
+        // Codex: as it writes them.
+        let ev =
+            |kind: &str, t: &str| format!(r#"{{"timestamp":"{t}","type":"event_msg","payload":{{"type":"{kind}"}}}}"#);
+        assert_eq!(turn(Kind::Codex, &[&ev("task_started", t1)]), Some((None, at(t1))));
+        assert_eq!(
+            turn(Kind::Codex, &[&ev("task_started", t1), &ev("token_count", t2), &ev("task_complete", t2)]),
+            Some((Some(TurnEnd::Done), at(t2)))
+        );
+        assert_eq!(
+            turn(Kind::Codex, &[&ev("task_started", t1), &ev("turn_aborted", t2)]),
+            Some((Some(TurnEnd::Interrupted), at(t2)))
+        );
+        // pi: the person's message; a reply that calls a tool goes on; one
+        // that stops ends it; one broken off.
+        let pi = |role: &str, stop: &str| {
+            format!(
+                r#"{{"type":"message","timestamp":"{t2}","message":{{"role":"{role}","stopReason":"{stop}","usage":{{}}}}}}"#
+            )
+        };
+        assert_eq!(turn(Kind::Pi, &[&pi("user", "")]), Some((None, at(t2))));
+        assert_eq!(turn(Kind::Pi, &[&pi("user", ""), &pi("assistant", "toolUse")]), Some((None, at(t2))));
+        assert_eq!(turn(Kind::Pi, &[&pi("assistant", "stop")]), Some((Some(TurnEnd::Done), at(t2))));
+        assert_eq!(turn(Kind::Pi, &[&pi("assistant", "aborted")]), Some((Some(TurnEnd::Interrupted), at(t2))));
+        // Nothing of turns: none.
+        assert_eq!(turn(Kind::Codex, &[&ev("token_count", t1)]), None);
+        // The agent's own transcripts give the turn, the newest; a helper's
+        // (a subagent's) never.
+        let mut sum = Usage::default();
+        let own = |t: &str, over| Usage { turn: Some(Turn { over, at: at(t) }), ..Usage::default() };
+        sum.add(&own(t1, Some(TurnEnd::Done)), true);
+        sum.add(&own(t2, None), false);
+        assert_eq!(
+            sum.turn,
+            Some(Turn { over: Some(TurnEnd::Done), at: at(t1) }),
+            "a helper's turn is not the agent's"
+        );
+        sum.add(&own(t2, None), true);
+        assert_eq!(sum.turn, Some(Turn { over: None, at: at(t2) }));
+        sum.add(&own(t1, Some(TurnEnd::Done)), true);
+        assert_eq!(sum.turn.unwrap().at, at(t2), "an older transcript's turn does not win");
     }
 
     #[test]

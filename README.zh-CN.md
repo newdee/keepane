@@ -53,11 +53,13 @@ pane 根据工作模式处理消息：
 |---|---|---|
 | `normal`（默认） | 不自动接收 | 用 `read-message` 读取；窗口标记显示 `@` |
 | `shell` | keepane 的提示符钩子检测到 shell 回到提示符 | 输入并执行命令 |
-| `ai` | agent 的轮次结束 hook 调用 `pane-ready` | 作为提示词输入 |
+| `ai` | agent 的轮次结束 hook 调用 `pane-ready`，或它的会话记录显示这一轮已结束（Claude Code、Codex、pi） | 作为提示词粘贴进去，再单独按回车 |
 
 状态栏会显示当前 pane 的模式（`ai`、`shell` 醒目标出，`normal` 用暗色），`C-b q` 也会在每个 pane 的序号下面写上它的名字和模式。自己配了 `status-right` 的话，用 `#{pane_work_mode}` 加上。
 
-用户在 pane 中输入后，keepane 会把它视为忙碌，直到收到下一次就绪信号，避免消息插入正在输入的内容。keepane 投递的命令运行期间如果有人按键，结束该命令的提示符也不会触发新消息；用户自己运行命令时提前输入的内容则无法由 keepane 阻止。
+用户在 pane 中输入后，keepane 会把它视为被占用，直到收到下一次就绪信号，避免消息插入正在输入的内容。keepane 投递的命令运行期间如果有人按键，结束该命令的提示符也不会触发新消息；用户自己运行命令时提前输入的内容则无法由 keepane 阻止。
+
+pane 当前的状态用一个词表示（`#{pane_state}`，dashboard 和手机页也显示）：`idle`（空闲，可以接收下一条消息）、`busy`（程序在干活）、`typing`（输入中：有按键但还没按回车，说明有人在输入，消息会等着）、`no-agent`（`ai` 模式的 pane 回到了 shell 提示符，agent 已经退出）、`unknown`（`shell` 模式的 pane 从没发出过提示符标记，例如 cmd）、`exited`（程序已退出）；`normal` 模式的 pane 既不算空闲也不算忙（`-`）。`#{pane_idle}` 在 `idle` 时为 1。
 
 `ai` 模式下，如果 agent 已退出并重新出现 shell 提示符，消息不会投递。投递方式以发送时接收方的模式为准：发给 agent 的文本即使遇到模式切换，也不会作为 shell 命令执行。
 
@@ -69,7 +71,7 @@ pane 根据工作模式处理消息：
 
 每个字段是 `名字=值`，用空格隔开；值里不会有空格，程序按空格切开就能读回。`set -g message-envelope json` 改成把同样的字段写成一行 JSON（`{"keepane":1,"id":12,…}`，0.17 之前的写法，shell 命令前也是）；事件日志一直用 JSON。
 
-投给 shell 时，命令前放一个短信封头（编号和发件方：有名字用名字，否则用 pane，否则是 `user`），写成不执行任何东西、又会留在历史里的形式：PowerShell 里是注释（`<# keepane #12 from %lead #> cargo test`），bash 和 zsh 里是 `:` 的参数（`: 'keepane #12 from %lead'; cargo test`）；其余字段用 `trace-message 12` 查看。多行内容会合为一条命令执行，对应一个结果（bash 和 zsh 里取最后一行的结果）。投给 agent 时，内容由信封头、正文和结束行 `[keepane end=12]` 组成。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
+投给 shell 时，命令前放一个短信封头（编号和发件方：有名字用名字，否则用 pane，否则是 `user`），写成不执行任何东西、又会留在历史里的形式：PowerShell 里是注释（`<# keepane #12 from %lead #> cargo test`），bash 和 zsh 里是 `:` 的参数（`: 'keepane #12 from %lead'; cargo test`）；其余字段用 `trace-message 12` 查看。多行内容会合为一条命令执行，对应一个结果（bash 和 zsh 里取最后一行的结果）。投给 agent 时，内容由信封头、正文和结束行 `[keepane end=12]` 组成，先粘贴进去；回车等粘贴稳定后单独发出（最早在粘贴后 300 ms，并且 150 ms 内没有新输出，最晚 2 秒）。这是因为 agent 的输入框可能吞掉紧跟在粘贴后面的回车（Codex 会这样）。回车后 2.5 秒内没有任何输出，就再发一次；仍然没有，就在 `show-messages` 里提示。这期间有人在 pane 里打字，回车就留给这个人。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
 
 发送方能选的字段按名字给：`--to`（目标 pane，简写 `-t`）、`--re 12`（回复第 12 条消息，不写 `--to` 就发给它的发送方；`-r` 回复本 pane 正在处理的那条）、`--task 12`（接着第 12 号任务）。其余由 keepane 填：谁发的（`from`、`name`、`mode`）、编号、hop 和 `via`。发送方改不了它们，所以信封头可信，hop 上限也照样管用：
 
@@ -465,7 +467,7 @@ hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做
 
 Codex（0.160 起）和 pi（1.0 起）默认在备用屏幕里画界面，和 vim 一样：它们输出的内容不会进滚动历史，在 keepane、tmux 或任何终端里都一样，所以往上翻不到历史。滚轮（以及手机上的滑动）仍然能翻，翻的是它们自己的界面。想让历史留在 pane 里，就让它们用内联模式：Codex 在 `~/.codex/config.toml` 的 `[tui]` 下写 `alternate_screen = "never"`（或者用 `codex --no-alt-screen` 启动）；pi 在 `~/.pi/agent/settings.json` 里写 `"tuiMode": "regular"`。
 
-发给 `ai` 模式 pane 的消息，如果这个 pane 的 agent 启动以来从没报告过空闲，消息就会一直排队。所以 `send-message` 会直接说明，并给出补上 hook 的 `setup` 命令；dashboard 和手机页上也会提示（`#{pane_unheard}`）。
+发给 `ai` 模式 pane 的消息，如果这个 pane 的 agent 启动以来从没报告过空闲，消息就会排队等着。`send-message` 会直接说明，并给出补上 hook 的 `setup` 命令；dashboard 和手机页上也会提示（`#{pane_unheard}`）。对 Claude Code、Codex 和 pi，keepane 还会读 agent 的会话记录（和统计花费一样，每 2 秒读一次）：记录里一轮结束了，即使没有 hook 也会把 pane 设为空闲，最多晚约 3 秒；用户按 Esc 打断时 hook 不会运行，但会话记录会记下，pane 同样变为空闲，正在处理的消息记为未完成。有 hook 时会立即生效。
 
 24 个工具：
 

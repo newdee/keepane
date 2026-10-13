@@ -72,6 +72,9 @@ pub struct Context {
     pub pane_address: String,
     pub pane_work_mode: String,
     pub pane_idle: bool,
+    /// What it is up to, in a word (`Actor::state`): idle, busy, typing,
+    /// no-agent, unknown, exited, or `-` in `normal` mode.
+    pub pane_state: String,
     /// An `ai` pane whose agent has not said it is free since it started
     /// (no turn-end hook, most likely).
     pub pane_unheard: bool,
@@ -298,6 +301,7 @@ impl Context {
             "pane_address" => self.pane_address.clone(),
             "pane_work_mode" => self.pane_work_mode.clone(),
             "pane_idle" => flag(self.pane_idle),
+            "pane_state" => self.pane_state.clone(),
             "pane_unheard" => flag(self.pane_unheard),
             "pane_inbox" => self.pane_inbox.to_string(),
             "pane_status" => self.pane_status.clone(),

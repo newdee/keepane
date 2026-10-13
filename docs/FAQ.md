@@ -59,7 +59,9 @@ phone shows it waiting. It looks as if the agent forgets to check its inbox.
 
 **Why.** An agent does not read its inbox itself. At the end of each turn
 its hook runs `keepane pane-ready`, and keepane types the next message in as
-its prompt. Without that hook the pane never counts as free. keepane says so:
+its prompt. For Claude Code, Codex and pi keepane also reads the agent's
+transcript, and frees the pane about 3 seconds at the most after a turn there is over;
+any other agent without that hook never counts as free. keepane says so:
 the reply to `send-message` gets a second line, `%N has not said it is free
 since its agent started ...`, and the dashboard and the phone mark the pane.
 
@@ -79,12 +81,15 @@ can run a command at the end of each turn: have it run `keepane pane-ready
 ## A pane stays busy and nothing is delivered
 
 **What you see.** The pane's agent or shell is plainly waiting, but keepane
-still counts it as busy.
+does not count it as free (`#{pane_state}` reads `typing` or `busy`).
 
-**Why.** Typing into a pane makes it busy until its next signal (the shell's
-prompt, the agent's hook), so a message never lands in the middle of a line
-being typed. Text typed and then deleted, or a prompt that was not redrawn,
-can leave it waiting for a signal that does not come.
+**Why.** Typing into a pane holds its messages until its next signal (the
+shell's prompt, the agent's hook or, for Claude Code, Codex and pi, a turn
+over in its transcript), so a message never lands in the middle of a line
+being typed: keys with no Enter read `typing`. Text typed and then deleted,
+or a prompt that was not redrawn, can leave it waiting for a signal that
+does not come. An `ai` pane whose agent has exited reads `no-agent`, and
+waits for an agent to be started there.
 
 **What to do.** From outside the pane (another terminal, or the `C-b :`
 prompt):

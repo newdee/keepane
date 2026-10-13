@@ -1179,7 +1179,7 @@ const PANE_FIELDS: &str = "#{pane_id}\t#{session_name}\t#{window_index}\t#{windo
                            #{pane_activity}\t#{pane_last_line}\t#{pane_idle}\t#{pane_inbox}\t#{pane_unheard}\t#{pane_message}\t\
                            #{pane_dead_status}\t#{alternate_on}\t\
                            #{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_context}\t#{agent_tokens}\t\
-                           #{agent_cpu}\t#{agent_mem}\t#{pane_title}";
+                           #{agent_cpu}\t#{agent_mem}\t#{pane_state}\t#{pane_title}";
 
 /// The list-panes lines (tab-separated, in `PANE_FIELDS` order) as a JSON array.
 fn panes_json(out: &str) -> String {
@@ -1192,12 +1192,12 @@ fn panes_json_at(out: &str, now: u64) -> String {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() < 34 {
+            if f.len() < 35 {
                 return None;
             }
             // The title the program set (last: one with a tab in it is still
             // whole, the tab a space).
-            let title = f[33..].join(" ");
+            let title = f[34..].join(" ");
             // The agent it runs (`list-agents`), its figures as they read;
             // null for none.
             let agent = if f[26].is_empty() {
@@ -1215,7 +1215,7 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
                  \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
                  \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{},\"path\":{},\"quiet\":{},\"last\":{},\
-                 \"idle\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"exit\":{},\"alt\":{},\"agent\":{},\"title\":{}}}",
+                 \"idle\":{},\"state\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"exit\":{},\"alt\":{},\"agent\":{},\"title\":{}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -1241,6 +1241,9 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 // Free for its next message (a shell or agent pane: a
                 // normal one is never), and how many wait in its inbox.
                 f[20] == "1",
+                // What it is up to, in a word (idle, busy, typing, no-agent,
+                // unknown, exited, `-`).
+                json_str(f[33]),
                 num(f[21]),
                 // An agent's pane never heard from: the hook it lacks.
                 f[22] == "1",
@@ -1511,13 +1514,13 @@ mod tests {
         let qr = qr_text("http://192.168.1.23:7681/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
         assert!(qr.lines().count() > 10 && qr.contains('█'), "{qr}");
         let json = panes_json_at(
-            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t7\t\t0\t\t\t\t\t\t\t\t✳ fix\tthe login\n\
-             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t1\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\t2\t1\tclaude\tclaude-opus-5-5\t$2.10\t34%\t1.2M\t12%\t812M\t\nshort line\n",
+            "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t7\t\t0\t\t\t\t\t\t\t\ttyping\t✳ fix\tthe login\n\
+             %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t1\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\t2\t1\tclaude\tclaude-opus-5-5\t$2.10\t34%\t1.2M\t12%\t812M\texited\t\nshort line\n",
             1060,
         );
         assert_eq!(
             json,
-            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"inbox":2,"unheard":false,"working":7,"exit":null,"alt":false,"agent":null,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":true,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"inbox":3,"unheard":true,"working":0,"exit":2,"alt":true,"agent":{"kind":"claude","model":"claude-opus-5-5","cost":"$2.10","context":"34%","tokens":"1.2M","cpu":"12%","mem":"812M"},"title":""}]"#
+            r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"state":"typing","inbox":2,"unheard":false,"working":7,"exit":null,"alt":false,"agent":null,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":true,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"state":"exited","inbox":3,"unheard":true,"working":0,"exit":2,"alt":true,"agent":{"kind":"claude","model":"claude-opus-5-5","cost":"$2.10","context":"34%","tokens":"1.2M","cpu":"12%","mem":"812M"},"title":""}]"#
         );
         assert_eq!(panes_json(""), "[]");
         // The fields as the server fills them read back: the agent's in

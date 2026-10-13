@@ -54,7 +54,7 @@ pub fn needs_yes(argv: &[String]) -> bool {
 }
 
 /// `list-panes -F` for the board: one pane a line, tab-separated.
-pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}";
+pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}\t#{pane_state}";
 
 /// The agent a pane runs, its figures as the `agent_*` formats write them.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -165,6 +165,9 @@ pub struct PaneRow {
     /// Its repository's branch and what git last said is changed there
     /// (`main ●3 ↑2`), empty outside one.
     pub git: String,
+    /// What it is up to, in the server's word (`pane_state`); empty from a
+    /// server too old to say.
+    pub state_word: String,
 }
 
 impl PaneRow {
@@ -201,12 +204,17 @@ impl PaneRow {
                 .copied()
                 .collect::<Vec<_>>()
                 .join(" "),
+            state_word: f.get(31).copied().unwrap_or_default().to_string(),
         })
     }
 
-    fn state(&self) -> &'static str {
+    /// What it is up to: the server's word (`Actor::state`), else, from a
+    /// server too old to say, free or busy.
+    fn state(&self) -> &str {
         if self.dead {
             "exited"
+        } else if !self.state_word.is_empty() {
+            &self.state_word
         } else if self.mode == "normal" {
             "-"
         } else if self.idle {
@@ -216,13 +224,16 @@ impl PaneRow {
         }
     }
 
-    /// The state, coloured: free green, busy yellow, exited red; a
-    /// `normal` pane (never free or busy) nothing.
+    /// The state, coloured: free green, busy yellow, exited red, someone
+    /// typing cyan, no agent or not known dim; a `normal` pane (never free
+    /// or busy) nothing.
     fn state_styled(&self) -> String {
         let colour = match self.state() {
             "idle" => "32",
             "busy" => "33",
             "exited" => "31",
+            "typing" => "36",
+            "no-agent" | "unknown" => "2",
             _ => return String::new(),
         };
         paint(colour, self.state())
@@ -2202,6 +2213,13 @@ mod tests {
         assert_eq!(PaneRow::parse(&format!("{line}\t0{agent}\tmain\t")).unwrap().git, "main");
         assert_eq!(PaneRow::parse(&format!("{line}\t0{agent}\t\t")).unwrap().git, "");
         assert_eq!(PaneRow::parse(&format!("{line}\t0{agent}")).unwrap().git, "");
+        // The server's word for what it is up to, coloured; from an older
+        // server, free or busy as before.
+        let r = PaneRow::parse(&format!("{line}\t0{agent}\tmain\t\ttyping")).unwrap();
+        assert_eq!((r.state(), r.state_styled()), ("typing", paint("36", "typing")));
+        let r = PaneRow::parse(&format!("{line}\t0{agent}\tmain\t\tno-agent")).unwrap();
+        assert_eq!(r.state_styled(), paint("2", "no-agent"));
+        assert_eq!(PaneRow::parse(line).unwrap().state(), "idle", "an older server: by pane_idle");
         let q = Queued::parse("  #6  from %lead  waiting 3s  second  with  gaps").unwrap();
         assert_eq!(
             (q.id.as_str(), q.from.as_str(), q.waiting.as_str(), q.text.as_str()),
