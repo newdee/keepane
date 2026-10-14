@@ -5250,7 +5250,9 @@ async fn files_and_folders_are_shared_by_a_link() {
         Err(e) => eprintln!("no tool to unpack a zip here ({e}): its structure is the unit tests'"),
     }
     // Sent once: ended (the server is told once the answer is out).
-    h.wait_for_cli("the folder's share ended", &["share", "-l"], |_, out| !out.contains("folder")).await;
+    // (Its number, not the word: macOS's temp directory is under /var/folders.)
+    h.wait_for_cli("the folder's share ended", &["share", "-l"], |_, out| !out.lines().any(|l| l.starts_with("2  ")))
+        .await;
     assert_eq!(fetch(&zip_url, "GET", "").await.0, 404);
 
     // Counted once: a range that does not reach the end, a HEAD, a 416
