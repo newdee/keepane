@@ -41,6 +41,7 @@ import { bounced, headOf, stampDetail, stampText, under, where } from "../format
 import { useScreen, useStatusLine, useStored, useVisible } from "../hooks";
 import { t } from "../i18n";
 import { copyText, outputOf, plain } from "../copy";
+import { draftOf, keepDraft } from "../draft";
 import { ContextMenu, type MenuAt } from "./ContextMenu";
 import { ConfirmClose, History, type Sent } from "./Sheets";
 import { StatusBar } from "./StatusBar";
@@ -812,15 +813,17 @@ function Composer({
   /** A pane that takes messages (shell, ai): its name, for the message switch. */
   tellTo?: string;
 }) {
-  const [text, setText] = useState("");
+  // The box as it was left for another pane (or before a reload).
+  const [kept] = useState(() => draftOf(id));
+  const [text, setText] = useState(kept?.text ?? "");
   // The box as a message into the pane's inbox (it waits its turn), not typing.
-  const [telling, setTelling] = useState(false);
+  const [telling, setTelling] = useState(kept?.tell ?? false);
   const tell = telling && !!tellTo;
   const enterRuns = mode === "run";
   // Live: what of the box has gone out (since the last Enter or key), and
   // the box as it is now, sent a moment later (a burst of typing goes as one).
   const live = mode === "live" && !tell;
-  const wentOut = useRef("");
+  const wentOut = useRef(kept?.out ?? "");
   const latest = useRef<string | null>(null);
   const timer = useRef<number | undefined>(undefined);
   // Ctrl, Alt, Shift held for the next key (button or typed): their letters.
@@ -863,6 +866,7 @@ function Composer({
     while (same < was.length && same < is.length && was[same] === is[same]) same++;
     const out = "\x7f".repeat(was.length - same) + is.slice(same).join("");
     wentOut.current = now;
+    keepDraft(id, { text: now, out: now, live, tell: telling });
     if (out) send("", out);
   };
   const later = (v: string) => {
@@ -883,7 +887,25 @@ function Composer({
     }
   };
   // Live on or off (the mode, or the message switch): the box starts afresh.
-  useEffect(() => fresh(), [live]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Coming back to a box kept the other way: afresh too.
+  const wasLive = useRef(kept ? kept.live : live);
+  useEffect(() => {
+    if (wasLive.current === live) return;
+    wasLive.current = live;
+    fresh();
+  }, [live]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The box kept for this pane while another is shown. Typed a moment ago
+  // and not yet out: its timer still sends it (and keeps that); a reload
+  // before then keeps less as out, and the rest goes with the next change.
+  useEffect(() => keepDraft(id, { text, out: wentOut.current, live, tell: telling }), [id, text, live, telling]);
+  useEffect(() => {
+    // A kept box: as tall as when it was left, its cursor at the end.
+    const el = box.current;
+    if (el?.value) {
+      el.style.height = Math.min(128, el.scrollHeight) + "px";
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }, []);
   const remember = (s: string) => {
     const had = sent.find((x) => x.t === s);
     let loose = 0;

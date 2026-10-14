@@ -157,7 +157,17 @@ server command `web-status`) says how it serves and who is connected;
 `keepane web stop` (`web-stop`) ends it, cutting off the phones on it. The
 server command `web-start` takes the same flags as `-p`, `-b`, `-r`, `-k`
 (`-p 0`: any free port). It stops with the server; a `web-start -k` line in the
-config has it on whenever the server runs, with the same code each time. `#{web_url}` is its
+config has it on whenever the server runs, with the same code each time.
+From `web-start` to `web-stop` the server keeps how it is served (the file
+`web` in its link directory): when the sessions are restored
+(`__server --restore`, which `keepane startup` registers, or
+`restore-on-start on`) it is served the same way again, and `web-resume`
+(which `restart-server` sends) does the same at once; what cannot be
+served yet (an address not up so soon after logon) is tried again every
+10 seconds, `web-status` saying why meanwhile. Without `--bind`, this
+machine's addresses are looked at again every 10 seconds while it serves:
+it is served on those that came and no longer on those gone. `#{web_url}`
+is its
 address (empty while it is off) and `#{web_clients}` how many are on it; the
 default status line shows `web` and that number while it serves, and a phone
 connecting, or a wrong key, is said on the status line.

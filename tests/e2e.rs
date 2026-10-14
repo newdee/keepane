@@ -5182,6 +5182,73 @@ async fn web_serves_on_every_address_it_is_given() {
     h.cli(&["kill-server"]).await;
 }
 
+/// The page served when the server ended comes back with the sessions
+/// (`__server --restore`, what the logon entry runs) as it was served, and
+/// `web-resume` (what `restart-server` asks) says so; after `web-stop`, it
+/// does not.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_phone_page_comes_back_with_the_sessions() {
+    let h = Harness::start("web-again").await;
+    h.cli(&["new", "-d", "-s", "w"]).await;
+    let (code, _, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1", "-r"]).await;
+    assert_eq!(code, 0, "{err}");
+    let kept = keepane::link::dir(&h.socket).join("web");
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), "-p 0 -b 127.0.0.1 -r\n");
+    // A server after this one, restoring: its own sessions directory, never
+    // the real one (it would bring back the developer's sessions).
+    let config = h.sessions_dir.with_extension("conf");
+    std::fs::write(&config, format!("set -g sessions-dir '{}'\n", h.sessions_dir.display())).unwrap();
+    let again = async |h: &Harness| {
+        h.cli(&["kill-server"]).await;
+        let pipe = pipe_name(&h.socket);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while open_pipe(&pipe).is_ok() {
+            assert!(Instant::now() < deadline, "the server did not end");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let (s, config) = (h.socket.clone(), config.clone());
+        tokio::spawn(async move {
+            // The old server's pipe may outlast it a moment (a busy machine).
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let options = keepane::server::RunOptions { force_restore: true, config: Some(config.clone()) };
+                match keepane::server::run_with(s.clone(), options).await {
+                    Err(e) if format!("{e:#}").contains("already running") && Instant::now() < deadline => {
+                        tokio::time::sleep(Duration::from_millis(100)).await
+                    }
+                    r => break r.unwrap(),
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while open_pipe(&pipe).is_err() {
+            assert!(Instant::now() < deadline, "the server did not come up");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Something to keep it up (one with no session ends itself).
+        h.cli(&["new", "-d", "-s", "w2"]).await;
+        h.cli(&["web-status"]).await.1
+    };
+    let status = again(&h).await;
+    let url = keepane::web::status_url(&status).expect(&status).to_string();
+    assert!(url.starts_with("http://127.0.0.1:") && status.contains(" · read-only · "), "{status}");
+    let addr: std::net::SocketAddr = url["http://".len()..].split('/').next().unwrap().parse().unwrap();
+    let key = url.split("#k=").nth(1).unwrap();
+    assert_eq!(http(addr, "GET", "/api/info", key, "").await.0, 200);
+    let (code, said, _) = h.cli(&["web-resume"]).await;
+    assert_eq!((code, keepane::web::status_url(&said)), (0, Some(url.as_str())), "served already: how");
+
+    // Stopped: the next server does not serve it.
+    assert_eq!(h.cli(&["web-stop"]).await.0, 0);
+    assert!(!kept.exists());
+    let status = again(&h).await;
+    assert_eq!(status.trim(), "off: `keepane web` starts it");
+    let (code, said, _) = h.cli(&["web-resume"]).await;
+    assert_eq!((code, said.trim()), (0, "off: it was not served when the server ended"));
+    h.cli(&["kill-server"]).await;
+    std::fs::remove_file(&config).ok();
+}
+
 /// The phone's inbox: each waiting message whole, in order; to the top,
 /// deleted and brought back; what the pane works on and what it finished.
 /// Only POST changes anything, and not on a read-only page.

@@ -92,7 +92,8 @@ pub fn install(socket: &str) -> Result<String> {
         bail!("cannot write the Run value (error {rc})");
     }
     Ok(format!(
-        "keepane will start at logon and restore every saved session.\n\
+        "keepane will start at logon and restore every saved session,\n\
+         and serve the phone page again if it was on (`keepane web stop` turns that off).\n\
          where: HKCU\\{RUN_KEY}\\{name}\n\
          runs:  {cmd}\n\
          `keepane startup off` removes it; `keepane startup status` shows it."

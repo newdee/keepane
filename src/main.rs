@@ -38,11 +38,12 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
 Resume after a reboot (sessions autosave to the data directory's sessions folder):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
-  startup on|off|status   (Windows: start the server at logon and restore every saved session)
+  startup on|off|status   (Windows: start the server at logon and restore every saved session, and the phone page if it was on)
   windows-terminal install|remove|status   (Windows: a keepane profile in the Windows Terminal dropdown)
 Upgrading:  version (this keepane and the server's)   update [--check]   restart-server (sessions move to this version)
   migrate   (from wmux, keepane's old name: sessions, saved data, logon start, Windows Terminal profile)
-On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network)
+On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network;
+  served again when the sessions are restored, until `web stop`)
 History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
   list-marks [-J] [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines; -J as JSON, with each one's lines)
   copy-output [-p] [-t pane]   (what the last command printed, to a buffer and the clipboard; -p prints it; prefix y)

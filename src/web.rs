@@ -3,8 +3,9 @@
 //! HTTP on the LAN: a page that lists every pane, shows one as it is on the
 //! screen (colours included), and sends what is typed on the phone to it.
 //! Everything runs on this machine; the phone only shows and types. The
-//! server hosts it (`web-start`, `web-status`, `web-stop`), so it runs in the
-//! background for as long as the server does; each request is still asked
+//! server hosts it (`web-start`, `web-status`, `web-stop`, `web-resume`), so
+//! it runs in the background for as long as the server does (and again when
+//! the sessions are restored, until stopped); each request is still asked
 //! of the server as a client would ask it, with the same commands the CLI
 //! sends. `keepane web` starts it and prints the code to scan.
 //!
@@ -214,7 +215,13 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
             bail!("web {sub}: takes nothing more");
         }
         if !running {
-            println!("off: no keepane server is running (socket '{socket}')");
+            // Stopped with no server: not served again when one restores.
+            let note = if sub == "stop" && forget_on(&on_path(socket)) {
+                "; it will not be served again on restore"
+            } else {
+                ""
+            };
+            println!("off: no keepane server is running (socket '{socket}'){note}");
             return Ok(if sub == "stop" { 1 } else { 0 });
         }
         let (code, out, err) = ask(vec![format!("web-{sub}")]).await?;
@@ -315,6 +322,31 @@ pub fn kept_key() -> Result<String> {
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(&path, &k).with_context(|| format!("keep the key in {}", path.display()))?;
     Ok(k)
+}
+
+/// Where a server keeps how its page is served, from a `web-start` until a
+/// `web-stop`: it is served the same way again when the sessions are
+/// restored (`keepane startup`, `restart-server`).
+pub fn on_path(socket: &str) -> std::path::PathBuf {
+    crate::link::dir(socket).join("web")
+}
+
+/// How the page was served when the server ended, when it was not stopped.
+pub fn kept_on(path: &std::path::Path) -> Option<Options> {
+    let text = std::fs::read_to_string(path).ok()?;
+    Options::parse(&text.split_whitespace().collect::<Vec<_>>()).ok()
+}
+
+pub fn keep_on(path: &std::path::Path, o: &Options) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    std::fs::write(path, o.flags().join(" ") + "\n").with_context(|| format!("write {}", path.display()))
+}
+
+/// Not served again; whether it would have been.
+pub fn forget_on(path: &std::path::Path) -> bool {
+    std::fs::remove_file(path).is_ok()
 }
 
 fn base64url(bytes: &[u8]) -> String {

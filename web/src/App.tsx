@@ -14,6 +14,7 @@ import {
   useViewportHeight,
   type Mode,
 } from "./hooks";
+import { dropDrafts } from "./draft";
 import { headOf, where } from "./format";
 import { lang as currentLang, setLang, t, type Lang } from "./i18n";
 import { Latency } from "./components/Status";
@@ -30,6 +31,8 @@ export default function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   const [current, setCurrent] = useState<string | null>(null);
   const { panes, error, reload } = usePanes(!!info);
+  // A pane closed: what was left in its box goes too.
+  useEffect(() => void (panes && dropDrafts(panes.map((p) => p.id))), [panes]);
   const term = useTermTheme();
   const page = usePageMode();
   // The language is kept in i18n; this state only redraws the page when it changes.

@@ -735,7 +735,10 @@ keepane startup off         # stop doing that
 This writes one value under the per-user `Run` registry key (no
 administrator rights, nothing in Task Scheduler), running the server
 through `conhost --headless` so no console window appears at logon. After a
-reboot, `keepane attach` finds everything as it was.
+reboot, `keepane attach` finds everything as it was. The phone page
+(`keepane web`, below) comes back too when it was on, served the same way
+(add `-k` so that its code stays the same); until the network is up after
+logon, it is tried again every 10 seconds.
 
 Upgrading: installing a new keepane does not replace the server that is
 already running, which keeps your sessions and is still the old program.
@@ -1020,8 +1023,13 @@ keepane web stop     # end it; the phones on it are cut off
 keepane web          # while it runs: the same code again, to scan
 ```
 
-To have it on whenever keepane runs, put `web-start -k` in `~/.keepane.conf`: the
-server starts it itself, with the same code each time (`-k`, below).
+When the sessions come back (`keepane startup`, `keepane restart-server`),
+it comes back with them, the way it was served, until `keepane web stop`.
+To have it on whenever keepane runs, put `web-start -k` in
+`~/.keepane.conf`: the server starts it itself, with the same code each
+time (`-k`, below). Serving on this machine's addresses (no `--bind`), it
+looks at them again every 10 seconds: an address that came (Tailscale up
+after logon, another Wi-Fi) is served on too.
 
 While it serves, the status line shows `web` and how many are connected
 (`#{web_url}` and `#{web_clients}`, for a status line of your own), the

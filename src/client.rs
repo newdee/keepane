@@ -492,6 +492,16 @@ async fn restart_server_here(socket: &str, pipe: &str, old: &str) -> Result<(i32
     if !told_clients && !sessions.is_empty() {
         lines.push("terminals that were attached were detached: `keepane attach` to go back".into());
     }
+    // The phones' page, served again as it was (when it was on), or why
+    // not yet.
+    if let Ok((0, said, _)) = query(socket, &["web-resume"]).await {
+        let first = said.lines().next().unwrap_or("");
+        if let Some(url) = crate::web::status_url(&said) {
+            lines.push(format!("the phone page is served again: {url}"));
+        } else if first.starts_with("off: to be served again") {
+            lines.push(format!("the phone page is {}", &first["off: ".len()..]));
+        }
+    }
     // The old server cannot tell its defaults from what was set, so its
     // options are not copied (that would pin the old defaults on the new
     // version): the new server reads the config file, as after kill-server.

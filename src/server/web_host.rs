@@ -2,7 +2,8 @@
 //! `web-start` binds and serves, `web-stop` ends it (the phones connected
 //! are cut off), `web-status` says how it serves and who is connected, and
 //! `#{web_url}` / `#{web_clients}` put that on the status line. It ends with
-//! the server.
+//! the server, and comes back the same way when the sessions are restored
+//! (`web-resume`), unless it was stopped.
 //!
 //! Who is connected comes from the requests themselves (`web::Seen`): the
 //! page asks for the pane list every two seconds while it is shown and keeps
@@ -22,6 +23,10 @@ const CONNECTED_FOR: Duration = Duration::from_secs(10);
 const PEERS_KEPT: usize = 32;
 /// Refused addresses remembered.
 const REFUSED_KEPT: usize = 16;
+/// How often this machine's addresses are looked at again while it serves
+/// on them (`--bind` not given), and a start on restore that could not be
+/// made is tried again: at logon the network may come up after keepane.
+const LOOK_AGAIN: Duration = Duration::from_secs(10);
 
 pub(super) struct WebHost {
     /// Which start this is: a request still under way when an earlier one
@@ -30,14 +35,19 @@ pub(super) struct WebHost {
     options: Options,
     /// The address to scan: on the first of the addresses served.
     url: String,
-    /// The other addresses served (this machine's Tailscale ones), the
-    /// same port and key.
-    also: Vec<IpAddr>,
+    /// Each address served and its listener, the first the one scanned;
+    /// the others (this machine's Tailscale ones) the same port and key.
+    /// The tasks are taken by `web-stop`, which waits for them to end.
+    served: Vec<(IpAddr, tokio::task::JoinHandle<()>)>,
     port: u16,
     key: String,
     since: DateTime<Local>,
-    /// One per address; taken by `web-stop`, which waits for them to end.
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// For a listener on an address that comes later.
+    state: std::sync::Arc<crate::web::State>,
+    /// When the addresses were last looked at, and those that could not be
+    /// listened on then (said once each).
+    looked: Instant,
+    unbound: Vec<IpAddr>,
     peers: Vec<Peer>,
     refused: Vec<IpAddr>,
     /// The count the status line was last drawn with.
@@ -47,10 +57,38 @@ pub(super) struct WebHost {
 impl Drop for WebHost {
     fn drop(&mut self) {
         // The listeners and every connection go with the tasks.
-        for task in &self.tasks {
+        for (_, task) in &self.served {
             task.abort();
         }
     }
+}
+
+/// A start on restore that could not be made yet, tried again.
+pub(super) struct WebRetry {
+    options: Options,
+    error: String,
+    next: Instant,
+}
+
+fn bind(ip: IpAddr, port: u16) -> std::io::Result<tokio::net::TcpListener> {
+    std::net::TcpListener::bind((ip, port))
+        .and_then(|l| l.set_nonblocking(true).map(|_| l))
+        .and_then(tokio::net::TcpListener::from_std)
+}
+
+/// The same addresses, the same one first (the one scanned): the others
+/// in whatever order the system lists them.
+fn same_addrs(a: &[IpAddr], b: &[IpAddr]) -> bool {
+    let sorted = |x: &[IpAddr]| {
+        let mut v = x.to_vec();
+        v.sort();
+        v
+    };
+    a.first() == b.first() && sorted(a) == sorted(b)
+}
+
+fn scanned(ip: IpAddr, port: u16, key: &str) -> String {
+    format!("http://{}/#k={key}", crate::link::hostport(ip, port))
 }
 
 struct Peer {
@@ -109,8 +147,8 @@ impl WebHost {
         }
         first.push_str(&format!(" · since {} · {} connected", self.since.format("%H:%M"), self.clients()));
         let mut lines = vec![first];
-        for ip in &self.also {
-            lines.push(format!("also http://{}/#k={}", crate::link::hostport(*ip, self.port), self.key));
+        for (ip, _) in self.served.iter().skip(1) {
+            lines.push(format!("also {}", scanned(*ip, self.port, &self.key)));
         }
         let mut peers: Vec<&Peer> = self.peers.iter().collect();
         // Connected first; each group in the order they came.
@@ -134,7 +172,42 @@ impl WebHost {
 }
 
 impl Server {
+    /// `web-start`: served, and kept so (`web::keep_on`) until `web-stop`.
     pub(super) fn web_start(&mut self, o: Options) -> Outcome {
+        let out = self.web_serve(o);
+        if let (Outcome::Text(_), Some(w)) = (&out, &self.web) {
+            // Asked to serve: a start still waiting to be tried is not.
+            self.web_retry = None;
+            if let Err(e) = crate::web::keep_on(&self.web_on, &w.options) {
+                log::warn!("web: {e:#}");
+            }
+        }
+        out
+    }
+
+    /// `web-resume`: served as it was when the server ended, unless stopped
+    /// (with the sessions restored: `keepane startup`, `restart-server`).
+    /// What cannot be served yet (an address not up so soon after logon) is
+    /// tried again every `LOOK_AGAIN`, until served or `web-stop`.
+    pub(super) fn web_resume(&mut self) -> Outcome {
+        if self.web.is_some() {
+            return Outcome::Text(self.web_status());
+        }
+        let Some(o) = crate::web::kept_on(&self.web_on) else {
+            return Outcome::Text("off: it was not served when the server ended".into());
+        };
+        match self.web_serve(o.clone()) {
+            Outcome::Error(e) => {
+                log::warn!("{e}; tried again every {} s", LOOK_AGAIN.as_secs());
+                self.note_message(&format!("{e}; tried again every {} s", LOOK_AGAIN.as_secs()));
+                self.web_retry = Some(WebRetry { options: o, error: e, next: Instant::now() + LOOK_AGAIN });
+                Outcome::Text(self.web_status())
+            }
+            out => out,
+        }
+    }
+
+    fn web_serve(&mut self, o: Options) -> Outcome {
         if let Some(w) = &self.web {
             // Asked again as it serves (`keepane web` for the code again, a
             // config read again): how it serves.
@@ -155,11 +228,6 @@ impl Server {
             Ok(k) => k,
             Err(e) => return Outcome::Error(format!("web: {e:#}")),
         };
-        let bind = |ip: IpAddr, port: u16| {
-            std::net::TcpListener::bind((ip, port))
-                .and_then(|l| l.set_nonblocking(true).map(|_| l))
-                .and_then(tokio::net::TcpListener::from_std)
-        };
         let listener = match bind(ip, port) {
             Ok(l) => l,
             // What to look at: the address, or the port.
@@ -171,20 +239,20 @@ impl Server {
         // `-p 0`: whichever port the system gave; the other addresses take
         // the same one (one that cannot is left out, and said).
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
-        let mut listeners = vec![listener];
-        let mut also = Vec::new();
+        let mut listeners = vec![(ip, listener)];
+        let mut unbound = Vec::new();
         for other in addrs.iter().skip(1) {
             match bind(*other, port) {
-                Ok(l) => {
-                    listeners.push(l);
-                    also.push(*other);
-                }
+                Ok(l) => listeners.push((*other, l)),
                 // One asked for (`-b`) is not left out quietly: an address
                 // this machine does not have, say.
                 Err(e) if !o.bind.is_empty() => {
                     return Outcome::Error(format!("web: listen on {other}:{port}: {e} (an address of this machine?)"));
                 }
-                Err(e) => log::warn!("web: not on {other}:{port}: {e}"),
+                Err(e) => {
+                    log::warn!("web: not on {other}:{port}: {e}");
+                    unbound.push(*other);
+                }
             }
         }
         self.web_generation += 1;
@@ -193,24 +261,23 @@ impl Server {
         let state = std::sync::Arc::new(crate::web::State::new(&self.socket, &key, o.read_only).notify(move |seen| {
             let _ = events.send(Event::Web(generation, seen));
         }));
-        let tasks = listeners.into_iter().map(|l| tokio::spawn(crate::web::serve(l, state.clone()))).collect();
-        let url = format!("http://{}/#k={key}", crate::link::hostport(ip, port));
-        let where_ = std::iter::once(ip)
-            .chain(also.iter().copied())
-            .map(|ip| crate::link::hostport(ip, port))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let served: Vec<_> =
+            listeners.into_iter().map(|(ip, l)| (ip, tokio::spawn(crate::web::serve(l, state.clone())))).collect();
+        let url = scanned(ip, port, &key);
+        let where_ = served.iter().map(|(ip, _)| crate::link::hostport(*ip, port)).collect::<Vec<_>>().join(", ");
         log::info!("web: serving on {where_}");
         self.note_message(&format!("web: serving on {where_}"));
         self.web = Some(WebHost {
             generation,
             options: o,
             url,
-            also,
+            served,
             port,
             key,
             since: Local::now(),
-            tasks,
+            state,
+            looked: Instant::now(),
+            unbound,
             peers: Vec::new(),
             refused: Vec::new(),
             drawn: 0,
@@ -223,13 +290,20 @@ impl Server {
     /// ended, the port closed with it: `keepane web stop` followed at once by
     /// `keepane web` on the same port finds it free.
     pub(super) fn web_stop(&mut self, cid: Option<ClientId>) -> Outcome {
+        // Not served again on restore, nor tried again.
+        crate::web::forget_on(&self.web_on);
+        let waiting = self.web_retry.take().is_some();
         let Some(mut host) = self.web.take() else {
+            if waiting {
+                self.note_message("web: stopped (it was waiting to be served again)");
+                return Outcome::Ok;
+            }
             return Outcome::Error("web: not running".into());
         };
         log::info!("web: stopped");
         self.note_message("web: stopped");
         self.web_redraw();
-        let tasks = std::mem::take(&mut host.tasks);
+        let tasks: Vec<_> = std::mem::take(&mut host.served).into_iter().map(|(_, t)| t).collect();
         let Some(cid) = cid else { return Outcome::Ok };
         for task in &tasks {
             task.abort();
@@ -246,10 +320,85 @@ impl Server {
     }
 
     pub(super) fn web_status(&self) -> String {
-        match &self.web {
-            Some(w) => w.status(),
-            None => "off: `keepane web` starts it".into(),
+        match (&self.web, &self.web_retry) {
+            (Some(w), _) => w.status(),
+            (None, Some(r)) => format!(
+                "off: to be served again (web-start {}), tried every {} s: {}",
+                r.options.flags().join(" "),
+                LOOK_AGAIN.as_secs(),
+                r.error
+            ),
+            (None, None) => "off: `keepane web` starts it".into(),
         }
+    }
+
+    /// Every tick: a start on restore that could not be made, tried again
+    /// when due; serving on this machine's addresses, those looked at again
+    /// when due (served on the ones that came, no longer on the ones gone).
+    pub(super) fn web_look_again(&mut self) {
+        if let Some(r) = self.web_retry.as_mut().filter(|r| Instant::now() >= r.next) {
+            r.next = Instant::now() + LOOK_AGAIN;
+            let o = r.options.clone();
+            match self.web_serve(o) {
+                Outcome::Error(e) => {
+                    if let Some(r) = self.web_retry.as_mut() {
+                        r.error = e;
+                    }
+                }
+                _ => self.web_retry = None,
+            }
+            return;
+        }
+        let Some(w) = self.web.as_mut().filter(|w| w.options.bind.is_empty() && w.looked.elapsed() >= LOOK_AGAIN)
+        else {
+            return;
+        };
+        w.looked = Instant::now();
+        let want = crate::link::listen_addrs(&[]);
+        let have: Vec<IpAddr> = w.served.iter().map(|(ip, _)| *ip).collect();
+        if same_addrs(&want, &have) {
+            return;
+        }
+        let mut served = Vec::new();
+        let mut old = std::mem::take(&mut w.served);
+        let mut unbound = Vec::new();
+        for ip in &want {
+            if let Some(i) = old.iter().position(|(o, _)| o == ip) {
+                served.push(old.remove(i));
+                continue;
+            }
+            match bind(*ip, w.port) {
+                Ok(l) => served.push((*ip, tokio::spawn(crate::web::serve(l, w.state.clone())))),
+                Err(e) => {
+                    if !w.unbound.contains(ip) {
+                        log::warn!("web: not on {}: {e}", crate::link::hostport(*ip, w.port));
+                    }
+                    unbound.push(*ip);
+                }
+            }
+        }
+        w.unbound = unbound;
+        // Nothing to serve on (no listener could be made): left as it was,
+        // looked at again next time.
+        if served.is_empty() {
+            w.served = old;
+            return;
+        }
+        // Gone from this machine (a loopback stand-in for no network
+        // included): no longer listened on.
+        for (_, task) in &old {
+            task.abort();
+        }
+        w.served = served;
+        let now: Vec<IpAddr> = w.served.iter().map(|(ip, _)| *ip).collect();
+        if same_addrs(&now, &have) {
+            return;
+        }
+        w.url = scanned(now[0], w.port, &w.key);
+        let where_ = now.iter().map(|ip| crate::link::hostport(*ip, w.port)).collect::<Vec<_>>().join(", ");
+        log::info!("web: now serving on {where_}");
+        self.note_message(&format!("web: now serving on {where_}"));
+        self.web_redraw();
     }
 
     /// A request told us who asked. A new phone, or one back after it was
@@ -332,6 +481,14 @@ impl Server {
     }
 }
 
+/// A unit test's server: its own file of how it served goes with it.
+#[cfg(test)]
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.web_on);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +533,139 @@ mod tests {
         assert!(s.web.is_none());
         assert_eq!(text(s.web_stop(None)), "error: web: not running");
         assert!(text(s.web_start(Options { read_only: true, ..here() })).contains(" · read-only · "));
+    }
+
+    /// Served from `web-start` to `web-stop`: a server after it (the
+    /// sessions restored) serves it the same way again; stopped, not.
+    #[tokio::test]
+    async fn it_is_served_again_as_it_was_until_stopped() {
+        let mut a = server();
+        assert_eq!(text(a.web_resume()), "off: it was not served when the server ended");
+        assert!(a.web.is_none() && a.web_retry.is_none());
+        let o = Options { read_only: true, ..here() };
+        text(a.web_start(o.clone()));
+        assert_eq!(std::fs::read_to_string(&a.web_on).unwrap(), "-p 0 -b 127.0.0.1 -r\n");
+        // Asked again with no flag: still kept as it serves.
+        text(a.web_start(Options::default()));
+        assert_eq!(crate::web::kept_on(&a.web_on), Some(o.clone()));
+        // The server ends; the file stays (as a real one's does).
+        let file = std::mem::take(&mut a.web_on);
+        drop(a);
+
+        let mut b = server();
+        b.web_on = file.clone();
+        let said = text(b.web_resume());
+        assert!(said.starts_with("serving http://127.0.0.1:") && said.contains(" · read-only · "), "{said}");
+        assert_eq!(b.web.as_ref().unwrap().options, o);
+        // Served already (the config did): how it serves, nothing else.
+        assert_eq!(text(b.web_resume()), b.web_status());
+        assert_eq!(text(b.web_stop(None)), "ok");
+        assert!(!file.exists(), "stopped: not served again");
+
+        let mut c = server();
+        c.web_on = file.clone();
+        assert_eq!(text(c.web_resume()), "off: it was not served when the server ended");
+        assert!(c.web.is_none());
+        // A file not written by keepane: nothing served from it.
+        std::fs::write(&file, "--nope\n").unwrap();
+        assert!(text(c.web_resume()).starts_with("off: it was not served"));
+        std::fs::remove_file(&file).ok();
+    }
+
+    /// An address not up yet (at logon, before the network): said, tried
+    /// again every `LOOK_AGAIN`, served once it can be; a `web-stop` while
+    /// it waits ends the waiting and the keeping, a `web-start` the waiting.
+    #[tokio::test]
+    async fn a_start_on_restore_that_cannot_be_made_is_tried_again() {
+        let mut s = server();
+        // 192.0.2.1: an address kept for documentation, on no machine.
+        let away = Options { bind: vec![IpAddr::from([192, 0, 2, 1])], ..here() };
+        crate::web::keep_on(&s.web_on, &away).unwrap();
+        let said = text(s.web_resume());
+        assert!(
+            said.starts_with(
+                "off: to be served again (web-start -p 0 -b 192.0.2.1), tried every 10 s: web: listen on 192.0.2.1:0"
+            ),
+            "{said}"
+        );
+        assert!(s.messages.iter().any(|m| m.contains("tried again every 10 s")));
+        assert!(crate::web::status_url(&said).is_none(), "keepane web reads no address from it");
+        // Not due yet: not tried.
+        s.web_retry.as_mut().unwrap().options = here();
+        s.web_look_again();
+        assert!(s.web.is_none());
+        // Due, and the address up now (here, the loopback stands in): served.
+        s.web_retry.as_mut().unwrap().next = Instant::now();
+        s.web_look_again();
+        assert!(s.web.is_some() && s.web_retry.is_none(), "{}", s.web_status());
+        assert!(s.web_status().starts_with("serving http://127.0.0.1:"));
+        text(s.web_stop(None));
+
+        // Stopped while it waits: nothing more is tried, nothing kept.
+        crate::web::keep_on(&s.web_on, &away).unwrap();
+        text(s.web_resume());
+        assert!(s.web_retry.is_some());
+        assert_eq!(text(s.web_stop(None)), "ok");
+        assert!(s.web_retry.is_none() && !s.web_on.exists());
+        assert_eq!(s.web_status(), "off: `keepane web` starts it");
+        assert_eq!(text(s.web_stop(None)), "error: web: not running");
+
+        // Started by hand while it waits: that one is served, the wait ends.
+        crate::web::keep_on(&s.web_on, &away).unwrap();
+        text(s.web_resume());
+        text(s.web_start(here()));
+        assert!(s.web_retry.is_none() && s.web.is_some());
+        assert_eq!(crate::web::kept_on(&s.web_on), Some(here()));
+        text(s.web_stop(None));
+    }
+
+    /// Served on this machine's addresses (no `--bind`): looked at again
+    /// every `LOOK_AGAIN`, served on what they are now, the address to scan
+    /// the first of them; nothing said when nothing moved.
+    #[tokio::test]
+    async fn it_follows_the_addresses_of_this_machine() {
+        let mut s = server();
+        text(s.web_start(here()));
+        // As though served with no --bind while only the loopback was up.
+        s.web.as_mut().unwrap().options.bind.clear();
+        s.web_look_again();
+        assert_eq!(addrs(&s), vec![IpAddr::from([127, 0, 0, 1])], "not due yet: as it was");
+        s.web.as_mut().unwrap().looked = Instant::now() - LOOK_AGAIN;
+        let want = crate::link::listen_addrs(&[]);
+        let moved = |s: &Server| s.messages.iter().filter(|m| m.contains("web: now serving on")).count();
+        s.web_look_again();
+        let w = s.web.as_ref().unwrap();
+        // Each address there now, unless its port was taken there.
+        let now = addrs(&s);
+        assert!(
+            now.iter().all(|ip| want.contains(ip)) && now.len() + w.unbound.len() == want.len(),
+            "{now:?} {want:?}"
+        );
+        assert!(w.url.starts_with(&format!("http://{}/", crate::link::hostport(now[0], w.port))), "{}", w.url);
+        let said = usize::from(now != [IpAddr::from([127, 0, 0, 1])]);
+        assert_eq!(moved(&s), said, "{:?}", s.messages);
+        // Nothing moved: nothing said.
+        s.web.as_mut().unwrap().looked = Instant::now() - LOOK_AGAIN;
+        s.web_look_again();
+        assert_eq!(moved(&s), said);
+        assert_eq!(addrs(&s), now);
+    }
+
+    /// The system listing the Tailscale addresses in another order moves
+    /// nothing; another first address (the one scanned) does.
+    #[test]
+    fn addresses_are_the_same_in_any_order_after_the_first() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let (lan, t1, t2) = (ip("192.168.1.5"), ip("100.64.0.3"), ip("fd7a:115c:a1e0::3"));
+        assert!(same_addrs(&[lan, t1, t2], &[lan, t2, t1]));
+        assert!(!same_addrs(&[lan, t1], &[t1, lan]), "another one scanned");
+        assert!(!same_addrs(&[lan, t1], &[lan]));
+        assert!(!same_addrs(&[lan], &[ip("127.0.0.1")]));
+        assert!(same_addrs(&[], &[]));
+    }
+
+    fn addrs(s: &Server) -> Vec<IpAddr> {
+        s.web.as_ref().unwrap().served.iter().map(|(ip, _)| *ip).collect()
     }
 
     /// Asked by a client, `web-stop` answers only once the task has ended:

@@ -980,6 +980,11 @@ pub struct Server {
     prices: prices::PriceList,
     /// The phones' page, while it is served (`web-start`).
     web: Option<web_host::WebHost>,
+    /// Served again on restore but not yet able to (`web-resume`).
+    web_retry: Option<web_host::WebRetry>,
+    /// How it is served, kept from `web-start` to `web-stop` (`web::on_path`;
+    /// a unit test's own file).
+    web_on: PathBuf,
     /// Starts of it so far (`web_host`: stale requests are told apart).
     web_generation: u64,
     /// The links to other machines (docs/design/link.md), once first used.
@@ -1307,6 +1312,14 @@ impl Server {
         socket: String,
         events: mpsc::UnboundedSender<Event>,
     ) -> Server {
+        // A unit test's server keeps it in a file of its own, not the user's.
+        let web_on = if cfg!(test) {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::env::temp_dir().join(format!("keepane-web-on-{}-{n}", std::process::id()))
+        } else {
+            crate::web::on_path(&socket)
+        };
         Server {
             opts: Options::default(),
             prefix_binds: default_bindings(),
@@ -1363,6 +1376,8 @@ impl Server {
             agents: agents::Agents::default(),
             prices: prices::PriceList::default(),
             web: None,
+            web_retry: None,
+            web_on,
             web_generation: 0,
             link: None,
             remote_views: HashMap::new(),
@@ -1757,6 +1772,11 @@ impl Server {
             for p in problems {
                 log::warn!("restore-on-start: {p}");
             }
+        }
+        // The phones' page comes back with the sessions, as it was served
+        // when the server ended (unless the config served it already).
+        if self.opts.restore_on_start || self.force_restore {
+            self.web_resume();
         }
     }
 
@@ -2255,6 +2275,7 @@ impl Server {
                 self.public_ip_tick();
                 self.agents_tick();
                 self.prices_tick();
+                self.web_look_again();
                 self.web_tick();
                 self.web_fit_tick();
                 self.git_tick();
@@ -5563,6 +5584,7 @@ impl Server {
             Cmd::WebStart(o) => self.web_start(o),
             Cmd::WebStatus => Outcome::Text(self.web_status()),
             Cmd::WebStop => self.web_stop(cid),
+            Cmd::WebResume => self.web_resume(),
             Cmd::WebFit { target, size } => self.web_fit(cid, target.as_ref(), size),
             c @ (Cmd::LinkId | Cmd::LinkTrust { .. } | Cmd::LinkList | Cmd::LinkAllow { .. } | Cmd::LinkRekey) => {
                 self.exec_link_local(c, cid)

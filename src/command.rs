@@ -610,8 +610,13 @@ pub enum Cmd {
     WebStart(crate::web::Options),
     /// `web-status`: how the phones' page is served, and who is connected.
     WebStatus,
-    /// `web-stop`: stop serving it, the connected phones cut off.
+    /// `web-stop`: stop serving it, the connected phones cut off; not
+    /// served again on restore.
     WebStop,
+    /// `web-resume`: serve it as it was served when the server ended, when
+    /// it was not stopped (the sessions restored: `restart-server`, the
+    /// logon entry); what cannot be served yet is tried again.
+    WebResume,
     /// `web-fit -t pane -x cols -y rows | -u`: size the pane's session to a
     /// phone, the pane zoomed, until undone or no phone shows the pane
     /// (the phone page's fit button).
@@ -1571,6 +1576,7 @@ impl fmt::Display for Cmd {
             }
             Cmd::WebStatus => f.write_str("web-status"),
             Cmd::WebStop => f.write_str("web-stop"),
+            Cmd::WebResume => f.write_str("web-resume"),
             Cmd::WebFit { target, size } => {
                 f.write_str("web-fit")?;
                 fmt_target(f, target)?;
@@ -2231,6 +2237,7 @@ pub const COMMANDS: &[&str] = &[
     "version",
     "wait-for",
     "web-fit",
+    "web-resume",
     "web-start",
     "web-status",
     "web-stop",
@@ -2364,6 +2371,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("version", &[]),
     ("wait-for", &["-L", "-U", "-S"]),
     ("web-fit", &["-t", "-x", "-y", "-u"]),
+    ("web-resume", &[]),
     ("web-start", &["-p", "-b", "-r", "-k"]),
     ("web-status", &[]),
     ("web-stop", &[]),
@@ -3722,9 +3730,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::WebStart(o)
         }
-        "web-status" | "web-stop" => {
+        "web-status" | "web-stop" | "web-resume" => {
             a.none_left(n)?;
-            if n == "web-status" { Cmd::WebStatus } else { Cmd::WebStop }
+            match n {
+                "web-status" => Cmd::WebStatus,
+                "web-stop" => Cmd::WebStop,
+                _ => Cmd::WebResume,
+            }
         }
         "web-fit" => {
             let (mut target, mut cols, mut rows, mut undo) = (None, None, None, false);

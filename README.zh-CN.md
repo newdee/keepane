@@ -392,7 +392,7 @@ keepane startup status      # 看看注册了什么
 keepane startup off         # 取消
 ```
 
-它只在当前用户的 `Run` 注册表键下写一个值，不需要管理员权限，也不碰任务计划；server 通过 `conhost --headless` 启动，登录时不会闪出控制台窗口。重启之后 `keepane attach` 进去，东西都在。
+它只在当前用户的 `Run` 注册表键下写一个值，不需要管理员权限，也不碰任务计划；server 通过 `conhost --headless` 启动，登录时不会闪出控制台窗口。重启之后 `keepane attach` 进去，东西都在。手机页面（`keepane web`，见下文）原来开着的话，也会按原来的参数重新打开（加 `-k`，二维码就不变）；登录后网络还没就绪时，每 10 秒重试一次。
 
 升级：装了新版 keepane，已经在跑的 server 不会被换掉。它还是旧程序，你的 session 都在它里面。
 
@@ -515,7 +515,7 @@ keepane web stop     # 关掉；连着的手机随之断开
 keepane web          # 开着的时候再运行一次：重新打出同一个二维码
 ```
 
-想让它随 keepane 一直开着，就在 `~/.keepane.conf` 里加一行 `web-start -k`：server 启动时自己把它打开，每次都是同一个二维码（`-k` 见下）。
+session 恢复时（`keepane startup`、`keepane restart-server`），它也跟着按原来的参数重新打开，直到你运行 `keepane web stop`。想让它随 keepane 一直开着，就在 `~/.keepane.conf` 里加一行 `web-start -k`：server 启动时自己把它打开，每次都是同一个二维码（`-k` 见下）。没写 `--bind` 时，它每 10 秒重新查一次本机的地址：新出现的地址（登录后才连上的 Tailscale、换了一个 Wi-Fi）也会开上。
 
 开着的时候，状态栏会显示 `web` 和当前连接数（自己配状态栏可以用 `#{web_url}` 和 `#{web_clients}`）；dashboard（`prefix v`）的 pane 列表标题上也显示同样的数字。有手机连上，或者有人用错误的密钥访问，状态栏都会提示。
 
