@@ -4252,3 +4252,23 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 7 | 全量三平台 + 全部变异 | fmt、clippy 三平台 0；Windows 443 + 10 + 127，Linux 421 + 127；变异 Windows 18/18、Linux 2/2 | 干净（1/3） |
 | 8 | 可复现性 | 分享和 web 相关的 e2e 并行：Windows 5/5，Linux 3/3；分享单测 3/3（zip 同一目录两次逐字节相同由单测断言）；真实二进制脚本再跑 20/20 | 干净（2/3） |
 | 9 | 安全不变量 | 文件夹里放指向外部目录的 junction：zip 只有 `shared/`、`shared/ok.txt`，外部文件的名字和内容都不在 zip 的字节里，提示"1 left out"；200、令牌不对 404、令牌格式不对 404、POST 405、416、HEAD 六种回答 6/6 带 sandbox；状态栏和 show-messages 里没有令牌；站点 580 = 443 + 10 + 127 | 干净（3/3），验收通过 |
+
+## 135. 0.36.0 的 CI：分享测试在 Windows、macOS 上失败
+
+用户："发布 0.36.0 吧"。`b32d4dc`（版本号 0.36.0）的 CI：Ubuntu 全过，Windows、macOS 的 lib 测试失败，所以没有打 tag。
+
+- 原因（都在测试里，产品行为正确）：
+  - `a_share_is_a_link_until_stopped` 拿原始临时路径和输出比较。输出写的是真实路径；CI 的临时目录是 Windows 的 8.3 短路径（`RUNNER~1`）和 macOS 的 `/var` → `/private/var` 链接，两者不同。与第 131 条同类。
+  - `a_path_that_is_not_text_is_refused`：macOS 的 APFS 不接受非 UTF-8 文件名（`Illegal byte sequence`），这种情况在 macOS 上不会出现。
+  - 修完后 `7b49b30` 的 CI 跑到了 e2e：macOS 上 `files_and_folders_are_shared_by_a_link` 等 `share -l` 里不再有 "folder" 这个词，而 macOS 的临时目录在 `/var/folders/` 下。
+- 定性：共性（测试拿依赖临时路径写法的字符串做断言），边界遗漏（本机的临时路径恰好是规范的、不含这些词）。全仓搜同类：输出与 `.display()` 比较的断言 2 处（都已用真实路径），用 "folder"、"file"、"var"、"tmp"、"Temp"、"private" 这类词判断输出的 0 处。
+- 修法：比较真实路径（`git::real`）；macOS 上建不出这种文件名时跳过；按分享的编号判断它是否已结束。
+- 回归风险：只改测试，产品代码不变。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量三平台（本地）| 第一处修复后：Windows 443 + 10 + 127，Linux 421 + 127，clippy 三平台 0 | 干净（1/3） |
+| 2 | 真实 CI（`7b49b30`）| Ubuntu、Windows 全过（Windows 上 link 的 e2e 第一次在 CI 跑通）；macOS e2e 失败 1 个（"folder" 出现在临时路径里） | **有问题**：按编号判断（不计数） |
+| 3 | 真实 CI（`51949f6`）| Ubuntu、Windows、macOS、网页检查四项全绿 | 干净（1/3） |
+| 4 | 共性搜索 | 全仓测试：与 `.display()` 比较的断言 2 处，都是真实路径；用路径里可能出现的词判断的 0 处 | 干净（2/3） |
+| 5 | 可复现性 | 分享和 web 相关的 e2e：Windows 5/5，Linux 3/3；分享单测：Windows 3/3，Linux 3/3 | 干净（3/3），验收通过；`v0.36.0` 打在 `51949f6` |
