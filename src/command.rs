@@ -149,6 +149,20 @@ pub struct MenuItem {
     pub cmd: Option<Box<Cmd>>,
 }
 
+/// What `share` is asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShareWhat {
+    List,
+    /// `for_secs`: None is the default (24 hours), Some(0) no end.
+    Add {
+        path: String,
+        for_secs: Option<u64>,
+        once: bool,
+    },
+    /// One by its number, or every one (None).
+    Stop(Option<u32>),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
     NewSession {
@@ -617,6 +631,22 @@ pub enum Cmd {
     /// it was not stopped (the sessions restored: `restart-server`, the
     /// logon entry); what cannot be served yet is tried again.
     WebResume,
+    /// `share PATH [--for TIME] [--once]`: give out a file or a folder by a
+    /// link (docs/design/share.md); `share [-l]` lists what is shared,
+    /// `share stop ID|--all` ends it.
+    Share(ShareWhat),
+    /// `web-share-open token peer`: what a link shares, asked by the phones'
+    /// page when the link is opened.
+    ShareOpen {
+        token: String,
+        peer: String,
+    },
+    /// `web-share-sent token peer [note]`: all of it went to `peer`.
+    ShareSent {
+        token: String,
+        peer: String,
+        note: String,
+    },
     /// `web-fit -t pane -x cols -y rows | -u`: size the pane's session to a
     /// phone, the pane zoomed, until undone or no phone shows the pane
     /// (the phone page's fit button).
@@ -1577,6 +1607,26 @@ impl fmt::Display for Cmd {
             Cmd::WebStatus => f.write_str("web-status"),
             Cmd::WebStop => f.write_str("web-stop"),
             Cmd::WebResume => f.write_str("web-resume"),
+            Cmd::Share(ShareWhat::List) => f.write_str("share -l"),
+            Cmd::Share(ShareWhat::Add { path, for_secs, once }) => {
+                write!(f, "share {}", quote(path))?;
+                if let Some(s) = for_secs {
+                    let t = if *s == 0 {
+                        "0".to_string()
+                    } else {
+                        crate::share::for_text(std::time::Duration::from_secs(*s))
+                    };
+                    write!(f, " --for {t}")?;
+                }
+                if *once {
+                    f.write_str(" --once")?;
+                }
+                Ok(())
+            }
+            Cmd::Share(ShareWhat::Stop(Some(id))) => write!(f, "share stop {id}"),
+            Cmd::Share(ShareWhat::Stop(None)) => f.write_str("share stop --all"),
+            Cmd::ShareOpen { token, peer } => write!(f, "web-share-open {token} {}", quote(peer)),
+            Cmd::ShareSent { token, peer, note } => write!(f, "web-share-sent {token} {} {}", quote(peer), quote(note)),
             Cmd::WebFit { target, size } => {
                 f.write_str("web-fit")?;
                 fmt_target(f, target)?;
@@ -2241,6 +2291,9 @@ pub const COMMANDS: &[&str] = &[
     "web-start",
     "web-status",
     "web-stop",
+    "share",
+    "web-share-open",
+    "web-share-sent",
 ];
 
 /// The flags each command takes, for completion (the shell's and the `:`
@@ -2375,6 +2428,9 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("web-start", &["-p", "-b", "-r", "-k"]),
     ("web-status", &[]),
     ("web-stop", &[]),
+    ("share", &["-l", "--for", "--once", "--all"]),
+    ("web-share-open", &[]),
+    ("web-share-sent", &[]),
     ("link-add", &[]),
     (
         "link-allow",
@@ -3729,6 +3785,46 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::WebStart(o)
+        }
+        "share" => {
+            let usage = "share PATH [--for TIME] [--once] | share [-l] | share stop ID|--all";
+            let (mut words, mut for_secs, mut once, mut list, mut all) = (Vec::new(), None, false, false, false);
+            while let Some(w) = a.next() {
+                match w {
+                    "-l" => list = true,
+                    "--once" => once = true,
+                    "--all" => all = true,
+                    "--for" => {
+                        let v = a.value("--for")?;
+                        let d = crate::share::parse_for(v).map_err(|e| format!("{n}: {e}"))?;
+                        for_secs = Some(d.map_or(0, |d| d.as_secs()));
+                    }
+                    f if f.starts_with('-') && f.len() > 1 => return Err(bad_flag(n, f)),
+                    v => words.push(v.to_string()),
+                }
+            }
+            let adding = once || for_secs.is_some();
+            match words.as_slice() {
+                [] if !adding && !all => Cmd::Share(ShareWhat::List),
+                [stop] if stop == "stop" && all && !adding && !list => Cmd::Share(ShareWhat::Stop(None)),
+                [stop, id] if stop == "stop" && !all && !adding && !list => {
+                    let id = id.parse().map_err(|_| format!("{n} stop: '{id}' is not a share's number (share -l)"))?;
+                    Cmd::Share(ShareWhat::Stop(Some(id)))
+                }
+                [stop] if stop == "stop" && !list => return Err(format!("{n} stop: a share's number, or --all")),
+                [path] if !list && !all => Cmd::Share(ShareWhat::Add { path: path.clone(), for_secs, once }),
+                _ => return Err(format!("usage: {usage}")),
+            }
+        }
+        "web-share-open" | "web-share-sent" => {
+            let (token, peer) = (a.next(), a.next());
+            let note = if n == "web-share-sent" { a.next().unwrap_or("").to_string() } else { String::new() };
+            a.none_left(n)?;
+            let (Some(token), Some(peer)) = (token, peer) else {
+                return Err(format!("{n}: a token and the address that asked"));
+            };
+            let (token, peer) = (token.to_string(), peer.to_string());
+            if n == "web-share-open" { Cmd::ShareOpen { token, peer } } else { Cmd::ShareSent { token, peer, note } }
         }
         "web-status" | "web-stop" | "web-resume" => {
             a.none_left(n)?;

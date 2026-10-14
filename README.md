@@ -1050,6 +1050,32 @@ machine's network address and on its Tailscale addresses (`web status` lists
 them). Windows asks once whether keepane may use the network; allow it for
 private networks.
 
+### Sharing a file or a folder
+
+One command gives out a file or a folder by a link: scan its code with the
+phone, or open the link on another machine, and it downloads.
+
+```powershell
+keepane share report.pdf            # a file: a code to scan and a link
+keepane share ~/photos --for 2h     # a folder (as photos.zip), for 2 hours
+keepane share build.log --once      # gone after one whole download
+keepane share                       # what is shared (or -l)
+keepane share stop 2                # end one; --all ends every one
+```
+
+Each share has a link of its own (a random token, not the phone page's
+key): whoever has it can download that one thing and see nothing else. A
+share lasts 24 hours unless `--for` says (`30m`, `2h`, `7d`; `0` until it
+is stopped or the server ends). A file downloads as it is, and a download
+cut off carries on where it stopped; a folder downloads as a zip written
+while it is read (links in it are left out). Whatever is shared is sent as
+a download, never shown as a page. The link is on the phone page's address
+and port: when that is off, `share` turns it on (only until the server
+ends). The status line says each share, who downloads it and when it went,
+also when an agent in a pane shares something. Plain HTTP, like the page:
+across a network you do not trust, use Tailscale. The design:
+[docs/design/share.md](docs/design/share.md).
+
 ## Told when a pane is done
 
 keepane knows when a pane is done: a command that ran a while ended (its

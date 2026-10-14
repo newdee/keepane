@@ -21,6 +21,7 @@ pub mod platform;
 pub mod resurrect;
 pub mod server;
 pub mod setup;
+pub mod share;
 pub mod sysinfo;
 pub mod truecolor;
 pub mod vtinput;

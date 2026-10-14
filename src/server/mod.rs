@@ -25,6 +25,7 @@ pub mod pane;
 mod prices;
 mod public_ip;
 pub mod render;
+mod share_host;
 mod shellhist;
 mod web_fit;
 mod web_host;
@@ -982,6 +983,8 @@ pub struct Server {
     web: Option<web_host::WebHost>,
     /// Served again on restore but not yet able to (`web-resume`).
     web_retry: Option<web_host::WebRetry>,
+    /// Files and folders given out by a link (`share`).
+    shares: share_host::Shares,
     /// How it is served, kept from `web-start` to `web-stop` (`web::on_path`;
     /// a unit test's own file).
     web_on: PathBuf,
@@ -1377,6 +1380,7 @@ impl Server {
             prices: prices::PriceList::default(),
             web: None,
             web_retry: None,
+            shares: share_host::Shares::default(),
             web_on,
             web_generation: 0,
             link: None,
@@ -2277,6 +2281,7 @@ impl Server {
                 self.prices_tick();
                 self.web_look_again();
                 self.web_tick();
+                self.shares_tick();
                 self.web_fit_tick();
                 self.git_tick();
                 self.link_git_sweep();
@@ -5585,6 +5590,9 @@ impl Server {
             Cmd::WebStatus => Outcome::Text(self.web_status()),
             Cmd::WebStop => self.web_stop(cid),
             Cmd::WebResume => self.web_resume(),
+            Cmd::Share(what) => self.exec_share(what, cid),
+            Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
+            Cmd::ShareSent { token, peer, note } => self.share_sent(&token, &peer, &note),
             Cmd::WebFit { target, size } => self.web_fit(cid, target.as_ref(), size),
             c @ (Cmd::LinkId | Cmd::LinkTrust { .. } | Cmd::LinkList | Cmd::LinkAllow { .. } | Cmd::LinkRekey) => {
                 self.exec_link_local(c, cid)

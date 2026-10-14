@@ -363,14 +363,14 @@ fn base64url(bytes: &[u8]) -> String {
 
 /// The QR code as text, light on dark (a terminal's usual colours), two
 /// rows of modules per line.
-fn qr_text(data: &str) -> Result<String> {
+pub fn qr_text(data: &str) -> Result<String> {
     use qrcode::render::unicode::Dense1x2;
     let code = qrcode::QrCode::new(data.as_bytes()).context("make the QR code")?;
     Ok(code.render::<Dense1x2>().dark_color(Dense1x2::Light).light_color(Dense1x2::Dark).quiet_zone(true).build())
 }
 
 /// Compare without stopping at the first difference.
-fn same_key(a: &str, b: &str) -> bool {
+pub fn same_key(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -385,6 +385,8 @@ pub struct Request {
     pub headers: Vec<(String, String)>,
     /// The browser takes a gzip body (`Accept-Encoding: gzip`).
     pub gzip: bool,
+    /// What of a shared file a download carried on asks for (`Range`).
+    pub range: Option<String>,
     pub body: Vec<u8>,
 }
 
@@ -422,7 +424,7 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
         (Some(m), Some(t)) if !m.is_empty() && t.starts_with('/') => (m.to_string(), t),
         _ => bail!("not an HTTP request"),
     };
-    let (mut length, mut key, mut headers, mut gzip) = (0usize, None, Vec::new(), false);
+    let (mut length, mut key, mut headers, mut gzip, mut range) = (0usize, None, Vec::new(), false, None);
     for line in lines {
         let Some((name, value)) = line.split_once(':') else { continue };
         let value = value.trim();
@@ -430,6 +432,8 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
             length = value.parse().context("bad Content-Length")?;
         } else if name.eq_ignore_ascii_case("accept-encoding") {
             gzip = value.split(',').any(|e| e.split(';').next().is_some_and(|e| e.trim().eq_ignore_ascii_case("gzip")));
+        } else if name.eq_ignore_ascii_case("range") {
+            range = Some(value.to_string());
         } else if name.eq_ignore_ascii_case("x-keepane-key") {
             key = Some(value.to_string());
         } else if name.len() > 10 && name[..10].eq_ignore_ascii_case("x-keepane-") {
@@ -457,7 +461,7 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
             (percent_decode(k), percent_decode(v))
         })
         .collect();
-    Ok(Some(Request { method, path: percent_decode(path), query, key, headers, gzip, body }))
+    Ok(Some(Request { method, path: percent_decode(path), query, key, headers, gzip, range, body }))
 }
 
 /// `%XX` escapes and `+` for a space, as a browser writes a query; a `%`
@@ -531,6 +535,12 @@ async fn connection(mut stream: TcpStream, peer: IpAddr, state: &State) -> Resul
         state.tell(Seen::Watching { peer, pane: pane.to_string(), open: true });
         let _watching = Watching(state, peer, pane.to_string());
         return watch(&mut stream, state, pane, history, req.param("join") == Some("1")).await;
+    }
+    // A file or a folder shared (`keepane share`): its own token, not the
+    // key; sent as it is read.
+    if req.path.starts_with("/s/") {
+        return crate::share::serve(&mut stream, &req.method, &req.path, req.range.as_deref(), peer, &state.socket)
+            .await;
     }
     let resp = handle(&req, peer, state).await;
     write_response(&mut stream, &resp).await
@@ -1335,6 +1345,7 @@ mod tests {
             key: key.map(String::from),
             headers: Vec::new(),
             gzip: false,
+            range: None,
             body: Vec::new(),
         }
     }

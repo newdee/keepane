@@ -144,6 +144,16 @@ repositories here (`keepane clone`, `keepane push`).
 - It is plain HTTP, fine at home; from outside, go through Tailscale or a
   similar private network, not a port opened to the internet.
 
+## A shared link says "this link has ended"
+
+- Its time was up (24 hours unless `--for` said), it was stopped, or it was
+  `--once` and went once. `keepane share` lists what is still shared.
+- Shares last only as long as the server: after `restart-server` or a
+  reboot, share it again.
+- The link is on the phone page's port: after `keepane web stop` none of
+  them answers; `keepane web` serves them again (on its new port, if it
+  changed: `keepane share` lists the links as they are now).
+
 ## Tell me on my phone when a job finishes, even when it is locked
 
 The phone's page tells you (a banner, a sound, a buzz on Android) while it

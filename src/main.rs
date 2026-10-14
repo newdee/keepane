@@ -44,6 +44,7 @@ Upgrading:  version (this keepane and the server's)   update [--check]   restart
   migrate   (from wmux, keepane's old name: sessions, saved data, logon start, Windows Terminal profile)
 On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network;
   served again when the sessions are restored, until `web stop`)
+  share PATH [--for 2h] [--once]   (a file or a folder by a link and a QR code; 24h unless --for)   share [-l]   share stop ID|--all
 History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
   list-marks [-J] [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines; -J as JSON, with each one's lines)
   copy-output [-p] [-t pane]   (what the last command printed, to a buffer and the clipboard; -p prints it; prefix y)

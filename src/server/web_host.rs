@@ -115,6 +115,17 @@ impl WebHost {
         &self.url
     }
 
+    /// How it serves (for the tests of what turns it on).
+    #[cfg(test)]
+    pub(super) fn options(&self) -> &Options {
+        &self.options
+    }
+
+    /// The addresses served on, the one scanned first.
+    pub(super) fn addrs(&self) -> Vec<IpAddr> {
+        self.served.iter().map(|(ip, _)| *ip).collect()
+    }
+
     /// The port served on: what another machine's keepane answers to.
     pub(super) fn port(&self) -> u16 {
         self.port
@@ -207,7 +218,7 @@ impl Server {
         }
     }
 
-    fn web_serve(&mut self, o: Options) -> Outcome {
+    pub(super) fn web_serve(&mut self, o: Options) -> Outcome {
         if let Some(w) = &self.web {
             // Asked again as it serves (`keepane web` for the code again, a
             // config read again): how it serves.

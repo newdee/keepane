@@ -528,6 +528,20 @@ keepane web --bind 192.168.1.23,10.0.0.5     # 多张网卡：每个地址都监
 
 用的是普通 HTTP，适合自己家里的网络：在公共网络上，抓包的人能看到密钥。在外面想用，就在中间加一层 Tailscale 这类私有网络：`keepane web` 会同时监听本机的局域网地址和 Tailscale 地址（`web status` 会列出来）。第一次运行时 Windows 会问是否允许 keepane 联网，选“专用网络”允许即可。
 
+### 分享文件或文件夹
+
+一个命令把文件或文件夹分享出去：手机扫二维码，或者在别的电脑上打开链接，就直接下载。
+
+```powershell
+keepane share report.pdf            # 分享一个文件：打印二维码和链接
+keepane share ~/photos --for 2h     # 分享一个文件夹（下载为 photos.zip），2 小时内有效
+keepane share build.log --once      # 完整下载一次后失效
+keepane share                       # 列出正在分享的（也可以加 -l）
+keepane share stop 2                # 取消一个；--all 取消全部
+```
+
+每次分享有自己的链接（一个随机令牌，不是手机页面的密钥）：拿到链接的人只能下载这一个东西，别的什么都看不到。默认 24 小时有效，`--for` 可以改（`30m`、`2h`、`7d`；`0` 表示一直有效，直到取消或 server 退出）。文件原样下载，下载中断后能从断开的地方接着下；文件夹边读边打成 zip 下载（里面的符号链接不打包）。分享的东西一律作为下载发出，不会被浏览器当作网页打开。链接用的是手机页面的地址和端口：手机页面没开时，`share` 会把它打开（只到 server 退出为止）。每次分享、谁在下载、什么时候下完，状态栏都会提示；pane 里的 agent 发起的分享也一样。和手机页面一样是普通 HTTP：在不信任的网络上请走 Tailscale。设计稿：[docs/design/share.md](docs/design/share.md)。
+
 ## pane 完成时通知你
 
 keepane 知道 pane 什么时候"完成"了：一条跑了一段时间的命令结束（靠 shell 报告的命令记录，和命令时间是同一个来源）、agent 这一轮结束（它的 hook 运行了 `keepane pane-ready`）、一条消息的任务结束，或者程序退出。它会通过这几种方式告诉你：

@@ -5155,6 +5155,135 @@ async fn http(addr: std::net::SocketAddr, method: &str, path: &str, key: &str, b
     (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
 }
 
+/// A request for a shared link: status, head (as text), body (as bytes).
+async fn fetch(url: &str, method: &str, extra: &str) -> (u16, String, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rest = url.strip_prefix("http://").unwrap();
+    let (host, path) = rest.split_once('/').unwrap();
+    let mut s = tokio::net::TcpStream::connect(host).await.unwrap();
+    s.write_all(format!("{method} /{path} HTTP/1.1\r\nHost: {host}\r\n{extra}\r\n").as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).await.unwrap();
+    let end = out.windows(4).position(|w| w == b"\r\n\r\n").expect("a head");
+    let head = String::from_utf8_lossy(&out[..end]).into_owned();
+    let status = head.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, head, out[end + 4..].to_vec())
+}
+
+/// A file and a folder shared (`share`) and fetched over HTTP as a browser
+/// would: the file byte for byte, a range of it, a range past its end, its
+/// head alone; the folder as a zip this machine's own tool unpacks to the
+/// same files; once means once; stopped means gone; a wrong token is 404;
+/// every answer a download that cannot run as a page.
+#[tokio::test(flavor = "multi_thread")]
+async fn files_and_folders_are_shared_by_a_link() {
+    let h = Harness::start("share").await;
+    h.cli(&["new", "-d", "-s", "sh"]).await;
+    let dir = h.sessions_dir.with_extension("share");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("proj/sub")).unwrap();
+    let data: Vec<u8> = (0..300_000u32).map(|i| (i * 13 % 251) as u8).collect();
+    std::fs::write(dir.join("data.bin"), &data).unwrap();
+    std::fs::write(dir.join("proj/a.txt"), "hello").unwrap();
+    std::fs::write(dir.join("proj/中文.txt"), "你好").unwrap();
+    std::fs::write(dir.join("proj/sub/b.bin"), &data[..70_000]).unwrap();
+    let (code, _, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+    assert_eq!(code, 0, "{err}");
+    let link = |out: &str| out.lines().find_map(|l| l.trim().strip_prefix("http://").map(|u| format!("http://{u}")));
+
+    // A file, named where the command ran.
+    let (code, out, err) = h.cli_at(&dir, &["share", "data.bin"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("share 1: ") && out.contains("data.bin (file, 292 KB), until "), "{out}");
+    let url = link(&out).expect(&out);
+    let (status, head, body) = fetch(&url, "GET", "").await;
+    assert_eq!(status, 200, "{head}");
+    assert!(body == data, "the file, byte for byte ({} bytes came)", body.len());
+    for want in [
+        "Content-Type: application/octet-stream",
+        "Content-Disposition: attachment; filename=\"data.bin\"",
+        "Content-Security-Policy: sandbox",
+        "Content-Length: 300000",
+        "Accept-Ranges: bytes",
+    ] {
+        assert!(head.contains(want), "{want}: {head}");
+    }
+    let (status, head, body) = fetch(&url, "GET", "Range: bytes=100-199\r\n").await;
+    assert_eq!((status, body.as_slice()), (206, &data[100..200]), "{head}");
+    assert!(head.contains("Content-Range: bytes 100-199/300000"), "{head}");
+    let (status, head, _) = fetch(&url, "GET", "Range: bytes=300000-\r\n").await;
+    assert_eq!(status, 416, "{head}");
+    assert!(head.contains("Content-Range: bytes */300000"), "{head}");
+    let (status, head, body) = fetch(&url, "HEAD", "").await;
+    assert_eq!((status, body.len()), (200, 0), "{head}");
+    let wrong = format!("{}AAAAAAAAAAAAAAAAAAAAAA", &url[..url.len() - 22]);
+    assert_eq!(fetch(&wrong, "GET", "").await.0, 404);
+
+    // A folder, once: a zip that unpacks to the same files.
+    let (code, out, err) = h.cli_at(&dir, &["share", "proj", "--once", "--for", "2h"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("share 2: ") && out.contains("(folder), until ") && out.contains("(2h), once"), "{out}");
+    let zip_url = link(&out).expect(&out);
+    let (status, head, zip) = fetch(&zip_url, "GET", "").await;
+    assert_eq!(status, 200, "{head}");
+    assert!(head.contains("filename=\"proj.zip\"") && !head.contains("Content-Length"), "{head}");
+    let zip_file = dir.join("got.zip");
+    std::fs::write(&zip_file, &zip).unwrap();
+    let unpacked = dir.join("unpacked");
+    std::fs::create_dir_all(&unpacked).unwrap();
+    let tool = if cfg!(windows) {
+        std::process::Command::new("tar").arg("-xf").arg(&zip_file).arg("-C").arg(&unpacked).output()
+    } else {
+        std::process::Command::new("python3").args(["-m", "zipfile", "-e"]).arg(&zip_file).arg(&unpacked).output()
+    };
+    match tool {
+        Ok(o) if o.status.success() => {
+            for f in ["a.txt", "中文.txt", "sub/b.bin"] {
+                assert_eq!(
+                    std::fs::read(unpacked.join("proj").join(f)).ok(),
+                    std::fs::read(dir.join("proj").join(f)).ok(),
+                    "{f}"
+                );
+            }
+        }
+        Ok(o) => panic!("the zip did not unpack: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => eprintln!("no tool to unpack a zip here ({e}): its structure is the unit tests'"),
+    }
+    // Sent once: ended (the server is told once the answer is out).
+    h.wait_for_cli("the folder's share ended", &["share", "-l"], |_, out| !out.contains("folder")).await;
+    assert_eq!(fetch(&zip_url, "GET", "").await.0, 404);
+
+    // Counted once: a range that does not reach the end, a HEAD, a 416
+    // are not the whole file.
+    let (_, list, _) = h.cli(&["share", "-l"]).await;
+    assert!(list.lines().next().unwrap_or("").contains(", sent 1  "), "{list}");
+    // Stopped: gone. What went on was said on the status line.
+    let (_, out, _) = h.cli(&["share", "stop", "1"]).await;
+    assert_eq!(out.trim(), "share 1 stopped: its link no longer works");
+    assert_eq!(fetch(&url, "GET", "").await.0, 404);
+    let (_, said, _) = h.cli(&["show-messages"]).await;
+    for want in [
+        "share 1: 127.0.0.1 is downloading data.bin",
+        "share 1: data.bin sent to 127.0.0.1",
+        "share 2: proj sent to 127.0.0.1 (3 file(s)); it was for once: ended",
+    ] {
+        assert!(said.contains(want), "{want}: {said}");
+    }
+    // The ways it is asked wrongly.
+    for (argv, want) in [
+        (vec!["share", "nothing-here.txt"], "nothing-here.txt"),
+        (vec!["share", "data.bin", "--for", "2x"], "is not a time"),
+        (vec!["share", "stop"], "a share's number, or --all"),
+        (vec!["share", "stop", "x"], "is not a share's number"),
+        (vec!["share", "a", "b"], "usage: share"),
+    ] {
+        let (code, _, err) = h.cli_at(&dir, &argv).await;
+        assert!(code != 0 && err.contains(want), "{argv:?}: {err}");
+    }
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// More than one network card: `-b` with each address serves on every
 /// one, the same key and port; an address this machine does not have is
 /// an error, not left out quietly.

@@ -182,6 +182,32 @@ put away), when no phone has shown the pane for 10 seconds, when `keepane
 web` stops, or when the session is sized by hand (`resize-window`); the
 session gets its size back.
 
+`keepane share PATH [--for TIME] [--once]` (the server command `share`)
+gives out a file or a folder by a link on the phone page's address and port,
+`http://host:port/s/TOKEN`, and prints it with a QR code: one link a
+machine address, the code for the first. The path is the command's
+(relative to where it ran, `~` home). The token is 128 random bits of its
+own, not the page's key; whoever has the link can download that one thing.
+`--for` takes `90s`, `30m`, `2h`, `7d` (365d at most), `0` for no end; 24
+hours when not given. `--once` ends it after one whole download. A file is
+sent as it is, with one range of it on request (`Range`, 206; past its end,
+416); a folder as a zip written while it is read (STORED, ZIP64 when
+needed, UTF-8 names under `NAME/`), links in it and what cannot be read
+left out (a file that stops reading part of the way, cut there). Every
+download is `application/octet-stream` with `Content-Disposition:
+attachment`, and every answer carries `Content-Security-Policy: sandbox`:
+nothing is shown as a page on the page's address. A link that ended, was
+stopped or never was answers 404; a download under way goes on. With the
+page off, `share` serves it, as it was last served (else as `keepane web`
+does), for as long as the server runs (not kept for a restore). `keepane
+share` (or `-l`) lists what is shared; `share stop ID` or `share stop
+--all` ends them. Each share, the first download from each address and
+each whole download are said on the status line and kept in
+`show-messages`. The page asks the server `web-share-open` (a token and the
+address asking) for what a link shares, and tells it `web-share-sent` (the
+same, and a note) when all of it went: keepane's own commands, not for
+people.
+
 ### Panes on other machines
 
 `send-message --to host:port/$1:@3.%7` (or `host:port/%name`) reaches a pane
