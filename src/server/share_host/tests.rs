@@ -43,7 +43,9 @@ async fn a_share_is_a_link_until_stopped() {
     let mut s = server();
     let (out, token) = add(&mut s, &d.join("report.pdf"), None, false);
     assert!(crate::share::valid_token(&token), "{out}");
-    assert!(out.contains(&format!("share 1: {} (file, 2 KB), until ", d.join("report.pdf").display())), "{out}");
+    // The real path (a runner's temp directory may be a short or linked one).
+    let real = crate::git::real(&d.join("report.pdf"));
+    assert!(out.contains(&format!("share 1: {} (file, 2 KB), until ", real.display())), "{out}");
     assert!(out.contains("(1d)") && out.contains("  http://127.0.0.1:") && out.contains("█"), "{out}");
     assert!(!out.contains("was off"), "the page was on: {out}");
     assert!(
@@ -147,7 +149,11 @@ async fn a_path_that_is_not_text_is_refused() {
     use std::os::unix::ffi::OsStrExt;
     let d = temp("bytes");
     let odd = d.join(std::ffi::OsStr::from_bytes(b"odd\xff.txt"));
-    std::fs::write(&odd, "x").unwrap();
+    // macOS (APFS) takes no such name: there the case cannot come up.
+    if std::fs::write(&odd, "x").is_err() {
+        let _ = std::fs::remove_dir_all(&d);
+        return;
+    }
     // A path comes as text; a link is how its real path is not.
     std::os::unix::fs::symlink(&odd, d.join("link.txt")).unwrap();
     let mut s = server();
