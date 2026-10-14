@@ -13,6 +13,7 @@ pub mod import;
 pub mod input;
 mod keyhint;
 pub mod layout;
+mod link_git;
 mod link_in;
 mod link_out;
 mod link_state;
@@ -130,6 +131,10 @@ enum Event {
     WebStopped(ClientId),
     /// Another machine answered a request of ours, or could not (`link_out`).
     LinkAnswer(Box<link_out::LinkAnswer>),
+    /// A `clone` or `push` of ours ended (`link_git`).
+    LinkGitDone(Box<link_git::GitDone>),
+    /// git done for another machine's request: the answer to it (`link_git`).
+    LinkLater(Box<link_git::Later>),
     /// `done-webhook` could not be told (`done`): why.
     DoneWebhookFailed(String),
     /// git said a repository's status (nothing, when it failed): which git
@@ -2217,6 +2222,8 @@ impl Server {
             Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
             Event::LinkAnswer(a) => self.link_answered(*a),
+            Event::LinkGitDone(d) => self.link_git_done(*d),
+            Event::LinkLater(l) => self.link_later(*l),
             Event::DoneWebhookFailed(why) => {
                 log::warn!("done-webhook: {why}");
                 self.note_message(&format!("done-webhook: {why}"));
@@ -2251,6 +2258,7 @@ impl Server {
                 self.web_tick();
                 self.web_fit_tick();
                 self.git_tick();
+                self.link_git_sweep();
                 self.forget_due();
                 // An open chart keeps the paired machines' panes fresh.
                 if self.a_chart_is_open() {
@@ -5566,6 +5574,7 @@ impl Server {
             | Cmd::LinkCapture { .. }
             | Cmd::LinkPane(_)
             | Cmd::LinkKill { .. }) => self.exec_link_out(c, cid),
+            c @ (Cmd::LinkClone { .. } | Cmd::LinkPush { .. }) => self.exec_link_git(c, cid),
             Cmd::LinkInbound { peer, request } => self.link_inbound(cid, &peer, &request),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };

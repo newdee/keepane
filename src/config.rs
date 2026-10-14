@@ -167,6 +167,11 @@ pub struct Options {
     /// The git to run for the panes' repositories (`crate::git::command`):
     /// a path or a name on the PATH; empty, the one found.
     pub git_command: String,
+    /// Where a repository another machine clones here goes when it names
+    /// no path, and what a relative path is under (`keepane clone`).
+    pub link_clone_dir: String,
+    /// The largest bundle of commits sent or taken (`clone`, `push`).
+    pub link_push_limit: u64,
     /// Keep what happens to messages and panes in a JSON Lines file a day.
     pub event_log: bool,
     /// Days the event log keeps.
@@ -387,6 +392,8 @@ pub const SHOWABLE: &[&str] = &[
     "event-log-days",
     "event-log-max",
     "git-command",
+    "link-clone-dir",
+    "link-push-limit",
     "hint-open",
     "theme",
     "window-style",
@@ -483,6 +490,8 @@ impl Default for Options {
             done_webhook: String::new(),
             done_webhook_format: "json".into(),
             git_command: String::new(),
+            link_clone_dir: "~/keepane".into(),
+            link_push_limit: 200 * 1024 * 1024,
             event_log: true,
             event_log_days: 30,
             event_log_max: 20 * 1024 * 1024,
@@ -608,6 +617,8 @@ pub const KNOWN: &[&str] = &[
     "hint-open",
     "history-limit",
     "keep-zoom",
+    "link-clone-dir",
+    "link-push-limit",
     "log-history",
     "log-history-days",
     "log-history-dir",
@@ -975,6 +986,14 @@ impl Options {
                 }
                 self.git_command = value.trim().to_string();
             }
+            "link-clone-dir" => {
+                let v = value.trim();
+                if v.is_empty() || v.contains(['\n', '\r', '\0']) {
+                    return Err("bad link-clone-dir: one line, a directory (~ for the home directory)".into());
+                }
+                self.link_clone_dir = v.to_string();
+            }
+            "link-push-limit" => self.link_push_limit = parse_size(name, value, 1024 * 1024, 4096 * 1024 * 1024)?,
             "done-webhook" => {
                 let v = value.trim();
                 let ok = v.is_empty()
@@ -1136,6 +1155,8 @@ impl Options {
             "done-panes" => self.done_panes.clone(),
             "done-webhook" => self.done_webhook.clone(),
             "git-command" => self.git_command.clone(),
+            "link-clone-dir" => self.link_clone_dir.clone(),
+            "link-push-limit" => size_name(self.link_push_limit),
             "done-webhook-format" => self.done_webhook_format.clone(),
             "event-log" => onoff(self.event_log),
             "event-log-days" => self.event_log_days.to_string(),

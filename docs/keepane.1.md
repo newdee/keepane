@@ -200,9 +200,10 @@ A paired machine's messages go to `ai` and `normal` panes only. To let them
 run as commands in `shell` panes here: `keepane link allow <host:port>
 --shell` (`link-allow`; `--no-shell` takes it back); to let it read what the
 panes here show: `--screen` (`--no-screen`); to let it start panes here:
-`--panes` (`--no-panes`). All are given from a terminal outside keepane or
+`--panes` (`--no-panes`); to let it send commits into repositories here:
+`--push` (`--no-push`). All are given from a terminal outside keepane or
 the `C-b :` prompt, never from inside a pane (`link-trust` takes `--shell`,
-`--screen` and `--panes` too). `keepane link start <host:port> [-s session]
+`--screen`, `--panes` and `--push` too). `keepane link start <host:port> [-s session]
 [-n name] [-m mode] [-c dir] [-- program args]` (`link-start`) starts a pane
 on a machine that allowed this one to: one of its `agent-commands` (with any
 arguments, so a shell on that list makes `--panes` as much as `--shell`), within
@@ -224,6 +225,35 @@ address. `keepane web` listens on this machine's network address and on its
 Tailscale addresses, so either network works; `web-status` lists them.
 `link-inbound` is how `keepane web` hands a request from another machine to
 the server, which holds the keys.
+
+`keepane clone <host:port> [path] [--tell pane]` (`clone`, `link-clone`)
+sends the repository the command runs in to a paired machine that allowed
+this one to (`--push`, above), as a new repository at `path` there: nothing
+may be there yet, or an empty directory. The path is that machine's: `~` is
+its home directory, and a relative path, or none, is under its
+`link-clone-dir` (default `~/keepane`), with none the name of this
+repository's directory. The current branch is checked out there, and its
+remote is named after this machine. `keepane push [<host:port> [path]]
+[--tell pane]` (`push`, `link-push`) sends the commits of the current branch
+that machine lacks to where the repository was cloned or pushed before (this
+machine keeps where, by that machine's key, so a new address changes
+nothing); with no machine, to the one it went to (named when it went to more
+than one); with a path, to a repository already there, which must share a
+first commit with this one (or have none yet), kept from then on. There the
+commits go to `<this machine>/<branch>`; the branch itself moves on when
+that loses nothing of that side's: a fast-forward, its files too when it is
+checked out and no tracked file is changed. Otherwise it is left as it was
+and the answer says why (commits of its own there, files changed), for that
+side to merge. Only committed work goes; files not committed here are
+counted in the answer. `--tell pane` sends that pane there a message once
+the commits are in; the status line there says so either way, and the event
+log keeps it. `push -l` lists where this machine's repositories go. The
+commits go as a git bundle, in pieces over the link, checked whole (SHA-256)
+before git takes them; `link-push-limit` (default 200M) is the most a bundle
+may be, here when it is made and there as it arrives. Both machines need git
+(`git-command`). Git LFS contents are not sent (their pointer files are); a
+shallow clone is refused (its early history is not there to send: `git fetch
+--unshallow` first).
 
 ## KEYS
 

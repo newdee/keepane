@@ -599,6 +599,7 @@ keepane send-message --to 100.64.0.3:7681/%worker "run the tests"
 keepane link allow 100.64.0.3:7681 --shell     # --no-shell 收回
 keepane link allow 100.64.0.3:7681 --screen    # 允许它读这边 pane 的屏幕；--no-screen 收回
 keepane link allow 100.64.0.3:7681 --panes     # 允许它在这边开 pane；--no-panes 收回
+keepane link allow 100.64.0.3:7681 --push      # 允许它往这边的仓库送提交（clone、push）；--no-push 收回
 keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
 keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
 keepane link rekey                             # 换一对新密钥：所有配对都要重做
@@ -623,6 +624,21 @@ keepane link kill 100.64.0.3:7681/%helper               # 只能关这台机器�
 程序必须在对方的 `agent-commands` 白名单里，参数不限：白名单里要是有 shell（`pwsh`、`bash` 等），它收到什么就执行什么，这时 `--panes` 等于同时给了执行命令的权限；只想让对方开 agent 的话，在那台电脑上 `set -g agent-commands "claude codex"`（`link allow --panes` 的回复会列出当前白名单）。数量受对方的 `agent-pane-limit` 限制（按这台机器单独计数）。开出来的 pane 放在以这台机器命名的 session 里（`-s` 可以指定别的），工作模式和 agent 开的 pane 一样按程序自动定（`-m` 可以指定）；往那边 `shell` 模式的 pane 发命令仍然需要 `--shell` 授权。对方只在它的 server 运行期间记得哪些 pane 是这台机器开的。agent 也能通过 MCP 做同样的事：`create_remote_pane`，以及用地址调用 `kill_pane`。
 
 没授权的机器发给 `shell` pane 的消息会被拒收，发送方会看到怎么授权。`keepane web --read-only` 的机器也不收别的机器的消息。对方连不上时立刻报错，不会在本机排队等以后再发；加 `-w` 时由对方等到投递为止，时间到了还在排队就算超时（和发给本机 pane 一样，退出码非 0）。配对和解除配对会在状态栏提示并记进事件日志；被拒的请求也一样，但同一个地址一分钟只记一次，有人大量乱发时不会刷屏，也不会把事件日志写满。设计和每条决定见 [docs/design/link.md](docs/design/link.md)。
+
+### 把提交送到另一台电脑
+
+对方授权了 `--push` 的话，可以把本机仓库的提交送过去：单向，只送已提交的内容。在仓库目录里运行：
+
+```powershell
+keepane clone 100.64.0.3:7681                  # 在对方建副本，放在它的 link-clone-dir 下（~/keepane/<本机仓库目录名>）
+keepane clone 100.64.0.3:7681 ~/src/proj       # 或放到对方指定路径（必须不存在，或是空目录）
+keepane push                                   # 以后：把当前分支的新提交送到上次的位置
+keepane push 100.64.0.3:7681 ~/src/proj        # 送到对方已有的仓库（必须是同一个项目），以后记住这个位置
+keepane push --tell %worker                    # 送到后再给那边这个 pane 发一条消息
+keepane push -l                                # 本机各仓库送到了哪里
+```
+
+本机按对方的公钥记下每个仓库送到了哪里，对方换了地址（换了网络）也照样找得到。`keepane push` 不写机器时，送到这个仓库去过的那台；去过多台时要写明哪台。只送对方没有的提交：打成 git bundle，分块传过去，对方核对整个文件的 SHA-256 后才交给 git。提交在对方放进 `<本机名>/<分支>`；不会丢掉对方任何东西时，分支也跟着前移：能快进，并且分支是当前检出的、已跟踪的文件没有改动时，文件一起更新。对方在这个分支上有自己的提交，或者有改动的文件时，分支保持不动，回复里说明原因，由那边自己合并或变基。路径按对方机器解释（`~` 是对方的家目录）。送到对方已有的仓库时，两边至少要有一个相同的根提交（第一个提交），否则拒绝；对方仓库还没有提交时不受这条限制。浅克隆的仓库不能送（它没有早期历史），会提示先 `git fetch --unshallow`；Git LFS 只送指针文件，不送内容。本机未提交的文件不会送，回复里会写出个数。对方的状态栏会提示收到了什么，事件日志也会记一笔。`link-push-limit`（默认 200M）限制一次的大小，两边各自检查；两边都要装 git。agent 可以通过 MCP 的 `push_repo` 做同样的事。设计见 [docs/design/link-push.md](docs/design/link-push.md)。
 
 ## 手册
 

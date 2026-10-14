@@ -57,7 +57,7 @@ pub(super) struct LinkAnswer {
 const ANSWER_GRACE: Duration = Duration::from_secs(5);
 
 /// The headers every request carries.
-fn common_headers(from: &str, port: u16, time: i64, nonce: &str) -> Vec<(&'static str, String)> {
+pub(super) fn common_headers(from: &str, port: u16, time: i64, nonce: &str) -> Vec<(&'static str, String)> {
     vec![
         (link::H_PROTOCOL, link::PROTOCOL.to_string()),
         (link::H_VERSION, env!("CARGO_PKG_VERSION").to_string()),
@@ -187,7 +187,7 @@ impl Server {
         Ok(())
     }
 
-    fn peer_key(&mut self, addr: &str) -> Result<String, String> {
+    pub(super) fn peer_key(&mut self, addr: &str) -> Result<String, String> {
         self.link()?.peer_by_addr(addr).map(|p| p.key.clone()).ok_or_else(|| {
             format!(
                 "{addr} is not paired with this machine: `keepane link add http://{addr}/#k=...` (its `keepane web` address), or `keepane link trust`"
@@ -453,7 +453,12 @@ impl Server {
 
     /// An answer as it is when its signature is the paired machine's, for
     /// this request; the reason otherwise.
-    fn checked(addr: &str, key: &str, nonce: &str, result: Result<Answer, String>) -> Result<Answer, String> {
+    pub(super) fn checked(
+        addr: &str,
+        key: &str,
+        nonce: &str,
+        result: Result<Answer, String>,
+    ) -> Result<Answer, String> {
         let ans = result?;
         let sig = ans.header(link::H_SIGN).unwrap_or_default();
         if !link::verify(key, &link::answer_text(nonce, ans.status, &ans.body), sig) {
@@ -508,6 +513,7 @@ impl Server {
                 shell: false,
                 screen: false,
                 panes: false,
+                push: false,
             }),
         }
         if let Err(e) = self.save_peers() {

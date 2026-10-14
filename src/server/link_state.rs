@@ -14,6 +14,8 @@ use super::{ClientId, Outcome, Server};
 use crate::link::{self, Identity, Nonces, Peer};
 
 pub(super) struct LinkHost {
+    /// Where all of it is kept, decided once, at load (`link::dir`).
+    pub(super) dir: std::path::PathBuf,
     pub(super) id: Identity,
     pub(super) peers: Vec<Peer>,
     pub(super) nonces: Nonces,
@@ -33,6 +35,9 @@ pub(super) struct LinkHost {
     /// that machine: the ones it may close, and what counts toward its
     /// `agent-pane-limit`. Not kept past this server.
     pub(super) made: HashMap<super::PaneId, String>,
+    /// Bundles of commits arriving from other machines (`link_git`), by
+    /// their transfer's name.
+    pub(super) incoming: HashMap<String, super::link_git::Incoming>,
 }
 
 /// Origins remembered at most (as many as message records, `observe`).
@@ -88,8 +93,11 @@ pub(super) fn js(s: &str) -> String {
 }
 
 impl Server {
-    fn link_dir(&self) -> std::path::PathBuf {
-        link::dir(&self.socket)
+    /// The link directory: the one the state was loaded from (the keys,
+    /// the table, where repositories went, bundles on their way), else where
+    /// it would be.
+    pub(super) fn link_dir(&self) -> std::path::PathBuf {
+        self.link.as_ref().map_or_else(|| link::dir(&self.socket), |l| l.dir.clone())
     }
 
     /// The link state, loaded on first use (the key made then, if none).
@@ -97,7 +105,12 @@ impl Server {
         if self.link.is_none() {
             let dir = self.link_dir();
             let id = Identity::load_or_make(&dir).map_err(|e| format!("link: {e:#}"))?;
+            // Bundles left half sent or taken by a server before this one.
+            for d in ["incoming", "outgoing"] {
+                let _ = std::fs::remove_dir_all(dir.join(d));
+            }
             self.link = Some(LinkHost {
+                dir: dir.clone(),
                 id,
                 peers: link::load_table(&dir),
                 nonces: Nonces::default(),
@@ -106,6 +119,7 @@ impl Server {
                 refused: HashMap::new(),
                 sent: HashMap::new(),
                 made: HashMap::new(),
+                incoming: HashMap::new(),
             });
         }
         Ok(self.link.as_mut().expect("just made"))
@@ -149,10 +163,12 @@ impl Server {
                 Err(e) => Outcome::Error(e),
             },
             Cmd::LinkList => self.link_list(),
-            Cmd::LinkTrust { addr, key, shell, screen, panes } => {
-                self.link_trust(cid, addr, key, [shell, screen, panes])
+            Cmd::LinkTrust { addr, key, shell, screen, panes, push } => {
+                self.link_trust(cid, addr, key, [shell, screen, panes, push])
             }
-            Cmd::LinkAllow { addr, shell, screen, panes } => self.link_allow(cid, &addr, [shell, screen, panes]),
+            Cmd::LinkAllow { addr, shell, screen, panes, push } => {
+                self.link_allow(cid, &addr, [shell, screen, panes, push])
+            }
             Cmd::LinkRekey => self.link_rekey(),
             other => Outcome::Error(format!("not a link command: {other}")),
         }
@@ -166,7 +182,8 @@ impl Server {
         if l.peers.is_empty() {
             return Outcome::Text("no machines paired: `keepane link add <its keepane web address>`".into());
         }
-        let mut rows = vec![["MACHINE", "KEY", "SHELL", "SCREEN", "PANES", "LAST SEEN"].map(String::from).to_vec()];
+        let mut rows =
+            vec![["MACHINE", "KEY", "SHELL", "SCREEN", "PANES", "PUSH", "LAST SEEN"].map(String::from).to_vec()];
         let yes = |b: bool| if b { "yes" } else { "no" }.to_string();
         for p in &l.peers {
             rows.push(vec![
@@ -175,6 +192,7 @@ impl Server {
                 yes(p.shell),
                 yes(p.screen),
                 yes(p.panes),
+                yes(p.push),
                 l.seen.get(&p.key).map_or("never".into(), |t| t.format("%H:%M:%S").to_string()),
             ]);
         }
@@ -188,15 +206,17 @@ impl Server {
         cid: Option<ClientId>,
         addr: String,
         key: String,
-        [shell, screen, panes]: [bool; 3],
+        [shell, screen, panes, push]: [bool; 4],
     ) -> Outcome {
-        if (shell || screen || panes) && self.caller_pane(cid).is_some() {
+        if (shell || screen || panes || push) && self.caller_pane(cid).is_some() {
             let flag = if shell {
                 "--shell"
             } else if screen {
                 "--screen"
-            } else {
+            } else if panes {
                 "--panes"
+            } else {
+                "--push"
             };
             return Outcome::Error(not_from_a_pane(&format!("link-trust {flag}")));
         }
@@ -214,8 +234,9 @@ impl Server {
                 p.shell = shell;
                 p.screen = screen;
                 p.panes = panes;
+                p.push = push;
             }
-            None => l.peers.push(Peer { key: key.clone(), addr: addr.clone(), shell, screen, panes }),
+            None => l.peers.push(Peer { key: key.clone(), addr: addr.clone(), shell, screen, panes, push }),
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
@@ -225,7 +246,7 @@ impl Server {
             &format!("link: {addr} ({fp}) trusted by {by}"),
             "trusted",
             &format!(
-                ",\"addr\":{},\"key\":{},\"shell\":{shell},\"screen\":{screen},\"panes\":{panes},\"by\":{}",
+                ",\"addr\":{},\"key\":{},\"shell\":{shell},\"screen\":{screen},\"panes\":{panes},\"push\":{push},\"by\":{}",
                 js(&addr),
                 js(&key),
                 js(&by)
@@ -235,11 +256,16 @@ impl Server {
     }
 
     /// Whether a machine's messages may run as commands in `shell` panes
-    /// here, whether it may read what the panes show, and whether it may
-    /// start panes here. Only a person outside every pane decides: otherwise
+    /// here, whether it may read what the panes show, whether it may start
+    /// panes here, and whether it may send commits into repositories here. Only a person outside every pane decides: otherwise
     /// a program in a pane could let another machine run commands on this
     /// one, or read its screens.
-    fn link_allow(&mut self, cid: Option<ClientId>, addr: &str, [shell, screen, panes]: [Option<bool>; 3]) -> Outcome {
+    fn link_allow(
+        &mut self,
+        cid: Option<ClientId>,
+        addr: &str,
+        [shell, screen, panes, push]: [Option<bool>; 4],
+    ) -> Outcome {
         if self.caller_pane(cid).is_some() {
             return Outcome::Error(not_from_a_pane("link-allow"));
         }
@@ -260,7 +286,10 @@ impl Server {
         if let Some(s) = panes {
             p.panes = s;
         }
-        let (key, now_shell, now_screen, now_panes) = (p.key.clone(), p.shell, p.screen, p.panes);
+        if let Some(s) = push {
+            p.push = s;
+        }
+        let (key, now_shell, now_screen, now_panes, now_push) = (p.key.clone(), p.shell, p.screen, p.panes, p.push);
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
         }
@@ -274,6 +303,9 @@ impl Server {
         }
         if panes.is_some() {
             said.push(format!("{addr} {} start panes here", may(now_panes)));
+        }
+        if push.is_some() {
+            said.push(format!("{addr} {} send commits into repositories here (clone, push)", may(now_push)));
         }
         let agent_commands = self.opts.agent_commands.clone();
         if panes == Some(true) {
@@ -299,7 +331,7 @@ impl Server {
             &format!("link: {text} (by {by})"),
             "allowed",
             &format!(
-                ",\"addr\":{},\"key\":{},\"shell\":{now_shell},\"screen\":{now_screen},\"panes\":{now_panes},\"by\":{}",
+                ",\"addr\":{},\"key\":{},\"shell\":{now_shell},\"screen\":{now_screen},\"panes\":{now_panes},\"push\":{now_push},\"by\":{}",
                 js(addr),
                 js(&key),
                 js(&by)
@@ -367,8 +399,14 @@ mod tests {
         assert_eq!(text(server("link-state-a").exec_link_local(Cmd::LinkId, None)), key_a, "kept");
 
         assert!(text(b.exec_link_local(Cmd::LinkList, None)).starts_with("no machines paired"));
-        let trust =
-            Cmd::LinkTrust { addr: "10.0.0.1:7681".into(), key: ka.into(), shell: false, screen: false, panes: false };
+        let trust = Cmd::LinkTrust {
+            addr: "10.0.0.1:7681".into(),
+            key: ka.into(),
+            shell: false,
+            screen: false,
+            panes: false,
+            push: false,
+        };
         assert_eq!(text(b.exec_link_local(trust, None)), format!("trusted 10.0.0.1:7681  {fp}"));
         let own = Cmd::LinkTrust {
             addr: "10.0.0.2:7681".into(),
@@ -376,6 +414,7 @@ mod tests {
             shell: false,
             screen: false,
             panes: false,
+            push: false,
         };
         assert!(text(b.exec_link_local(own, None)).contains("own key"));
         let list = text(b.exec_link_local(Cmd::LinkList, None));
@@ -384,7 +423,8 @@ mod tests {
             "{list}"
         );
 
-        let allow = |addr: &str, shell, screen| Cmd::LinkAllow { addr: addr.into(), shell, screen, panes: None };
+        let allow =
+            |addr: &str, shell, screen| Cmd::LinkAllow { addr: addr.into(), shell, screen, panes: None, push: None };
         assert!(text(b.exec_link_local(allow("10.0.0.9:1", Some(true), None), None)).contains("not paired"));
         assert_eq!(
             text(b.exec_link_local(allow("10.0.0.1:7681", Some(true), None), None)),
@@ -397,7 +437,8 @@ mod tests {
         );
         // Starting panes here, on its own too: what it may start said, and
         // that a shell on the list runs anything.
-        let panes = Cmd::LinkAllow { addr: "10.0.0.1:7681".into(), shell: None, screen: None, panes: Some(true) };
+        let panes =
+            Cmd::LinkAllow { addr: "10.0.0.1:7681".into(), shell: None, screen: None, panes: Some(true), push: None };
         b.opts.agent_commands = "claude C:\\bin\\bash.exe codex".into();
         let said = text(b.exec_link_local(panes.clone(), None));
         assert!(said.starts_with("10.0.0.1:7681 may start panes here; it may start: claude"), "{said}");
@@ -405,12 +446,21 @@ mod tests {
         b.opts.agent_commands = "claude codex".into();
         assert!(!text(b.exec_link_local(panes, None)).contains("run any command"), "agents only");
         let list = text(b.exec_link_local(Cmd::LinkList, None));
-        assert!(list.lines().next().unwrap().contains("PANES") && list.contains("yes    yes     yes"), "{list}");
+        assert!(list.lines().next().unwrap().contains("PANES") && list.contains("yes    yes     yes    no"), "{list}");
+        let push =
+            Cmd::LinkAllow { addr: "10.0.0.1:7681".into(), shell: None, screen: None, panes: None, push: Some(true) };
+        assert_eq!(
+            text(b.exec_link_local(push, None)),
+            "10.0.0.1:7681 may send commits into repositories here (clone, push)"
+        );
         let again = server("link-state-b");
         let mut again = again;
         let peers = &again.link().unwrap().peers;
         assert_eq!(peers.len(), 1);
-        assert!(peers[0].shell && peers[0].screen && peers[0].panes && peers[0].key == ka, "read back from the file");
+        assert!(
+            peers[0].shell && peers[0].screen && peers[0].panes && peers[0].push && peers[0].key == ka,
+            "read back"
+        );
 
         let rekey = text(b.exec_link_local(Cmd::LinkRekey, None));
         assert!(rekey.contains("pair again"), "{rekey}");

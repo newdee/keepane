@@ -1188,6 +1188,7 @@ keepane (never from inside a pane, where an agent could):
 keepane link allow 100.64.0.3:7681 --shell     # --no-shell takes it back
 keepane link allow 100.64.0.3:7681 --screen    # it may read the panes here; --no-screen takes it back
 keepane link allow 100.64.0.3:7681 --panes     # it may start panes here; --no-panes takes it back
+keepane link allow 100.64.0.3:7681 --push      # it may send commits here (clone, push); --no-push takes it back
 keepane link remove 100.64.0.3:7681            # unpair, on both
 keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
 keepane link rekey                             # a new key: every pairing has to be made again
@@ -1231,6 +1232,39 @@ unpairing are said on the status line and kept in the event log, and so are
 refused requests, once a minute for each address that sends them (a flood of
 bad requests fills neither). The design and every decision:
 [docs/design/link.md](docs/design/link.md).
+
+### Sending commits to another machine
+
+A repository's commits go to a paired machine that allowed this one to
+(`--push`), one way, committed work only. Run these in the repository:
+
+```powershell
+keepane clone 100.64.0.3:7681                  # a copy there, in its link-clone-dir (~/keepane/<this repository's name>)
+keepane clone 100.64.0.3:7681 ~/src/proj       # or at a path there (nothing there yet, or an empty directory)
+keepane push                                   # later: the new commits of the current branch, to where it went
+keepane push 100.64.0.3:7681 ~/src/proj        # to a repository already there (the same project), kept from now
+keepane push --tell %worker                    # and a message to that pane there once they are in
+keepane push -l                                # where this machine's repositories go
+```
+
+This machine keeps where each repository went, by the other machine's key,
+so a new address (another network) changes nothing; `keepane push` with no
+machine goes to the one it went to (name it when it went to more than one).
+Only the commits that machine lacks go, as a git bundle sent in pieces and
+checked whole before git takes it. There, the commits land in `<this
+machine>/<branch>`, and the branch moves on with them when that loses
+nothing: a fast-forward, its files too when it is checked out and no tracked
+file is changed. When that side has commits of its own on the branch, or
+changed files, the branch is left as it was and the answer says why, for
+that side to merge or rebase. A path names that machine's directories (`~`
+its home). A repository already there is taken only when it shares a first
+commit with this one (or has no commit yet). A shallow clone is refused (its
+early history is not there to send: `git fetch --unshallow` first); Git LFS
+contents are not sent, only their pointer files. Files not committed here
+are counted in the answer and not sent. The status line there says what
+came, and the event log keeps it. `link-push-limit` (default 200M) bounds a
+bundle on both sides; both need git. Agents do it through MCP: `push_repo`.
+The design: [docs/design/link-push.md](docs/design/link-push.md).
 
 ## The manual
 

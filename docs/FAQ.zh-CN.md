@@ -84,7 +84,7 @@ pane 的编号（`%7`）和名字（`%builder`）跟着 pane 走，不管它被�
 keepane link allow 192.168.1.20:7681 --shell
 ```
 
-加 `--screen` 则允许那台机器读取 pane 的屏幕（`keepane link capture`）。
+加 `--screen` 则允许那台机器读取 pane 的屏幕（`keepane link capture`）；加 `--panes` 允许它在这边开 pane；加 `--push` 允许它往这边的仓库送提交（`keepane clone`、`keepane push`）。
 
 ## 手机打不开页面
 

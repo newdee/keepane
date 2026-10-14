@@ -183,6 +183,20 @@ fn tools() -> Vec<Value> {
             &["host"],
         ),
         tool(
+            "push_repo",
+            "Send the commits of the current branch of the repository you are in to another machine paired \
+             with this one, which must have allowed this one to (link allow --push there): to where it was \
+             cloned or pushed before (keepane clone host:port makes the copy there first), or to path there. \
+             Only committed work goes. Returns what happened there (fast-forwarded, or kept beside the branch \
+             and why).",
+            json!({
+                "host": s("The machine, host:port (needed when the repository goes to more than one, or with path)"),
+                "path": s("The repository's path there (only the first time, for one it was not cloned to)"),
+                "tell": s("A pane there to send a message to once the commits are in"),
+            }),
+            &[],
+        ),
+        tool(
             "kill_pane",
             "Close a pane (kept 10 s for the user to undo). One on another machine (host:port/...) only if \
              this machine started it there (create_remote_pane).",
@@ -323,6 +337,20 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             } else {
                 vec!["kill-pane".into(), "-t".into(), pane]
             }
+        }
+        "push_repo" => {
+            let mut c = vec!["link-push".to_string()];
+            c.extend(str_of("host"));
+            if let Some(p) = str_of("path") {
+                if c.len() == 1 {
+                    return Err("push_repo: path needs host".into());
+                }
+                c.push(p);
+            }
+            if let Some(t) = str_of("tell") {
+                c.extend(["--tell".into(), t]);
+            }
+            c
         }
         "create_remote_pane" => {
             let mut c = vec!["link-start".into(), need("host")?];
@@ -514,6 +542,13 @@ mod tests {
             ["link-kill", "10.0.0.1:7681/%7"]
         );
         assert_eq!(command("kill_pane", &json!({"pane": "%7"})).unwrap(), ["kill-pane", "-t", "%7"]);
+        // Commits to another machine: where they went before, or a path there.
+        assert_eq!(command("push_repo", &json!({})).unwrap(), ["link-push"]);
+        assert_eq!(
+            command("push_repo", &json!({"host": "10.0.0.1:7681", "path": "~/p", "tell": "%w"})).unwrap(),
+            ["link-push", "10.0.0.1:7681", "~/p", "--tell", "%w"]
+        );
+        assert!(command("push_repo", &json!({"path": "~/p"})).is_err(), "a path needs its machine");
         // Answering a message, carrying a task on: by their numbers.
         assert_eq!(
             command("send_message", &json!({"re": 7, "task": 3, "text": "done"})).unwrap(),

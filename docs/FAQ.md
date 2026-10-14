@@ -128,7 +128,9 @@ in a pane, so an agent cannot grant it to itself):
 keepane link allow 192.168.1.20:7681 --shell
 ```
 
-`--screen` lets that machine read a pane's screen (`keepane link capture`).
+`--screen` lets that machine read a pane's screen (`keepane link capture`);
+`--panes` lets it start panes here; `--push` lets it send commits into
+repositories here (`keepane clone`, `keepane push`).
 
 ## The phone can't open the page
 

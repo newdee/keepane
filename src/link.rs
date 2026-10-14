@@ -100,14 +100,17 @@ pub fn listen_addrs(bind: &[IpAddr]) -> Vec<IpAddr> {
 /// with the same words (`id`, `add`, `trust`, `list`, `panes`, `allow`,
 /// `remove`, `rekey`).
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
-    const WORDS: &[&str] =
-        &["id", "add", "trust", "list", "panes", "info", "capture", "start", "kill", "allow", "remove", "rekey"];
+    const WORDS: &[&str] = &[
+        "id", "add", "trust", "list", "panes", "info", "capture", "start", "kill", "allow", "remove", "rekey", "clone",
+        "push",
+    ];
     const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
-                         trust <host:port> <key> [--shell] [--screen] [--panes] | list | panes <host:port> | \
+                         trust <host:port> <key> [--shell] [--screen] [--panes] [--push] | list | panes <host:port> | \
                          info <host:port> | capture [-S lines] <host:port/pane> | \
                          start <host:port> [-s session] [-n name] [-m mode] [-c dir] [-- program args] | \
                          kill <host:port/pane> | \
-                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] | \
+                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] [--push|--no-push] | \
+                         clone <host:port> [path] [--tell pane] | push [<host:port> [path]] [--tell pane] | push -l | \
                          remove <host:port> | rekey";
     let Some(what) = args.first().map(String::as_str).filter(|w| WORDS.contains(w)) else {
         bail!("{USAGE}");
@@ -242,6 +245,7 @@ pub fn same(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// A server's key pair.
+#[derive(Clone)]
 pub struct Identity {
     key: SigningKey,
 }
@@ -406,12 +410,14 @@ pub struct Peer {
     pub screen: bool,
     /// It may start panes here (`link start`), and close those it started.
     pub panes: bool,
+    /// It may send commits into repositories here (`clone`, `push`).
+    pub push: bool,
 }
 
 const TABLE_HEAD: &str = "# keepane link: the machines allowed to send messages to this server's panes\n\
                           # (docs/design/link.md). One a line: public key, address, then `shell` when\n\
                           # its messages may run as commands, `screen` when it may read the panes,\n\
-                          # `panes` when it may start panes here.\n";
+                          # `panes` when it may start panes here, `push` when it may send commits.\n";
 
 /// The table's lines back; comments, blank and malformed lines skipped.
 pub fn parse_table(text: &str) -> Vec<Peer> {
@@ -427,8 +433,9 @@ pub fn parse_table(text: &str) -> Vec<Peer> {
             continue;
         }
         let rest: Vec<&str> = f.collect();
-        let (shell, screen, panes) = (rest.contains(&"shell"), rest.contains(&"screen"), rest.contains(&"panes"));
-        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell, screen, panes });
+        let has = |w: &str| rest.contains(&w);
+        let (shell, screen, panes, push) = (has("shell"), has("screen"), has("panes"), has("push"));
+        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell, screen, panes, push });
     }
     out
 }
@@ -439,7 +446,8 @@ pub fn format_table(peers: &[Peer]) -> String {
         let shell = if p.shell { " shell" } else { "" };
         let screen = if p.screen { " screen" } else { "" };
         let panes = if p.panes { " panes" } else { "" };
-        s.push_str(&format!("{} {}{shell}{screen}{panes}\n", p.key, p.addr));
+        let push = if p.push { " push" } else { "" };
+        s.push_str(&format!("{} {}{shell}{screen}{panes}{push}\n", p.key, p.addr));
     }
     s
 }
@@ -451,6 +459,61 @@ pub fn load_table(dir: &Path) -> Vec<Peer> {
 pub fn save_table(dir: &Path, peers: &[Peer]) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     write_private(&dir.join("authorized"), &format_table(peers))
+}
+
+/// Where a repository here goes on another machine (`clone`, `push`;
+/// docs/design/link-push.md): the repository (its real path, `Repo::key`),
+/// that machine's key (so a new address of it changes nothing), the path
+/// there as that machine wrote it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pushed {
+    pub repo: String,
+    pub key: String,
+    pub path: String,
+}
+
+const PUSHES_HEAD: &str = "# keepane: where this machine's repositories were cloned or pushed to\n\
+                           # (docs/design/link-push.md). One a line, tab between: the repository here,\n\
+                           # the other machine's public key, the path there.\n";
+
+/// The records back; comments, blank and malformed lines skipped; one per
+/// repository and machine (the last line wins).
+pub fn parse_pushes(text: &str) -> Vec<Pushed> {
+    let mut out: Vec<Pushed> = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut f = line.split('\t');
+        let (Some(repo), Some(key), Some(path), None) = (f.next(), f.next(), f.next(), f.next()) else { continue };
+        if repo.is_empty() || path.is_empty() || !valid_public(key) {
+            continue;
+        }
+        out.retain(|p| !(p.repo == repo && p.key == key));
+        out.push(Pushed { repo: repo.into(), key: key.into(), path: path.into() });
+    }
+    out
+}
+
+pub fn format_pushes(pushes: &[Pushed]) -> String {
+    let mut s = PUSHES_HEAD.to_string();
+    for p in pushes {
+        s.push_str(&format!("{}\t{}\t{}\n", p.repo, p.key, p.path));
+    }
+    s
+}
+
+pub fn load_pushes(dir: &Path) -> Vec<Pushed> {
+    std::fs::read_to_string(dir.join("pushes")).map(|t| parse_pushes(&t)).unwrap_or_default()
+}
+
+/// Kept: `p` in place of what was there for its repository and machine.
+pub fn save_push(dir: &Path, p: Pushed) -> Result<()> {
+    let mut all = load_pushes(dir);
+    all.retain(|q| !(q.repo == p.repo && q.key == p.key));
+    all.push(p);
+    std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+    write_private(&dir.join("pushes"), &format_pushes(&all))
 }
 
 /// An answer from the other machine.
@@ -713,6 +776,7 @@ mod tests {
             shell,
             screen: false,
             panes: false,
+            push: false,
         };
         assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key]), Ok(want(false)));
         assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--shell"]), Ok(want(true)));
@@ -733,19 +797,54 @@ mod tests {
         let k1 = Identity::make(&dir.join("1")).unwrap().public();
         let k2 = Identity::make(&dir.join("2")).unwrap().public();
         let peers = vec![
-            Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), shell: true, screen: false, panes: false },
-            Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), shell: false, screen: true, panes: true },
+            Peer {
+                key: k1.clone(),
+                addr: "100.64.0.3:7681".into(),
+                shell: true,
+                screen: false,
+                panes: false,
+                push: true,
+            },
+            Peer {
+                key: k2.clone(),
+                addr: "[fd7a::1]:7681".into(),
+                shell: false,
+                screen: true,
+                panes: true,
+                push: false,
+            },
         ];
         save_table(&dir, &peers).unwrap();
         assert_eq!(load_table(&dir), peers);
         let hand = format!("# mine\n\n{k1} 1.2.3.4:5 screen panes shell\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n");
         assert_eq!(
             parse_table(&hand),
-            vec![Peer { key: k1, addr: "1.2.3.4:5".into(), shell: true, screen: true, panes: true }]
+            vec![Peer { key: k1, addr: "1.2.3.4:5".into(), shell: true, screen: true, panes: true, push: false }]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Where repositories went: read back as written, one per repository
+    /// and machine (the last kept), what is not a line of it skipped.
+    #[test]
+    fn where_repositories_went_reads_back() {
+        let dir = std::env::temp_dir().join(format!("keepane-pushes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let k1 = Identity::make(&dir.join("1")).unwrap().public();
+        let k2 = Identity::make(&dir.join("2")).unwrap().public();
+        let p = |repo: &str, key: &str, path: &str| Pushed { repo: repo.into(), key: key.into(), path: path.into() };
+        save_push(&dir, p(r"C:\a b\proj", &k1, "/home/u/keepane/proj")).unwrap();
+        save_push(&dir, p(r"C:\a b\proj", &k2, r"D:\x")).unwrap();
+        save_push(&dir, p(r"C:\a b\proj", &k1, "/home/u/src/proj")).unwrap();
+        assert_eq!(
+            load_pushes(&dir),
+            vec![p(r"C:\a b\proj", &k2, r"D:\x"), p(r"C:\a b\proj", &k1, "/home/u/src/proj")],
+            "one per repository and machine, the last kept"
+        );
+        let hand = format!("# mine\n\nr\tnot-a-key\t/p\nr\t{k1}\t\nr\t{k1}\t/p\textra\nr\t{k1}\t/q\n");
+        assert_eq!(parse_pushes(&hand), vec![p("r", &k1, "/q")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn an_answer_is_read_to_its_length() {
         let a =

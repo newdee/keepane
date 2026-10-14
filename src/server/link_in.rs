@@ -70,7 +70,7 @@ pub(super) fn session_for(host: &str) -> String {
 }
 impl Server {
     /// The JSON answer: signed by this server for the request's nonce.
-    fn link_answer(&mut self, nonce: &str, status: u16, body: String) -> Outcome {
+    pub(super) fn link_answer(&mut self, nonce: &str, status: u16, body: String) -> Outcome {
         let sign = match self.link() {
             Ok(l) => l.id.sign(&link::answer_text(nonce, status, body.as_bytes())),
             Err(_) => String::new(),
@@ -189,6 +189,9 @@ impl Server {
             ("POST", "/link/pane") => self.link_pane_in(&req, &nonce, &peer),
             ("POST", "/link/kill") => self.link_kill_in(&req, &nonce, &peer),
             ("POST", "/link/trace") => self.link_trace_in(cid, &req, &nonce, &peer),
+            ("POST", "/link/git/look") => self.link_git_look_in(cid, &req.body, &nonce, &peer),
+            ("POST", "/link/git/chunk") => self.link_git_chunk_in(&req.body, &nonce, &peer),
+            ("POST", "/link/git/apply") => self.link_git_apply_in(cid, &req.body, &nonce, &peer),
             ("GET", "/link/panes") => {
                 let cmd = Cmd::ListPanes { target: None, all: true, session: false, format: Some(PANES.into()) };
                 match self.exec(cmd, None) {
@@ -219,7 +222,7 @@ impl Server {
     /// A refused request is said on the status line and kept in the event
     /// log: something on the network is trying, and should not go unnoticed.
     /// Once a minute per address at most (`LinkHost::say_refused`).
-    fn link_refused(&mut self, addr: &str, why: &str) {
+    pub(super) fn link_refused(&mut self, addr: &str, why: &str) {
         if !self.link().is_ok_and(|l| l.say_refused(addr)) {
             return;
         }
@@ -277,6 +280,7 @@ impl Server {
                 shell: false,
                 screen: false,
                 panes: false,
+                push: false,
             }),
         }
         l.seen.insert(from.to_string(), chrono::Local::now());

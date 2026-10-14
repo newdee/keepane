@@ -7,6 +7,7 @@ pub mod config;
 pub mod dashboard;
 pub mod format;
 pub mod git;
+pub mod gitsync;
 pub mod histlog;
 pub mod ipc;
 pub mod keys;

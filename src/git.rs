@@ -68,6 +68,25 @@ fn is_commit(s: &str) -> bool {
     s.len() >= 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The real path of `p` (links, short names and case worked out), written as
+/// people write it (`plain`); `p` as it is when the filesystem cannot say.
+pub fn real(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).map(plain).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// A real path as people write it: Windows' `\\?\C:\…` (what canonicalizing
+/// gives) as `C:\…`, `\\?\UNC\server\share` as `\\server\share`.
+pub fn plain(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => p,
+    }
+}
+
 /// A commit's short form, as git writes it.
 pub fn short(commit: &str) -> &str {
     &commit[..commit.len().min(7)]
@@ -79,7 +98,7 @@ impl Repo {
     /// `RUNNER~1`, which a shell may report long; another case; a link) is
     /// one. Its root as found when the filesystem cannot say.
     pub fn key(&self) -> PathBuf {
-        std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone())
+        real(&self.root)
     }
 
     fn head_file(&self) -> Option<String> {
@@ -94,6 +113,13 @@ impl Repo {
             Some(r) => r.strip_prefix("refs/heads/").unwrap_or(r).to_string(),
             None => head.chars().take(7).collect(),
         }
+    }
+
+    /// The branch its head is on; none when detached or unreadable.
+    pub fn on_branch(&self) -> Option<String> {
+        let head = self.head_file()?;
+        let r = head.strip_prefix("ref: ")?;
+        Some(r.strip_prefix("refs/heads/").unwrap_or(r).to_string())
     }
 
     /// The commit its head is at, in full; none on a branch with no commit
@@ -606,6 +632,9 @@ mod tests {
         let other = dir.join("other");
         std::fs::create_dir_all(other.join(".git")).unwrap();
         assert_ne!(key(&other), plain);
+        assert_eq!(super::plain(PathBuf::from(r"\\?\C:\x\y")), PathBuf::from(r"C:\x\y"));
+        assert_eq!(super::plain(PathBuf::from(r"\\?\UNC\srv\share\r")), PathBuf::from(r"\\srv\share\r"));
+        assert_eq!(super::plain(PathBuf::from("/home/u/r")), PathBuf::from("/home/u/r"));
         let gone = Repo { root: dir.join("gone"), gitdir: dir.join("gone/.git"), common: dir.join("gone/.git") };
         assert_eq!(gone.key(), dir.join("gone"));
         std::fs::remove_dir_all(&dir).unwrap();

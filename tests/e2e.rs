@@ -298,6 +298,30 @@ impl Harness {
         self.cli_in(None, argv).await
     }
 
+    /// `cli`, run in directory `dir` (where the server finds a repository).
+    async fn cli_at(&self, dir: &std::path::Path, argv: &[&str]) -> (i32, String, String) {
+        let mut c = self.connect().await;
+        c.send(ClientMsg::Command {
+            version: PROTOCOL_VERSION,
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+            cwd: dir.to_string_lossy().into_owned(),
+            cols: COLS,
+            rows: ROWS,
+            interactive: false,
+            pane_env: None,
+        })
+        .await;
+        let mut out = String::new();
+        let mut err = String::new();
+        loop {
+            match c.next().await {
+                ServerMsg::Text(t) => out.push_str(&t),
+                ServerMsg::Error(e) => err.push_str(&e),
+                ServerMsg::Done { code } => return (code, out, err),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
     /// `cli`, as run by a program inside pane `pane` (`KEEPANE_PANE`).
     async fn cli_in(&self, pane: Option<u32>, argv: &[&str]) -> (i32, String, String) {
         let mut c = self.connect().await;
@@ -1732,8 +1756,7 @@ async fn choose_tree_as_a_tree_of_blocks() {
 async fn choose_tree_as_a_chart() {
     // The link directory the link tests use: a machine that never paired
     // must not get a key pair from opening the chart.
-    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
-    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
+    let _dir = link_test_dir();
     let h = Harness::start("chartview").await;
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "s"]).await;
@@ -5932,8 +5955,7 @@ async fn link_call(
 /// that is off is an error at once.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_machine_allowed_to_starts_panes_on_another_and_closes_only_those() {
-    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
-    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
+    let _dir = link_test_dir();
     let a = Harness::start("lpa").await;
     let b = Harness::start("lpb").await;
     a.cli(&["new", "-d", "-s", "wa"]).await;
@@ -5994,14 +6016,178 @@ async fn a_machine_allowed_to_starts_panes_on_another_and_closes_only_those() {
     b.cli(&["kill-server"]).await;
 }
 
+/// Commits go to another machine (docs/design/link-push.md): only from a
+/// machine allowed to (`--push`), `clone` makes the repository there and
+/// keeps where, `push` sends what is new: fast-forwarded with its files,
+/// already up to date, kept beside the branch when that side has commits of
+/// its own, in several pieces when the bundle is over 1 MiB, refused over
+/// either side's `link-push-limit`, and to a repository named by its path
+/// only when it is the same project; `--tell` messages a pane there, which
+/// says so on its status line too; files not committed here are counted.
+#[tokio::test(flavor = "multi_thread")]
+async fn commits_go_to_another_machine_by_clone_and_push() {
+    let Some(git) = keepane::git::command("") else {
+        eprintln!("no git here: skipped");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("keepane-test-push-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    link_test_dir();
+    let (here, there) = (root.join("proj"), root.join("there"));
+    std::fs::create_dir_all(&here).unwrap();
+    let g = |dir: &std::path::Path, args: &[&str]| {
+        let o = std::process::Command::new(&git)
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let commit = |dir: &std::path::Path, file: &str, bytes: &[u8]| {
+        std::fs::write(dir.join(file), bytes).unwrap();
+        g(dir, &["add", file]);
+        g(dir, &["commit", "-q", "-m", file]);
+    };
+    g(&here, &["init", "-q", "-b", "main"]);
+    commit(&here, "a.txt", b"one\n");
+    let a = Harness::start("gpa").await;
+    let b = Harness::start("gpb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    b.cli(&["set", "-g", "link-clone-dir", &there.to_string_lossy()]).await;
+    // Not allowed yet: said how to allow it, nothing made there.
+    let (code, _, err) = a.cli_at(&here, &["clone", &addr_b]).await;
+    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --push")), "{err}");
+    assert!(!there.exists());
+    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--push"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("may send commits into repositories here"), "{out}");
+    // Cloned under link-clone-dir, by this repository's name; kept.
+    let (code, out, err) = a.cli_at(&here, &["clone", &addr_b]).await;
+    assert_eq!(code, 0, "{err}");
+    let copy = there.join("proj");
+    assert!(out.contains("cloned, main checked out") && copy.join("a.txt").is_file(), "{out}");
+    let remote = g(&copy, &["remote"]);
+    assert!(!remote.is_empty() && remote != "origin", "named after this machine: {remote}");
+    let (_, listed, _) = a.cli_at(&here, &["push", "-l"]).await;
+    assert!(listed.contains(&addr_b) && listed.contains(&copy.to_string_lossy().to_string()), "{listed}");
+    let (code, _, err) = a.cli_at(&here, &["clone", &addr_b]).await;
+    assert!(code != 0 && err.contains("is a repository already"), "{err}");
+    // A path named there (relative: under its link-clone-dir).
+    let (code, out, err) = a.cli_at(&here, &["clone", &addr_b, "named/copy"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("cloned") && there.join("named").join("copy").join("a.txt").is_file(), "{out}");
+    // The record follows the last clone; a repository there named by its
+    // path, of the same project, takes the commits and is kept from now.
+    let (code, out, err) = a.cli_at(&here, &["push", &addr_b, &copy.to_string_lossy()]).await;
+    assert!(code == 0 && out.contains("already up to date"), "{out}{err}");
+    let (_, listed, _) = a.cli_at(&here, &["push", "-l"]).await;
+    assert!(listed.contains(&copy.to_string_lossy().to_string()) && !listed.contains("copy\n"), "{listed}");
+    // A directory there with something in it: not a place for a clone.
+    std::fs::create_dir_all(there.join("full")).unwrap();
+    std::fs::write(there.join("full").join("note.txt"), "mine").unwrap();
+    let (code, _, err) = a.cli_at(&here, &["clone", &addr_b, "full"]).await;
+    // Refused here, before anything is sent (there it would be refused too, later).
+    assert!(code != 0 && err.contains("is not empty: name another path"), "{err}");
+    // New commits: fast-forwarded there, files too; then nothing new.
+    commit(&here, "b.txt", b"two\n");
+    let (code, out, err) = a.cli_at(&here, &["push"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("main 1 commit, fast-forwarded") && copy.join("b.txt").is_file(), "{out}");
+    let (code, out, _) = a.cli_at(&here, &["push"]).await;
+    assert!(code == 0 && out.contains("already up to date"), "{out}");
+    // Outside a repository: said.
+    let (code, _, err) = a.cli(&["push"]).await;
+    assert!(code != 0 && err.contains("is in no git repository"), "{err}");
+    // A commit of that side's own: kept beside its branch; theirs untouched.
+    commit(&copy, "theirs.txt", b"x\n");
+    let mine_there = g(&copy, &["rev-parse", "main"]);
+    // Over 1 MiB, in several pieces (bytes git cannot squeeze).
+    let mut big = Vec::with_capacity(1_600_000);
+    let mut x: u64 = 0x9e3779b97f4a7c15;
+    while big.len() < 1_600_000 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        big.extend_from_slice(&x.to_le_bytes());
+    }
+    commit(&here, "big.bin", &big);
+    let (code, out, err) = a.cli_at(&here, &["push"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(&format!("1 commit kept in {remote}/main")) && out.contains("of its own"), "{out}");
+    assert_eq!(g(&copy, &["rev-parse", "main"]), mine_there);
+    assert_eq!(g(&copy, &["rev-parse", &format!("{remote}/main")]), g(&here, &["rev-parse", "main"]));
+    // Over link-push-limit: here, then there.
+    big.iter_mut().for_each(|b| *b = b.wrapping_add(1));
+    commit(&here, "big2.bin", &big);
+    a.cli(&["set", "-g", "link-push-limit", "1M"]).await;
+    let (code, _, err) = a.cli_at(&here, &["push"]).await;
+    assert!(code != 0 && err.contains("over link-push-limit") && err.contains("nothing sent"), "{err}");
+    a.cli(&["set", "-g", "link-push-limit", "200M"]).await;
+    b.cli(&["set", "-g", "link-push-limit", "1M"]).await;
+    let (code, _, err) = a.cli_at(&here, &["push"]).await;
+    assert!(code != 0 && err.contains("over link-push-limit here"), "{err}");
+    b.cli(&["set", "-g", "link-push-limit", "200M"]).await;
+    // A repository there named by its path: not the same project, refused.
+    let other = root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    g(&other, &["init", "-q", "-b", "main"]);
+    commit(&other, "o.txt", b"o\n");
+    let (code, _, err) = a.cli_at(&here, &["push", &addr_b, &other.to_string_lossy()]).await;
+    assert!(code != 0 && err.contains("another project"), "{err}");
+    // That machine moves (its web on another port): this one learns where
+    // from its next request, and `push` with no machine goes there, by its key.
+    assert_eq!(b.cli(&["web-stop"]).await.0, 0);
+    let (_, addr_b) = web(&b).await;
+    let (code, _, err) = b.cli(&["link-info", &addr_a]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, out, err) = a.cli_at(&here, &["push"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with(&format!("{addr_b}:")) && out.contains("kept in"), "{out}"); // Told to a pane there; said on its status line; a file not committed counted.
+    b.cli(&["rename-pane", "-t", "wb:0.0", "listener"]).await;
+    std::fs::write(here.join("a.txt"), "edited\n").unwrap();
+    let (code, out, err) = a.cli_at(&here, &["push", &addr_b, "--tell", "%listener"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("note: 1 file(s) here are not committed"), "{out}");
+    // (Sent once the commits are in, after the answer here.)
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, inbox, _) = b.cli(&["list-messages", "-t", "%listener"]).await;
+        if inbox.contains("commits from") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never told: {inbox}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (_, said, _) = b.cli(&["show-messages"]).await;
+    assert!(said.contains(&format!("link: commits from {addr_a}")), "{said}");
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
+    for h in [&a, &b] {
+        let _ = std::fs::remove_dir_all(keepane::link::dir(&h.socket));
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
 /// The chart with another machine paired: a row of machines under the
 /// root (this one first), the other's sessions, windows and panes under it
 /// by their names, Enter on one of its panes shows that pane's screen,
 /// `x` touches nothing there, and a machine that went off says so.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_chart_shows_the_paired_machines() {
-    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
-    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
+    let _dir = link_test_dir();
     let a = Harness::start("lca").await;
     let b = Harness::start("lcb").await;
     let mut c = a.connect().await;
@@ -6083,9 +6269,7 @@ async fn the_chart_shows_the_paired_machines() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn panes_on_two_machines_pass_messages_once_paired() {
-    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
+    let dir = link_test_dir();
     let a = Harness::start("linka").await;
     let b = Harness::start("linkb").await;
     a.cli(&["new", "-d", "-s", "wa"]).await;
@@ -6257,7 +6441,7 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
 
     // A stranger, a stale clock, a repeat, a signature for another request:
     // refused, and said on the status line.
-    let stranger = keepane::link::Identity::make(&dir.join("stranger")).unwrap();
+    let stranger = keepane::link::Identity::make(&dir.join(format!("stranger-{}", std::process::id()))).unwrap();
     let key_b = b.cli(&["link-id"]).await.1.split_whitespace().next().unwrap().to_string();
     let now = keepane::link::now();
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n1", "").await;
@@ -6402,7 +6586,10 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let (_, trace, _) = a.cli(&["trace-message", &msg_id(&err.trim_start_matches('#').replace("rejected", ""))]).await;
     assert!(trace.contains("rejected"), "nothing queued: {trace}");
     a.cli(&["kill-server"]).await;
-    let _ = std::fs::remove_dir_all(&dir);
+    for h in [&a, &b] {
+        let _ = std::fs::remove_dir_all(keepane::link::dir(&h.socket));
+    }
+    let _ = std::fs::remove_dir_all(dir.join(format!("stranger-{}", std::process::id())));
 }
 
 /// The prefix handed over as a bare byte (character 0x02, no Ctrl flag, no
@@ -7668,6 +7855,16 @@ async fn the_newer_variables_come_from_the_live_tree() {
     let (_, out, _) = h.cli(&["display-message", "-p", "#{client_name}|[#{client_session}]|#{client_prefix}"]).await;
     assert!(out.trim().starts_with("client-") && out.trim().ends_with("|[]|0"), "{out}");
     h.cli(&["kill-server"]).await;
+}
+
+/// The link directory of every test that pairs servers: one, the same for
+/// all (it is the process's environment, and they run at once), never
+/// removed while they run; each server's own directory under it is new
+/// (`Harness::start`).
+fn link_test_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("keepane-test-link-{}", std::process::id()));
+    unsafe { std::env::set_var("KEEPANE_LINK_DIR", &dir) };
+    dir
 }
 
 // ------------------------------------------------------------ pane messages

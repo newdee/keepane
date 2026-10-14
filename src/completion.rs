@@ -30,7 +30,21 @@ pub(crate) const LOCAL: &[&str] = &[
 /// The flags of the commands the client handles itself.
 const LOCAL_FLAGS: &[(&str, &[&str])] = &[
     ("import-config", &["-n", "-o"]),
-    ("link", &["--no-panes", "--no-screen", "--no-shell", "--panes", "--screen", "--shell"]),
+    (
+        "link",
+        &[
+            "--no-panes",
+            "--no-push",
+            "--no-screen",
+            "--no-shell",
+            "--panes",
+            "--push",
+            "--screen",
+            "--shell",
+            "--tell",
+            "-l",
+        ],
+    ),
     ("man", &["--roff"]),
     ("setup", &["--install"]),
     ("update", &["--check"]),
@@ -85,7 +99,8 @@ pub fn complete(
             owned(&["status", "stop"])
         } else if canon == "link" && rest.len() == 1 && !current.starts_with('-') {
             owned(&[
-                "add", "allow", "capture", "id", "info", "kill", "list", "panes", "start", "rekey", "remove", "trust",
+                "add", "allow", "capture", "clone", "id", "info", "kill", "list", "panes", "push", "start", "rekey",
+                "remove", "trust",
             ])
         } else if canon == "setup" && rest.len() == 1 && !current.starts_with('-') {
             owned(&crate::setup::AGENTS.map(crate::setup::Agent::word))
@@ -322,7 +337,7 @@ Register-ArgumentCompleter -Native -CommandName keepane,tmux -ScriptBlock {{
   }} elseif ($canon -eq 'web' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('status', 'stop')
   }} elseif ($canon -eq 'link' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
-    $out = @('add', 'allow', 'capture', 'id', 'info', 'kill', 'list', 'panes', 'start', 'rekey', 'remove', 'trust')
+    $out = @('add', 'allow', 'capture', 'clone', 'id', 'info', 'kill', 'list', 'panes', 'push', 'start', 'rekey', 'remove', 'trust')
   }} elseif ($canon -eq 'setup' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('claude', 'codex', 'cursor', 'gemini', 'opencode')
   }} elseif ($canon -in @('set-option','show-options') -and $prev -ne '-t' -and $wordToComplete -notlike '-*') {{

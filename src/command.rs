@@ -627,7 +627,7 @@ pub enum Cmd {
     LinkAdd {
         url: String,
     },
-    /// `link-trust host:port key [--shell] [--screen] [--panes]`: let the
+    /// `link-trust host:port key [--shell] [--screen] [--panes] [--push]`: let the
     /// machine with that public key send messages here, by hand (no web key
     /// needed).
     LinkTrust {
@@ -636,6 +636,7 @@ pub enum Cmd {
         shell: bool,
         screen: bool,
         panes: bool,
+        push: bool,
     },
     /// `link-list`: the machines paired with this server.
     LinkList,
@@ -664,15 +665,36 @@ pub enum Cmd {
     LinkKill {
         target: String,
     },
+    /// `link-clone host:port [path] [--tell pane]` (`clone`): the repository
+    /// the client is in, as a new one at `path` on that machine (its
+    /// `link-clone-dir` and this one's name when none); where it went is kept
+    /// for `link-push` (docs/design/link-push.md).
+    LinkClone {
+        addr: String,
+        path: Option<String>,
+        tell: Option<String>,
+    },
+    /// `link-push [host:port [path]] [--tell pane]` (`push`): the commits of
+    /// the current branch the other machine lacks, to where this repository
+    /// was cloned or pushed (or `path` there, kept from now); `-l`: where
+    /// this machine's repositories go.
+    LinkPush {
+        addr: Option<String>,
+        path: Option<String>,
+        tell: Option<String>,
+        list: bool,
+    },
     /// `link-allow host:port [--shell|--no-shell] [--screen|--no-screen]
-    /// [--panes|--no-panes]`: whether that machine's messages may run as
+    /// [--panes|--no-panes] [--push|--no-push]`: whether that machine's messages may run as
     /// commands in `shell` panes here, whether it may read what the panes
-    /// here show, and whether it may start panes here.
+    /// here show, whether it may start panes here, and whether it may send
+    /// commits into repositories here (`clone`, `push`).
     LinkAllow {
         addr: String,
         shell: Option<bool>,
         screen: Option<bool>,
         panes: Option<bool>,
+        push: Option<bool>,
     },
     /// `link-remove host:port`: unpair (both sides, when it can be reached).
     LinkRemove {
@@ -1559,7 +1581,7 @@ impl fmt::Display for Cmd {
             }
             Cmd::LinkId => f.write_str("link-id"),
             Cmd::LinkAdd { url } => write!(f, "link-add {}", quote(url)),
-            Cmd::LinkTrust { addr, key, shell, screen, panes } => {
+            Cmd::LinkTrust { addr, key, shell, screen, panes, push } => {
                 write!(f, "link-trust {} {}", quote(addr), quote(key))?;
                 if *shell {
                     f.write_str(" --shell")?;
@@ -1569,6 +1591,9 @@ impl fmt::Display for Cmd {
                 }
                 if *panes {
                     f.write_str(" --panes")?;
+                }
+                if *push {
+                    f.write_str(" --push")?;
                 }
                 Ok(())
             }
@@ -1598,7 +1623,30 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::LinkKill { target } => write!(f, "link-kill {}", quote(target)),
-            Cmd::LinkAllow { addr, shell, screen, panes } => {
+            Cmd::LinkClone { addr, path, tell } => {
+                write!(f, "link-clone {}", quote(addr))?;
+                if let Some(p) = path {
+                    write!(f, " {}", quote(p))?;
+                }
+                if let Some(t) = tell {
+                    write!(f, " --tell {}", quote(t))?;
+                }
+                Ok(())
+            }
+            Cmd::LinkPush { addr, path, tell, list } => {
+                f.write_str("link-push")?;
+                if *list {
+                    f.write_str(" -l")?;
+                }
+                for w in [addr, path].into_iter().flatten() {
+                    write!(f, " {}", quote(w))?;
+                }
+                if let Some(t) = tell {
+                    write!(f, " --tell {}", quote(t))?;
+                }
+                Ok(())
+            }
+            Cmd::LinkAllow { addr, shell, screen, panes, push } => {
                 write!(f, "link-allow {}", quote(addr))?;
                 if let Some(s) = shell {
                     f.write_str(if *s { " --shell" } else { " --no-shell" })?;
@@ -1608,6 +1656,9 @@ impl fmt::Display for Cmd {
                 }
                 if let Some(s) = panes {
                     f.write_str(if *s { " --panes" } else { " --no-panes" })?;
+                }
+                if let Some(s) = push {
+                    f.write_str(if *s { " --push" } else { " --no-push" })?;
                 }
                 Ok(())
             }
@@ -2081,7 +2132,9 @@ pub const COMMANDS: &[&str] = &[
     "link-add",
     "link-allow",
     "link-capture",
+    "link-clone",
     "link-kill",
+    "link-push",
     "link-start",
     "link-id",
     "link-inbound",
@@ -2315,7 +2368,10 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("web-status", &[]),
     ("web-stop", &[]),
     ("link-add", &[]),
-    ("link-allow", &["--shell", "--no-shell", "--screen", "--no-screen", "--panes", "--no-panes"]),
+    (
+        "link-allow",
+        &["--shell", "--no-shell", "--screen", "--no-screen", "--panes", "--no-panes", "--push", "--no-push"],
+    ),
     ("link-capture", &["-S"]),
     ("link-id", &[]),
     ("link-inbound", &[]),
@@ -2324,9 +2380,11 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("link-panes", &[]),
     ("link-rekey", &[]),
     ("link-remove", &[]),
-    ("link-trust", &["--shell", "--screen", "--panes"]),
+    ("link-trust", &["--shell", "--screen", "--panes", "--push"]),
     ("link-start", &["-s", "-n", "-m", "-c"]),
     ("link-kill", &[]),
+    ("link-clone", &["--tell"]),
+    ("link-push", &["-l", "--tell"]),
 ];
 
 /// The flags of a command, for completion.
@@ -2409,6 +2467,8 @@ pub const ALIASES: &[(&str, &str)] = &[
     ("lsp", "list-panes"),
     ("has", "has-session"),
     ("rename", "rename-session"),
+    ("clone", "link-clone"),
+    ("push", "link-push"),
     ("neww", "new-window"),
     ("killw", "kill-window"),
     ("renamew", "rename-window"),
@@ -3769,8 +3829,39 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             Cmd::LinkKill { target }
         }
+        "link-clone" | "link-push" => {
+            let (mut words, mut tell, mut list) = (Vec::new(), None, false);
+            while let Some(w) = a.next() {
+                match w {
+                    "--tell" => tell = Some(a.value("--tell")?.to_string()),
+                    "-l" if n == "link-push" => list = true,
+                    f if f.starts_with('-') && words.is_empty() => return Err(bad_flag(n, f)),
+                    v => words.push(v.to_string()),
+                }
+            }
+            if words.len() > 2 {
+                return Err(format!("{n}: host:port and a path there, at most"));
+            }
+            let mut words = words.into_iter();
+            let (addr, path) = (words.next(), words.next());
+            if let Some(addr) = &addr
+                && !crate::link::valid_hostport(addr)
+            {
+                return Err(format!("{n}: '{addr}' is not host:port (the other machine's keepane web address)"));
+            }
+            if list && (addr.is_some() || tell.is_some()) {
+                return Err(format!("{n}: -l takes nothing else"));
+            }
+            if n == "link-clone" {
+                let addr =
+                    addr.ok_or_else(|| format!("{n}: host:port required (the other machine's keepane web address)"))?;
+                Cmd::LinkClone { addr, path, tell }
+            } else {
+                Cmd::LinkPush { addr, path, tell, list }
+            }
+        }
         "link-allow" => {
-            let (mut addr, mut shell, mut screen, mut panes) = (None, None, None, None);
+            let (mut addr, mut shell, mut screen, mut panes, mut push) = (None, None, None, None, None);
             while let Some(w) = a.next() {
                 match w {
                     "--shell" => shell = Some(true),
@@ -3779,6 +3870,8 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     "--no-screen" => screen = Some(false),
                     "--panes" => panes = Some(true),
                     "--no-panes" => panes = Some(false),
+                    "--push" => push = Some(true),
+                    "--no-push" => push = Some(false),
                     f if f.starts_with('-') => return Err(bad_flag(n, f)),
                     v if addr.is_none() => addr = Some(v.to_string()),
                     v => return Err(format!("{n}: what is '{v}'?")),
@@ -3788,21 +3881,24 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::link::valid_hostport(&addr) {
                 return Err(format!("{n}: '{addr}' is not host:port"));
             }
-            if shell.is_none() && screen.is_none() && panes.is_none() {
-                return Err(format!("{n}: --shell or --no-shell, --screen or --no-screen, --panes or --no-panes"));
+            if shell.is_none() && screen.is_none() && panes.is_none() && push.is_none() {
+                return Err(format!(
+                    "{n}: --shell or --no-shell, --screen or --no-screen, --panes or --no-panes, --push or --no-push"
+                ));
             }
-            Cmd::LinkAllow { addr, shell, screen, panes }
+            Cmd::LinkAllow { addr, shell, screen, panes, push }
         }
         "link-trust" => {
             // `--shell` and `--screen` are the flags: a key is base64url, and
             // one in 64 starts with `-`, so any other word is a word (and is
             // checked as a key or an address below).
-            let (mut words, mut shell, mut screen, mut panes) = (Vec::new(), false, false, false);
+            let (mut words, mut shell, mut screen, mut panes, mut push) = (Vec::new(), false, false, false, false);
             while let Some(w) = a.next() {
                 match w {
                     "--shell" => shell = true,
                     "--screen" => screen = true,
                     "--panes" => panes = true,
+                    "--push" => push = true,
                     v => words.push(v.to_string()),
                 }
             }
@@ -3814,7 +3910,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::link::valid_public(&key) {
                 return Err(format!("{n}: '{key}' is not a keepane link public key"));
             }
-            Cmd::LinkTrust { addr, key, shell, screen, panes }
+            Cmd::LinkTrust { addr, key, shell, screen, panes, push }
         }
         "link-inbound" => {
             let peer = a.next().ok_or("link-inbound: peer address required")?.to_string();
