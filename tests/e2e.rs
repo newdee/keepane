@@ -2119,6 +2119,46 @@ async fn copy_mode_vi_motions_and_modes() {
     h.cli(&["kill-server"]).await;
 }
 
+/// Under the clock's date, other places' time (`clock-mode-zones`); under
+/// the lines, the month with today marked, when it fits; a zone not known
+/// is refused and the one set kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_clock_shows_other_places_and_the_month() {
+    let h = Harness::start("clockzones").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "z"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    h.cli(&["set", "-g", "clock-mode-animation", "off"]).await;
+    let (code, _, err) = h.cli(&["set", "-g", "clock-mode-zones", "Asia/Tokyo, los angeles"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.cli(&["set", "-g", "clock-mode-zones", "Atlantis/Nowhere"]).await;
+    assert!(code != 0 && err.contains("no time zone 'Atlantis/Nowhere'"), "{err}");
+    assert_eq!(h.cli(&["show", "-gv", "clock-mode-zones"]).await.1.trim(), "Asia/Tokyo,America/Los_Angeles");
+    c.prefix('t').await;
+    let month = chrono::Local::now().format("%B %Y").to_string();
+    c.wait_for("the zones and the month", |s| {
+        let t = s.contents();
+        t.contains("Tokyo ")
+            && t.contains(" · Los Angeles ")
+            && t.contains(&month)
+            && t.contains("Mo Tu We Th Fr Sa Su")
+    })
+    .await;
+    // Today reversed: one day's two cells (in the pane: not the status
+    // line's current window, its last row).
+    let today = format!("{:>2}", chrono::Local::now().format("%-d"));
+    let screen = c.screen.screen();
+    let (rows, cols) = screen.size();
+    let marked: Vec<String> = (0..rows - 1)
+        .flat_map(|r| (0..cols).map(move |col| (r, col)))
+        .filter(|&(r, col)| screen.cell(r, col).is_some_and(|cell| cell.inverse()))
+        .map(|(r, col)| screen.cell(r, col).unwrap().contents().to_string())
+        .collect();
+    assert_eq!(marked.concat(), today, "{marked:?}");
+    c.type_str("q").await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// Under the clock something moves with the machine: `random` (the
 /// default) one kind or another each time the clock is put on; `cycle`
 /// takes them in turn, pulse, matrix and bars first; frames come while it

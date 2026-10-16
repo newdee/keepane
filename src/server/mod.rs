@@ -8790,6 +8790,7 @@ impl Server {
                     self.opts.clock_mode_style,
                     colour,
                     lines,
+                    self.opts.clock_mode_info,
                     anim.is_some(),
                 );
                 if let (Some(a), Some(band)) = (anim, band) {

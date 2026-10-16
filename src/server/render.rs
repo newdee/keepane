@@ -938,10 +938,20 @@ pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, colour: Color, 
 /// in `rect`; lines that do not fit go from the last up, so the time stays.
 /// Too small for the big digits: the time as text in the corner.
 ///
+/// `calendar`: under the lines, past a blank row, the month (today in the
+/// clock's colour, reversed), only when all the lines are shown and all of
+/// it fits; the time and the lines come first, and an animation under it
+/// keeps `ANIMATION_KEEPS` rows.
+///
 /// `below`: something is to be drawn under it (an animation): the block
 /// sits a third of the free rows down instead of half, and the rows under
 /// it, past a blank one, are given back; whatever room the time and the
 /// lines take comes first.
+/// The rows an animation under the clock keeps before a calendar takes any
+/// (the bars need theirs, with their names and figures under them).
+pub const ANIMATION_KEEPS: u16 = 10;
+
+#[allow(clippy::too_many_arguments)]
 pub fn draw_clock(
     g: &mut Grid,
     rect: Rect,
@@ -949,6 +959,7 @@ pub fn draw_clock(
     hours: u8,
     colour: Color,
     lines: &[(String, Option<Color>)],
+    calendar: bool,
     below: bool,
 ) -> Option<Rect> {
     let (time, ampm) = if hours == 12 {
@@ -970,7 +981,20 @@ pub fn draw_clock(
     // A blank row between the digits and the lines, when there are any.
     let room = usize::from(rect.h.saturating_sub(6));
     let shown = &lines[..lines.len().min(room)];
-    let total = 5 + if shown.is_empty() { 0 } else { 1 + shown.len() as u16 };
+    let mut total = 5 + if shown.is_empty() { 0 } else { 1 + shown.len() as u16 };
+    let month = calendar.then(|| super::clock::month(now.date_naive()));
+    // With something under it, that keeps its rows first: its band as it
+    // would be, the block a third of the free rows down and a blank row.
+    let month = month.filter(|(rows, _)| {
+        let with = total + 1 + rows.len() as u16;
+        let band = |t: u16| rect.h.saturating_sub((rect.h - t) / 3 + t + 1);
+        // (A line left out means no row is left: it never fits then.)
+        rect.w >= 20 && with <= rect.h && (!below || band(with) >= ANIMATION_KEEPS)
+    });
+    let month_at = total + 1;
+    if let Some((rows, _)) = &month {
+        total += 1 + rows.len() as u16;
+    }
     let free = rect.h - total;
     let y0 = rect.y + if below { free / 3 } else { free / 2 };
     draw_big_text(g, Rect { x: rect.x, y: y0, w: rect.w, h: 5 }, &time, style);
@@ -983,6 +1007,15 @@ pub fn draw_clock(
         let x = rect.x + rect.w.saturating_sub(width) / 2;
         let line_style = fg.map_or(Style::default(), |c| Style::colors(c, Color::Default));
         g.put_str(x, y0 + 6 + i as u16, text, line_style, rect.x + rect.w - x);
+    }
+    if let Some((rows, (ty, tx))) = &month {
+        let x = rect.x + (rect.w - 20) / 2;
+        for (i, r) in rows.iter().enumerate() {
+            g.put_str(x, y0 + month_at + i as u16, r, Style::default(), 20);
+        }
+        let today = Style { inverse: true, ..style };
+        let day = &rows[*ty][*tx..*tx + 2];
+        g.put_str(x + *tx as u16, y0 + month_at + *ty as u16, day, today, 2);
     }
     let y = y0 + total + 1;
     (below && y < rect.y + rect.h).then(|| Rect { x: rect.x, y, w: rect.w, h: rect.y + rect.h - y })
@@ -1685,7 +1718,10 @@ mod tests {
         };
         // Room for all: digits, a blank row, the three lines, centred.
         let mut g = Grid::new(30, 12);
-        assert_eq!(draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 12 }, now, 24, Color::Idx(4), &lines, false), None);
+        assert_eq!(
+            draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 12 }, now, 24, Color::Idx(4), &lines, false, false),
+            None
+        );
         let b = blocks(&g);
         assert!(!b.is_empty() && b.iter().all(|c| *c == Color::Idx(4)), "the digits in the clock's colour");
         let text: Vec<String> = (0..12).map(|y| row(&g, y).trim().to_string()).collect();
@@ -1696,18 +1732,73 @@ mod tests {
         assert_eq!(g.get(x, at as u16 + 1).style.fg, Color::Idx(1), "a line in its own colour");
         // Short: the last lines go, the time stays.
         let mut g = Grid::new(30, 7);
-        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 7 }, now, 24, Color::Idx(4), &lines, false);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 7 }, now, 24, Color::Idx(4), &lines, false, false);
         let text: Vec<String> = (0..7).map(|y| row(&g, y).trim().to_string()).collect();
         assert!(!blocks(&g).is_empty() && text.contains(&"first".to_string()), "{text:?}");
         assert!(!text.contains(&"second".to_string()) && !text.contains(&"third".to_string()), "{text:?}");
         // 12 hours: 2:25, PM beside it.
         let mut g = Grid::new(30, 6);
-        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 6 }, now, 12, Color::Idx(4), &[], false);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 6 }, now, 12, Color::Idx(4), &[], false, false);
         assert!((0..6).any(|y| row(&g, y).contains("PM")), "AM / PM beside the digits");
         // Too small for the digits: the time as text.
         let mut g = Grid::new(12, 3);
-        assert_eq!(draw_clock(&mut g, Rect { x: 0, y: 0, w: 12, h: 3 }, now, 12, Color::Idx(4), &lines, true), None);
+        assert_eq!(
+            draw_clock(&mut g, Rect { x: 0, y: 0, w: 12, h: 3 }, now, 12, Color::Idx(4), &lines, false, true),
+            None
+        );
         assert_eq!(row(&g, 0).trim_end(), "2:25 PM");
+    }
+
+    /// The month under the lines when all of it fits, today reversed in the
+    /// clock's colour; not when a line had to go, nor in a narrow pane.
+    #[test]
+    fn the_month_goes_under_the_lines_when_it_fits() {
+        use chrono::TimeZone;
+        let now = chrono::Local.with_ymd_and_hms(2026, 10, 16, 14, 25, 0).unwrap();
+        let lines = vec![("first".to_string(), None), ("second".to_string(), None)];
+        let row = |g: &Grid, y: u16| (0..g.cols).map(|x| g.get(x, y).text().to_string()).collect::<String>();
+        // 5 digits + blank + 2 lines + blank + 7 calendar rows = 16.
+        let mut g = Grid::new(30, 16);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 16 }, now, 24, Color::Idx(4), &lines, true, false);
+        let text: Vec<String> = (0..16).map(|y| row(&g, y)).collect();
+        let head = text.iter().position(|t| t.contains("Mo Tu We Th Fr Sa Su")).expect("the calendar");
+        assert_eq!(text[head - 1].trim(), "October 2026");
+        assert_eq!(text[head - 2].trim(), "", "a blank row between the lines and it");
+        assert!(text[head - 3].contains("second"));
+        let y = head as u16 + 3;
+        let x = row(&g, y).find("16").unwrap() as u16;
+        let today = &g.get(x, y).style;
+        assert!(today.inverse && today.fg == Color::Idx(4), "today reversed in the clock's colour");
+        assert!(!g.get(x + 3, y).style.inverse, "only today");
+        // A row short: no calendar, every line still there.
+        let mut g = Grid::new(30, 15);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 15 }, now, 24, Color::Idx(4), &lines, true, false);
+        let all: String = (0..15).map(|y| row(&g, y)).collect();
+        assert!(!all.contains("Mo Tu") && all.contains("second"));
+        // Narrower than 20 columns, or off: none.
+        let mut g = Grid::new(19, 30);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 19, h: 30 }, now, 24, Color::Idx(4), &lines, true, false);
+        assert!(!(0..30).any(|y| row(&g, y).contains("Mo Tu")));
+        let mut g = Grid::new(30, 30);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 30 }, now, 24, Color::Idx(4), &lines, false, false);
+        assert!(!(0..30).any(|y| row(&g, y).contains("Mo Tu")));
+        // With an animation under it, room for both: the band starts past
+        // the calendar, and keeps its rows.
+        let mut g = Grid::new(30, 34);
+        let band =
+            draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 34 }, now, 24, Color::Idx(4), &lines, true, true).unwrap();
+        let last = (0..34).rev().find(|&y| !row(&g, y).trim().is_empty()).unwrap();
+        assert!(row(&g, last).contains("31") && band.y == last + 2, "band at {}, calendar ends {last}", band.y);
+        assert!(band.h >= ANIMATION_KEEPS, "{band:?}");
+        // Less room than that: the animation keeps its rows, no calendar.
+        let mut g = Grid::new(30, 24);
+        let band =
+            draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 24 }, now, 24, Color::Idx(4), &lines, true, true).unwrap();
+        assert!(!(0..24).any(|y| row(&g, y).contains("Mo Tu")) && band.h >= ANIMATION_KEEPS, "{band:?}");
+        // The same room with nothing under it: the calendar.
+        let mut g = Grid::new(30, 24);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 24 }, now, 24, Color::Idx(4), &lines, true, false);
+        assert!((0..24).any(|y| row(&g, y).contains("Mo Tu")));
     }
 
     /// Something to draw under the clock: the block goes a third of the
@@ -1722,8 +1813,8 @@ mod tests {
         let digits_at = |g: &Grid| (0..g.rows).find(|&y| (0..g.cols).any(|x| g.get(x, y).text() == "█")).unwrap();
         let rect = Rect { x: 1, y: 2, w: 40, h: 30 };
         let (mut plain, mut room) = (Grid::new(42, 34), Grid::new(42, 34));
-        assert_eq!(draw_clock(&mut plain, rect, now, 24, Color::Idx(4), &lines, false), None);
-        let band = draw_clock(&mut room, rect, now, 24, Color::Idx(4), &lines, true).unwrap();
+        assert_eq!(draw_clock(&mut plain, rect, now, 24, Color::Idx(4), &lines, false, false), None);
+        let band = draw_clock(&mut room, rect, now, 24, Color::Idx(4), &lines, false, true).unwrap();
         // 30 rows, 8 taken (digits, a blank, two lines): 22 free, 7 above.
         assert_eq!((digits_at(&plain), digits_at(&room)), (2 + 11, 2 + 7));
         assert_eq!(band, Rect { x: 1, y: 2 + 7 + 8 + 1, w: 40, h: 30 - 7 - 8 - 1 });
@@ -1733,7 +1824,10 @@ mod tests {
         assert_eq!(line_y + 2, band.y, "a blank row between the last line and the band");
         // A pane just tall enough for the time and the lines: no rows left.
         let mut g = Grid::new(42, 10);
-        assert_eq!(draw_clock(&mut g, Rect { x: 0, y: 0, w: 40, h: 8 }, now, 24, Color::Idx(4), &lines, true), None);
+        assert_eq!(
+            draw_clock(&mut g, Rect { x: 0, y: 0, w: 40, h: 8 }, now, 24, Color::Idx(4), &lines, false, true),
+            None
+        );
     }
 
     /// A pane's name and mode go under its number, centred, in the same

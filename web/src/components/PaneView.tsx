@@ -25,6 +25,7 @@ import {
   Inbox,
   Maximize2,
   PanelBottom,
+  PanelRightOpen,
   Columns2,
   Plus,
   Rows2,
@@ -44,7 +45,7 @@ import { copyText, outputOf, plain } from "../copy";
 import { draftOf, keepDraft } from "../draft";
 import { ContextMenu, type MenuAt } from "./ContextMenu";
 import { ConfirmClose, History, type Sent } from "./Sheets";
-import { StatusBar } from "./StatusBar";
+import { StatusBar, StatusFit, StatusPanel } from "./StatusBar";
 
 // Buttons: what they show, what they send (a named key, `=` text, `@` the
 // page's own: Ctrl, Alt). The usual ones, then the rest.
@@ -112,6 +113,19 @@ export function PaneView(props: Props) {
   // The session's status line under the screen (on unless turned off here).
   const [statusOn, setStatusOn] = useStored<boolean | number>("keepane-status-line", true);
   const statusLine = useStatusLine(p ? p.session : null, !!statusOn);
+  // The line at the bottom when all of it fits there; else from the side,
+  // opened by its button (a phone held upright).
+  const shownStatus = statusOn && statusLine && statusLine.on ? statusLine : null;
+  const [statusFits, setStatusFits] = useState(true);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const statusSide = !!shownStatus && !statusFits;
+  const statusButton = (cls: string) =>
+    statusSide ? (
+      <Button id="status-open" isIconOnly variant="ghost" size="sm" className={cls} aria-label={t("Status line", "状态栏")}
+        onPress={() => !bounced("status") && setStatusOpen(true)}>
+        <PanelRightOpen className="size-4.5" />
+      </Button>
+    ) : null;
   // What the box does with what is typed: sends it as it is typed (live),
   // types it on Enter (a second Enter runs it), or types and runs it.
   const [inputMode, setInputMode] = useStored<InputMode>("keepane-input", choseBefore());
@@ -577,6 +591,7 @@ export function PaneView(props: Props) {
           </Dropdown.Popover>
         </Dropdown>
         {props.status}
+        {statusButton("pointer-coarse:size-11")}
         <Tool id="fullscreen" label={t("Full screen: the screen and the box only", "全屏：只留屏幕和输入框")} onPress={() => props.onFocus(true)}>
           <Fullscreen className="size-4" />
         </Tool>
@@ -674,6 +689,9 @@ export function PaneView(props: Props) {
             {[
               { id: "fullscreen-switch", label: t("Another pane", "切换 pane"), icon: <LayoutList className="size-4" />, go: () => !bounced("switch") && props.onSwitcher() },
               { id: "fullscreen-exit", label: t("Leave full screen", "退出全屏"), icon: <Minimize className="size-4" />, go: () => props.onFocus(false) },
+              ...(statusSide
+                ? [{ id: "status-open", label: t("Status line", "状态栏"), icon: <PanelRightOpen className="size-4" />, go: () => !bounced("status") && setStatusOpen(true) }]
+                : []),
             ].map((b) => (
               <Button key={b.id} id={b.id} isIconOnly size="sm" variant="ghost" aria-label={b.label} onPress={b.go}
                 className="rounded-full bg-black/35 text-white opacity-70 hover:opacity-100 pointer-coarse:size-11">
@@ -722,8 +740,18 @@ export function PaneView(props: Props) {
           />
         </div>
       </div>
-      {statusOn && statusLine && statusLine.on ? (
-        <StatusBar line={statusLine} theme={theme} onOpen={(pane) => pane !== id && props.onGo(pane)} />
+      {shownStatus ? <StatusFit line={shownStatus} onFit={setStatusFits} /> : null}
+      {shownStatus && statusFits ? (
+        <StatusBar line={shownStatus} theme={theme} onOpen={(pane) => pane !== id && props.onGo(pane)} />
+      ) : null}
+      {shownStatus ? (
+        <StatusPanel
+          line={shownStatus}
+          theme={theme}
+          open={statusOpen && statusSide}
+          onClose={() => setStatusOpen(false)}
+          onOpen={(pane) => pane !== id && props.onGo(pane)}
+        />
       ) : null}
 
       {readOnly ? null : (
@@ -745,6 +773,7 @@ export function PaneView(props: Props) {
                   onPress={() => !bounced("switch") && props.onSwitcher()}>
                   <LayoutList className="size-4.5" />
                 </Button>
+                {statusButton("mb-0.5 pointer-coarse:size-11")}
               </>
             ) : null
           }

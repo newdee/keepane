@@ -68,6 +68,8 @@ pub struct Options {
     pub clock_mode_style: u8,
     pub clock_mode_colour: Option<Color>,
     pub clock_mode_info: bool,
+    /// `clock-mode-zones`: other places' time under the clock's date.
+    pub clock_mode_zones: Vec<chrono_tz::Tz>,
     /// What moves under the clock (`clock-mode-animation`): `pulse`,
     /// `matrix`, `bars`, `fire`, `aquarium`, `starfield`, `life`, `donut`,
     /// `weather`; `random` (the default: one of them at random each time a
@@ -291,6 +293,39 @@ fn ranged<T: std::str::FromStr + PartialOrd + std::fmt::Display>(
     }
 }
 
+/// `clock-mode-zones`: IANA time zones, commas between them (8 at most);
+/// a name in any case, or a city alone when one zone ends with it
+/// (`shanghai`, `los angeles`). Empty: none.
+pub fn parse_zones(value: &str) -> Result<Vec<chrono_tz::Tz>, String> {
+    use chrono_tz::{TZ_VARIANTS, Tz};
+    let one = |name: &str| -> Result<Tz, String> {
+        if let Ok(z) = name.parse::<Tz>() {
+            return Ok(z);
+        }
+        let want = name.replace(' ', "_").to_ascii_lowercase();
+        if let Some(z) = TZ_VARIANTS.iter().find(|z| z.name().to_ascii_lowercase() == want) {
+            return Ok(*z);
+        }
+        let city: Vec<&Tz> = TZ_VARIANTS
+            .iter()
+            .filter(|z| z.name().rsplit('/').next().is_some_and(|c| c.to_ascii_lowercase() == want))
+            .collect();
+        match city.as_slice() {
+            [z] => Ok(**z),
+            [] => Err(format!("clock-mode-zones: no time zone '{name}' (an IANA name, as Asia/Shanghai)")),
+            many => Err(format!(
+                "clock-mode-zones: '{name}' could be {}",
+                many.iter().map(|z| z.name()).collect::<Vec<_>>().join(", ")
+            )),
+        }
+    };
+    let zones = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(one).collect::<Result<Vec<_>, _>>()?;
+    if zones.len() > 8 {
+        return Err("clock-mode-zones: 8 at most".into());
+    }
+    Ok(zones)
+}
+
 /// A size in bytes, written plainly or with K or M.
 fn parse_size(name: &str, value: &str, lo: u64, hi: u64) -> Result<u64, String> {
     let v = value.trim();
@@ -342,6 +377,7 @@ pub const SHOWABLE: &[&str] = &[
     "clock-mode-style",
     "clock-mode-colour",
     "clock-mode-info",
+    "clock-mode-zones",
     "clock-mode-animation",
     "base-index",
     "remain-on-exit",
@@ -442,6 +478,7 @@ impl Default for Options {
             clock_mode_style: 24,
             clock_mode_colour: None,
             clock_mode_info: true,
+            clock_mode_zones: Vec::new(),
             clock_mode_animation: "random".into(),
             pane_border_fg: Color::Rgb(0x3b, 0x42, 0x61),
             // The session name on a blue block.
@@ -598,6 +635,7 @@ pub const KNOWN: &[&str] = &[
     "clock-mode-colour",
     "clock-mode-info",
     "clock-mode-style",
+    "clock-mode-zones",
     "default-command",
     "default-shell",
     "default-terminal",
@@ -878,6 +916,7 @@ impl Options {
                 }
             }
             "clock-mode-info" => self.clock_mode_info = parse_bool(value)?,
+            "clock-mode-zones" => self.clock_mode_zones = parse_zones(value)?,
             "clock-mode-animation" => self.clock_mode_animation = one_of(name, value, CLOCK_ANIMATIONS)?,
             "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
@@ -1182,6 +1221,7 @@ impl Options {
             "clock-mode-style" => self.clock_mode_style.to_string(),
             "clock-mode-colour" => self.clock_mode_colour.map_or("default".into(), color_name),
             "clock-mode-info" => onoff(self.clock_mode_info),
+            "clock-mode-zones" => self.clock_mode_zones.iter().map(|z| z.name()).collect::<Vec<_>>().join(","),
             "clock-mode-animation" => self.clock_mode_animation.clone(),
             "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
@@ -1471,6 +1511,22 @@ mod tests {
         o.set("clock-mode-style", "12").unwrap();
         o.set("clock-mode-colour", "red").unwrap();
         o.set("clock-mode-info", "off").unwrap();
+        // Other places: by IANA name in any case, or a city alone.
+        o.set("clock-mode-zones", "asia/shanghai, Los Angeles,tokyo").unwrap();
+        assert_eq!(o.get("clock-mode-zones").as_deref(), Some("Asia/Shanghai,America/Los_Angeles,Asia/Tokyo"));
+        for (bad, says) in [
+            ("Nowhere/City", "no time zone 'Nowhere/City'"),
+            ("Eastern", "could be "),
+            ("a,b,c,d,e,f,g,h,i", "no time zone 'a'"),
+        ] {
+            let e = o.set("clock-mode-zones", bad).unwrap_err();
+            assert!(e.contains(says), "{bad}: {e}");
+        }
+        let nine = "UTC,Asia/Tokyo,Asia/Shanghai,Europe/London,Europe/Paris,America/New_York,America/Chicago,America/Denver,America/Los_Angeles";
+        assert_eq!(o.set("clock-mode-zones", nine).unwrap_err(), "clock-mode-zones: 8 at most");
+        assert_eq!(o.get("clock-mode-zones").as_deref(), Some("Asia/Shanghai,America/Los_Angeles,Asia/Tokyo"), "kept");
+        o.set("clock-mode-zones", "").unwrap();
+        assert_eq!(o.get("clock-mode-zones").as_deref(), Some(""));
         assert_eq!((o.clock_mode_style, o.clock_mode_colour, o.clock_mode_info), (12, Some(Color::Idx(1)), false));
         assert_eq!(o.get("clock-mode-colour").as_deref(), Some("red"));
         o.set("clock-mode-colour", "default").unwrap();

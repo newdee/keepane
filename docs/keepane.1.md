@@ -367,11 +367,17 @@ Windows, GitHub Desktop or Homebrew put it). Without git, the branch and
 the commit ids are read from the repository's files and the rest is left out.
 
 `clock-mode` (prefix t) draws the time in big digits and under it the date
-(and UTC), the pane (its program, folder and branch, how long it has run and
-been quiet), its last command (how long it took, how it ended), its agent
-(model, cost, context), the machine (CPU, memory, battery, time since
-boot) and keepane (its sessions and panes, the messages it has delivered
-since it started). `clock-mode-info off` leaves the time alone, as tmux draws it;
+(and UTC), other places' time (`clock-mode-zones`: IANA names, commas
+between them, 8 at most; a name in any case, or a city alone when one zone
+ends with it, as `tokyo`; each shown by its city, its weekday too when its
+day is not this one), the pane (its program, folder and branch, how long
+it has run and been quiet), its last command (how long it took, how it
+ended), its agent (model, cost, context), the machine (CPU, memory,
+battery, time since boot) and keepane (its sessions and panes, the
+messages it has delivered since it started); then, when all of them are
+shown and it fits whole, the month (Monday first, today reversed in the
+clock's colour; an animation under the clock keeps 10 rows before it).
+`clock-mode-info off` leaves the time alone, as tmux draws it;
 `clock-mode-style 12` counts the hours to 12; `clock-mode-colour` colours the
 digits (`default`: the active pane border's colour).
 

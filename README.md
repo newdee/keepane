@@ -423,7 +423,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `T` / `f` | name this pane / find a window by name or title |
 | `[` / `PgUp` | copy mode (see below) |
 | `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
-| `t` / `~` / `r` | clock, and under it the date (and UTC), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`); below, something that moves with the machine (see below); `q` leaves it / recent messages / redraw |
+| `t` / `~` / `r` | clock, and under it the date (and UTC), other places' time (`clock-mode-zones`), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine, then the month with today marked when it fits (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`); below, something that moves with the machine (see below); `q` leaves it / recent messages / redraw |
 | `]` | paste the clipboard |
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names) |
 | `d` | detach |
@@ -953,14 +953,15 @@ view menu holds the rest: When each command ran adds a column with the time
 each command started (tap one for its date, how long it took and its exit
 code, and to copy the command or what it printed; see "Command times and
 history"). Under the screen is the session's status line, as the terminal
-draws it, in its colours: its two ends stay put and the windows between them
-scroll sideways when there are more than fit (the current one in view), so
-the machine and the clock always show (a right end too long for the room is
-cut at its start, marked `…`); tapping a window opens it. Status
-line, in the view menu, hides it on this device; `set -g status off` hides it
-everywhere. A tap on a session or window folds it (the device remembers); its
-right click or long press renames it or folds every window of a session at
-once. A pane wider than the phone wraps its long lines at the phone's edge
+draws it, in its colours, when all of it fits there; where it does not (a
+phone held upright), its button in the pane's bar (by the box in full
+screen) opens it from the side, nothing cut: the windows a row each, then
+each part of its ends as it is drawn. Tapping a window opens it. Status
+line, in the view menu, hides it on this device; `set -g status off`
+hides it everywhere. A tap on a session or window folds it (the device
+remembers); its right click or long press renames it or folds every window
+of a session at once.
+A pane wider than the phone wraps its long lines at the phone's edge
 (the view menu turns that off, for a full-screen program). Fit to this screen,
 in the same menu, sizes the pane to the phone: it fills its window and its
 session takes the phone's columns and rows, so a full-screen program (vim,
@@ -1366,6 +1367,7 @@ set -g undo-kill-time 10          # seconds a killed pane or window can come bac
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
 set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
 set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, random (the default), cycle or off
+set -g clock-mode-zones "Asia/Shanghai,America/Los_Angeles"  # other places' time under the clock's date (IANA names, or a city alone: tokyo)
 set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
 set -g git-command C:\Tools\git\cmd\git.exe  # the git to run for the panes' repositories (default: the one found)
 

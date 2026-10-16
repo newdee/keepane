@@ -307,51 +307,64 @@ test("an agent's card: its model, cost and context", async ({ app, browser }) =>
   }
 });
 
-test("the status line under the screen: its windows open, the menu hides it", async ({ app, browser, screen }) => {
+test("the status line: under the screen where all of it fits, else from the side", async ({ app, browser, screen }) => {
   await app.open(page(portOf(app.baseUrl), paneNumber("work:0.1")));
   await browser.reload();
   const bar = browser.locator("#status-line");
+  const open = browser.locator("#status-open");
+  const panel = browser.locator("#status-panel");
+  const windows = Number(kp("display-message", "-p", "-t", "work", "#{session_windows}").trim());
+  // Wide: all of it at the bottom, as the terminal draws it; no button.
   await expect(bar).toBeVisible();
-  // As the terminal draws it: the session, its windows, the current marked.
   await expect(bar).toContainText("work");
-  await expect(browser.locator("#status-line [data-window]")).toHaveCount(
-    Number(kp("display-message", "-p", "-t", "work", "#{session_windows}").trim()),
-  );
+  await expect(browser.locator("#status-line [data-window]")).toHaveCount(windows);
   await expect(browser.locator('#status-line [aria-current][data-window="0"]')).toHaveCount(1);
-  // Room for all: nothing marked as cut. On a phone the windows keep what
-  // they need (up to 40%) and the right end is cut from its left, saying
-  // so; past 40% the windows fade where more are hidden. Neither runs into
-  // the other. Wide again, the marks go.
-  const cut = browser.locator("#status-line [data-cut]");
-  const more = browser.locator("#status-line [data-more]");
-  await expect(cut).toHaveCount(0);
-  await expect(more).toHaveCount(0);
+  await expect(open).toHaveCount(0);
+  // A phone held upright: too narrow for it; from the side, nothing cut.
   await browser.setViewport({ width: 390, height: 844 });
-  await expect(cut).toHaveCount(1);
-  await expect(more).toHaveCount(0);
-  kp("new-window", "-d", "-t", "work:", "-n", "one-more-window");
-  try {
-    await expect(browser.locator('#status-line [data-more="end"]')).toHaveCount(1);
-    await expect(cut).toHaveCount(1);
-  } finally {
-    kp("kill-window", "-t", "work:one-more-window");
-  }
-  await expect(more).toHaveCount(0);
-  await browser.setViewport({ width: 1280, height: 860 });
-  await expect(cut).toHaveCount(0);
-  // A window's label opens that window's pane.
+  await expect(bar).toHaveCount(0);
+  await expect(open).toBeVisible();
+  await open.tap();
+  await expect(panel).toBeVisible();
+  await expect(browser.locator("#status-panel [data-window]")).toHaveCount(windows);
+  await expect(browser.locator('#status-panel [aria-current][data-window="0"]')).toHaveCount(1);
+  // The window shown already: the panel goes, the pane stays.
+  await browser.locator('#status-panel [data-window="0"]').tap();
+  await expect(panel).toHaveCount(0);
+  await expect(browser.locator("#screen")).toBeVisible();
+  await open.tap();
+  await expect(panel).toBeVisible();
+  // Every part of the line's ends: the right end's last (the time) too.
+  const time = kp("display-message", "-p", "-t", "work", "%H:%M").trim();
+  await expect.poll(async () => (await browser.locator("#status-parts").textContent()) ?? "").toMatch(new RegExp(`${time.slice(0, 2)}:\\d\\d`));
+  // A window there opens its pane, and the panel goes.
   const logs = show("work:1", "#{pane_id}");
-  await browser.locator('#status-line [data-window="1"]').click();
+  await browser.locator('#status-panel [data-window="1"]').tap();
   await expect.poll(() => browser.evaluate(() => JSON.stringify(history.state && history.state.pane))).toBe(JSON.stringify(logs));
-  // The View menu turns it off (and on again, as it was).
+  await expect(panel).toHaveCount(0);
+  // Full screen: the button by the box.
+  await browser.locator("#fullscreen").tap();
+  await expect(browser.locator("#fullscreen-exit")).toBeVisible();
+  await expect(open).toBeVisible();
+  await browser.locator("#fullscreen-exit").tap();
+  // Wide again: back at the bottom, the button gone.
+  await browser.setViewport({ width: 1280, height: 860 });
+  await expect(bar).toBeVisible();
+  await expect(open).toHaveCount(0);
+  // A window's label opens that window's pane.
+  const first = show("work:0.1", "#{pane_id}");
+  await browser.locator('#status-line [data-window="0"]').click();
+  await expect.poll(() => browser.evaluate(() => JSON.stringify(history.state && history.state.pane))).not.toBe(JSON.stringify(logs));
+  void first;
+  // The View menu turns it off (bar and button), and on again.
   await browser.locator("#view").click();
   await entry(screen, "状态栏").tap();
   await expect(bar).toHaveCount(0);
+  await expect(open).toHaveCount(0);
   await browser.locator("#view").click();
   await entry(screen, "状态栏").tap();
   await expect(bar).toBeVisible();
 });
-
 test("desktop: a card's menu has the modes, the pane's ticked", async ({ app, browser, screen }) => {
   await app.open(page(portOf(app.baseUrl)));
   await browser.locator('[data-pane][data-name="builder"]').secondaryTap();

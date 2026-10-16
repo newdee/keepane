@@ -1,9 +1,12 @@
 //! What `clock-mode` (prefix t) shows under the time, with `clock-mode-info`
-//! on: the date (and UTC), the pane (its program, folder and branch, how long
+//! on: the date (and UTC), other places' time (`clock-mode-zones`), the
+//! pane (its program, folder and branch, how long
 //! it has run and been quiet), its last command (how long it took, how it
 //! ended), its agent (model, cost, context), the machine (CPU, memory,
 //! battery, time since boot) and keepane (its sessions and panes, the
 //! messages it has delivered). Each line only when there is something to say.
+//! Under them, the month as a calendar (`month`; `render::draw_clock` puts
+//! it there when it fits).
 
 use super::layout::PaneId;
 use super::pane::Pane;
@@ -56,10 +59,64 @@ fn fit(text: &str, room: usize, keep_end: bool) -> String {
     }
 }
 
+/// `clock-mode-zones` under the date: each place by its city and its time,
+/// its weekday too when its day is not this one; as many on a line as fit
+/// `width` (one alone may be cut).
+fn zone_lines(now: DateTime<Local>, zones: &[chrono_tz::Tz], hours: u8, width: usize) -> Vec<String> {
+    use chrono::Datelike;
+    use unicode_width::UnicodeWidthStr;
+    let mut lines: Vec<String> = Vec::new();
+    for z in zones {
+        let t = now.with_timezone(z);
+        let city = z.name().rsplit('/').next().unwrap_or(z.name()).replace('_', " ");
+        let time = if hours == 12 { t.format("%-I:%M %p") } else { t.format("%H:%M") };
+        let mut part = format!("{city} {time}");
+        if t.date_naive() != now.date_naive() {
+            part.push_str(&format!(" ({})", t.weekday()));
+        }
+        match lines.last_mut() {
+            Some(l) if l.width() + 3 + part.width() <= width => l.push_str(&format!(" · {part}")),
+            _ => lines.push(fit(&part, width, false)),
+        }
+    }
+    lines
+}
+
+/// The month around `today` as a calendar (Monday first): its name and
+/// year, the days' names, then a row a week; and where `today` is in it
+/// (row, column of its first character). Each row 20 columns.
+pub(super) fn month(today: chrono::NaiveDate) -> (Vec<String>, (usize, usize)) {
+    use chrono::Datelike;
+    let first = today.with_day(1).expect("a month has a first day");
+    let days = first.checked_add_months(chrono::Months::new(1)).map_or(31, |next| (next - first).num_days() as u32);
+    let mut rows = vec![format!("{:^20}", first.format("%B %Y").to_string()), "Mo Tu We Th Fr Sa Su".to_string()];
+    let lead = first.weekday().num_days_from_monday() as usize;
+    let mut row = "   ".repeat(lead);
+    let mut at = (0, 0);
+    for d in 1..=days {
+        let col = (lead + d as usize - 1) % 7;
+        if d == today.day() {
+            at = (rows.len(), col * 3);
+        }
+        row.push_str(&format!("{d:>2}"));
+        if col == 6 {
+            rows.push(std::mem::take(&mut row));
+        } else {
+            row.push(' ');
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row.trim_end().to_string());
+    }
+    let rows = rows.into_iter().map(|r| format!("{r:<20}")).collect();
+    (rows, at)
+}
+
 /// The lines, in order, each with its colour (None: the pane's own), each
 /// at most `width` columns: a long path loses its start and a long command
 /// its end, so what follows them on the line (how long, how it ended)
 /// stays.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn clock_lines(
     now: DateTime<Local>,
     hours: u8,
@@ -67,6 +124,7 @@ pub(super) fn clock_lines(
     last: Option<&LastCommand>,
     agent: Option<&agents::Stats>,
     sys: &crate::sysinfo::System,
+    zones: &[chrono_tz::Tz],
     width: usize,
 ) -> Vec<(String, Option<Color>)> {
     use unicode_width::UnicodeWidthStr;
@@ -76,6 +134,7 @@ pub(super) fn clock_lines(
     };
     let utc = now.with_timezone(&Utc).fixed_offset();
     let mut lines = vec![(format!("{} · UTC {}", now.format("%A, %-d %B %Y"), clock(utc)), None)];
+    lines.extend(zone_lines(now, zones, hours, width).into_iter().map(|l| (l, None)));
 
     let mut after = String::new();
     if !pane.branch.is_empty() {
@@ -215,6 +274,7 @@ impl Server {
             last.as_ref(),
             self.agents.stats.get(&id),
             &crate::sysinfo::system(),
+            &self.opts.clock_mode_zones,
             width,
         );
         let panes = self.sessions.iter().flat_map(|s| &s.windows).map(|w| w.panes.len()).sum();
@@ -262,13 +322,13 @@ mod tests {
             end: Some(now),
             exit: Some(0),
         };
-        let lines = clock_lines(now, 24, &deep, Some(&long), None, &sys(), 60);
+        let lines = clock_lines(now, 24, &deep, Some(&long), None, &sys(), &[], 60);
         assert_eq!(lines[1].0, "pwsh in …j8snz9_vkdnw0r0000gn/T (main) · up 3h12m · quiet 4m");
         assert_eq!(lines[2].0, "last: cargo build --release --… · 1m42s · ✓ · finished 14:25");
         assert!(lines.iter().all(|(l, _)| l.width() <= 60), "{lines:?}");
         assert_eq!((lines[1].0.width(), lines[2].0.width()), (60, 60), "the room used, not more");
         // Wide enough: as they are.
-        let lines = clock_lines(now, 24, &deep, Some(&long), None, &sys(), 200);
+        let lines = clock_lines(now, 24, &deep, Some(&long), None, &sys(), &[], 200);
         assert!(lines[1].0.contains("/private/var/folders/") && lines[2].0.contains("--features full"));
         // Wide characters count by their columns; nothing to keep, nothing.
         assert_eq!(fit("项目/文档", 6, true), "…/文档");
@@ -289,7 +349,7 @@ mod tests {
             exit: Some(101),
         };
         let ended = LastCommand { start: Some(now - chrono::Duration::seconds(402)), ..ended };
-        let lines = clock_lines(now, 24, &facts(), Some(&ended), None, &sys(), 200);
+        let lines = clock_lines(now, 24, &facts(), Some(&ended), None, &sys(), &[], 200);
         let text: Vec<&str> = lines.iter().map(|(s, _)| s.as_str()).collect();
         let utc = now.with_timezone(&Utc).format("%H:%M").to_string();
         assert_eq!(text[0], format!("Saturday, 10 October 2026 · UTC {utc}"));
@@ -305,6 +365,65 @@ mod tests {
         assert_eq!(keepane_line(1, 1, 0), "keepane: 1 session · 1 pane · 0 messages delivered");
     }
 
+    /// Each place by its city and time, its weekday when its day is not
+    /// this one; as many on a line as fit.
+    #[test]
+    fn other_places_by_their_city_and_time() {
+        use chrono::Datelike;
+        let zones = crate::config::parse_zones("Asia/Shanghai, America/Los_Angeles, UTC").unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 10, 10, 23, 30, 0).unwrap().with_timezone(&Local);
+        let day = |z: chrono_tz::Tz| {
+            let t = now.with_timezone(&z);
+            if t.date_naive() == now.date_naive() { String::new() } else { format!(" ({})", t.weekday()) }
+        };
+        let want = format!(
+            "Shanghai 07:30{} · Los Angeles 16:30{} · UTC 23:30{}",
+            day(chrono_tz::Asia::Shanghai),
+            day(chrono_tz::America::Los_Angeles),
+            day(chrono_tz::UTC)
+        );
+        assert_eq!(zone_lines(now, &zones, 24, 200), vec![want.clone()]);
+        // Narrow: one a line; one wider than the pane is cut.
+        let lines = zone_lines(now, &zones, 24, 22);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines.iter().all(|l| unicode_width::UnicodeWidthStr::width(l.as_str()) <= 22), "{lines:?}");
+        assert!(zone_lines(now, &zones, 12, 200)[0].starts_with("Shanghai 7:30 AM"));
+        assert!(zone_lines(now, &[], 24, 200).is_empty());
+        // Under the date, before the pane.
+        let lines = clock_lines(now, 24, &facts(), None, None, &sys(), &zones, 200);
+        assert_eq!(lines[1].0, want);
+        assert!(lines[2].0.starts_with("pwsh in "));
+    }
+
+    /// The month: Monday first, the 1st under its weekday, a row a week,
+    /// every row 20 columns; where today is.
+    #[test]
+    fn a_month_as_a_calendar() {
+        let d = |y, m, day| chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        // October 2026 starts on a Thursday.
+        let (rows, at) = month(d(2026, 10, 16));
+        assert_eq!(rows[0].trim(), "October 2026");
+        assert_eq!(rows[1], "Mo Tu We Th Fr Sa Su");
+        assert_eq!(rows[2], "          1  2  3  4");
+        assert_eq!(rows[6], "26 27 28 29 30 31   ");
+        assert_eq!(rows.len(), 7);
+        assert!(rows.iter().all(|r| r.chars().count() == 20), "{rows:?}");
+        assert_eq!(at, (4, 12));
+        assert_eq!(&rows[at.0][at.1..at.1 + 2], "16");
+        // February 2026: 28 days from a Sunday, five week rows; March 2026:
+        // 31 from a Sunday, six (the most a month takes).
+        let (rows, at) = month(d(2026, 2, 1));
+        assert_eq!((rows[2].trim(), rows.len()), ("1", 7));
+        assert_eq!(&rows[at.0][at.1..at.1 + 2], " 1");
+        let (rows, _) = month(d(2026, 3, 1));
+        assert_eq!((rows.len(), rows[7].trim()), (8, "30 31"));
+        // A leap year's February 29th, and a month that ends on a Sunday.
+        let (rows, at) = month(d(2028, 2, 29));
+        assert_eq!(&rows[at.0][at.1..at.1 + 2], "29");
+        let (rows, _) = month(d(2026, 5, 31));
+        assert!(rows.last().unwrap().ends_with("31"), "{rows:?}");
+    }
+
     #[test]
     fn twelve_hours_running_commands_and_agents() {
         let now = Local.with_ymd_and_hms(2026, 10, 10, 14, 25, 0).unwrap();
@@ -317,18 +436,18 @@ mod tests {
         let mut usage = agents::Usage { model: "claude-opus-5-5".into(), ..Default::default() };
         usage.tokens.input = 1_200_000;
         let agent = agents::Stats { usage, cost: Some(2.1), context_pct: Some(34), ..Default::default() };
-        let lines = clock_lines(now, 12, &facts(), Some(&running), Some(&agent), &sys(), 200);
+        let lines = clock_lines(now, 12, &facts(), Some(&running), Some(&agent), &sys(), &[], 200);
         let text: Vec<&str> = lines.iter().map(|(s, _)| s.as_str()).collect();
         assert!(text[0].contains(" AM") || text[0].contains(" PM"), "UTC in 12 hours: {}", text[0]);
         assert_eq!(text[2], "running: npm run dev · for 1m05s");
         assert_eq!(text[3], "claude claude-opus-5-5 · $2.10 · context 34% · 1.2M tokens");
         let done =
             LastCommand { exit: Some(0), end: Some(now), start: Some(now - chrono::Duration::seconds(3)), ..running };
-        let lines = clock_lines(now, 12, &facts(), Some(&done), None, &sys(), 200);
+        let lines = clock_lines(now, 12, &facts(), Some(&done), None, &sys(), &[], 200);
         assert_eq!(lines[2].0, "last: npm run dev · 3.0s · ✓ · finished 2:25 PM");
         assert_eq!(lines[2].1, Some(Color::Idx(2)));
         // Nothing typed yet: no command line.
         let none = LastCommand { command: String::new(), ..done };
-        assert_eq!(clock_lines(now, 24, &facts(), Some(&none), None, &sys(), 200).len(), 3);
+        assert_eq!(clock_lines(now, 24, &facts(), Some(&none), None, &sys(), &[], 200).len(), 3);
     }
 }
