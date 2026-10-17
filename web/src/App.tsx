@@ -22,7 +22,12 @@ import { PaneList, PaneRail } from "./components/PaneList";
 import { PaneView } from "./components/PaneView";
 import { ConfirmClose, InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
 
-const THEME_NAMES: Record<string, string> = { "tokyo-night": "Tokyo Night", "tokyo-day": "Tokyo Day" };
+const THEME_NAMES: Record<string, string> = {
+  "paper-dark": "Paper Dark",
+  paper: "Paper",
+  "tokyo-night": "Tokyo Night",
+  "tokyo-day": "Tokyo Day",
+};
 /** The lines of each pane a cell of the grid shows. */
 const GRID_LINES = 4;
 

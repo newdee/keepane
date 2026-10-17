@@ -171,9 +171,12 @@ fn real_client_in_conpty() {
     // load, read in-process, and the clock.
     let row = t.row(23);
     assert!(row.contains("CPU ") && row.contains("MEM "), "machine on the right: {row:?}");
-    // In Tokyo Night's colours: the session on its blue block.
+    // In Paper Dark's colours: the session on its cinnabar block, the pane
+    // on the dark paper.
     let cell = t.parser.screen().cell(23, 1).unwrap();
-    assert_eq!(cell.bgcolor(), vt100::Color::Rgb(0x7a, 0xa2, 0xf7), "{row:?}");
+    assert_eq!(cell.bgcolor(), vt100::Color::Rgb(0xdd, 0x62, 0x5e), "{row:?}");
+    let pane = t.parser.screen().cell(0, 79).unwrap();
+    assert_eq!(pane.bgcolor(), vt100::Color::Rgb(0x17, 0x17, 0x16));
 
     // Keystrokes travel: pty -> conhost -> ReadConsoleInputW -> server -> pane.
     t.send("echo typed-in-conpty\r");

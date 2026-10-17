@@ -236,12 +236,15 @@ fn one_of(name: &str, value: &str, words: &[&str]) -> Result<String, String> {
 }
 
 /// The built-in themes (`theme`), each the `set -g` lines of its file in
-/// themes/: the same options in each, so one replaces another whole.
+/// themes/: the same options in each, so one replaces another whole. The
+/// first is the default look.
 pub const THEMES: &[(&str, &str)] = &[
+    ("paper-dark", include_str!("../themes/paper-dark.conf")),
+    ("paper", include_str!("../themes/paper.conf")),
     ("tokyo-night", include_str!("../themes/tokyo-night.conf")),
     ("tokyo-day", include_str!("../themes/tokyo-day.conf")),
 ];
-pub const THEME_NAMES: &[&str] = &["tokyo-night", "tokyo-day"];
+pub const THEME_NAMES: &[&str] = &["paper-dark", "paper", "tokyo-night", "tokyo-day"];
 
 /// The options a theme sets (the same in each).
 fn theme_options() -> &'static [&'static str] {
@@ -447,11 +450,11 @@ impl Default for Options {
             history_limit: 5000,
             status: true,
             status_top: false,
-            // The look is Tokyo Night (themes/tokyo-night.conf); themes/plain.conf
-            // is tmux's plain one. A bar a shade darker than Tokyo Night's
-            // background (#1a1b26), so it reads as its own strip.
-            status_fg: Color::Rgb(0xa9, 0xb1, 0xd6),
-            status_bg: Color::Rgb(0x16, 0x16, 0x1e),
+            // The look is Paper Dark (themes/paper-dark.conf); themes/plain.conf
+            // is tmux's plain one. A bar a shade darker than the panes
+            // (#171716), so it reads as its own strip.
+            status_fg: Color::Rgb(0xa5, 0xa2, 0x9a),
+            status_bg: Color::Rgb(0x12, 0x12, 0x12),
             remain_on_exit: false,
             save_history: 500,
             monitor_activity: false,
@@ -470,8 +473,8 @@ impl Default for Options {
             repeat_time_ms: 500,
             prefix_hint: true,
             prefix_hint_delay_ms: 500,
-            // Quiet borders, the active pane outlined in blue.
-            pane_border_active_fg: Color::Rgb(0x7a, 0xa2, 0xf7),
+            // Quiet borders, the active pane outlined in cinnabar.
+            pane_border_active_fg: Color::Rgb(0xdd, 0x62, 0x5e),
             // tmux's defaults.
             display_panes_colour: Color::Idx(4),
             display_panes_active_colour: Color::Idx(1),
@@ -480,23 +483,23 @@ impl Default for Options {
             clock_mode_info: true,
             clock_mode_zones: Vec::new(),
             clock_mode_animation: "random".into(),
-            pane_border_fg: Color::Rgb(0x3b, 0x42, 0x61),
-            // The session name on a blue block.
-            status_left: "#[fg=#1a1b26,bg=#7aa2f7,bold] #S #[default] ".into(),
+            pane_border_fg: Color::Rgb(0x66, 0x66, 0x64),
+            // The session name on a cinnabar block, the one block on the bar.
+            status_left: "#[fg=#121212,bg=#dd625e,bold] #S #[default] ".into(),
             // What is useful at a glance and costs nothing to read: a newer
             // keepane when there is one, the branch when in a repository
             // (and what git last said is changed there, `●3 ↑2`),
             // where the pane is, the machine's load, the battery when there
-            // is one, then the time on a blue block.
-            status_right: "#{?keepane_update,#[fg=#1a1b26,bg=#e0af68,bold] ⇡ #{keepane_update} #[default] ,}#{?web_url,#[fg=#1a1b26,bg=#9ece6a,bold] web #{web_clients} #[default] ,}#{?#{==:#{pane_work_mode},normal},#[fg=#565f89]normal ,#[fg=#1a1b26,bg=#bb9af7,bold] #{pane_work_mode} #[default] }#{?git_branch,#[fg=#bb9af7]#{git_branch}#{?git_marks, #{git_marks},} ,}#[fg=#7dcfff]#{pane_current_path_short} #[fg=#9ece6a]CPU #{cpu_percentage} #[fg=#e0af68]MEM #{ram_percentage} #{?battery_percentage,#[fg=#9ece6a]BAT #{battery_percentage} ,}#[fg=#1a1b26,bg=#7aa2f7,bold] %H:%M ".into(),
+            // is one, then the time.
+            status_right: "#{?keepane_update,#[fg=#dd625e,bold]⇡ #{keepane_update}#[default]  ,}#{?web_url,#[fg=#cecabe]web #{web_clients}#[default]  ,}#{?#{==:#{pane_work_mode},normal},#[fg=#87837b]normal  ,#[fg=#dd625e,bold]#{pane_work_mode}#[default]  }#{?git_branch,#[fg=#cecabe]#{git_branch}#{?git_marks, #{git_marks},}  ,}#[fg=#87837b]#{pane_current_path_short}  CPU #{cpu_percentage}  MEM #{ram_percentage}  #{?battery_percentage,BAT #{battery_percentage}  ,}#[fg=#cecabe,bold]%H:%M ".into(),
             status_left_length: 40,
             status_right_length: 100, // the default right side is a long one; it gives way only to the current window and its marks
             status_justify: "left".into(),
-            // Muted tabs, the current one on a purple block.
+            // Muted tabs, the current one in cinnabar, underlined.
             window_status_separator: "".into(),
             status_interval: 15,
-            window_status_format: "#[fg=#565f89] #I:#W#F ".into(),
-            window_status_current_format: "#[fg=#1a1b26,bg=#bb9af7,bold] #I:#W#F #[default]".into(),
+            window_status_format: "#[fg=#87837b] #I:#W#F ".into(),
+            window_status_current_format: "#[fg=#dd625e,bold] #[underscore]#I:#W#F#[nounderscore] #[default]".into(),
             plugin_path: "~/.keepane/plugins".into(),
             pending_plugins: Vec::new(),
             user: Vec::new(),
@@ -533,10 +536,18 @@ impl Default for Options {
             event_log_days: 30,
             event_log_max: 20 * 1024 * 1024,
             hint_open: String::new(),
-            theme: "tokyo-night".into(),
-            window_fg: Color::Default,
-            window_bg: Color::Default,
-            pane_colours: Vec::new(),
+            theme: "paper-dark".into(),
+            // Drawn on the dark paper whatever the terminal's colours are.
+            window_fg: Color::Rgb(0xce, 0xca, 0xbe),
+            window_bg: Color::Rgb(0x17, 0x17, 0x16),
+            // Vitesse Dark's 16 (black, red, green, yellow, blue, magenta,
+            // cyan, white, then the bright ones).
+            pane_colours: [
+                0x393a34, 0xcb7676, 0x4d9375, 0xe6cc77, 0x6394bf, 0xd9739f, 0x5eaab5, 0xdbd7ca, 0x818181, 0xcb7676,
+                0x4d9375, 0xe6cc77, 0x6394bf, 0xd9739f, 0x5eaab5, 0xffffff,
+            ]
+            .map(|c: u32| Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8))
+            .to_vec(),
             choose_tree_style: "chart".into(),
         }
     }
@@ -1293,7 +1304,7 @@ mod tests {
         assert_eq!(o.get("status-style").unwrap(), "fg=#a9b1d6,bg=colour234");
         assert_eq!(o.get("status-bg").unwrap(), "colour234");
         assert_eq!(o.get("pane-active-border-style").unwrap(), "fg=brightblue");
-        assert_eq!(o.get("pane-border-style").unwrap(), "fg=#3b4261", "Tokyo Night's by default");
+        assert_eq!(o.get("pane-border-style").unwrap(), "fg=#666664", "Paper Dark's by default");
         // tmux separates a style's parts with spaces as well as commas.
         o.set("status-style", "bg=#1e1e2e fg=#cdd6f4").unwrap();
         assert_eq!(o.get("status-style").unwrap(), "fg=#cdd6f4,bg=#1e1e2e");
@@ -1623,12 +1634,13 @@ mod tests {
         assert!(o.set("save-history", "").is_err(), "not an on/off option");
     }
 
-    /// The light theme reads clearly: each colour text is drawn in (the
-    /// panes' text, the 15 colours after black, which a light theme keeps
-    /// light for what is drawn on colour) at 4.5:1 or more on the panes and
-    /// on the status bar (WCAG AA), the pane borders at 3:1 on the panes.
+    /// Each built-in theme that draws its panes (paper-dark, paper,
+    /// tokyo-day) reads clearly: each colour text is drawn in (the panes'
+    /// text, the 15 colours after black, which a light theme keeps light for
+    /// what is drawn on colour) at 4.5:1 or more on the panes and on the
+    /// status bar (WCAG AA), the pane borders at 3:1 on the panes.
     #[test]
-    fn the_light_theme_reads_clearly() {
+    fn the_themes_that_draw_the_panes_read_clearly() {
         fn lum(c: Color) -> f64 {
             let Color::Rgb(r, g, b) = c else { panic!("an RGB colour: {c:?}") };
             let ch = |v: u8| {
@@ -1641,33 +1653,48 @@ mod tests {
             let (x, y) = (lum(a), lum(b));
             (x.max(y) + 0.05) / (x.min(y) + 0.05)
         };
-        let mut o = Options::default();
-        o.set("theme", "tokyo-day").unwrap();
-        let (pane, bar) = (o.window_bg, o.status_bg);
-        let text: Vec<(String, Color)> = std::iter::once(("text".to_string(), o.window_fg))
-            .chain(o.pane_colours.iter().enumerate().skip(1).map(|(i, c)| (format!("colour {i}"), *c)))
-            .collect();
-        for (name, c) in text {
-            assert!(ratio(c, pane) >= 4.5, "{name} on the panes: {:.2}:1", ratio(c, pane));
-            assert!(ratio(c, bar) >= 4.5, "{name} on the bar: {:.2}:1", ratio(c, bar));
-        }
-        assert!(ratio(o.pane_border_fg, pane) >= 3.0, "the border: {:.2}:1", ratio(o.pane_border_fg, pane));
-        assert!(ratio(o.pane_border_active_fg, pane) >= 3.0, "the active border");
-        // The status line's own runs (`#[fg=…,bg=…]`), each on its block or on the bar.
-        let base = crate::server::render::Style::colors(o.status_fg, bar);
-        let formats = [&o.status_left, &o.window_status_format, &o.window_status_current_format, &o.status_right];
-        let mut runs = 0;
-        for f in formats {
-            for spec in f.split("#[").skip(1).filter_map(|s| s.split_once(']')).map(|(spec, _)| spec) {
-                if !spec.contains("fg=") {
-                    continue;
-                }
-                let s = crate::format::style_from_spec(spec, base);
-                assert!(ratio(s.fg, s.bg) >= 4.5, "#[{spec}] (no bg: the bar's): {:.2}:1", ratio(s.fg, s.bg));
-                runs += 1;
+        let mut checked = Vec::new();
+        for (theme, _) in THEMES {
+            let mut o = Options::default();
+            o.set("theme", theme).unwrap();
+            if o.pane_colours.is_empty() {
+                continue; // the terminal's colours, not the theme's to choose
             }
+            let (pane, bar) = (o.window_bg, o.status_bg);
+            let text: Vec<(String, Color)> =
+                [("text".to_string(), o.window_fg), ("the bar's text".to_string(), o.status_fg)]
+                    .into_iter()
+                    .chain(o.pane_colours.iter().enumerate().skip(1).map(|(i, c)| (format!("colour {i}"), *c)))
+                    .collect();
+            for (name, c) in text {
+                assert!(ratio(c, pane) >= 4.5, "{theme}: {name} on the panes: {:.2}:1", ratio(c, pane));
+                assert!(ratio(c, bar) >= 4.5, "{theme}: {name} on the bar: {:.2}:1", ratio(c, bar));
+            }
+            let border = ratio(o.pane_border_fg, pane);
+            assert!(border >= 3.0, "{theme}: the border: {border:.2}:1");
+            assert!(ratio(o.pane_border_active_fg, pane) >= 3.0, "{theme}: the active border");
+            // The status line's own runs (`#[fg=…,bg=…]`), each on its block or on the bar.
+            let base = crate::server::render::Style::colors(o.status_fg, bar);
+            let formats = [&o.status_left, &o.window_status_format, &o.window_status_current_format, &o.status_right];
+            let mut runs = 0;
+            for f in formats {
+                for spec in f.split("#[").skip(1).filter_map(|s| s.split_once(']')).map(|(spec, _)| spec) {
+                    if !spec.contains("fg=") {
+                        continue;
+                    }
+                    let s = crate::format::style_from_spec(spec, base);
+                    assert!(
+                        ratio(s.fg, s.bg) >= 4.5,
+                        "{theme}: #[{spec}] (no bg: the bar's): {:.2}:1",
+                        ratio(s.fg, s.bg)
+                    );
+                    runs += 1;
+                }
+            }
+            checked.push((*theme, runs));
         }
-        assert_eq!(runs, 13, "every coloured run of the status line checked");
+        // Every coloured run of each status line checked.
+        assert_eq!(checked, [("paper-dark", 10), ("paper", 10), ("tokyo-day", 13)]);
     }
 
     /// The built-in themes set the same options, so one replaces another
@@ -1675,26 +1702,32 @@ mod tests {
     #[test]
     fn a_theme_replaces_the_other_whole() {
         let names = |t: &str| theme_settings(t).unwrap().into_iter().map(|(n, _)| n).collect::<Vec<_>>();
-        let night = names(THEMES[0].1);
+        let first = names(THEMES[0].1);
         for (name, text) in THEMES {
-            assert_eq!(names(text), night, "{name} sets other options than tokyo-night");
+            assert_eq!(names(text), first, "{name} sets other options than paper-dark");
         }
         assert_eq!(THEMES.iter().map(|(n, _)| *n).collect::<Vec<_>>(), THEME_NAMES);
         let default = Options::default();
+        assert_eq!(default.get("theme").as_deref(), Some("paper-dark"));
         let mut o = Options::default();
         o.set("theme", "tokyo-day").unwrap();
         assert_eq!(o.get("theme").as_deref(), Some("tokyo-day"));
         assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x33, 0x58, 0xb0), Color::Rgb(0xe1, 0xe2, 0xe7)));
         assert_eq!(o.pane_colours.len(), 16);
         assert_ne!(o.get("status-right"), default.get("status-right"));
+        // tokyo-night gives the panes back to the terminal.
         o.set("theme", "tokyo-night").unwrap();
-        for n in night.iter().map(String::as_str).chain(["theme"]) {
-            assert_eq!(o.get(n), default.get(n), "{n} after tokyo-day and back");
+        assert_eq!((o.window_bg, o.pane_colours.len()), (Color::Default, 0));
+        o.set("theme", "paper").unwrap();
+        assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x39, 0x3a, 0x34), Color::Rgb(0xfd, 0xfd, 0xfb)));
+        o.set("theme", "paper-dark").unwrap();
+        for n in first.iter().map(String::as_str).chain(["theme"]) {
+            assert_eq!(o.get(n), default.get(n), "{n} after tokyo-day, tokyo-night, paper and back");
         }
         // No such theme: an error, and nothing changed.
         let before = o.get("status-style");
         assert!(o.set("theme", "solarized").unwrap_err().contains("tokyo-day"));
-        assert_eq!((o.get("status-style"), o.get("theme").as_deref()), (before, Some("tokyo-night")));
+        assert_eq!((o.get("status-style"), o.get("theme").as_deref()), (before, Some("paper-dark")));
         // A theme's option set some other way (a file, by hand, abbreviated):
         // the look is no built-in theme's, and says so.
         o.set("status-sty", "bg=red").unwrap();
@@ -1711,7 +1744,8 @@ mod tests {
     }
 
     /// Every theme file in themes/ reads and sets, and after tokyo-day each
-    /// gives the panes back to the terminal.
+    /// but the three that draw the panes themselves gives the panes back to
+    /// the terminal.
     #[test]
     fn every_theme_file_sets_and_gives_the_panes_back() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes");
@@ -1723,22 +1757,22 @@ mod tests {
             for (name, value) in theme_settings(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display())) {
                 o.set(&name, &value).unwrap_or_else(|e| panic!("{}: {name}: {e}", f.display()));
             }
-            if !f.ends_with("tokyo-day.conf") {
-                assert!(
-                    o.window_bg == Color::Default && o.pane_colours.is_empty(),
-                    "{} leaves the panes drawn as tokyo-day did",
-                    f.display()
-                );
-            }
+            let own = ["paper-dark.conf", "paper.conf", "tokyo-day.conf"].iter().any(|n| f.ends_with(n));
+            assert_eq!(
+                o.window_bg == Color::Default && o.pane_colours.is_empty(),
+                !own,
+                "{} draws the panes itself or gives them back",
+                f.display()
+            );
             seen += 1;
         }
-        assert_eq!(seen, 7);
+        assert_eq!(seen, 9);
     }
 
     #[test]
     fn pane_colours_are_sixteen_or_none() {
         let mut o = Options::default();
-        assert_eq!(o.get("pane-colours").as_deref(), Some(""));
+        assert!(o.get("pane-colours").unwrap().starts_with("#393a34 #cb7676 "), "paper-dark's");
         let fifteen = vec!["red"; 15].join(" ");
         assert!(o.set("pane-colours", &fifteen).unwrap_err().contains("16"));
         let sixteen = format!("{fifteen},#112233");
@@ -1748,17 +1782,19 @@ mod tests {
         assert!(o.get("pane-colours").unwrap().ends_with("#112233"));
         o.set("pane-colours", "").unwrap();
         assert!(o.pane_colours.is_empty());
+        assert_eq!(o.get("pane-colours").as_deref(), Some(""));
+        // A part given changes that part, the other stays.
         o.set("window-style", "bg=#ffffff").unwrap();
-        assert_eq!(o.get("window-style").as_deref(), Some("fg=default,bg=#ffffff"));
+        assert_eq!(o.get("window-style").as_deref(), Some("fg=#cecabe,bg=#ffffff"));
         o.set("window-style", "default").unwrap();
         assert_eq!((o.window_fg, o.window_bg), (Color::Default, Color::Default));
     }
 
-    /// themes/tokyo-night.conf is the built-in look written out: every
+    /// themes/paper-dark.conf is the built-in look written out: every
     /// option it sets comes out the same as the default.
     #[test]
-    fn the_tokyo_night_theme_is_the_default_look() {
-        let theme = include_str!("../themes/tokyo-night.conf");
+    fn the_paper_dark_theme_is_the_default_look() {
+        let theme = include_str!("../themes/paper-dark.conf");
         let mut o = Options::default();
         let mut set = Vec::new();
         for line in theme.lines() {

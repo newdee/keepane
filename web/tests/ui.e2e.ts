@@ -54,6 +54,14 @@ test("desktop: send, menus, themes, rename, switch, fold, history, inbox, done",
     await screen.getByRole("button", "外观").tap();
     await entry(screen, "Tokyo Night").tap();
     await expect.poll(() => kp("show", "-gv", "theme").trim()).toBe("tokyo-night");
+    await screen.getByRole("button", "外观").tap();
+    await screen.getByRole("menuitem", { name: /^Paper$/ }).tap();
+    await expect.poll(() => kp("show", "-gv", "theme").trim()).toBe("paper");
+    await expect.poll(() => browser.evaluate(() => getComputedStyle(document.querySelector("pre.term")!.parentElement!).backgroundColor)).toBe("rgb(253, 253, 251)");
+    await screen.getByRole("button", "外观").tap();
+    await entry(screen, "Paper Dark").tap();
+    await expect.poll(() => kp("show", "-gv", "theme").trim()).toBe("paper-dark");
+    await expect.poll(() => browser.evaluate(() => getComputedStyle(document.querySelector("pre.term")!.parentElement!).backgroundColor)).toBe("rgb(23, 23, 22)");
   });
 
   // Rename the window logs (its row's menu).

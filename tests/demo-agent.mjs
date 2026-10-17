@@ -81,6 +81,24 @@ function reply(output, grows) {
   }
 }
 
+/** A turn begun (a prompt given) and ended, as each agent writes them:
+ *  keepane takes an agent pane as busy from the one to the other. */
+function turnStart(text) {
+  const rec =
+    kind === "claude"
+      ? { type: "user", cwd, message: { role: "user", content: text } }
+      : { type: "event_msg", payload: { type: "task_started" } };
+  fs.appendFileSync(file, JSON.stringify(rec) + "\n");
+}
+function turnEnd() {
+  n += 1;
+  const rec =
+    kind === "claude"
+      ? { type: "assistant", cwd, message: { id: `msg_${n}`, model, stop_reason: "end_turn", content: [] } }
+      : { type: "event_msg", payload: { type: "task_complete" } };
+  fs.appendFileSync(file, JSON.stringify(rec) + "\n");
+}
+
 const STEPS = [
   ["Read", "src/parse.rs"],
   ["Grep", "fn parse_line"],
@@ -107,9 +125,11 @@ if (what === "work") {
   const steps = Number(stepsArg);
   for (let i = 0; i < steps; i++) await step(i);
   console.log(`${mark} done: ${steps} steps`);
+  turnEnd();
   setInterval(() => {}, 1 << 30);
 } else {
   // fixer: told the work through keepane (an `ai` pane), does it, says so.
+  turnEnd(); // the opening turn: nothing to do yet
   keepane("rename-pane", kind);
   keepane("set-work-mode", "ai");
   keepane("pane-ready");
@@ -138,6 +158,7 @@ if (what === "work") {
   for (;;) {
     const text = (await next()).replace(/\[keepane[^\]]*\]/g, "").trim();
     if (!text) continue;
+    turnStart(text);
     console.log(`› ${text.length > 70 ? text.slice(0, 69) + "…" : text}`);
     for (const [tool, arg] of [
       ["Read", "src/parse.rs"],
@@ -151,6 +172,7 @@ if (what === "work") {
     fs.writeFileSync(path.join(cwd, "fixed"), "");
     console.log(dim("  ✓ 12 passed"));
     console.log(`${mark} fixed: parse_line skips an empty line`);
+    turnEnd();
     keepane("pane-ready");
   }
 }

@@ -4315,3 +4315,38 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 4 | 全量三平台 + 浏览器 | Windows 446 + 10 + 128，Linux 424 + 128，clippy 三平台 0；浏览器 37/37 | 干净（1/3） |
 | 5 | 静态一致性 | 新标识符都有使用方（`MAX_TAILS` 4 处、`GRID_LINES` 3 处、`web_tails` 2 处、`PaneCell` 2 处、`data-cell` 13 处）；站点数 584 = 446 + 10 + 128，不变；新增文档行 0 行超过 76 列；README 中英、man page 每句对照代码 | 干净（2/3） |
 | 6 | 可复现性 | `the_phone_page_lists_shows_types_and_splits`：Windows 5/5、Linux 3/3；`the_code_and_the_pane_list` Linux 3/3；浏览器 `grid` 3/3。`web-tails` 用 `serde_json::Map`（有序），同样的屏幕输出同样的 JSON | 干净（3/3），验收通过 |
+
+
+## 138. 默认主题换成纸面（paper-dark），加浅色 paper；当前窗口按格式画，不再强制反色
+
+用户："I want to set a default theme for terminal, it's like the dfine-blog's markdown's code block theme, dark and white. be like a paper writing."；选项里选了"出厂默认改成 paper-dark"和"墨 + 一点朱砂"。
+
+- 做法：
+  - 新主题 `themes/paper-dark.conf`（默认）和 `themes/paper.conf`，内置名 `paper-dark`、`paper`，排在 `tokyo-night`、`tokyo-day` 前面；`THEMES[0]` 是默认外观。
+  - 配色取自 dfine-blog 代码块：shiki `vitesse-dark` / `vitesse-light` 的终端 16 色；底色是博客代码块的纸面（深 `#171716`、浅 `#fdfdfb`），状态栏深 `#121212`、浅 `#eceae4`（代码块顶轨）；强调色只有朱砂（深 `#dd625e`、浅 `#b83e3c`）。
+  - 状态栏：会话名在朱砂色块上（栏上唯一的色块）；当前窗口朱砂粗体加下划线（下划线只在文字下）；其余是墨色、淡墨；工作模式不是 normal 时朱砂粗体。
+  - 对比度：浅色有 4 个颜色在栏上不到 4.5:1（黄 2.0、青 3.0、红 4.1、朱砂 4.2），各自在原色相里加深到 4.6 左右；深色只有亮黑 `#777777`（4.0）提亮到 `#818181`。边框到 3:1（浅 `#92908a`、深 `#666664`；博客原来的线色只有 1.6 和 1.3）。
+  - 两套都自己画 pane（`window-style` + `pane-colours`），在什么终端里都一样。
+  - 网页主题菜单加 "Paper Dark"、"Paper"；README 中英、man page、站点两处说明、演示与截图工具（`render-frames.ps1` 调色板、`make-demos.ps1` / `make-phone-shots.ps1` 的浅色改用 `paper`）跟着改；演示帧补记下划线（`u`），渲染时画出来。
+- 顺带发现并修的缺陷（第 1 轮）：渲染器把当前窗口的标签整体反色（`render.rs`，0.18 以前的写法）。
+  - 定性：共性、结构缺陷。渲染器改了格式指定的样式，主题控制不了。tokyo-night、tokyo-day、nord、dracula、catppuccin、gruvbox 的注释和 README 都写"当前窗口在色块上"，终端里实际是"彩色字"；网页状态栏不反色，显示的是色块，电脑和手机不一致。
+  - 改法：渲染器照格式画。唯一靠反色区分当前窗口的 `plain.conf` 显式写 `#[reverse]`，外观不变（新单测）。别的主题现在显示的就是注释说的色块。
+  - 影响：自己写了 `window-status-current-format`、又没写样式的配置，当前窗口不再自动反色（与 tmux 一致）。
+- 对现有用户的影响：没设主题的人升级后变成 paper-dark，pane 由主题画（以前是终端自己的颜色）。要回到以前：`set -g theme tokyo-night`。从 tokyo-night.conf 等文件复制的配置里有 `window-style default`，pane 照旧还给终端（测试覆盖）。
+- 定性：新功能 + 上面一个共性缺陷。影响面：`Options::default` 的 9 个外观字段；`compose` 的当前窗口分支；测试里假设默认是 Tokyo Night 的 6 处。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量三平台 + 实拍画面 | Windows 445 + 10 + 128（`the_default_status_line_says_the_panes_mode` 要求模式有底色）；`pane_colours_are_sixteen_or_none` 假设默认 fg 是 `default`；实拍：当前窗口成了朱砂色块（渲染器反色，见上）；演示帧不记下划线，图片与终端不一致；一次 `share::a_folder_is_a_zip_a_reader_takes` 失败 | **有问题**：两个测试改判据（模式：粗体且颜色与 normal 不同）；渲染器照格式画、`plain.conf` 写 `#[reverse]`、补单测；帧补 `u`；zip 测试之后单跑（不计数） |
+| 2 | 全量三平台 + 通读 diff | Windows 447 + 10 + 128，Linux 425 + 128，clippy 两平台 0；浏览器 37/37；19 个文件 diff 逐段读过 | 干净（1/3） |
+| 3 | 机制通路（变异 14 个）+ 静态一致性 | 14/14 被抓到（渲染器再反色、plain 不反色、浅黄/朱砂/深亮黑/深边框用原色、paper-dark 不画 pane、默认值 4 处与文件不一致、paper 不内置、模式不标出、网页菜单没名字）。静态：README 说"每种颜色"达标，实际 black 不查；`paper.conf` 朱砂原值写成 4.1（实为 4.18）、漏写亮黑来源；`tokyo-night.conf` 仍说"自 0.18 起的外观、测试保证与内置一致"；man page 说 tokyo-day 是"0.37 以前的外观"；nord 等 4 个文件注释"在 tokyo-day 之后把 pane 还给终端" | **有问题**：改文案与注释（不计数） |
+| 4 | 边界与退化输入 + 全量 | 复制自旧主题的配置、只改 `status-style`、状态栏变窄、浅色菜单高亮（`#776723` 底）逐项看过；Windows 447 + 10 + 128，Linux 425 + 128，clippy 0；zip 测试连跑 10 次 0 失败（不在本次 diff 内，记为既有偶发） | 干净（1/3） |
+| 5 | 逻辑正确与不变量 + 全量 + 浏览器 | 3 条不变量（各主题同一组选项、默认 = `THEMES[0]` 文件、终端与网页当前窗口同样式）成立；Windows e2e 127/128：`under_the_clock_something_moves_with_the_machine` 数到 2 帧（`still <= 1`），单跑通过 | **有问题**：第 131 条同类的判据缺陷（帧数不等于没动），同一测试里 2 处（时钟关后、动画关时）。改为比画面内容 + 帧数上限 2（动画每秒至少 5 帧，0.8 s 至少 4 帧）；变异"动画关了还在动"仍被抓到；单跑 6/6（不计数） |
+| 6 | 代码正确性 + 全量 + 浏览器 | Windows 447 + 10 + 128，Linux 425 + 128，clippy 两平台 0；浏览器 37/37 | 干净（1/3） |
+| 7 | 可复现性 | `config::` 16 项 5/5、`format::` 12 项 5/5、`a_theme_draws_the_panes_and_the_page_can_set_it` 5/5；浏览器 `ui` 3/3；配色计算脚本 3 次输出哈希相同；同一帧渲染 2 次 PNG 哈希相同；Windows 447 + 10 + 128，Linux 425 + 128 | 干净（2/3） |
+| 8 | 静态一致性（复查）+ 变异 15 个 + 全量 | 剩余 Tokyo 引用逐条核对（现成主题列表、旧版回退、测试步骤）；新增文档行 0 行超过 76 列；变异 15/15（加"动画关了还在动"）；`web/dist` 与重新构建逐字节相同；Windows 447 + 10 + 128，Linux 425 + 128，clippy 两平台 0 | 干净（3/3），验收通过 |
+
+- 重拍图片时发现的两个工具问题（HEAD 上同样失败，与本次改动无关）：
+  - `record_fix` 等不到 `fixed`：替身 agent（`tests/demo-agent.mjs`）的会话记录只有轮次开始（Claude 的 `user`、Codex 的 `task_started`），没有结束。第 129 条起服务器按会话记录判断忙闲，这个 pane 就一直"忙"，消息排队不送。定性：共性（Claude、Codex 两个分支都缺），边界遗漏（替身没跟上第 129 条）。改法：替身照真 agent 写轮次结束（`stop_reason: "end_turn"`、`task_complete`），fixer 每收到一条消息写开始。修后 `record_fix` 通过。
+  - `make-phone-shots.ps1` 等不到 `git log` 的两条提交：最近的提交说明很长，一条折成十几行，20 行的 pane 只看得到最后一条。改法：说明截到 30 列、不显示分支标签（`%<(30,trunc)%s`），手机页约 46 列里放得下一行。
+- 遗留：站点上的测试数（`docs/index.html`）发版时改成 585。

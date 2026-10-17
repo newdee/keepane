@@ -36,7 +36,7 @@ $tmp = (Resolve-Path $Work).Path
 $env:KEEPANE_SESSIONS_DIR = Join-Path $tmp "sessions"
 $env:KEEPANE_CONFIG = Join-Path $tmp "empty.conf"
 # The light pictures have the light terminal theme too.
-Set-Content $env:KEEPANE_CONFIG $(if ($Light) { "set -g theme tokyo-day" } else { "" })
+Set-Content $env:KEEPANE_CONFIG $(if ($Light) { "set -g theme paper" } else { "" })
 Remove-Item Env:KEEPANE -ErrorAction SilentlyContinue
 Remove-Item Env:KEEPANE_PANE -ErrorAction SilentlyContinue
 
@@ -77,7 +77,9 @@ function Type-Line($target, $text, $expect) {
     Wait-Screen $target "the output" { param($s) $s -match $expect }
 }
 Type-Line "dev:0.0" "Test-Path Cargo.toml" "True"
-Type-Line "dev:0.0" "git --no-pager log --oneline --graph --decorate --color=always -12" "\* [0-9a-f]{7}.*\n.*\* [0-9a-f]{7}"
+# Each subject cut to 40 columns: this repository's are long, and wrapped
+# they would push all but the last commit off the pane.
+Type-Line "dev:0.0" "git --no-pager log --graph --color=always -12 --format='%C(auto)%h %<(30,trunc)%s'" "\* [0-9a-f]{7}.*\n.*\* [0-9a-f]{7}"
 Type-Line "dev:0.1" "git status -sb | Select-Object -First 5" "## "
 Type-Line "dev:1" "Get-ChildItem src | Select-Object -First 8 Name, Length" "Length"
 # Something running, so the list names a program and not only shells.

@@ -705,18 +705,41 @@ mod tests {
     }
 
     /// The default status line says the current pane's work mode: `ai` and
-    /// `shell` marked out (a background of their own), `normal` dim.
+    /// `shell` marked out (bold, in the accent), `normal` muted.
     #[test]
     fn the_default_status_line_says_the_panes_mode() {
         let right = crate::config::Options::default().status_right;
         let mut cache = ShellCache::default();
-        for (mode, marked) in [("ai", true), ("shell", true), ("normal", false)] {
+        let style = |mode: &str, cache: &mut ShellCache| {
             let mut c = ctx();
             c.pane_work_mode = mode.into();
-            let segs = expand(&right, &c, &mut cache, Style::default(), now());
+            let segs = expand(&right, &c, cache, Style::default(), now());
             let seg = segs.iter().find(|s| s.text.trim() == mode).unwrap_or_else(|| panic!("{mode}: {}", plain(&segs)));
-            assert_eq!(seg.style.bg != Style::default().bg, marked, "{mode}: {:?}", seg.style);
+            seg.style
+        };
+        let normal = style("normal", &mut cache);
+        assert!(!normal.bold, "{normal:?}");
+        for mode in ["ai", "shell"] {
+            let s = style(mode, &mut cache);
+            assert!(s.bold && s.fg != normal.fg, "{mode}: {s:?} against normal's {normal:?}");
         }
+    }
+
+    /// themes/plain.conf reverses the current window itself (the status
+    /// line draws each label as its format says); the others it leaves.
+    #[test]
+    fn the_plain_theme_reverses_the_current_window() {
+        let mut o = crate::config::Options::default();
+        for (name, value) in crate::config::theme_settings(include_str!("../themes/plain.conf")).unwrap() {
+            o.set(&name, &value).unwrap();
+        }
+        let mut cache = ShellCache::default();
+        let label = |f: &str, cache: &mut ShellCache| expand(f, &ctx(), cache, Style::default(), now());
+        let current = label(&o.window_status_current_format, &mut cache);
+        assert_eq!(plain(&current), "2:shell*");
+        assert!(current.iter().all(|s| s.style.inverse), "{current:?}");
+        let other = label(&o.window_status_format, &mut cache);
+        assert!(other.iter().all(|s| !s.style.inverse), "{other:?}");
     }
 
     fn ctx() -> Context {

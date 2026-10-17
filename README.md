@@ -1406,10 +1406,12 @@ sets up the terminal and the option does nothing.
 
 ### Themes
 
-keepane looks like Tokyo Night out of the box: the session on a blue block,
-the current window on a purple one, muted tabs, quiet pane borders with the
-active pane outlined in blue. `themes/` in this repository holds other
-colour schemes (Nord, Gruvbox dark, Dracula, Catppuccin Mocha), Tokyo Night
+keepane looks like ink on paper out of the box (`paper-dark`): the panes in
+the colours of the code on dfine.tech at night (Vitesse Dark on a warm
+near-black), a quiet bar in soft ink, and one accent, cinnabar, for the
+session's block, the current window and the active pane's outline.
+`themes/` in this repository holds other colour schemes (Nord, Gruvbox
+dark, Dracula, Catppuccin Mocha, Tokyo Night and Tokyo Day), Paper Dark
 itself to edit, and `plain.conf`, tmux's plain green bar. They are ordinary
 keepane commands, so a theme is just a file to source and an easy thing to
 copy and edit:
@@ -1419,21 +1421,28 @@ source-file ~/.keepane/themes/dracula.conf
 source-file ~/.keepane/themes/plain.conf   # tmux's look instead
 ```
 
-Two themes are built in, to switch with one option (or from the phone's
-page): `tokyo-night`, the default, and `tokyo-day`, its light one.
+Four themes are built in, to switch with one option (or from the phone's
+page): `paper-dark`, the default, and `paper`, its light one (white paper,
+as the code on dfine.tech by day); `tokyo-night`, the default up to 0.37,
+and `tokyo-day`, its light one.
 
 ```tmux
-set -g theme tokyo-day
+set -g theme paper
 ```
 
 keepane draws in the terminal it runs in, so with `tokyo-night` a pane's
 background and the colours programs use (their red, blue...) are the
-terminal's own. A light theme has to draw them itself, or it would be a
-light status line over dark panes: `tokyo-day` sets `window-style` (a
-pane's default text and background, as in tmux) and `pane-colours` (the 16
-colours programs use, the first 16 of the palette), so it is light in a
-dark terminal too. A theme sets these and the status line and borders all
-at once, so set the theme first and your own changes after it. Once one of those options is set some other way (a theme file, by hand), the look is no built-in theme's and `show -gv theme` says `custom`.
+terminal's own. The other three draw them themselves, so they look the
+same in any terminal: they set `window-style` (a pane's default text and
+background, as in tmux) and `pane-colours` (the 16 colours programs use,
+the first 16 of the palette). Their text colours (all but black, which
+programs draw on colour) read at 4.5:1 or more on the panes and the bar.
+A theme sets these and the status line and borders all at once, so set
+the theme first and your own changes after it. Once one of those options
+is set some other way (a theme file, by hand), the look is no built-in
+theme's and `show -gv theme` says `custom`.
+For the panes in the terminal's own colours under another theme:
+`set -g window-style default` and `set -g pane-colours ""`.
 
 The default look uses 24-bit colours. On a terminal without them (macOS's
 Terminal, unless it says `COLORTERM=truecolor`), keepane shows the nearest
@@ -1493,7 +1502,7 @@ set -ag status-right " #{local_ip} #{public_ip}"
 ```
 
 The default `status-right` uses the machine's (see
-`themes/tokyo-night.conf`, which is the default look written out, and
+`themes/paper-dark.conf`, which is the default look written out, and
 `themes/plain.conf` for tmux's); `set -g status-right ...` replaces it, and
 `set -g status off` hides the line (prompts and messages then show over the bottom row).
 

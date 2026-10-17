@@ -203,7 +203,7 @@ impl Harness {
         let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
         assert_eq!(code, 0, "{err}");
         // tmux's plain status line, which these tests read as text: the
-        // default look (Tokyo Night) is tests/console.rs's to check.
+        // default look (Paper Dark) is tests/console.rs's to check.
         let plain = concat!(env!("CARGO_MANIFEST_DIR"), "/themes/plain.conf");
         let (code, _, err) = h.cli(&["source-file", plain]).await;
         assert_eq!(code, 0, "{err}");
@@ -2196,8 +2196,14 @@ async fn under_the_clock_something_moves_with_the_machine() {
         assert!(moving >= 5, "{kind}: {moving} frames in 0.8 s");
         c.type_str("q").await;
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
+        // Nothing moves on in the pane, and no animation's frames come (at
+        // 5 or more a second they would be 4 in 0.8 s; the status line and
+        // a new minute may each make one).
+        let pane = |s: &vt100::Screen| s.rows(0, COLS).take(usize::from(ROWS) - 1).collect::<Vec<_>>();
+        let before = pane(c.screen.screen());
         let still = c.frames_for(800).await;
-        assert!(still <= 1, "{kind}: {still} frames after the clock went");
+        assert_eq!(pane(c.screen.screen()), before, "{kind}: the pane changed after the clock went");
+        assert!(still <= 2, "{kind}: {still} frames after the clock went");
     }
     // What the window's other panes print moves `OUT` too: a short burst
     // in a small pane under the clock's. Short, and it ends by itself: the
@@ -2321,10 +2327,14 @@ async fn under_the_clock_something_moves_with_the_machine() {
         h.cli(&["set", "-g", option, value]).await;
         c.prefix('t').await;
         c.wait_for("the clock", |s| s.contents().contains("███") && s.contents().contains(" · UTC ")).await;
+        // Nothing drawn under the clock's lines, and no animation's frames
+        // (4 or more in 0.8 s; the lines' second and the status line may
+        // each make one).
         let still = c.frames_for(800).await;
         let s = c.screen.screen();
         assert!(!braille(s) && !katakana(s) && !s.contents().contains("OUT "), "{option} {value}: {}", c.text());
-        assert!(still <= 1, "{option} {value}: {still} frames");
+        assert!(last_rows(s).trim().is_empty(), "{option} {value}: {}", c.text());
+        assert!(still <= 2, "{option} {value}: {still} frames");
         // `/` asks for one: it moves under `clock-mode-animation off`, not
         // under `animation off`.
         c.type_str("/").await;
@@ -3004,9 +3014,10 @@ async fn a_commands_output_is_copied_and_copy_mode_steps_between_commands() {
     h.cli(&["kill-server"]).await;
 }
 
-/// `theme`: tokyo-day draws the panes light (their default colours and the
-/// palette's first 16) whatever the terminal's are; tokyo-night leaves them
-/// to the terminal. The phone's page reads it and sets it at `/api/theme`.
+/// `theme`: paper-dark, the default, and tokyo-day draw the panes (their
+/// default colours and the palette's first 16) whatever the terminal's are;
+/// tokyo-night leaves them to the terminal. The phone's page reads it and
+/// sets it at `/api/theme`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
     let h = Harness::start("theme").await;
@@ -3026,8 +3037,13 @@ async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
     };
     let bg_at = |s: &vt100::Screen| s.cell(0, COLS - 1).map(|c| c.bgcolor());
     use vt100::Color;
-    assert_eq!(bg_at(c.screen.screen()), Some(Color::Default), "tokyo-night leaves the panes to the terminal");
+    // The harness's plain.conf leaves them to the terminal.
+    assert_eq!(bg_at(c.screen.screen()), Some(Color::Default));
     assert_eq!(red_cell(c.screen.screen()), Some(Color::Idx(1)));
+    let (code, _, err) = h.cli(&["set", "-g", "theme", "paper-dark"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("the dark paper", |s| bg_at(s) == Some(Color::Rgb(0x17, 0x17, 0x16))).await;
+    c.wait_for("Vitesse Dark's red", |s| red_cell(s) == Some(Color::Rgb(0xcb, 0x76, 0x76))).await;
     let (code, _, err) = h.cli(&["set", "-g", "theme", "tokyo-day"]).await;
     assert_eq!(code, 0, "{err}");
     c.wait_for("light panes", |s| bg_at(s) == Some(Color::Rgb(0xe1, 0xe2, 0xe7))).await;
@@ -3045,7 +3061,7 @@ async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
         (Some("tokyo-day"), Some("#e1e2e7"), Some("#3358b0"))
     );
     assert_eq!(v["palette"][1].as_str(), Some("#b21e49"));
-    assert_eq!(v["names"], serde_json::json!(["tokyo-night", "tokyo-day"]));
+    assert_eq!(v["names"], serde_json::json!(["paper-dark", "paper", "tokyo-night", "tokyo-day"]));
     let (code, body) = http(addr, "POST", "/api/theme?name=solarized", "k", "").await;
     assert_eq!(code, 400, "{body}");
     let (code, body) = http(addr, "POST", "/api/theme?name=tokyo-night", "k", "").await;

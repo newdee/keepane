@@ -26,8 +26,8 @@ param(
     # Width of a panel beside the terminal for frames that carry a `side`
     # (the tour: a chapter's title and lines, or the phone); 0: none.
     [int]$Panel = 0,
-    # Draw it light: the Tokyo Day palette and a light window, for frames
-    # recorded with `theme tokyo-day`.
+    # Draw it light: the Paper palette and a light window, for frames
+    # recorded with `theme paper`.
     [switch]$Light
 )
 
@@ -40,25 +40,25 @@ if ($installed -notcontains $FontName) {
     $FontName = "Cascadia Mono"
 }
 
-# Tokyo Night, the palette the recordings' keepane theme (themes/tokyo-night.conf)
-# is made for.
+# Paper Dark, as the recordings' keepane theme (themes/paper-dark.conf, the
+# default look) sets the panes.
 $palette = @(
-    "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
-    "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"
+    "#393a34", "#cb7676", "#4d9375", "#e6cc77", "#6394bf", "#d9739f", "#5eaab5", "#dbd7ca",
+    "#818181", "#cb7676", "#4d9375", "#e6cc77", "#6394bf", "#d9739f", "#5eaab5", "#ffffff"
 )
-$defaultFg = "#c0caf5"
-$defaultBg = "#1a1b26"
-$chromeBg = "#16161e"
+$defaultFg = "#cecabe"
+$defaultBg = "#171716"
+$chromeBg = "#121212"
 # The window's title, the side panel's accent, text and quieter text.
-$titleFg = "#565f89"; $accentFg = "#7aa2f7"; $sideFg = "#c0caf5"; $sideMuted = "#a9b1d6"
+$titleFg = "#87837b"; $accentFg = "#dd625e"; $sideFg = "#cecabe"; $sideMuted = "#a5a29a"
 if ($Light) {
-    # Tokyo Day, as themes/tokyo-day.conf sets the panes.
+    # Paper, as themes/paper.conf sets the panes.
     $palette = @(
-        "#e9e9ed", "#b21e49", "#4b6431", "#725833", "#225baa", "#7440b8", "#006486", "#4d5a8b",
-        "#595c6d", "#b21e49", "#4b6431", "#725833", "#225baa", "#7440b8", "#006486", "#3358b0"
+        "#eceae4", "#9e5252", "#1e754f", "#776723", "#296aa3", "#a13865", "#20727e", "#5d5b55",
+        "#6a6863", "#9e5252", "#1e754f", "#776723", "#296aa3", "#a13865", "#20727e", "#393a34"
     )
-    $defaultFg = "#3358b0"; $defaultBg = "#e1e2e7"; $chromeBg = "#d0d5e3"
-    $titleFg = "#565b76"; $accentFg = "#225baa"; $sideFg = "#3358b0"; $sideMuted = "#4d5a8b"
+    $defaultFg = "#393a34"; $defaultBg = "#fdfdfb"; $chromeBg = "#eceae4"
+    $titleFg = "#6b6860"; $accentFg = "#b83e3c"; $sideFg = "#393a34"; $sideMuted = "#5d5b55"
 }
 
 function To-Color([string]$spec, [string]$fallback) {
@@ -226,6 +226,10 @@ foreach ($file in $frames) {
                 }
             } else {
                 $g.DrawString($text, $f, $b, [float]($pad + $x), $top, $fmt)
+            }
+            # Underlined (SGR 4): a line under the run, in its colour.
+            if ($run.u) {
+                $g.FillRectangle($b, [float]($pad + $x), [float]($top + $cellH - 3), [float]$w, [float]1.5)
             }
             $b.Dispose()
             $x += $w

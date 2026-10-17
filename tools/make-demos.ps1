@@ -26,7 +26,7 @@ param(
     [string]$Work = "target/demos",
     # Only these demos (by name, such as keepane-messages); all when empty.
     [string[]]$Only = @(),
-    # The light pictures: recorded with `theme tokyo-day`, the phone page
+    # The light pictures: recorded with `theme paper`, the phone page
     # light, drawn on a light window; written as <name>-light.*.
     [switch]$Light
 )
@@ -68,7 +68,7 @@ if ($takes.Name -contains "keepane-tour") {
 }
 $suffix = ""
 if ($Light) {
-    $env:KEEPANE_DEMO_THEME = "tokyo-day"
+    $env:KEEPANE_DEMO_THEME = "paper"
     $env:KEEPANE_PHONE_MODE = "light"
     $suffix = "-light"
 } else {

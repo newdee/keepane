@@ -723,20 +723,20 @@ set -ag status-right " | keepane"    # -a 是往原值后面追加，不是覆�
 source-file ~/.keepane/themes/nord.conf
 ```
 
-keepane 默认就是 Tokyo Night 的样子：会话名在蓝色色块上，当前窗口在紫色色块上，其他窗口标签是暗色，pane 边框很淡，当前 pane 用蓝色描边。仓库里的 `themes/` 还放了几套现成配色（Nord、Gruvbox dark、Dracula、Catppuccin Mocha），Tokyo Night 本身也有一份方便改，另外 `plain.conf` 是 tmux 那种朴素的绿色状态栏。它们就是普通的 keepane 命令文件，`source-file` 一下就行，想改直接改：
+keepane 默认是纸上写字的样子（`paper-dark`）：pane 用 dfine.tech 夜间代码块的配色（Vitesse Dark，底色是偏暖的近黑），状态栏是淡墨色，全屏只有一种强调色朱砂，用在会话名色块、当前窗口和当前 pane 的描边上。仓库里的 `themes/` 还放了几套现成配色（Nord、Gruvbox dark、Dracula、Catppuccin Mocha、Tokyo Night 和 Tokyo Day），Paper Dark 本身也有一份方便改，另外 `plain.conf` 是 tmux 那种朴素的绿色状态栏。它们就是普通的 keepane 命令文件，`source-file` 一下就行，想改直接改：
 
 ```tmux
 source-file ~/.keepane/themes/dracula.conf
 source-file ~/.keepane/themes/plain.conf   # 换回 tmux 的样子
 ```
 
-内置两套主题，一个选项就能切换（手机页面上也能切）：默认的 `tokyo-night`，和它的浅色版 `tokyo-day`。
+内置四套主题，一个选项就能切换（手机页面上也能切）：默认的 `paper-dark` 和它的浅色版 `paper`（白纸，像 dfine.tech 白天的代码块）；0.37 及以前的默认 `tokyo-night` 和它的浅色版 `tokyo-day`。
 
 ```tmux
-set -g theme tokyo-day
+set -g theme paper
 ```
 
-keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时，pane 的背景色和程序用的颜色（红、蓝等）都是终端自己的。浅色主题必须自己画这些颜色，否则就成了浅色状态栏配深色 pane。所以 `tokyo-day` 会设置 `window-style`（pane 的默认文字色和背景色，和 tmux 一样）和 `pane-colours`（程序用的 16 种颜色，也就是调色板的前 16 个），这样在深色终端里也是完整的浅色效果。主题会同时设置这些颜色和状态栏、边框，所以先设主题，自己的改动写在它后面。这些选项只要有一个用别的方式改过（加载主题文件、手动设置），外观就不再是哪套内置主题，`show -gv theme` 会显示 `custom`。
+keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时，pane 的背景色和程序用的颜色（红、蓝等）都是终端自己的。另外三套自己画这些颜色，在哪个终端里看都一样：它们设置 `window-style`（pane 的默认文字色和背景色，和 tmux 一样）和 `pane-colours`（程序用的 16 种颜色，也就是调色板的前 16 个）。它们的文字颜色（黑色除外，程序一般把黑色用在色块上）在 pane 和状态栏上的对比度都不低于 4.5:1。主题会同时设置这些颜色和状态栏、边框，所以先设主题，自己的改动写在它后面。这些选项只要有一个用别的方式改过（加载主题文件、手动设置），外观就不再是哪套内置主题，`show -gv theme` 会显示 `custom`。想在别的主题下让 pane 用终端自己的颜色：`set -g window-style default` 加 `set -g pane-colours ""`。
 
 默认外观用的是 24 位真彩色。在不支持真彩色的终端上（macOS 自带的 Terminal，除非它声明了 `COLORTERM=truecolor`），keepane 会自动换成 256 色里最接近的颜色，keepane 自己的界面和 pane 里程序的输出都一样。
 
@@ -770,7 +770,7 @@ set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm
 set -ag status-right " #{local_ip} #{public_ip}"
 ```
 
-默认的 `status-right` 用的是系统信息那几个变量（完整写法见 `themes/tokyo-night.conf`，它就是默认外观；tmux 那种朴素的见 `themes/plain.conf`）；`set -g status-right ...` 整条换掉，`set -g status off` 整行关掉（之后提示和消息临时显示在最底下一行）。
+默认的 `status-right` 用的是系统信息那几个变量（完整写法见 `themes/paper-dark.conf`，它就是默认外观；tmux 那种朴素的见 `themes/plain.conf`）；`set -g status-right ...` 整条换掉，`set -g status off` 整行关掉（之后提示和消息临时显示在最底下一行）。
 
 比较运算与 tmux 一样：`#{==:a,b}` `#{!=:a,b}` `#{<:a,b}` `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}`、`#{m:通配符,文本}`（`m/i:` 忽略大小写）得到 `1` 或 `0`，可以做 `#{?…}` 的条件，也可以做配置文件里 `%if` 的条件。
 

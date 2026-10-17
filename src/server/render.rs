@@ -488,7 +488,10 @@ pub fn compose(f: &Frame) -> Composed {
             if plan.before && x < win_end {
                 x += g.put_str(x, sy, "<", mark(waiting(0..plan.first)), win_end - x);
             }
-            for (i, (label, current)) in s.windows.iter().enumerate() {
+            // Each label as its format draws it: the current window's look is
+            // window-status-current-format's (themes/plain.conf reverses it),
+            // as the phone's page shows it too.
+            for (i, (label, _)) in s.windows.iter().enumerate() {
                 if i < plan.first || i >= plan.end {
                     window_hits.push((0, 0)); // left out: never hit
                     continue;
@@ -497,15 +500,7 @@ pub fn compose(f: &Frame) -> Composed {
                     x += g.put_str(x, sy, &s.separator, base, win_end.saturating_sub(x));
                 }
                 let start = x;
-                if *current {
-                    let inv: Vec<Segment> = label
-                        .iter()
-                        .map(|s| Segment { text: s.text.clone(), style: Style { inverse: true, ..s.style } })
-                        .collect();
-                    x += g.put_segments(x, sy, &inv, win_end - x);
-                } else {
-                    x += g.put_segments(x, sy, label, win_end - x);
-                }
+                x += g.put_segments(x, sy, label, win_end - x);
                 window_hits.push((start, x));
             }
             if plan.after && x < win_end {
@@ -2142,7 +2137,8 @@ mod tests {
         assert_eq!(cursor, Some((1, 0)));
         let row: String = (0..20).map(|x| g.get(x, 3).text()).collect();
         assert_eq!(row, "[s] 0:a 1:b    12:00");
-        assert!(g.get(4, 3).style.inverse);
+        // The current window as its format draws it, nothing added.
+        assert!(!g.get(4, 3).style.inverse);
         assert!(!g.get(8, 3).style.inverse);
         assert_eq!(g.get(0, 3).style.bg, Color::Idx(2));
         assert!(g.get(0, 3).style.bold);
@@ -2261,8 +2257,10 @@ mod tests {
         assert_eq!(hits, vec![(0, 0), (0, 0)], "nothing drawn, nothing hit");
         // The right side keeps its width while the current window fits
         // beside it: the window after it is left out, marked `>`; the
-        // current one is drawn inverse.
-        f.status.as_mut().unwrap().windows = vec![(seg("0:x", st), true), (seg("1:y", st), false)];
+        // current one is drawn in its format's style (reversed here, as
+        // themes/plain.conf has it).
+        let rev = Style { inverse: true, ..st };
+        f.status.as_mut().unwrap().windows = vec![(seg("0:x", rev), true), (seg("1:y", st), false)];
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
         assert_eq!(row, "abcd0:x>  RR");
@@ -2295,7 +2293,7 @@ mod tests {
         // window last hid the current window.)
         let status = f.status.as_mut().unwrap();
         status.right = seg("RR", st);
-        status.windows = vec![(seg("0:aaa", st), false), (seg("1:bbb", st), false), (seg("2:ccc", st), true)];
+        status.windows = vec![(seg("0:aaa", st), false), (seg("1:bbb", st), false), (seg("2:ccc", rev), true)];
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
         assert_eq!(row, "abcd2:ccc RR");

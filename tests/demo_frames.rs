@@ -1077,14 +1077,14 @@ impl Demo {
         .expect("prompt script");
         let shell = format!("pwsh.exe -NoLogo -NoProfile -NoExit -File {}", prompt.display());
         let conf = tmp.join("keepane.conf");
-        // The recordings wear the Tokyo Night theme from themes/, status line
+        // The recordings wear the Paper Dark theme from themes/, status line
         // and all: the branch, the directory, the machine's load, the clock.
         // The focus frame is slowed down so that the pictures, taken five
         // times a second, catch it moving (160 ms, the default, falls
         // between two of them).
-        // The look: KEEPANE_DEMO_THEME names a theme file (tokyo-day for the light
-        // pictures), tokyo-night when it is not set.
-        let name = std::env::var("KEEPANE_DEMO_THEME").unwrap_or_else(|_| "tokyo-night".into());
+        // The look: KEEPANE_DEMO_THEME names a theme file (paper for the light
+        // pictures), paper-dark when it is not set.
+        let name = std::env::var("KEEPANE_DEMO_THEME").unwrap_or_else(|_| "paper-dark".into());
         let theme = std::fs::read_to_string(format!("{}/themes/{name}.conf", env!("CARGO_MANIFEST_DIR")))
             .unwrap_or_else(|e| panic!("themes/{name}.conf: {e}"));
         std::fs::write(
@@ -1288,7 +1288,7 @@ impl Recorder {
             json.push('[');
             let mut first = true;
             let mut run = String::new();
-            let mut run_style: Option<(String, String, bool, bool, bool)> = None;
+            let mut run_style: Option<(String, String, bool, bool, bool, bool)> = None;
             let mut x = 0;
             while x < cols {
                 let Some(cell) = screen.cell(y, x) else {
@@ -1296,7 +1296,14 @@ impl Recorder {
                     continue;
                 };
                 let wide = cell.is_wide();
-                let style = (color(cell.fgcolor()), color(cell.bgcolor()), cell.bold(), cell.inverse(), cell.dim());
+                let style = (
+                    color(cell.fgcolor()),
+                    color(cell.bgcolor()),
+                    cell.bold(),
+                    cell.inverse(),
+                    cell.dim(),
+                    cell.underline(),
+                );
                 let text = cell.contents();
                 let text = if text.is_empty() { " ".to_string() } else { text.to_string() };
                 match &run_style {
@@ -1413,19 +1420,20 @@ impl Drop for Phone {
     }
 }
 
-fn push_run(json: &mut String, first: &mut bool, style: &(String, String, bool, bool, bool), text: &str) {
+fn push_run(json: &mut String, first: &mut bool, style: &(String, String, bool, bool, bool, bool), text: &str) {
     if !*first {
         json.push(',');
     }
     *first = false;
     let _ = write!(
         json,
-        "{{\"fg\":\"{}\",\"bg\":\"{}\",\"b\":{},\"i\":{},\"d\":{},\"t\":{}}}",
+        "{{\"fg\":\"{}\",\"bg\":\"{}\",\"b\":{},\"i\":{},\"d\":{},\"u\":{},\"t\":{}}}",
         style.0,
         style.1,
         style.2,
         style.3,
         style.4,
+        style.5,
         json_string(text)
     );
 }
