@@ -52,6 +52,21 @@ A phone is a touch screen. The web engine has no touch emulation yet, so
 on for the test's page and gives the test fingers: taps, long presses,
 swipes, a pinch. The rest is e2e's own: `screen`, `browser`, `expect`.
 
+The project's site, `docs/` (what GitHub Pages serves), has tests of its
+own in `site/`: its light and dark looks (the system's, or the visitor's
+pick), each picture shown in the page's look, the contrast of its text,
+and its bar at a phone's width. They need neither build; `e2e/serve-site.ts`
+serves `docs/` as it is, and `colourScheme` in `e2e/phone.ts` sets the
+system's light or dark through the same DevTools port.
+
+```sh
+npm run test:site                     # npx e2e run --config e2e.site.config.ts
+```
+
+Their report and artifacts go to `.e2e/site/`. Run the two suites one after
+the other, not together: the browser's DevTools port is in one file
+(`%TEMP%\keepane-e2e\browser.json`), and each run's browser writes it.
+
 A failed test leaves its screen, a screenshot and a Playwright trace under
 `.e2e/artifacts/`. The run sends e2e's anonymous usage figures unless
 `E2E_TELEMETRY_DISABLED=1`.

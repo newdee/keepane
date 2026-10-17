@@ -1,5 +1,7 @@
-// Language toggle for the keepane tour. Every translatable node carries
-// data-i18n; the English text lives in the HTML, the Chinese here.
+// Language and light/dark toggles for the keepane tour. Every translatable
+// node carries data-i18n; the English text lives in the HTML, the Chinese
+// here. Every picture in img/ has a light twin, name-light.ext, taken in
+// the paper theme; the HTML names the dark one (paper-dark).
 const ZH = {
   "nav.tour": "功能",
   "nav.faq": "常见问题",
@@ -165,12 +167,46 @@ const ZH = {
 
 const nodes = Array.from(document.querySelectorAll("[data-i18n]"));
 const EN = new Map(nodes.map((n) => [n, n.innerHTML]));
-// Pictures of a page that has words of its own come in both languages.
-const pictures = Array.from(document.querySelectorAll("img[data-src-zh]"));
+// The pictures, each with its dark English source; a page that has words of
+// its own also comes in Chinese (data-src-zh).
+const pictures = Array.from(document.querySelectorAll('img[src^="img/"]'));
 const EN_SRC = new Map(pictures.map((i) => [i, i.getAttribute("src")]));
 // Links to a page that comes in both languages, the same way.
 const links = Array.from(document.querySelectorAll("a[data-href-zh]"));
 const EN_HREF = new Map(links.map((a) => [a, a.getAttribute("href")]));
+
+// What the head's script chose before the first paint.
+let theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+
+function showPictures() {
+  for (const i of pictures) {
+    const src = lang === "zh" && i.dataset.srcZh ? i.dataset.srcZh : EN_SRC.get(i);
+    const light = src.replace(/(\.\w+)$/, "-light$1");
+    // In a <picture>, its light <source> is on or off; the <img> keeps the dark one.
+    const source = i.parentElement.tagName === "PICTURE" ? i.parentElement.querySelector("source") : null;
+    if (source) {
+      if (source.getAttribute("srcset") !== light) source.setAttribute("srcset", light);
+      source.media = theme === "light" ? "all" : "not all";
+    }
+    const want = source || theme !== "light" ? src : light;
+    if (i.getAttribute("src") !== want) i.setAttribute("src", want);
+  }
+}
+
+const THEME_LABEL = {
+  en: { light: "Dark page", dark: "Light page" },
+  zh: { light: "深色页面", dark: "浅色页面" },
+};
+
+function showTheme() {
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="theme-color"]').setAttribute("content", theme === "light" ? "#fdfdfb" : "#121212");
+  const b = document.getElementById("theme");
+  const label = THEME_LABEL[lang][theme];
+  b.setAttribute("aria-label", label);
+  b.title = label;
+  showPictures();
+}
 
 function apply(lang) {
   for (const n of nodes) {
@@ -178,10 +214,10 @@ function apply(lang) {
     if (lang === "zh" && ZH[key]) n.innerHTML = ZH[key];
     else n.innerHTML = EN.get(n);
   }
-  for (const i of pictures) i.setAttribute("src", lang === "zh" ? i.dataset.srcZh : EN_SRC.get(i));
   for (const a of links) a.setAttribute("href", lang === "zh" ? a.dataset.hrefZh : EN_HREF.get(a));
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   document.getElementById("lang").textContent = lang === "zh" ? "EN" : "中文";
+  showTheme();
   try {
     localStorage.setItem("keepane-lang", lang);
   } catch {
@@ -203,4 +239,32 @@ apply(lang);
 document.getElementById("lang").addEventListener("click", () => {
   lang = lang === "zh" ? "en" : "zh";
   apply(lang);
+});
+
+// A pick is remembered and wins over the system from then on: for this
+// visit at least, where nothing can be stored.
+let picked = false;
+document.getElementById("theme").addEventListener("click", () => {
+  theme = theme === "light" ? "dark" : "light";
+  picked = true;
+  showTheme();
+  try {
+    localStorage.setItem("keepane-theme", theme);
+  } catch {
+    /* private mode */
+  }
+});
+
+// No pick yet: the page follows the system when it changes.
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", (e) => {
+  if (picked) return;
+  let kept = null;
+  try {
+    kept = localStorage.getItem("keepane-theme");
+  } catch {
+    /* private mode */
+  }
+  if (kept === "light" || kept === "dark") return;
+  theme = e.matches ? "light" : "dark";
+  showTheme();
 });

@@ -9,3 +9,5 @@ node_modules/
 .e2e/failures/
 .e2e/logs/
 .e2e/videos/
+# the site's tests (e2e.site.config.ts) write all of theirs here
+.e2e/site/

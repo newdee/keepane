@@ -2,6 +2,7 @@
 // web/, after `npm run build` and `cargo build`. No model: every step is exact.
 import type { E2EConfig } from "e2e";
 import { web } from "@e2e-dev/web";
+import { keepErrors } from "./e2e/errors.ts";
 import { localChromium } from "./e2e/phone.ts";
 
 // What the shells in the tests' panes need from this machine; nothing else
@@ -19,22 +20,7 @@ export default {
         locale: "zh-CN",
         // What the page throws, kept across reloads for the check at the end
         // of each test (e2e/fixtures.ts).
-        initScripts: [
-          () => {
-            const keep = (what: string) => {
-              try {
-                const all = JSON.parse(sessionStorage.getItem("e2e-errors") || "[]");
-                sessionStorage.setItem("e2e-errors", JSON.stringify([...all, what]));
-              } catch {
-                // no storage here (about:blank)
-              }
-            };
-            // A ResizeObserver whose work spilled into the next frame is the
-            // browser's notice, not an error of the page's.
-            addEventListener("error", (e) => e.message.startsWith("ResizeObserver loop") || keep(String(e.message)));
-            addEventListener("unhandledrejection", (e) => keep(String(e.reason)));
-          },
-        ],
+        initScripts: [keepErrors],
       }),
       app: {
         url: "http://127.0.0.1:0",

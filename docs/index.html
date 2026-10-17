@@ -11,7 +11,19 @@
     <meta property="og:title" content="keepane" />
     <meta property="og:description" content="A terminal multiplexer: the programs in its panes keep running after the terminal closes, and panes pass messages to each other through inboxes." />
     <meta property="og:image" content="img/panes.png" />
-    <meta name="theme-color" content="#0d1017" />
+    <meta name="theme-color" content="#121212" />
+    <!-- Light or dark before the first paint: the visitor's pick, else the
+         system's (site.js keeps it and swaps the pictures) -->
+    <script>
+      (function () {
+        var t;
+        try {
+          t = localStorage.getItem("keepane-theme");
+        } catch (e) {}
+        if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = t;
+      })();
+    </script>
     <!-- fonts ship with the page: a stylesheet from Google's CDN blocks
          rendering wherever that host is unreachable -->
     <link rel="preload" href="fonts/Inter-400-latin.woff2" as="font" type="font/woff2" crossorigin />
@@ -25,6 +37,15 @@
         <a class="nav-link" href="#tour" data-i18n="nav.tour">Tour</a>
         <a class="nav-link" href="https://github.com/newdee/keepane/blob/master/docs/FAQ.md" data-href-zh="https://github.com/newdee/keepane/blob/master/docs/FAQ.zh-CN.md" data-i18n="nav.faq">FAQ</a>
         <button id="lang" class="lang-btn" type="button">中文</button>
+        <button id="theme" class="lang-btn theme-btn" type="button" aria-label="Light page" title="Light page">
+          <svg class="sun" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <circle cx="8" cy="8" r="3" fill="currentColor" />
+            <path stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06" />
+          </svg>
+          <svg class="moon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path fill="currentColor" d="M6.2 1.2a.6.6 0 0 1 .64.8A5.5 5.5 0 0 0 14 9.16a.6.6 0 0 1 .8.64A7 7 0 1 1 6.2 1.2Z" />
+          </svg>
+        </button>
         <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="nav.download">Download</a>
         <a class="star-btn" href="https://github.com/newdee/keepane" aria-label="GitHub">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -55,7 +76,12 @@
         <p class="meta" data-i18n="hero.meta">MIT · Windows, Linux, macOS · one small binary · formerly wmux</p>
 
         <figure class="stage">
-          <img src="img/keepane-tour.gif" width="900" alt="A tour in four parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. keepane web prints a QR code; on a phone the list shows every pane, and a command typed there runs in build on the computer." />
+          <!-- The one picture fetched at once: the browser takes the light
+               one itself on a light system, before site.js runs -->
+          <picture>
+            <source media="(prefers-color-scheme: light)" srcset="img/keepane-tour-light.gif" />
+            <img src="img/keepane-tour.gif" width="900" alt="A tour in four parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. keepane web prints a QR code; on a phone the list shows every pane, and a command typed there runs in build on the computer." />
+          </picture>
           <figcaption data-i18n="hero.caption">
             The tour: panes that message each other in three work modes, MCP for agents, the dashboard, and the panes on your phone.
           </figcaption>
@@ -330,7 +356,7 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
             You can replace the line with your own or turn it off.
           </p>
         </header>
-        <pre class="code statusline"><code>[work] 0:editor* 1:build 2:logs     master | ~\Documents\dfine\keepane | CPU 9% MEM 65% | 11:45</code></pre>
+        <pre class="code statusline"><code><span class="s"> work </span>  <span class="cur">0:editor*</span>  1:build  2:logs       normal  <span class="ink">master</span>  ~\Documents\dfine\keepane  CPU 9%  MEM 65%  <span class="clock">11:45</span></code></pre>
         <ul class="points">
           <li data-i18n="c6.p1"><code>#{git_branch}</code>, <code>#{cpu_percentage}</code>, <code>#{ram_percentage}</code>, <code>#{battery_percentage}</code>, <code>#{pane_current_path_short}</code> and <code>#{pane_pid_command}</code> (the program running in the pane right now) can go anywhere in <code>status-right</code>. <code>set -g status off</code> hides the line.</li>
           <li data-i18n="c6.p2">When two terminals attach at different sizes, <code>window-size</code> decides which one sizes the session. The smaller terminal sees part of the window and pans with <kbd>Shift</kbd> + arrows.</li>

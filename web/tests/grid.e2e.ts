@@ -4,7 +4,7 @@
 // for only while the grid is shown.
 import { expect } from "e2e";
 import type { Browser } from "@e2e-dev/web";
-import { pace, stays, test } from "../e2e/fixtures.ts";
+import { entry, pace, stays, test } from "../e2e/fixtures.ts";
 import { kp, page, paneIds, portOf, show, token } from "../e2e/keepane.ts";
 import { phone } from "../e2e/phone.ts";
 
@@ -46,6 +46,9 @@ test("the list as a grid", async ({ app, browser, screen }) => {
   await finger.longPress(browser.locator(`[data-cell="${builder}"]`));
   await expect(screen.getByRole("menuitem")).toHaveCount(12);
   await expect(browser.locator("#screen")).toHaveCount(0);
+  // Escape reaches the menu once the focus is in it (layout.e2e.ts, cardMenu);
+  // pressed sooner it can go to the page. Once, in a full run, the menu stayed.
+  await expect(entry(screen, "打开")).toBeFocused();
   await browser.keyboard.press("Escape");
   await expect(screen.getByRole("menu")).toHaveCount(0);
 

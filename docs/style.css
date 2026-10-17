@@ -1,4 +1,6 @@
-/* keepane feature tour: dark editorial layout over the terminal's own palette */
+/* keepane feature tour: an editorial layout in the terminal's default look,
+   paper-dark (ink on dark paper) or paper (ink on white), as the system says
+   or as the visitor picks (site.js; the pictures follow it) */
 
 /* Self-hosted so the page renders where Google's font CDN is unreachable.
    swap = text paints in the fallback immediately, then upgrades. */
@@ -31,20 +33,70 @@
   src: url("fonts/JetBrainsMono-400-latin.woff2") format("woff2");
 }
 
+/* The colours are themes/paper-dark.conf's and themes/paper.conf's: the
+   page is the bar, code sits on the panes' paper, the accent is the
+   cinnabar. Every text colour reads at 4.5:1 or more on the page, the
+   panels and the bar. */
 :root {
-  --bg: #0d1017;
-  --panel: #141922;
-  --panel-2: #10141c;
-  --line: #222835;
-  --text: #e6e9ef;
-  --dim: #9aa3b2;
-  --faint: #6a7383;
-  --accent: #98c379; /* the green of the status line */
-  --accent-2: #61afef;
-  --accent-soft: rgba(152, 195, 121, 0.14);
+  color-scheme: dark;
+  --bg: #121212;
+  --panel: #1c1c1b;
+  --panel-2: #171716;
+  --line: #2b2b29;
+  --text: #dbd7ca;
+  --dim: #a5a29a;
+  --faint: #87837b;
+  --accent: #dd625e; /* the cinnabar of the status line */
+  --accent-hover: #e57a76;
+  --on-accent: #121212;
+  --accent-2: #4d9375;
+  /* 10%: the accent's text on it keeps 4.5:1 on white paper too */
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --bar: #121212;
+  --bar-ink: #cecabe;
+  --shadow: rgba(0, 0, 0, 0.45);
   --r: 14px;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   --mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+/* Light: when the system is light and the visitor did not pick dark, or
+   when the visitor picked light (the head's script sets data-theme). */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #fdfdfb;
+    --panel: #f6f5f1;
+    --panel-2: #f6f5f1;
+    --line: #e4e2dc;
+    --text: #393a34;
+    --dim: #5d5b55;
+    --faint: #6b6860;
+    --accent: #b83e3c;
+    --accent-hover: #a33533;
+    --on-accent: #fdfdfb;
+    --accent-2: #1e754f;
+    --bar: #eceae4;
+    --bar-ink: #393a34;
+    --shadow: rgba(57, 58, 52, 0.14);
+  }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #fdfdfb;
+  --panel: #f6f5f1;
+  --panel-2: #f6f5f1;
+  --line: #e4e2dc;
+  --text: #393a34;
+  --dim: #5d5b55;
+  --faint: #6b6860;
+  --accent: #b83e3c;
+  --accent-hover: #a33533;
+  --on-accent: #fdfdfb;
+  --accent-2: #1e754f;
+  --bar: #eceae4;
+  --bar-ink: #393a34;
+  --shadow: rgba(57, 58, 52, 0.14);
 }
 
 * {
@@ -98,7 +150,7 @@ code {
   justify-content: space-between;
   gap: 16px;
   padding: 14px clamp(16px, 5vw, 56px);
-  background: rgba(13, 16, 23, 0.82);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
@@ -146,6 +198,27 @@ code {
   border-color: var(--faint);
 }
 
+/* The page's light or dark: a sun to go light, a moon to go dark. */
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+}
+
+.theme-btn svg {
+  display: block;
+}
+
+:root[data-theme="light"] .theme-btn .sun,
+:root:not([data-theme="light"]) .theme-btn .moon {
+  display: none;
+}
+
+/* No script, no switching: the page follows the system alone. */
+:root:not([data-theme]) .theme-btn {
+  display: none;
+}
+
 .star-btn {
   display: inline-flex;
   align-items: center;
@@ -182,11 +255,12 @@ code {
 
 .btn.primary {
   background: var(--accent);
-  color: #10140c;
+  color: var(--on-accent);
 }
 
-.btn.primary:hover {
-  background: #a8d189;
+.btn.primary:hover,
+.btn.small:hover {
+  background: var(--accent-hover);
 }
 
 .btn.ghost {
@@ -202,7 +276,7 @@ code {
   font-size: 14px;
   padding: 6px 14px;
   background: var(--accent);
-  color: #10140c;
+  color: var(--on-accent);
 }
 
 main {
@@ -268,7 +342,7 @@ main {
   height: auto;
   border-radius: var(--r);
   border: 1px solid var(--line);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 24px 60px var(--shadow);
   display: block;
 }
 
@@ -422,16 +496,34 @@ figcaption {
   font-size: 13px;
 }
 
-/* A status line as keepane draws it by default: black on green, one row. */
+/* A status line as keepane draws it by default (themes/paper-dark.conf,
+   or paper.conf on the light page): soft ink on the bar, the session in a
+   cinnabar block, the current window in cinnabar, bold and underlined. */
 .code.statusline {
   padding: 6px 12px;
-  background: #3fb950;
-  border-color: #3fb950;
+  background: var(--bar);
   white-space: pre;
 }
 .code.statusline code {
-  color: #0d1017;
+  color: var(--faint);
   font-size: 13px;
+}
+.statusline .s {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+.statusline .cur {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: underline;
+}
+.statusline .ink {
+  color: var(--bar-ink);
+}
+.statusline .clock {
+  color: var(--bar-ink);
+  font-weight: 700;
 }
 
 /* ------------------------------------------------------------- install */
@@ -528,6 +620,11 @@ footer a:hover {
     gap: 8px;
   }
   .star-btn span {
+    display: none;
+  }
+  /* The hero's Download is the first thing under the bar: the bar's own
+     makes room for the light/dark button. */
+  .top .btn.small {
     display: none;
   }
 }

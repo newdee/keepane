@@ -6,5 +6,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["e2e.config.ts", "e2e", "tests"]
+  "include": ["e2e.config.ts", "e2e.site.config.ts", "e2e", "tests", "site"]
 }

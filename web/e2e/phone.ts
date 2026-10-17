@@ -118,6 +118,40 @@ type Point = { x: number; y: number };
 /** The last test's connection: closed when the next phone opens, if its test failed before closing it. */
 let open: Cdp | undefined;
 
+/** A DevTools connection to the test's page (after `app.open`); the last one is closed. */
+async function devtools(browser: Browser): Promise<Cdp> {
+  const { http } = JSON.parse(fs.readFileSync(ENDPOINT, "utf8"));
+  const { webSocketDebuggerUrl } = await (await fetch(`${http}/json/version`)).json();
+  open?.close();
+  const cdp = await Cdp.open(webSocketDebuggerUrl);
+  open = cdp;
+  await cdp.attach(new URL(await browser.url()).origin);
+  return cdp;
+}
+
+/**
+ * The system's light or dark, as the test's page sees it in
+ * `prefers-color-scheme` (the web engine has no `colorScheme` yet), and
+ * whether the page's scripts run (`scripts(false)`: as with JavaScript off,
+ * from the next load). Both hold across reloads until `close`.
+ */
+export async function colourScheme(
+  browser: Browser,
+  scheme: "light" | "dark",
+): Promise<{ set(s: "light" | "dark"): Promise<void>; scripts(on: boolean): Promise<void>; close(): void }> {
+  const cdp = await devtools(browser);
+  const set = async (s: "light" | "dark") => {
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: s }] });
+    const now = await browser.evaluate(() => matchMedia("(prefers-color-scheme: light)").matches);
+    if (now !== (s === "light")) throw new Error(`prefers-color-scheme did not become ${s}`);
+  };
+  await set(scheme);
+  const scripts = async (on: boolean) => {
+    await cdp.send("Emulation.setScriptExecutionDisabled", { value: !on });
+  };
+  return { set, scripts, close: () => cdp.close() };
+}
+
 /** Fingers on the page: each call ends with the fingers lifted. */
 export interface Fingers {
   /** A tap on the middle of what the locator finds (or a point). */
@@ -140,12 +174,7 @@ export interface Fingers {
  */
 export async function phone(browser: Browser, size = { width: 390, height: 844 }): Promise<Fingers> {
   await browser.setViewport(size);
-  const { http } = JSON.parse(fs.readFileSync(ENDPOINT, "utf8"));
-  const { webSocketDebuggerUrl } = await (await fetch(`${http}/json/version`)).json();
-  open?.close();
-  const cdp = await Cdp.open(webSocketDebuggerUrl);
-  open = cdp;
-  await cdp.attach(new URL(await browser.url()).origin);
+  const cdp = await devtools(browser);
   await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   // Taken on, or the tests would touch a page that thinks it has a mouse.
   const on = await browser.evaluate(() => navigator.maxTouchPoints > 0 && matchMedia("(pointer: coarse)").matches);
