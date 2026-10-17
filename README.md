@@ -960,7 +960,12 @@ each part of its ends as it is drawn. Tapping a window opens it. Status
 line, in the view menu, hides it on this device; `set -g status off`
 hides it everywhere. A tap on a session or window folds it (the device
 remembers); its right click or long press renames it or folds every window
-of a session at once.
+of a session at once. The two buttons at the top of the list show it as a
+grid instead (the device remembers): a cell for each pane, two side by side
+on a phone held upright and more on a wider screen, each with the pane's
+state, name, inbox and window, and the last 4 lines it printed in the
+terminal's colours. Tap a cell to open its pane; a long press opens its
+menu.
 A pane wider than the phone wraps its long lines at the phone's edge
 (the view menu turns that off, for a full-screen program). Fit to this screen,
 in the same menu, sizes the pane to the phone: it fills its window and its

@@ -5515,6 +5515,34 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     assert_eq!(code, 200);
     assert!(screen.contains("-from-the-phone-7"), "{screen}");
 
+    // The grid's list (`tail=N`): each pane's last lines, what it printed
+    // last at the end (not the prompt waiting); only when asked, and only
+    // 1 to 8 lines.
+    http(addr, "POST", &format!("/api/send?pane={pane}"), key, "echo -and-then-8").await;
+    http(addr, "POST", &format!("/api/send?pane={pane}&key=Enter"), key, "").await;
+    h.wait_capture("w:0", "the second output", |t| t.lines().any(|l| l.trim() == "-and-then-8")).await;
+    let (code, list) = http(addr, "GET", "/api/panes?tail=4", key, "").await;
+    assert_eq!(code, 200, "{list}");
+    let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+    let tail: Vec<&str> = v[0]["tail"].as_array().expect(&list).iter().filter_map(|l| l.as_str()).collect();
+    assert!((2..=4).contains(&tail.len()) && tail.last() == Some(&"-and-then-8"), "{tail:?}");
+    assert!(tail.contains(&"-from-the-phone-7"), "{tail:?}");
+    let (_, one) = http(addr, "GET", "/api/panes?tail=1", key, "").await;
+    let v: serde_json::Value = serde_json::from_str(&one).unwrap();
+    assert_eq!(v[0]["tail"], serde_json::json!(["-and-then-8"]), "{one}");
+    for n in ["0", "9", "x"] {
+        let (code, list) = http(addr, "GET", &format!("/api/panes?tail={n}"), key, "").await;
+        assert!(code == 200 && !list.contains("\"tail\""), "{n}: {list}");
+    }
+    for (argv, why) in [
+        (vec!["web-tails"], "how many lines, 1 to 8"),
+        (vec!["web-tails", "9"], "how many lines, 1 to 8"),
+        (vec!["web-tails", "2", "3"], "web-tails"),
+    ] {
+        let (code, _, err) = h.cli(&argv).await;
+        assert!(code != 0 && err.contains(why), "{argv:?}: {err}");
+    }
+
     // A line wider than the pane: as the pane shows it, broken at its edge;
     // joined (`join=1`, for a phone that wraps at its own width), whole.
     let long = format!("L{}", "z".repeat(COLS as usize + 20));

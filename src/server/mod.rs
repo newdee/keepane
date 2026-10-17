@@ -5594,6 +5594,7 @@ impl Server {
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
             Cmd::ShareSent { token, peer, note } => self.share_sent(&token, &peer, &note),
             Cmd::WebFit { target, size } => self.web_fit(cid, target.as_ref(), size),
+            Cmd::WebTails { lines } => Outcome::Text(self.web_tails(lines)),
             c @ (Cmd::LinkId | Cmd::LinkTrust { .. } | Cmd::LinkList | Cmd::LinkAllow { .. } | Cmd::LinkRekey) => {
                 self.exec_link_local(c, cid)
             }

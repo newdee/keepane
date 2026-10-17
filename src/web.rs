@@ -893,8 +893,27 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             json_str(env!("CARGO_PKG_VERSION"))
         )),
         (true, "/api/panes") => {
-            match q(vec!["list-panes".into(), "-a".into(), "-F".into(), PANE_FIELDS.into()]).await {
-                Ok((0, out, _)) => Response::json(panes_json(&out)),
+            // `tail=N`: each pane's last N lines too (`web-tails`), for the
+            // grid of panes; asked together with the list.
+            let tail = req
+                .param("tail")
+                .and_then(|n| n.parse::<usize>().ok())
+                .filter(|n| (1..=crate::command::MAX_TAILS).contains(n));
+            let list = q(vec!["list-panes".into(), "-a".into(), "-F".into(), PANE_FIELDS.into()]);
+            let (list, tails) = match tail {
+                Some(n) => {
+                    let (list, tails) = tokio::join!(list, q(vec!["web-tails".into(), n.to_string()]));
+                    // Not given: no tail (the page shows the last line).
+                    let tails = match tails {
+                        Ok((0, out, _)) => serde_json::from_str(out.trim()).ok(),
+                        _ => None,
+                    };
+                    (list, tails)
+                }
+                None => (list.await, None),
+            };
+            match list {
+                Ok((0, out, _)) => Response::json(panes_json(&out, tails.as_ref())),
                 Ok((_, _, err)) => Response::text(500, err.trim()),
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
@@ -1233,13 +1252,15 @@ const PANE_FIELDS: &str = "#{pane_id}\t#{session_name}\t#{window_index}\t#{windo
                            #{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_context}\t#{agent_tokens}\t\
                            #{agent_cpu}\t#{agent_mem}\t#{pane_state}\t#{pane_title}";
 
-/// The list-panes lines (tab-separated, in `PANE_FIELDS` order) as a JSON array.
-fn panes_json(out: &str) -> String {
-    panes_json_at(out, chrono::Utc::now().timestamp().max(0) as u64)
+/// The list-panes lines (tab-separated, in `PANE_FIELDS` order) as a JSON
+/// array; with `tails` (`web-tails`), each pane's as its `tail` (none for
+/// a pane not in them).
+fn panes_json(out: &str, tails: Option<&serde_json::Value>) -> String {
+    panes_json_at(out, chrono::Utc::now().timestamp().max(0) as u64, tails)
 }
 
 /// `panes_json` with the time now given, for the tests.
-fn panes_json_at(out: &str, now: u64) -> String {
+fn panes_json_at(out: &str, now: u64, tails: Option<&serde_json::Value>) -> String {
     let items: Vec<String> = out
         .lines()
         .filter_map(|l| {
@@ -1261,13 +1282,17 @@ fn panes_json_at(out: &str, now: u64) -> String {
                 serde_json::Value::Object(o).to_string()
             };
             let num = |s: &str| s.parse::<u64>().unwrap_or(0);
+            let tail = tails
+                .and_then(|t| t.get(f[0]))
+                .filter(|v| v.is_array())
+                .map_or(String::new(), |v| format!(",\"tail\":{v}"));
             // The window's alerts, as the status line marks them: it printed
             // (#), rang (!), or went quiet (~) while nobody looked.
             Some(format!(
                 "{{\"id\":{},\"session\":{},\"window\":{},\"windowName\":{},\"pane\":{},\"command\":{},\
                  \"active\":{},\"windowActive\":{},\"cols\":{},\"rows\":{},\"dead\":{},\"attached\":{},\
                  \"activity\":{},\"bell\":{},\"silence\":{},\"name\":{},\"mode\":{},\"path\":{},\"quiet\":{},\"last\":{},\
-                 \"idle\":{},\"state\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"exit\":{},\"alt\":{},\"agent\":{},\"title\":{}}}",
+                 \"idle\":{},\"state\":{},\"inbox\":{},\"unheard\":{},\"working\":{},\"exit\":{},\"alt\":{},\"agent\":{},\"title\":{}{tail}}}",
                 json_str(f[0]),
                 json_str(f[1]),
                 num(f[2]),
@@ -1570,12 +1595,27 @@ mod tests {
             "%3\tdev\t0\tbuild\t1\tcargo\t1\t0\t80\t24\t0\t1\t1\t0\t1\tbuilder\tshell\t~/src\t1000\ttests: 42 passed\t0\t2\t0\t7\t\t0\t\t\t\t\t\t\t\ttyping\t✳ fix\tthe login\n\
              %4\tdev\t0\tbuild\t2\tclaude\t0\t0\t80\t24\t1\t1\t0\t0\t0\t\tai\t~/src\t1060\t\t0\t3\t1\t\t2\t1\tclaude\tclaude-opus-5-5\t$2.10\t34%\t1.2M\t12%\t812M\texited\t\nshort line\n",
             1060,
+            None,
         );
         assert_eq!(
             json,
             r#"[{"id":"%3","session":"dev","window":0,"windowName":"build","pane":1,"command":"cargo","active":true,"windowActive":false,"cols":80,"rows":24,"dead":false,"attached":true,"activity":true,"bell":false,"silence":true,"name":"builder","mode":"shell","path":"~/src","quiet":60,"last":"tests: 42 passed","idle":false,"state":"typing","inbox":2,"unheard":false,"working":7,"exit":null,"alt":false,"agent":null,"title":"✳ fix the login"},{"id":"%4","session":"dev","window":0,"windowName":"build","pane":2,"command":"claude","active":false,"windowActive":false,"cols":80,"rows":24,"dead":true,"attached":true,"activity":false,"bell":false,"silence":false,"name":"","mode":"ai","path":"~/src","quiet":0,"last":"","idle":false,"state":"exited","inbox":3,"unheard":true,"working":0,"exit":2,"alt":true,"agent":{"kind":"claude","model":"claude-opus-5-5","cost":"$2.10","context":"34%","tokens":"1.2M","cpu":"12%","mem":"812M"},"title":""}]"#
         );
-        assert_eq!(panes_json(""), "[]");
+        assert_eq!(panes_json("", None), "[]");
+        // Asked with each pane's last lines (`tail=N`): each its own, after
+        // the rest; a pane `web-tails` did not give (made in between), none
+        // (the page shows its last line); not asked, the list as it was.
+        let two = "%3\tdev\t0\tw\t0\tsh\t1\t1\t80\t24\t0\t1\t0\t0\t0\t\t\t~\t0\t\t0\t0\t0\t\t\t0\t\t\t\t\t\t\t\t-\t\n\
+                   %4\tdev\t0\tw\t1\tsh\t0\t1\t80\t24\t0\t1\t0\t0\t0\t\t\t~\t0\t\t0\t0\t0\t\t\t0\t\t\t\t\t\t\t\t-\t\n";
+        let tails = serde_json::json!({"%3": ["one", "two \"2\""], "%4": "not a list", "%9": ["gone"]});
+        let with = panes_json_at(two, 0, Some(&tails));
+        let v: serde_json::Value = serde_json::from_str(&with).unwrap();
+        assert_eq!(v[0]["tail"], serde_json::json!(["one", "two \"2\""]));
+        assert!(v[1].get("tail").is_none() && v.as_array().unwrap().len() == 2, "{with}");
+        assert!(with.contains(r#""title":"","tail":["one","two \"2\""]}"#), "{with}");
+        let without = panes_json_at(two, 0, None);
+        assert_eq!(panes_json_at(two, 0, Some(&serde_json::json!({}))), without);
+        assert!(!without.contains("tail"), "not asked: no tail");
         // The fields as the server fills them read back: the agent's in
         // their places.
         let ctx = crate::format::Context {
@@ -1597,7 +1637,7 @@ mod tests {
             Default::default(),
             chrono::Local::now(),
         ));
-        let v: serde_json::Value = serde_json::from_str(&panes_json_at(&line, 0)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&panes_json_at(&line, 0, None)).unwrap();
         assert_eq!(
             (&v[0]["id"], &v[0]["title"], &v[0]["agent"]),
             (

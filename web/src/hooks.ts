@@ -39,19 +39,20 @@ export function useStored<T>(name: string, fallback: T): [T, (v: T) => void] {
   return [v, set];
 }
 
-/** Every pane, asked for every two seconds while the page is shown. */
-export function usePanes(enabled: boolean) {
+/** Every pane, asked for every two seconds while the page is shown; with
+ *  `tail` (the grid shown), each one's last `tail` lines too. */
+export function usePanes(enabled: boolean, tail = 0) {
   const visible = useVisible();
   const [panes, setPanes] = useState<Pane[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const reload = useCallback(async () => {
     try {
-      setPanes(await getJson<Pane[]>("/api/panes"));
+      setPanes(await getJson<Pane[]>(tail ? `/api/panes?tail=${tail}` : "/api/panes"));
       setError(null);
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [tail]);
   useEffect(() => {
     if (!visible || !enabled) return;
     let stop = false;

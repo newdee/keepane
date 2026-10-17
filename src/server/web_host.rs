@@ -485,6 +485,21 @@ impl Server {
         }
     }
 
+    /// `web-tails N`: `{"%3": [...], ...}`, each pane's last `n` lines with
+    /// something on them, oldest first, read as `#{pane_last_line}` reads
+    /// its one (prompts passed over); for the phone page's grid of panes.
+    pub(super) fn web_tails(&self, n: usize) -> String {
+        let mut out = serde_json::Map::new();
+        for w in self.sessions.iter().flat_map(|s| s.windows.iter()) {
+            for id in w.layout.panes().iter().copied() {
+                if let Some(p) = w.pane(id) {
+                    out.insert(format!("%{id}"), p.last_lines(n, false).into());
+                }
+            }
+        }
+        serde_json::Value::Object(out).to_string()
+    }
+
     fn web_redraw(&mut self) {
         for c in self.clients.values_mut() {
             c.last_grid = None;

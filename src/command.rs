@@ -654,6 +654,12 @@ pub enum Cmd {
         target: Option<Target>,
         size: Option<(u16, u16)>,
     },
+    /// `web-tails N`: the last `N` lines each pane printed (as
+    /// `#{pane_last_line}` reads one), as JSON by pane: the phone page's
+    /// grid of panes.
+    WebTails {
+        lines: usize,
+    },
     /// `link-id`: this server's public key, for another machine to trust
     /// (docs/design/link.md).
     LinkId,
@@ -1635,6 +1641,7 @@ impl fmt::Display for Cmd {
                     None => f.write_str(" -u"),
                 }
             }
+            Cmd::WebTails { lines } => write!(f, "web-tails {lines}"),
             Cmd::LinkId => f.write_str("link-id"),
             Cmd::LinkAdd { url } => write!(f, "link-add {}", quote(url)),
             Cmd::LinkTrust { addr, key, shell, screen, panes, push } => {
@@ -2147,6 +2154,9 @@ fn key_table(name: &str, table: &str) -> Result<KeyTable, String> {
     }
 }
 
+/// The most lines `web-tails` gives of each pane.
+pub const MAX_TAILS: usize = 8;
+
 /// Every command name, for the unambiguous-prefix lookup below.
 pub const COMMANDS: &[&str] = &[
     "attach-session",
@@ -2291,6 +2301,7 @@ pub const COMMANDS: &[&str] = &[
     "web-start",
     "web-status",
     "web-stop",
+    "web-tails",
     "share",
     "web-share-open",
     "web-share-sent",
@@ -2428,6 +2439,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("web-start", &["-p", "-b", "-r", "-k"]),
     ("web-status", &[]),
     ("web-stop", &[]),
+    ("web-tails", &[]),
     ("share", &["-l", "--for", "--once", "--all"]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
@@ -3856,6 +3868,11 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             };
             Cmd::WebFit { target, size }
         }
+        "web-tails" => {
+            let lines = a.next().and_then(|v| v.parse::<usize>().ok()).filter(|n| (1..=MAX_TAILS).contains(n));
+            a.none_left(n)?;
+            Cmd::WebTails { lines: lines.ok_or_else(|| format!("{n}: how many lines, 1 to {MAX_TAILS}"))? }
+        }
         "link-id" | "link-list" | "link-rekey" => {
             a.none_left(n)?;
             match n {
@@ -4944,6 +4961,7 @@ mod tests {
             "kill-pane -a",
             "kill-session -a -t x",
             "capture-pane -p -S -100 -t w:1",
+            "web-tails 4",
             "run-shell -b -t w:1 \"pwsh -c Get-Date\"",
             "set-hook -g after-new-window \"rename-window hooked\"",
             "set-hook -gu after-new-window",

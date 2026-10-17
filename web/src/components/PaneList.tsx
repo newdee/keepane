@@ -9,6 +9,8 @@ import {
   ChevronsUpDown,
   Columns2,
   Inbox,
+  LayoutGrid,
+  List,
   Moon,
   PanelBottom,
   Plus,
@@ -23,7 +25,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ContextMenu, useContextPress, type MenuAt, type MenuEntry } from "./ContextMenu";
-import type { Agent, Pane, Renamed } from "../api";
+import type { Agent, Pane, Renamed, Theme } from "../api";
 import { bounced, headOf, quietFor, stateOf, under } from "../format";
 import { useStored } from "../hooks";
 import { t } from "../i18n";
@@ -34,6 +36,12 @@ const wKey = (p: Pane) => `w ${p.session}:${p.window}`;
 type Props = {
   panes: Pane[];
   current: string | null;
+  /** Shown as a grid: a cell per pane, its last `lines` lines in it, in the
+   *  terminal's colours (`theme`); `onGrid` switches. */
+  grid: boolean;
+  lines: number;
+  onGrid: (on: boolean) => void;
+  theme: Theme;
   readOnly: boolean;
   onOpen: (id: string) => void;
   onRename: (kind: Renamed, pane: Pane) => void;
@@ -44,8 +52,9 @@ type Props = {
 
 /** Every pane, as keepane holds them: each session, its windows, their panes
  *  (`list-panes -a` gives them in that order). Folded sessions and windows
- *  are kept on this device. */
-export function PaneList({ panes, current, readOnly, onOpen, onRename, onInbox, onAction }: Props) {
+ *  are kept on this device. As a grid, each session's panes are cells side
+ *  by side, each naming its window (windows do not fold there). */
+export function PaneList({ panes, current, grid, lines, onGrid, theme, readOnly, onOpen, onRename, onInbox, onAction }: Props) {
   const [foldedList, setFolded] = useStored<string[]>("keepane-folded", []);
   const folded = useMemo(() => new Set(foldedList), [foldedList]);
   const toggle = (k: string) => {
@@ -118,7 +127,7 @@ export function PaneList({ panes, current, readOnly, onOpen, onRename, onInbox, 
         ? { id: "toggle", label: t("Unfold", "展开"), icon: <ChevronDown className="size-4" /> }
         : { id: "toggle", label: t("Fold", "折叠"), icon: <ChevronRight className="size-4" /> },
     );
-    if (level === "session")
+    if (level === "session" && !grid)
       items.push(
         { id: "fold-all", label: t("Fold every window", "折叠所有窗口"), icon: <ChevronsDownUp className="size-4" /> },
         { id: "open-all", label: t("Unfold every window", "展开所有窗口"), icon: <ChevronsUpDown className="size-4" /> },
@@ -171,8 +180,20 @@ export function PaneList({ panes, current, readOnly, onOpen, onRename, onInbox, 
   const out: React.ReactNode[] = [];
   let lastSession: string | null = null;
   let lastWindow: number | null = null;
+  // The grid's cells of the session being read, put in once it ends.
+  let cells: React.ReactNode[] = [];
+  const endCells = () => {
+    if (cells.length)
+      out.push(
+        <div key={`g ${lastSession}`} data-grid={lastSession} className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2">
+          {cells}
+        </div>,
+      );
+    cells = [];
+  };
   for (const p of panes) {
     if (p.session !== lastSession) {
+      endCells();
       const c = count.s.get(sKey(p))!;
       const isFolded = folded.has(sKey(p));
       out.push(
@@ -191,6 +212,22 @@ export function PaneList({ panes, current, readOnly, onOpen, onRename, onInbox, 
       lastWindow = null;
     }
     if (folded.has(sKey(p))) continue;
+    if (grid) {
+      cells.push(
+        <PaneCell
+          key={p.id}
+          p={p}
+          lines={lines}
+          theme={theme}
+          selected={p.id === current}
+          here={p.active && p.windowActive}
+          onOpen={() => !bounced("open") && onOpen(p.id)}
+          onInbox={() => !bounced("inbox") && onInbox(p.id)}
+          onMenu={(x, y) => paneMenu(p, x, y)}
+        />,
+      );
+      continue;
+    }
     if (p.window !== lastWindow) {
       const isFolded = folded.has(wKey(p));
       const n = count.w.get(wKey(p))!;
@@ -222,11 +259,40 @@ export function PaneList({ panes, current, readOnly, onOpen, onRename, onInbox, 
       />,
     );
   }
+  endCells();
+  const n = panes.length;
   return (
     <div className="flex flex-col gap-1.5 px-3 pt-2 pb-6">
-      {out}
+      <div className="flex items-center gap-2 pl-1">
+        <span className="min-w-0 flex-1 truncate text-xs text-muted">{t(`${n} ${n === 1 ? "pane" : "panes"}`, `${n} 个 pane`)}</span>
+        <div role="group" aria-label={t("Show the panes as", "pane 的显示方式")} className="flex rounded-xl bg-default p-0.5">
+          <ViewButton id="view-list" on={!grid} label={t("List", "列表")} icon={<List className="size-4" />} onPress={() => onGrid(false)} />
+          <ViewButton id="view-grid" on={grid} label={t("Grid", "网格")} icon={<LayoutGrid className="size-4" />} onPress={() => onGrid(true)} />
+        </div>
+      </div>
+      <div className="flex flex-col gap-1.5">{out}</div>
       <ContextMenu at={menu} onClose={() => setMenu(null)} />
     </div>
+  );
+}
+
+/** One of the list's two ways (a list, a grid): pressed when it is the one shown. */
+function ViewButton(props: { id: string; on: boolean; label: string; icon: React.ReactNode; onPress: () => void }) {
+  return (
+    <button
+      type="button"
+      id={props.id}
+      aria-label={props.label}
+      title={props.label}
+      aria-pressed={props.on}
+      onClick={props.onPress}
+      className={
+        "grid size-9 place-items-center rounded-[10px] outline-none pointer-coarse:size-10 focus-visible:ring-2 focus-visible:ring-focus " +
+        (props.on ? "bg-surface text-foreground shadow-sm" : "text-muted hover:text-foreground")
+      }
+    >
+      {props.icon}
+    </button>
   );
 }
 
@@ -404,6 +470,102 @@ function PaneCard({
           {p.silence ? <Mark icon={<Moon className="size-3" />} label={t("quiet", "没动静")} /> : null}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** A pane as a cell of the grid: its state, name, what waits in its inbox;
+ *  its window and how long it has been quiet; its last `lines` lines in the
+ *  terminal's colours, the latest at the bottom (its last line alone until
+ *  they come). Tapped, it opens; held, its menu. */
+function PaneCell({
+  p,
+  lines,
+  theme,
+  selected,
+  here,
+  onOpen,
+  onInbox,
+  onMenu,
+}: {
+  p: Pane;
+  lines: number;
+  theme: Theme;
+  selected: boolean;
+  here: boolean;
+  onOpen: () => void;
+  onInbox: () => void;
+  onMenu: (x: number, y: number) => void;
+}) {
+  const st = stateOf(p);
+  const press = useContextPress(onMenu);
+  const alert = p.activity || p.bell || p.silence;
+  const tail = (p.tail ?? (p.last ? [p.last] : [])).slice(-lines);
+  const name = headOf(p);
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      data-cell={p.id}
+      data-name={p.name || undefined}
+      aria-label={[name, `${p.session}:${p.window}.${p.pane}`, st.label].filter(Boolean).join(" · ")}
+      {...press}
+      onClick={onOpen}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen())}
+      className={
+        "flex min-w-0 cursor-pointer flex-col gap-1.5 rounded-2xl border p-2.5 text-left transition-colors outline-none " +
+        "focus-visible:ring-2 focus-visible:ring-focus " +
+        (selected
+          ? "border-accent bg-accent-soft"
+          : alert
+            ? "border-warning/50 bg-surface hover:bg-surface-hover"
+            : "border-border bg-surface hover:bg-surface-hover")
+      }
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span
+          className={"size-2 shrink-0 rounded-full " + (st.tone ? DOT[st.tone] : "bg-transparent ring-1 ring-border")}
+          title={st.label}
+        />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
+        {here ? <span className="size-1.5 shrink-0 rounded-full bg-accent" title={t("on the computer's screen", "电脑上正显示")} /> : null}
+        {p.working > 0 ? (
+          <Chip size="sm" color="success" variant="soft" className="cursor-pointer" onClick={(e) => (e.stopPropagation(), onInbox())}>
+            #{p.working}
+          </Chip>
+        ) : null}
+        {p.inbox > 0 ? (
+          <Chip
+            size="sm"
+            color="accent"
+            variant="soft"
+            className="cursor-pointer"
+            aria-label={t(`${p.inbox} queued`, `排队 ${p.inbox}`)}
+            onClick={(e) => (e.stopPropagation(), onInbox())}
+          >
+            <Inbox className="size-3" />
+            {p.inbox}
+          </Chip>
+        ) : null}
+      </div>
+      <div className="flex min-w-0 items-center gap-1 text-[11px] text-muted">
+        <span className="min-w-0 flex-1 truncate">{`${p.window}: ${p.windowName}`}</span>
+        {p.activity ? <Terminal className="size-3 shrink-0 text-warning" aria-label={t("printed", "有输出")} /> : null}
+        {p.bell ? <BellRing className="size-3 shrink-0 text-warning" aria-label={t("bell", "响铃")} /> : null}
+        {p.silence ? <Moon className="size-3 shrink-0 text-warning" aria-label={t("quiet", "没动静")} /> : null}
+        <span className="shrink-0 tabular-nums">{quietFor(p.quiet)}</span>
+      </div>
+      <div
+        data-tail
+        className="flex flex-col justify-end overflow-hidden rounded-lg px-2 py-1.5 font-term text-[10px] leading-[14px] whitespace-pre"
+        style={{ background: theme.bg, color: theme.fg, height: lines * 14 + 12 }}
+      >
+        {tail.map((l, i) => (
+          <div key={i} className="overflow-hidden text-ellipsis">
+            {l}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -23,6 +23,8 @@ import { PaneView } from "./components/PaneView";
 import { ConfirmClose, InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
 
 const THEME_NAMES: Record<string, string> = { "tokyo-night": "Tokyo Night", "tokyo-day": "Tokyo Day" };
+/** The lines of each pane a cell of the grid shows. */
+const GRID_LINES = 4;
 
 export default function App() {
   useViewportHeight();
@@ -30,7 +32,17 @@ export default function App() {
   const [info, setInfo] = useState<Info | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [current, setCurrent] = useState<string | null>(null);
-  const { panes, error, reload } = usePanes(!!info);
+  // The list as a list or a grid (kept on this device); shown as a grid,
+  // each pane's last lines come with it.
+  const [view, setView] = useStored<string>("keepane-view", "list");
+  const grid = view === "grid";
+  const [railStored, setRail] = useStored<boolean>("keepane-rail", false);
+  const rail = wide && !!railStored;
+  // Full screen: only the pane's screen and its input are left, over the
+  // whole screen where the browser can (elsewhere, over the whole page).
+  const [focus, setFocus] = useState(false);
+  const showList = (wide || !current) && !(focus && current);
+  const { panes, error, reload } = usePanes(!!info, grid && showList && !rail ? GRID_LINES : 0);
   // A pane closed: what was left in its box goes too.
   useEffect(() => void (panes && dropDrafts(panes.map((p) => p.id))), [panes]);
   const term = useTermTheme();
@@ -38,9 +50,6 @@ export default function App() {
   // The language is kept in i18n; this state only redraws the page when it changes.
   const [lang, setLangState] = useState<Lang>(currentLang);
   const latency = useLatency(!!info);
-  // Full screen: only the pane's screen and its input are left, over the
-  // whole screen where the browser can (elsewhere, over the whole page).
-  const [focus, setFocus] = useState(false);
   // Leaving the browser's full screen (its Escape, a swipe) leaves it too.
   const fs = useFullscreen(() => setFocus(false));
   const status = <Latency ms={latency} />;
@@ -182,7 +191,6 @@ export default function App() {
   };
 
   const list = panes ?? [];
-  const showList = (wide || !current) && !(focus && current);
 
   // A pane's menu entries that act on the computer (from the list).
   const [closing, setClosing] = useState<Pane | null>(null);
@@ -242,8 +250,6 @@ export default function App() {
 
   // On a wide screen the list folds down to a strip (kept on this device):
   // its button, a swipe left on the list, a swipe right on the strip.
-  const [railStored, setRail] = useStored<boolean>("keepane-rail", false);
-  const rail = wide && !!railStored;
   const swipe = useRef<{ x: number; y: number; at: number; onList: boolean } | null>(null);
   const onTouchStart = (e: React.TouchEvent) => {
     if (!wide || e.touches.length !== 1) return void (swipe.current = null);
@@ -353,6 +359,10 @@ export default function App() {
               <PaneList
                 panes={list}
                 current={current}
+                grid={grid}
+                lines={GRID_LINES}
+                onGrid={(on) => setView(on ? "grid" : "list")}
+                theme={term.theme}
                 readOnly={!!info?.readOnly}
                 onOpen={(id) => (wide && current ? go(id) : open(id))}
                 onRename={rename}

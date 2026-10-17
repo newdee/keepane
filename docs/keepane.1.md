@@ -172,15 +172,22 @@ address (empty while it is off) and `#{web_clients}` how many are on it; the
 default status line shows `web` and that number while it serves, and a phone
 connecting, or a wrong key, is said on the status line.
 
-The page's Fit to this screen (in the pane's view menu) sizes the pane shown to the phone (`web-fit`): `web-fit -t pane -x
-cols -y rows` zooms the pane in its window and gives its session the phone's
-columns and rows, so a full-screen program draws for the phone. A session has
-one size, so meanwhile the computer and any other phone see that session at
+The page's Fit to this screen (in the pane's view menu) sizes the pane
+shown to the phone (`web-fit`): `web-fit -t pane -x cols -y rows` zooms
+the pane in its window and gives its session the phone's columns and
+rows, so a full-screen program draws for the phone. A session has one
+size, so meanwhile the computer and any other phone see that session at
 the phone's size too (the page and the status line say so). It ends with
 `web-fit -t pane -u` (the button again, another pane, the list, the phone
 put away), when no phone has shown the pane for 10 seconds, when `keepane
 web` stops, or when the session is sized by hand (`resize-window`); the
 session gets its size back.
+
+The page's list shown as a grid asks for each pane's last lines with it
+(`/api/panes?tail=4`, 1 to 8), which the server gives as `web-tails` (with
+N): `{"%3": [...]}`, the last N lines each pane printed, oldest first,
+prompts passed over as `#{pane_last_line}` passes them: a keepane command
+of the page's, not for people.
 
 `keepane share PATH [--for TIME] [--once]` (the server command `share`)
 gives out a file or a folder by a link on the phone page's address and port,

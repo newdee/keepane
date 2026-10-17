@@ -62,6 +62,9 @@ export type Pane = {
    *  null for none. */
   agent: Agent | null;
   title: string;
+  /** Its last lines, oldest first (`/api/panes?tail=N`, for the grid):
+   *  what it printed, as `last` is its last one. Missing when not asked. */
+  tail?: string[];
 };
 
 /** What the page renames, by one of its panes (`/api/action?do=rename-…`). */
