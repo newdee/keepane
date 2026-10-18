@@ -6892,6 +6892,117 @@ async fn the_prefix_as_a_bare_byte_still_works() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `passthrough`: F12 gives a pane every key, the prefix and the root
+/// table's too (a keepane in it, over ssh, gets its own prefix), and takes
+/// them back; it is the pane's, so the pane next to it keeps the prefix.
+#[tokio::test(flavor = "multi_thread")]
+async fn passthrough_gives_a_pane_the_prefix_until_f12() {
+    const VK_F5: u16 = 0x74;
+    const VK_F12: u16 = 0x7B;
+    let h = Harness::start("passthrough").await;
+    let (code, _, err) = h.cli(&["bind", "-n", "F5", "new-window"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, keys, _) = h.cli(&["list-keys"]).await;
+    assert!(keys.lines().any(|l| l.contains("-T root") && l.contains("F12") && l.ends_with("passthrough")), "{keys}");
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "pt"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    c.prefix('%').await;
+    c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
+    async fn windows(h: &Harness) -> usize {
+        h.cli(&["list-windows", "-t", "pt"]).await.1.lines().count()
+    }
+    async fn flag(h: &Harness, t: &str) -> String {
+        h.cli(&["display-message", "-p", "-t", t, "#{pane_passthrough}"]).await.1.trim().to_string()
+    }
+
+    // On: the message names the way back and the bar says so.
+    c.key(VK_F12, '\0', 0).await;
+    c.wait_for("the message", |s| s.contents().contains("passthrough on")).await;
+    assert!(c.text().contains("F12 ends it"), "{}", c.text());
+    assert_eq!(flag(&h, "pt:0.1").await, "1");
+    assert_eq!(flag(&h, "pt:0.0").await, "0", "the pane next to it is not");
+    c.wait_for("the word on the bar", |s| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap().contains("passthrough"))
+        .await;
+
+    // C-b c and a root key: typed into the pane, no window made.
+    c.prefix('c').await;
+    c.key(VK_F5, '\0', 0).await;
+    c.enter().await;
+    c.type_str(&remark("zqx")).await;
+    c.enter().await;
+    h.wait_capture("pt:0.1", "the marker after them", |t| t.contains("zqx")).await;
+    assert_eq!(windows(&h).await, 1, "the prefix and F5 went to the pane");
+
+    // The other pane keeps the prefix.
+    let (code, _, err) = h.cli(&["select-pane", "-t", "pt:0.0"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.prefix('c').await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while windows(&h).await != 2 {
+        assert!(Instant::now() < deadline, "C-b c in the other pane made no window");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Back in the pane it is still on; F12 turns it off and C-b is keepane's.
+    h.cli(&["select-window", "-t", "pt:0"]).await;
+    h.cli(&["select-pane", "-t", "pt:0.1"]).await;
+    c.key(VK_F12, '\0', 0).await;
+    c.wait_for("the message", |s| s.contents().contains("passthrough off")).await;
+    assert_eq!(flag(&h, "pt:0.1").await, "0");
+    c.key(VK_F5, '\0', 0).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while windows(&h).await != 3 {
+        assert!(Instant::now() < deadline, "F5 made no window once passthrough was off");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // From the command line: on, off, and words it does not take.
+    for (argv, want) in [
+        (&["passthrough", "-t", "pt:0.1", "on"][..], "1"),
+        (&["passthrough", "-t", "pt:0.1", "on"][..], "1"),
+        (&["passthrough", "-t", "pt:0.1", "off"][..], "0"),
+        (&["passthrough", "-t", "pt:0.1"][..], "1"),
+    ] {
+        let (code, _, err) = h.cli(argv).await;
+        assert_eq!(code, 0, "{argv:?}: {err}");
+        assert_eq!(flag(&h, "pt:0.1").await, want, "{argv:?}");
+    }
+    let (code, _, err) = h.cli(&["passthrough", "maybe"]).await;
+    assert!(code != 0 && err.contains("not on or off"), "{err}");
+    let (code, _, err) = h.cli(&["passthrough", "on", "off"]).await;
+    assert!(code != 0, "two words: {err}");
+    let (code, _, err) = h.cli(&["passthrough", "-t", "pt:0.9", "on"]).await;
+    assert!(code != 0 && !err.is_empty(), "no such pane: {err}");
+    assert_eq!(flag(&h, "pt:0.1").await, "1", "a refused one changed nothing");
+
+    // The prefix arrives as the program's byte 0x02, not swallowed: a
+    // program that prints the first key it reads.
+    #[cfg(windows)]
+    let reader: &[&str] = &[
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Write-Host ready; $k = [Console]::ReadKey($true); Write-Host ('got:' + [int]$k.KeyChar); Start-Sleep 60",
+    ];
+    #[cfg(unix)]
+    let reader: &[&str] =
+        &["/bin/sh", "-c", "stty raw -echo; echo ready; b=$(head -c 1 | od -An -tx1); echo \"got:$b\"; sleep 60"];
+    let reader: Vec<String> = reader.iter().map(|s| s.to_string()).collect();
+    let (code, _, err) = h.cli(&args(&["new-window", "-t", "pt", "-n", "reader"], &reader)).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("pt:reader", "the reader", |t| t.contains("ready")).await;
+    h.cli(&["passthrough", "-t", "pt:reader", "on"]).await;
+    c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
+    let got = h.wait_capture("pt:reader", "the prefix's byte", |t| t.contains("got:")).await;
+    assert!(got.contains("got:2") || got.contains("got: 02"), "{got}");
+    // With no key bound to it, it says how to get out.
+    h.cli(&["unbind", "-n", "F12"]).await;
+    let (_, out, _) = h.cli(&["passthrough", "-t", "pt:0.0", "on"]).await;
+    assert!(out.contains("no key ends it"), "{out}");
+    h.cli(&["kill-server"]).await;
+}
+
 /// `bind -T copy-mode-vi`: a key bound there runs its command in copy mode
 /// (a `send -X` motion or any other command) and nowhere else; unbinding
 /// gives the key back to copy mode; tmux's mouse-key lines are taken.

@@ -74,6 +74,8 @@ the config file take. `keepane list-commands` lists them, and
 `join-pane`, `move-pane`, `respawn-pane`, `list-panes`, `display-panes`,
 `capture-pane`, `send-keys` (`WheelUp`, `WheelDown`: what the wheel sends a full-screen or mouse-reading program; nothing otherwise), `send-prefix`, `pipe-pane`, `clear-history`,
 `record` (the pane's output as an asciinema file), `focus-pane`,
+`passthrough` (`[-t pane] [on|off]`: every key typed in the pane goes to
+it, the prefix too; see KEYS),
 `undo-kill` (the pane or window killed in the last `undo-kill-time`
 seconds comes back).
 
@@ -339,6 +341,12 @@ text prompt stays as typed. The defaults:
 | `:` | the command prompt |
 | `~` | recent messages |
 | `?` | list the keys |
+
+`F12`, without the prefix, turns `passthrough` on and off for the pane:
+while it is on, every key typed there goes to its program, the prefix and
+the root table's keys too, for a keepane running inside the pane (over
+ssh). The status line says `passthrough`. Other panes keep the prefix.
+`C-b C-b` sends a single `C-b` on without it.
 
 ## CONFIGURATION
 

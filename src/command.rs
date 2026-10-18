@@ -527,6 +527,14 @@ pub enum Cmd {
     SendPrefix {
         target: Option<Target>,
     },
+    /// `passthrough [-t] [on|off]`: every key typed in the pane goes to its
+    /// program, the prefix too (a keepane inside it, over ssh, gets them),
+    /// until a key bound in the root table to `passthrough` turns it off.
+    /// No `on`/`off` flips it.
+    Passthrough {
+        target: Option<Target>,
+        on: Option<bool>,
+    },
     /// `list-commands`: the command names this keepane knows.
     ListCommands,
     /// `list-clients`: who is attached, to what, at what size.
@@ -1483,6 +1491,15 @@ impl fmt::Display for Cmd {
                 f.write_str("send-prefix")?;
                 fmt_target(f, target)
             }
+            Cmd::Passthrough { target, on } => {
+                f.write_str("passthrough")?;
+                fmt_target(f, target)?;
+                match on {
+                    Some(true) => f.write_str(" on"),
+                    Some(false) => f.write_str(" off"),
+                    None => Ok(()),
+                }
+            }
             Cmd::ListCommands => f.write_str("list-commands"),
             Cmd::ListClients => f.write_str("list-clients"),
             Cmd::PasteBuffer { name, target, bracketed } => {
@@ -2251,6 +2268,7 @@ pub const COMMANDS: &[&str] = &[
     "next-layout",
     "next-window",
     "notify",
+    "passthrough",
     "paste-buffer",
     "pipe-pane",
     "previous-layout",
@@ -2389,6 +2407,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("next-layout", &["-t"]),
     ("next-window", &["-a", "-t"]),
     ("notify", &["-T"]),
+    ("passthrough", &["-t"]),
     ("paste-buffer", &["-b", "-p", "-t"]),
     ("pipe-pane", &["-o", "-I", "-O", "-t"]),
     ("previous-layout", &["-t"]),
@@ -3453,6 +3472,23 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::SendPrefix { target }
+        }
+        "passthrough" => {
+            let mut target = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let on = match a.next() {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(v) => return Err(format!("{n}: '{v}' is not on or off")),
+            };
+            a.none_left(n)?;
+            Cmd::Passthrough { target, on }
         }
         "list-commands" => {
             while a.is_flag() {

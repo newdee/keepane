@@ -484,8 +484,12 @@ impl Default for Options {
             clock_mode_zones: Vec::new(),
             clock_mode_animation: "random".into(),
             pane_border_fg: Color::Rgb(0x66, 0x66, 0x64),
-            // The session name on a cinnabar block, the one block on the bar.
-            status_left: "#[fg=#121212,bg=#dd625e,bold] #S #[default] ".into(),
+            // The session name on a cinnabar block, the one block on the bar;
+            // after it, while `passthrough` gives the pane every key, a word
+            // saying the prefix is not keepane's now.
+            status_left: "#[fg=#121212,bg=#dd625e,bold] #S #[default] \
+                          #{?pane_passthrough,#[fg=#dd625e,bold]passthrough#[default] ,}"
+                .into(),
             // What is useful at a glance and costs nothing to read: a newer
             // keepane when there is one, the branch when in a repository
             // (and what git last said is changed there, `●3 ↑2`),
@@ -1694,7 +1698,7 @@ mod tests {
             checked.push((*theme, runs));
         }
         // Every coloured run of each status line checked.
-        assert_eq!(checked, [("paper-dark", 10), ("paper", 10), ("tokyo-day", 13)]);
+        assert_eq!(checked, [("paper-dark", 11), ("paper", 11), ("tokyo-day", 14)]);
     }
 
     /// The built-in themes set the same options, so one replaces another

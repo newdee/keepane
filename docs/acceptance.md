@@ -4436,3 +4436,29 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 - 遗留：
   - 这里没有 Mac：macOS 只有编译（clippy）和 CI 上的测试（`plutil -lint`、`plutil -extract` 读回程序路径、e2e 用临时 HOME 写 agent）。登录时 launchd 真的起 server，要用户在 Mac 上重启后确认。
   - systemd 下从 pane 里 `restart-server` 之后，unit 显示 inactive，新 server 照常运行，注销时由用户的 systemd 一起停掉（会先保存）。
+
+## 142. `passthrough`：pane 里套一个 keepane（ssh 到服务器）时，把前缀整个让给它
+
+用户问：本机 keepane 的 pane 里 ssh 到服务器、在服务器上再开 keepane，`Ctrl-B` 该怎么办；之后说 "do it, add the passthrough toggle"。原来只有 `C-b C-b`（把一个 `C-b` 发进 pane），连续在里层操作要每次多按一下；keepane 没有自定义键表，tmux 用户常用的 "F12 关掉外层" 做不出来。
+
+- 做法：
+  - 新命令 `passthrough [-t pane] [on|off]`，不给 on/off 就切换。状态记在 pane 上（`Pane::passthrough`），不是客户端：别的 pane 照常用前缀，鼠标点过去也照常。
+  - 开着时，`handle_key` 不把前缀当前缀，root 表的键也不执行，都打进 pane；只有 root 表里绑到 `passthrough` 的键照常执行（这样才能关掉）。keepane 自己的模式或弹窗（copy mode、选择列表、popup）盖在上面时，键先归它们，和原来一样。
+  - 默认 root 绑定 `F12 passthrough`（原来 root 表默认是空的），`unbind -n F12` 可以去掉；开的时候提示里说出哪个键能关，没有键能关就说用 `keepane passthrough off`。
+  - 格式变量 `#{pane_passthrough}`；默认和 9 个主题的 `status-left` 在 session 名后面显示 `passthrough`（各用主题自己的强调色，`plain` 主题不带颜色）。
+  - 不存盘：重启 server 或恢复 session 后是关的。
+- 会不会引入新 bug：
+  - 没开 `passthrough` 时，`through` 为假，前缀、root 表、copy mode、popup 的路径和原来一字不差（全量测试三平台不变）。
+  - root 表多了一个默认键：程序收不到 `F12` 了（tmux 默认 root 表只有鼠标）。写进 README、man 和 tmux-parity；不想要就 `unbind -n F12`。
+  - 状态栏格式变了：主题测试（颜色对比度逐段检查）的段数 10/10/13 → 11/11/14，新段的对比度在三个自带配色的主题上都 ≥ 4.5:1。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路（变异） | 7 个变异（`through` 永远假、前缀仍归 keepane、root 键全放行、`F12` 也被放过去、只开不关、格式变量不赋值、`off` 读成 on）7/7 抓到；但读测试发现：测试只证明"没开新窗口"，没证明 `C-b` 真到了程序——把前缀直接吞掉的变异会活下来；默认绑定的往返测试没覆盖 root 表 | **有问题** ×2：加一个打印收到的第一个字节的程序（Windows `ReadKey`，Unix `od`），断言收到 0x02；吞前缀的变异随后被抓到（8/8）；往返测试加上 root 表（不计数） |
+| 2 | 边界与退化输入 + 文档一致性 | `passthrough maybe` 报 "not on or off"；`on off` 两个词报错；`-t pt:0.9` 不存在的 pane 报错，且原状态不变；README、man 新增行 0 行超过 76 列（变量清单那一行原来就是长行）；文档里"别的 pane 照常""鼠标照常""bind -n 的键也放过去"三句各有测试或代码对应 | 干净（1/3） |
+| 3 | 可复现性 | 新 e2e 连跑 20 次：Windows 0/20 失败，Linux 0/20 失败；Linux 全量 442 + 130，fmt、clippy 0；Windows 全量 455 + 10 + 130；macOS clippy 0 | 干净（2/3） |
+| 4 | 用户路径（WSL 真 pty，两层真 keepane） | 外层 attach 在 pty 里，pane 里跑内层（去掉 `KEEPANE`/`KEEPANE_PANE`，同 ssh）；按终端真实字节送键（`F12` 是 `ESC [24~`）。窗口数（外层/内层）：起始 1/1；`C-b c` 2/1；`C-b C-b c` 2/2；`F12` 后 `#{pane_passthrough}`=1，`C-b c` 两次 2/4；再 `F12`、`C-b c` 3/4 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - 嵌套被拒时的提示 "sessions should be nested with care, unset KEEPANE to force" 不准：只清 `KEEPANE` 仍会被拒（默认 socket 下空值当 `default`；`-L` 下客户端只看 `KEEPANE_PANE`），要两个都清。已告诉用户，等用户决定改不改。
+  - 网页端（输入框）不经过 `handle_key`，`passthrough` 对网页输入没有影响；网页全屏时抓整个键盘是另一个需求，待定。

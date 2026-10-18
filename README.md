@@ -435,6 +435,16 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
 | `M-n` / `M-p` | next / previous window with an alert (see `monitor-activity`) |
 
+A keepane inside a pane (on a server, over ssh) has `C-b` as its prefix
+too, and this keepane takes it first. `C-b C-b` sends one `C-b` on, so
+`C-b C-b c` makes a window on the server. To work there a while, press
+`F12`: the pane gets every key, the prefix and the keys bound with
+`bind -n` too, and the status line says `passthrough`. `F12` again gives
+the prefix back. It is the pane's own: the other panes keep the prefix,
+and clicking one of them works as ever. `passthrough [-t pane] [on|off]`
+does the same from a script; `bind -n <key> passthrough` picks another
+key (the one bound is the only key it lets through).
+
 With a Chinese, Japanese or Korean input method on, a key that comes in its
 full-width form (`【` for `[`, `：` for `:`, `ｙ` for `y`) works as the key:
 after the prefix, in copy mode, in the pickers and menus, at a y/n question
@@ -1492,7 +1502,7 @@ The variables, by kind:
 
 - session: `session_name` `session_id` `session_windows` `session_attached` `session_created`
 - window: `window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`
-- pane: `pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `alternate_on` `mouse_any_flag` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
+- pane: `pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `alternate_on` `mouse_any_flag` `pane_synchronized` `pane_in_mode` `pane_passthrough` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
 - client: `client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`
 - server: `host` `host_short` `socket_path` `version` `pid`. Also `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`.
 

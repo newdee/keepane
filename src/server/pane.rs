@@ -522,6 +522,8 @@ pub struct Pane {
     pub exit_code: Option<u32>,
     /// `clock-mode`: a clock is drawn over this pane until `q`.
     pub clock: bool,
+    /// `passthrough`: keys typed here, the prefix too, go to the program.
+    pub passthrough: bool,
     /// How many times a clock was put here (`clock-mode-animation cycle`
     /// takes the next kind each time), the kind picked at random for it
     /// (`random`: never the one before), what moves under it (and when it
@@ -861,6 +863,7 @@ impl Pane {
             replay_done: false,
             exit_code: None,
             clock: false,
+            passthrough: false,
             clock_turns: 0,
             clock_pick: None,
             git_base: None,

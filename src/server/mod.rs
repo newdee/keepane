@@ -1309,6 +1309,13 @@ fn default_bindings() -> HashMap<Key, Binding> {
     m
 }
 
+/// Keys that work without the prefix. F12 turns `passthrough` on and off:
+/// with it on the prefix goes to the pane, so the way back cannot need it.
+fn default_root_bindings() -> HashMap<Key, Binding> {
+    let cmd = Cmd::Passthrough { target: None, on: None };
+    HashMap::from([(Key::plain(KeyCode::F(12)), Binding { cmd, repeat: false })])
+}
+
 impl Server {
     fn new(
         pane_tx: std::sync::mpsc::Sender<PaneEvent>,
@@ -1326,7 +1333,7 @@ impl Server {
         Server {
             opts: Options::default(),
             prefix_binds: default_bindings(),
-            root_binds: HashMap::new(),
+            root_binds: default_root_bindings(),
             copy_binds: HashMap::new(),
             sessions: Vec::new(),
             clients: HashMap::new(),
@@ -4946,6 +4953,36 @@ impl Server {
                 }
                 Outcome::Ok
             }
+            Cmd::Passthrough { target, on } => {
+                // No target: the pane the client runs in (KEEPANE_PANE), else the active one.
+                let pid = match (&target, cid.and_then(|c| self.clients.get(&c)).and_then(|c| c.pane_env)) {
+                    (None, Some(p)) if self.find_pane_mut(p).is_some() => p,
+                    _ => match self.resolve(target.as_ref(), cid) {
+                        Ok((_, _, p)) => p,
+                        Err(e) => return Outcome::Error(e),
+                    },
+                };
+                // The way back, named while it is still in mind.
+                let mut back: Vec<String> = self
+                    .root_binds
+                    .iter()
+                    .filter(|(_, b)| matches!(b.cmd, Cmd::Passthrough { .. }))
+                    .map(|(k, _)| k.to_string())
+                    .collect();
+                back.sort();
+                let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
+                p.passthrough = on.unwrap_or(!p.passthrough);
+                Outcome::Text(match (p.passthrough, back.first()) {
+                    (false, _) => format!("passthrough off: the prefix is keepane's again in %{pid}"),
+                    (true, Some(k)) => {
+                        format!("passthrough on: every key goes to %{pid}, the prefix too ({k} ends it)")
+                    }
+                    (true, None) => format!(
+                        "passthrough on: every key goes to %{pid}, the prefix too; \
+                         no key ends it (bind -n F12 passthrough), keepane passthrough off does"
+                    ),
+                })
+            }
             Cmd::ListCommands => {
                 let mut names: Vec<&str> = crate::command::COMMANDS.to_vec();
                 names.sort_unstable();
@@ -6086,6 +6123,7 @@ impl Server {
             ctx.alternate_on = p.screen().alternate_screen();
             ctx.mouse_any_flag = p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
             ctx.pane_in_mode = p.copy.is_some();
+            ctx.pane_passthrough = p.passthrough;
             ctx.pane_pid = p.pid;
             ctx.pane_start_time = unix(p.spawned_at);
             ctx.pane_activity = unix(p.last_output);
@@ -6388,6 +6426,14 @@ impl Server {
         // The picker is a mode, like copy mode: the prefix still works (so
         // `prefix d` detaches out of it), everything else belongs to the mode.
         let in_chooser = self.clients.get(&cid).is_some_and(|c| c.chooser.is_some());
+        // `passthrough` on the pane typed into: the prefix and the root
+        // table's keys are its program's (a keepane in there, over ssh, has
+        // its own), all but the key that turns it off. A mode or popup of
+        // this keepane's over it still takes its keys first.
+        let through = !in_copy
+            && !in_chooser
+            && self.clients.get(&cid).is_some_and(|c| c.popup.is_none())
+            && self.session(sid).and_then(|s| s.window()).and_then(|w| w.active_pane()).is_some_and(|p| p.passthrough);
 
         if let Some(k) = key {
             let c = self.clients.get_mut(&cid).unwrap();
@@ -6455,7 +6501,7 @@ impl Server {
                 }
             }
             let c = self.clients.get_mut(&cid).unwrap();
-            if k == self.opts.prefix {
+            if k == self.opts.prefix && !through {
                 c.prefix = true;
                 c.swallow_up.insert(rec.vk);
                 c.prefix_at = Some(Instant::now());
@@ -6502,7 +6548,9 @@ impl Server {
                 }
                 return;
             }
-            if let Some(b) = self.root_binds.get(&k).cloned() {
+            if let Some(b) =
+                self.root_binds.get(&k).filter(|b| !through || matches!(b.cmd, Cmd::Passthrough { .. })).cloned()
+            {
                 c.swallow_up.insert(rec.vk);
                 let until = (b.repeat && self.opts.repeat_time_ms > 0)
                     .then(|| Instant::now() + Duration::from_millis(self.opts.repeat_time_ms));
@@ -10077,7 +10125,7 @@ mod tests {
 
     #[test]
     fn default_bindings_round_trip() {
-        for (key, b) in default_bindings() {
+        for (key, b) in default_bindings().into_iter().chain(default_root_bindings()) {
             let printed = b.cmd.to_string();
             let words = crate::command::tokenize(&printed).unwrap_or_else(|e| panic!("{key}: {printed}: {e}"));
             let back = crate::command::parse(&words).unwrap_or_else(|e| panic!("{key}: {printed}: {e}"));

@@ -56,6 +56,8 @@ pub struct Context {
     pub pane_synchronized: bool,
     /// In copy mode.
     pub pane_in_mode: bool,
+    /// `passthrough` is on: its keys, the prefix too, go to its program.
+    pub pane_passthrough: bool,
     pub pane_pid: Option<u32>,
     /// Unix time the pane's program was started, and of its last output.
     pub pane_start_time: i64,
@@ -317,6 +319,7 @@ impl Context {
             "pane_dead_status" => self.pane_dead_status.map(|c| c.to_string()).unwrap_or_default(),
             "pane_synchronized" => flag(self.pane_synchronized),
             "pane_in_mode" => flag(self.pane_in_mode),
+            "pane_passthrough" => flag(self.pane_passthrough),
             "pane_pid" => self.pane_pid.map(|p| p.to_string()).unwrap_or_default(),
             "pane_start_time" => self.pane_start_time.to_string(),
             "pane_activity" => self.pane_activity.to_string(),
@@ -834,6 +837,7 @@ mod tests {
             client_created: 13,
             client_activity: 14,
             client_prefix: true,
+            pane_passthrough: true,
             ..Default::default()
         };
         let want = [
@@ -862,6 +866,7 @@ mod tests {
             ("client_created", "13"),
             ("client_activity", "14"),
             ("client_prefix", "1"),
+            ("pane_passthrough", "1"),
         ];
         for (name, value) in want {
             assert_eq!(c.var(name).as_deref(), Some(value), "{name}");

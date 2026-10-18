@@ -263,6 +263,8 @@ keepane kill-server
 | `>` / `<` | pane 菜单 / 窗口菜单（括号里的字母直接执行，`Enter` 执行选中那条） |
 | `M-n` / `M-p` | 跳到下一个 / 上一个有提醒的窗口（见 `monitor-activity`） |
 
+pane 里再跑一个 keepane（比如 ssh 到服务器上跑的）时，它的前缀也是 `C-b`，而外面这个 keepane 先收到。`C-b C-b` 把一个 `C-b` 发进去，所以 `C-b C-b c` 是在服务器上开新窗口。要在里面连续操作，按 `F12`：这个 pane 收到所有键，前缀和 `bind -n` 绑的键也给它，状态栏显示 `passthrough`。再按 `F12` 把前缀收回来。这个开关属于这个 pane：别的 pane 照常用前缀，鼠标点别的 pane 也照常。脚本里用 `passthrough [-t pane] [on|off]`；想换键就 `bind -n <键> passthrough`（只有绑到它的键不会被放过去）。
+
 开着中文、日文、韩文输入法时，按出来的全角字符（`[` 出来 `【`，`:` 出来 `：`，`y` 出来 `ｙ`）照样当作那个键：前缀之后、copy mode、选择列表和菜单、y/n 确认、dashboard 里都是。打进 pane 的字，以及提示框里输入的文字（比如窗口名）保持原样；如果你把全角字符本身绑成了键，就按你的绑定来。
 
 pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程序仅按动画结束后的尺寸调整，不必等待动画完成。用 `set -g animation off` 关闭动画，或通过 `animation-time` 调整时长（毫秒）。
@@ -760,7 +762,7 @@ set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm
 
 - session：`session_name` `session_id` `session_windows` `session_attached` `session_created`
 - window：`window_name` `window_id` `window_index` `window_panes` `window_active` `window_last_flag` `window_zoomed_flag` `window_width` `window_height` `window_bell_flag` `window_activity_flag` `window_silence_flag` `window_flags`
-- pane：`pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `alternate_on` `mouse_any_flag` `pane_synchronized` `pane_in_mode` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
+- pane：`pane_index` `pane_id` `pane_title` `pane_current_command` `pane_start_command` `pane_current_path` `pane_width` `pane_height` `pane_active` `pane_dead` `pane_dead_status` `alternate_on` `mouse_any_flag` `pane_synchronized` `pane_in_mode` `pane_passthrough` `pane_pid` `pane_start_time` `pane_activity` `pane_dead_time` `pane_last` `pane_mode` `pane_top` `pane_left` `pane_bottom` `pane_right` `pane_at_top` `pane_at_bottom` `pane_at_left` `pane_at_right` `cursor_x` `cursor_y` `history_size` `history_limit`
 - client：`client_width` `client_height` `client_name` `client_session` `client_created` `client_activity` `client_prefix`
 - server：`host` `host_short` `socket_path` `version` `pid`。另外还有 `session_activity` `session_last_attached` `window_activity` `window_start_flag` `window_end_flag` `window_layout`。
 
