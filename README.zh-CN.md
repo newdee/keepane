@@ -394,6 +394,8 @@ keepane startup off         # 取消
 
 它只在当前用户的 `Run` 注册表键下写一个值，不需要管理员权限，也不碰任务计划；server 通过 `conhost --headless` 启动，登录时不会闪出控制台窗口。重启之后 `keepane attach` 进去，东西都在。手机页面（`keepane web`，见下文）原来开着的话，也会按原来的参数重新打开（加 `-k`，二维码就不变）；登录后网络还没就绪时，每 10 秒重试一次。
 
+这个值按完整路径运行 keepane，下面的 Windows Terminal profile 也一样。升级后新版装进了自己的文件夹（Scoop 设了 `no_junction`、或者每个版本一个文件夹）时，之后第一次运行的 keepane 会把这两处都改成自己，每改一处用一行字告诉你；旧文件夹已经被删掉时也一样。keepane 不会从更新的版本手里接过来。
+
 升级：装了新版 keepane，已经在跑的 server 不会被换掉。它还是旧程序，你的 session 都在它里面。
 
 ```powershell

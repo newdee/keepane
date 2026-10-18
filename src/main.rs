@@ -193,6 +193,15 @@ fn main() {
     if args[0] != "__server" && args[0] != "migrate" {
         keepane::legacy::move_data_dir_at_start();
     }
+    // The logon command and the Windows Terminal profile run keepane by its
+    // full path: after an update into a folder of its own, this newer one
+    // takes them over (startup::refresh_registrations). Not in the server,
+    // not on every Tab, not in the commands that set these themselves.
+    if !matches!(args[0].as_str(), "__server" | "__complete" | "migrate" | "startup" | "windows-terminal" | "wt") {
+        for line in keepane::startup::refresh_registrations(&socket) {
+            eprintln!("keepane: {line}");
+        }
+    }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     // Starting at logon is about the server, and the Windows Terminal
     // profile is a file of ours: both are settled without a server.

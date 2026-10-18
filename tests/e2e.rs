@@ -9855,3 +9855,81 @@ async fn a_panes_agent_is_read_from_its_transcript() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// After an update into a folder of its own (Scoop with `no_junction`), the
+/// logon command still runs the old keepane, and nothing once that folder
+/// is cleaned up. keepane itself, run as it is installed (a copy out of
+/// cargo's folder), takes it over at its next start, says so once, and
+/// leaves it alone after; run under a test's own directories, or from
+/// cargo's target folder, it touches nothing. (The Run key, under a
+/// throwaway socket name.)
+#[cfg(windows)]
+#[test]
+fn a_logon_command_of_a_gone_keepane_is_taken_over_by_the_installed_one() {
+    let sock = format!("e2e-refresh-{}", std::process::id());
+    // Removed however the test ends: a value left in the Run key would run
+    // at the next logon.
+    struct Throwaway(String);
+    impl Drop for Throwaway {
+        fn drop(&mut self) {
+            let _ = keepane::startup::remove(&self.0);
+        }
+    }
+    let _gone_after = Throwaway(sock.clone());
+    let value = format!("keepane-{sock}");
+    let run_key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let root = std::env::temp_dir().join(format!("keepane-e2e-refresh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let installed = root.join("keepane.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_keepane"), &installed).unwrap();
+    let gone = r"C:\keepane-e2e-gone\0.1.0\keepane.exe";
+    let plant = || {
+        let data = format!(r#"conhost.exe --headless "{gone}" -L {sock} __server --restore"#);
+        let o = std::process::Command::new("reg")
+            .args(["add", run_key, "/v", &value, "/t", "REG_SZ", "/d", &data, "/f"])
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "reg add: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    let real_dirs = ["KEEPANE_LOG_DIR", "KEEPANE_SESSIONS_DIR", "KEEPANE_HISTORY_DIR", "KEEPANE_CONFIG"];
+    // A command that needs no server: the registrations are settled first.
+    let start = |exe: &std::path::Path, test_dirs: bool| {
+        let mut c = std::process::Command::new(exe);
+        c.args(["-L", &sock, "list-sessions"]).env("KEEPANE_NO_UPDATE_CHECK", "1").env_remove("KEEPANE");
+        if test_dirs {
+            c.env("KEEPANE_SESSIONS_DIR", &root);
+        } else {
+            for v in real_dirs {
+                c.env_remove(v);
+            }
+        }
+        let o = c.output().unwrap();
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let registered = || keepane::startup::status(&sock).unwrap();
+
+    // Under a test's own directories: untouched.
+    plant();
+    let err = start(&installed, true);
+    assert!(registered().unwrap().contains(gone), "test dirs touched it: {err}");
+    // From cargo's target folder: untouched.
+    let err = start(std::path::Path::new(env!("CARGO_BIN_EXE_keepane")), false);
+    assert!(registered().unwrap().contains(gone), "a cargo build took it: {err}");
+    // As installed, with the real places: taken over, and said once.
+    let err = start(&installed, false);
+    let now = registered().unwrap();
+    assert!(now.contains(&format!("\"{}\"", installed.display())), "{now}\n{err}");
+    assert!(now.ends_with(&format!("-L {sock} __server --restore")), "{now}");
+    assert!(err.contains("keepane: start at logon now runs") && err.contains("which is gone"), "{err}");
+    let err = start(&installed, false);
+    assert!(!err.contains("start at logon"), "said again: {err}");
+    // And the copy answers -V as this build does, which is how a newer
+    // keepane tells an older one.
+    let v = std::process::Command::new(&installed).arg("-V").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&v.stdout).trim(), format!("keepane {}", env!("CARGO_PKG_VERSION")));
+
+    let _ = keepane::startup::remove(&sock);
+    assert!(registered().is_none());
+    let _ = std::fs::remove_dir_all(&root);
+}

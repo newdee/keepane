@@ -740,6 +740,13 @@ reboot, `keepane attach` finds everything as it was. The phone page
 (add `-k` so that its code stays the same); until the network is up after
 logon, it is tried again every 10 seconds.
 
+The value runs keepane by its full path, and so does the Windows Terminal
+profile below. When an update puts the new keepane in a folder of its own
+(Scoop with `no_junction`, a folder per version), the first keepane you
+run afterwards moves both to itself and says so, a line for each; it does
+the same when the old folder is gone. A keepane never takes them from a
+newer one.
+
 Upgrading: installing a new keepane does not replace the server that is
 already running, which keeps your sessions and is still the old program.
 

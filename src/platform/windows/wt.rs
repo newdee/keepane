@@ -73,10 +73,15 @@ fn fragment(exe: &str, socket: &str) -> serde_json::Value {
 /// Write the fragment. Idempotent: writing it again replaces it, same GUID.
 pub fn install_in(dir: &Path, socket: &str) -> Result<String> {
     let exe = std::env::current_exe().context("current_exe")?;
-    let exe = exe.to_string_lossy().into_owned();
+    install_exe_in(dir, socket, &exe.to_string_lossy())
+}
+
+/// The fragment running `exe` (`install_in`'s, or a newer keepane taking it
+/// over: `startup::refresh_registrations`).
+pub fn install_exe_in(dir: &Path, socket: &str, exe: &str) -> Result<String> {
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let path = dir.join(file_name(socket));
-    let text = serde_json::to_string_pretty(&fragment(&exe, socket))?;
+    let text = serde_json::to_string_pretty(&fragment(exe, socket))?;
     std::fs::write(&path, text).with_context(|| format!("cannot write {}", path.display()))?;
     Ok(format!(
         "\"{}\" is in the Windows Terminal dropdown (open a new tab, or restart Windows Terminal).\n\
@@ -85,7 +90,7 @@ pub fn install_in(dir: &Path, socket: &str) -> Result<String> {
          `keepane windows-terminal remove` takes it out; `keepane windows-terminal status` shows it.",
         profile_name(socket),
         path.display(),
-        command_line(&exe, socket)
+        command_line(exe, socket)
     ))
 }
 

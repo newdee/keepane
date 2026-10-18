@@ -3,6 +3,12 @@
 
 use anyhow::Result;
 
+/// Nothing is registered here that runs an exe by its path (no logon
+/// command yet, no Windows Terminal), so nothing goes stale on an update.
+pub fn refresh_registrations(_socket: &str) -> Vec<String> {
+    Vec::new()
+}
+
 /// `keepane startup ...`.
 pub fn run(_socket: &str, _args: &[String]) -> Result<i32> {
     eprintln!("keepane startup: not available here yet; start the server from your login files (keepane new -d)");

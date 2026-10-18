@@ -142,7 +142,11 @@ config), `completion` (a Tab completer for PowerShell, bash, zsh or fish), `man`
 (what the terminal sends for each key), `migrate` (from wmux, keepane's old
 name). On Windows: `startup`
 (start the server at logon) and `windows-terminal` (a Windows Terminal
-profile).
+profile). Both run keepane by its full path; when that is an older keepane
+or one that is gone (an update into a folder of its own, as Scoop with
+`no_junction` does), the next keepane to start takes them over and says
+so. One run from cargo's target folder, or under test directories, never
+does.
 
 ### The panes on a phone
 
