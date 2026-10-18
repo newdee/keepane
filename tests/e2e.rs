@@ -6986,8 +6986,11 @@ async fn passthrough_gives_a_pane_the_prefix_until_f12() {
         "Write-Host ready; $k = [Console]::ReadKey($true); Write-Host ('got:' + [int]$k.KeyChar); Start-Sleep 60",
     ];
     #[cfg(unix)]
-    let reader: &[&str] =
-        &["/bin/sh", "-c", "stty raw -echo; echo ready; b=$(head -c 1 | od -An -tx1); echo \"got:$b\"; sleep 60"];
+    let reader: &[&str] = &[
+        "/bin/sh",
+        "-c",
+        "stty raw -echo; echo ready; b=$(head -c 1 | od -An -tx1 | tr -d ' '); echo \"got:$b\"; sleep 60",
+    ];
     let reader: Vec<String> = reader.iter().map(|s| s.to_string()).collect();
     let (code, _, err) = h.cli(&args(&["new-window", "-t", "pt", "-n", "reader"], &reader)).await;
     assert_eq!(code, 0, "{err}");
@@ -6995,7 +6998,7 @@ async fn passthrough_gives_a_pane_the_prefix_until_f12() {
     h.cli(&["passthrough", "-t", "pt:reader", "on"]).await;
     c.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
     let got = h.wait_capture("pt:reader", "the prefix's byte", |t| t.contains("got:")).await;
-    assert!(got.contains("got:2") || got.contains("got: 02"), "{got}");
+    assert!(got.contains("got:2") || got.contains("got:02"), "{got}");
     // With no key bound to it, it says how to get out.
     h.cli(&["unbind", "-n", "F12"]).await;
     let (_, out, _) = h.cli(&["passthrough", "-t", "pt:0.0", "on"]).await;

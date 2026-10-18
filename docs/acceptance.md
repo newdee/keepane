@@ -4462,3 +4462,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 - 遗留：
   - 嵌套被拒时的提示 "sessions should be nested with care, unset KEEPANE to force" 不准：只清 `KEEPANE` 仍会被拒（默认 socket 下空值当 `default`；`-L` 下客户端只看 `KEEPANE_PANE`），要两个都清。已告诉用户，等用户决定改不改。
   - 网页端（输入框）不经过 `handle_key`，`passthrough` 对网页输入没有影响；网页全屏时抓整个键盘是另一个需求，待定。
+- 发版时 CI 的 macOS 跑出问题（0.40.0 第一次推送）：新 e2e 断言 `got: 02`，macOS 的 `od -An -tx1` 在前面补了 11 个空格（`got:           02`），断言不认。产品没错，是测试的边界遗漏，个性：仓里另 2 处 `od -An`（e2e.rs 的 alternate-screen 键和 `code=` 那条）早已用 `tr` 去空白，只这处漏了。改成 `od -An -tx1 | tr -d ' '`，断言 `got:02`（Windows 仍是 `got:2`）。复验：fmt、clippy（Windows、macOS 目标）0；该测试 Linux 0/10 失败、Windows 0/5 失败；macOS 由 CI 复验。
