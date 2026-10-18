@@ -23,6 +23,7 @@ pub mod server;
 pub mod setup;
 pub mod share;
 pub mod sysinfo;
+pub mod takeover;
 pub mod truecolor;
 pub mod vtinput;
 pub mod web;

@@ -4404,3 +4404,35 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 9 | 可复现性 + 断言用词 | 单测、e2e 各 3 次全过，`Run` 键残留 0；新增文字里"never / every / only"逐条对照代码（不从更新版手里接、cargo 和测试目录不动、两份安装不来回抢、每个 server 自己注册通知链接、cargo 在每个 target 目录写 `CACHEDIR.TAG`），都成立；剩下 12 个临时目录逐个对上第 8 轮的失败变异，清掉后通过的运行留 0 个 | 干净（3/3），验收通过 |
 
 - 遗留：用户这台机器装好 0.38.2 之后，`keepane startup on` 由用户自己决定开不开（会写 `Run` 键）。
+
+## 141. macOS 和 Linux 上的 `keepane startup`：launchd agent、systemd 用户 unit
+
+用户在 macOS 上运行 `keepane startup`，得到 "not available here yet"；之后说 "do it, then release it when done"。查明：Unix 的 `startup` 只是一个桩（`src/platform/unix/startup.rs` 打一行字、返回 1），macOS 和 Linux 上没有任何东西在登录时起 server，网页也就回不来。
+
+- 做法：
+  - macOS：`~/Library/LaunchAgents/tech.dfine.keepane.plist`（其他 socket 是 `tech.dfine.keepane.<socket>.plist`），`RunAtLoad`、`ProcessType Interactive`、`AbandonProcessGroup`。
+  - Linux：`~/.config/systemd/user/keepane.service`（`keepane-<socket>.service`），自己建 `default.target.wants` 里的链接（和 `systemctl --user enable` 建的一样），`KillMode=process`；写完 `systemctl --user daemon-reload`（连不上就算了）。没有 systemd（`/run/systemd/system` 不在）时 `on` 报错、不写文件。
+  - 两种都运行 `keepane -L <socket> __server --restore`，和 Windows 的 `Run` 值一样；写完不起 server，下次登录才起。
+  - 记下 `startup on` 时的 `PATH`、`SHELL`、`LANG`、`LC_ALL`、`LC_CTYPE`、keepane 自己的目录变量和 XDG 目录；`KEEPANE_TMPDIR` 总是写成客户端此刻用的 socket 目录。
+  - 登记的程序是 `PATH` 里指向同一个文件的那个名字（Homebrew 的 `bin/keepane`，升级后指向新版），不是 Cellar 里带版本号的文件。
+  - 0.38.2 的"注册跟着最新的 keepane 走"挪到共用的 `src/takeover.rs`（版本、缓存、`stale`、`installed_self`），Windows 和 Unix 都用它；Unix 接管时只换程序路径，文件其余部分（用户改过的也算）原样保留。
+- 定性（这次发现的缺陷）：
+  - 测试里写完可执行文件马上运行，Linux 偶尔报 ETXTBSY（别的测试线程 fork 时继承了写句柄）。共性：全仓搜出 5 处（e2e 3 处拷 keepane、e2e 1 处 `claude` 脚本、macOS 拷 `sleep`；`git.rs` 1 处钩子脚本；`takeover` 单测的脚本）。结构问题，收敛到两个共用函数：e2e 的 `ready_to_run` / `copy_keepane`，库内测试的 `platform::process::wait_runnable`。
+  - 写失败时留下临时文件：startup 的 `write_file` 和 `resurrect.rs` 的 `save` 是同一写法。共性，两处都改成失败就删临时文件；`resurrect` 的原行为（成功时）不变，有测试。
+  - systemd 给 unit 的 `XDG_RUNTIME_DIR`，登录 shell 可能没有（`su -`、部分 SSH）：server 和客户端算出不同的 socket 目录，客户端会再起一个 server。个性（只有 startup 不经客户端起 server），边界遗漏：总是写 `KEEPANE_TMPDIR`。
+  - 两个 keepane 同时启动接管同一个 unit 时共用临时文件名，一个的 rename 报 ENOENT、说"still runs"（其实已接管）。个性，边界遗漏：临时文件名带 pid。
+- 会不会引入新 bug：Windows 的接管逻辑只是搬家，测试照旧（`Run` 键、WT profile、缓存、junction 都在）；Unix 上没有注册时 `refresh_registrations` 只读一次文件（不存在），不建任何东西（测试覆盖）；`startup on` 不起 server（第 7 轮实测 0 个）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性 + 全量三平台 | 首次全量：Linux 新 e2e 在全量里失败、单跑通过，加诊断看到 ETXTBSY 重试 1 次；读代码：环境变量值或程序路径带换行（控制字符）会写坏 unit 和 plist；man 测试要求页面上有 `` `startup` `` | **有问题** ×4：上面的共用函数；`fits` 过滤值、拒绝路径；man 改写（不计数） |
+| 2 | 机制通路（WSL 真 systemd） | shell 里去掉 `XDG_RUNTIME_DIR`：推理发现 socket 目录对不上，改后实测 1 个 server、socket 在 `/tmp`；pane 里 `restart-server`：server 换新（pid 1185→1383）还在；变异去掉 `KillMode=process`：server 没了（`ls` 退出 1）；`systemctl stop` 先保存 2 个 session，再 start 恢复 2 个 | **有问题**：总是写 `KEEPANE_TMPDIR`（不计数） |
+| 3 | 边界与退化输入 | 15 种：PATH 空或没设、`-L ""`、文件位置是目录、目录不可写、wants 链接悬空或是普通文件、缓存损坏、LaunchAgents 不存在、不安全的 socket 名、相对 `KEEPANE_TMPDIR`、手写 unit 等；发现：挂在别的 target 下的 unit 被说成 "not enabled"；rename 失败留下 `.tmp`；`resurrect.rs` 同样 | **有问题** ×3：措辞改成 "not enabled for default.target"；两处失败删临时文件；补测试（不计数） |
+| 4 | 代码正确性（错误路径、资源、并发） | 并发接管共用临时文件名；新 e2e 一步：8 个进程同时启动、5 轮；变异回共用文件名：3/3 失败，修好 3/3 通过；全量 Windows 455 + 10 + 129 | **有问题**：临时文件名带 pid（不计数）。另：变异后 rsync 恢复的文件带旧 mtime，cargo 没重编，一次全量用的是变异后的二进制；脚本改为按校验和同步、不保留时间 |
+| 5 | 可复现性 | 同样输入 `startup on` 3 次，unit 的 sha256 都是 `74348c7f0be7ae60`；Linux startup/takeover 单测 30/30、e2e startup 20/20，Windows 单测 10/10；Linux 全量 442 + 129 | 干净（1/3） |
+| 6 | 逻辑与不变量 | 9 条不变量（不往旧版或同版搬、cargo 构建和测试目录不动、server/Tab/startup/wt/migrate 不做、不新建、每次写都用稳定名字、其余内容保留、每个入口检查 socket 名、Windows 守卫顺序不变）；6 个变异 6/6 抓到，复原后 17/17；全量 Windows 455 + 10 + 129，Linux 442 + 129，clippy 三平台 0 | 干净（2/3） |
+| 7 | 用户路径对照文档（WSL 真 systemd） | `on` 后 `systemctl --user is-enabled`：enabled；`on` 起的 server 0 个；`off` 后 not-found，status 退出 1，再 `off` 退出 0；没有 systemd（`unshare` 盖住 `/run/systemd`）：退出 1、写 0 个文件；help、man 有新说明；坏 socket 名、拼错的动词都退出 1；全量 Windows 455 + 10 + 129，Linux 442 + 129 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - 这里没有 Mac：macOS 只有编译（clippy）和 CI 上的测试（`plutil -lint`、`plutil -extract` 读回程序路径、e2e 用临时 HOME 写 agent）。登录时 launchd 真的起 server，要用户在 Mac 上重启后确认。
+  - systemd 下从 pane 里 `restart-server` 之后，unit 显示 inactive，新 server 照常运行，注销时由用户的 systemd 一起停掉（会先保存）。

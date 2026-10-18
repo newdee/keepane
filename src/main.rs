@@ -38,7 +38,8 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
 Resume after a reboot (sessions autosave to the data directory's sessions folder):
   resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
-  startup on|off|status   (Windows: start the server at logon and restore every saved session, and the phone page if it was on)
+  startup on|off|status   (start the server at logon and restore every saved session, and the phone page if it was on;
+  Windows: a Run value, macOS: a launchd agent, Linux: a systemd user unit)
   windows-terminal install|remove|status   (Windows: a keepane profile in the Windows Terminal dropdown)
 Upgrading:  version (this keepane and the server's)   update [--check]   restart-server (sessions move to this version)
   migrate   (from wmux, keepane's old name: sessions, saved data, logon start, Windows Terminal profile)
@@ -195,7 +196,7 @@ fn main() {
     }
     // The logon command and the Windows Terminal profile run keepane by its
     // full path: after an update into a folder of its own, this newer one
-    // takes them over (startup::refresh_registrations). Not in the server,
+    // takes them over (keepane::takeover). Not in the server,
     // not on every Tab, not in the commands that set these themselves.
     if !matches!(args[0].as_str(), "__server" | "__complete" | "migrate" | "startup" | "windows-terminal" | "wt") {
         for line in keepane::startup::refresh_registrations(&socket) {

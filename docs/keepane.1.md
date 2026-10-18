@@ -140,13 +140,17 @@ config), `completion` (a Tab completer for PowerShell, bash, zsh or fish), `man`
 (this page),
 `web` (the panes on a phone), `link` (panes on other machines), `show-keys`
 (what the terminal sends for each key), `migrate` (from wmux, keepane's old
-name). On Windows: `startup`
-(start the server at logon) and `windows-terminal` (a Windows Terminal
-profile). Both run keepane by its full path; when that is an older keepane
-or one that is gone (an update into a folder of its own, as Scoop with
-`no_junction` does), the next keepane to start takes them over and says
-so. One run from cargo's target folder, or under test directories, never
-does.
+name), `startup` (`on`, `off`, `status`: start the server at logon, every
+saved session restored: on Windows a `Run` value, on macOS a launchd agent in
+`~/Library/LaunchAgents`, on Linux a systemd user unit enabled for
+`default.target`, with the `PATH`, `SHELL` and locale it ran with). On
+Windows: `windows-terminal` (a Windows Terminal profile). Both run keepane
+by its full path (on macOS and Linux the name the `PATH` finds, such as
+Homebrew's `bin/keepane`); when that is an older keepane or one that is
+gone (an update into a folder of its own, as Scoop with `no_junction` or
+Homebrew's Cellar does), the next keepane to start takes them over and
+says so. One run from cargo's target folder, or under test directories,
+never does.
 
 ### The panes on a phone
 

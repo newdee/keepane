@@ -804,13 +804,18 @@ u UU N... 100644 100644 100644 100644 aa bb cc src/c.rs\0? notes.md\0? tmp/x\0";
         let script = dir.join("hook.sh");
         std::fs::write(
             &script,
-            format!("#!/bin/sh\necho ran > '{}'\n", marker.display().to_string().replace('\\', "/")),
+            format!(
+                "#!/bin/sh\n[ \"$1\" = settle ] && exit 0\necho ran > '{}'\n",
+                marker.display().to_string().replace('\\', "/")
+            ),
         )
         .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            // Else git, refused it too, would leave the check moot.
+            crate::platform::process::wait_runnable(&script, &["settle"]);
         }
         let hook = script.display().to_string().replace('\\', "/");
         g(&["config", "core.fsmonitor", &hook]);

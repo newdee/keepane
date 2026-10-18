@@ -272,11 +272,11 @@ install keepane-v<version>-linux-x86_64/keepane ~/.local/bin/
 
 Or build it (below). The server listens on a socket in
 `$XDG_RUNTIME_DIR/keepane-<uid>/` (else `/tmp/keepane-<uid>/`), a directory
-only you can open. `keepane startup`, `keepane update` and the Windows
-Terminal profile are Windows matters: on Linux and macOS, start the server
-from your login files if you want it at logon, and update it the way you
-installed it (`brew upgrade keepane`, or the releases page; `keepane update`
-says which).
+only you can open. `keepane startup on` starts the server at login (a
+launchd agent on macOS, a systemd user unit on Linux; see below).
+`keepane update` and the Windows Terminal profile are Windows matters: on
+Linux and macOS, update keepane the way you installed it (`brew upgrade
+keepane`, or the releases page; `keepane update` says which).
 
 ### Windows
 
@@ -724,7 +724,7 @@ goes into that history with its header in front (`<# keepane #12 from %builder #
 instead every message sent to the pane in any mode, from the event log, with
 how it went; `-n 20` shows the last 20.
 
-To have all of that happen by itself when you log on to Windows:
+To have all of that happen by itself when you log on:
 
 ```powershell
 keepane startup on          # start the server at logon and restore every saved session
@@ -732,20 +732,32 @@ keepane startup status      # what is registered
 keepane startup off         # stop doing that
 ```
 
-This writes one value under the per-user `Run` registry key (no
+On Windows this writes one value under the per-user `Run` registry key (no
 administrator rights, nothing in Task Scheduler), running the server
-through `conhost --headless` so no console window appears at logon. After a
-reboot, `keepane attach` finds everything as it was. The phone page
-(`keepane web`, below) comes back too when it was on, served the same way
-(add `-k` so that its code stays the same); until the network is up after
-logon, it is tried again every 10 seconds.
+through `conhost --headless` so no console window appears at logon. On
+macOS it writes a launchd agent,
+`~/Library/LaunchAgents/tech.dfine.keepane.plist`; on Linux a systemd user
+unit, `~/.config/systemd/user/keepane.service`, enabled for
+`default.target`. Both keep the `PATH`, `SHELL` and locale that `startup
+on` ran with, so the panes find what your shell finds. Neither starts a
+server when written: the next login does. On Linux the server stops at
+logout (it saves first) unless `loginctl enable-linger` keeps your user
+manager running, and then it starts at boot too; where systemd does not
+run (a container, WSL without it), `startup on` says so and writes
+nothing. After a reboot, `keepane attach` finds everything as it was. The
+phone page (`keepane web`, below) comes back too when it was on, served the
+same way (add `-k` so that its code stays the same); until the network is
+up after logon, it is tried again every 10 seconds.
 
-The value runs keepane by its full path, and so does the Windows Terminal
-profile below. When an update puts the new keepane in a folder of its own
-(Scoop with `no_junction`, a folder per version), the first keepane you
-run afterwards moves both to itself and says so, a line for each; it does
-the same when the old folder is gone. A keepane never takes them from a
-newer one.
+The logon command runs keepane by its full path, and so does the Windows
+Terminal profile below. When an update puts the new keepane in a folder of
+its own (Scoop with `no_junction`, a folder per version, Homebrew's
+Cellar), the first keepane you run afterwards moves both to itself and
+says so, a line for each; it does the same when the old folder is gone. A
+keepane never takes them from a newer one. On macOS and Linux, `startup
+on` registers the name your `PATH` finds (Homebrew's `bin/keepane`, which
+each upgrade points at the new version) rather than the file in the
+Cellar.
 
 Upgrading: installing a new keepane does not replace the server that is
 already running, which keeps your sessions and is still the old program.
@@ -1704,10 +1716,8 @@ the keyboard.
 
 ## Not (yet) implemented
 
-On Linux and macOS, `keepane startup` (the server at logon), `keepane
-update` (it says where the new version is) and desktop notifications with
-a "Go to pane" button are not there yet, and tab completion is for
-PowerShell only.
+On Linux and macOS, `keepane update` (it says where the new version is)
+and desktop notifications with a "Go to pane" button are not there yet.
 
 Compared with tmux, these differ for now:
 

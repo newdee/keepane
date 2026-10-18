@@ -11,15 +11,18 @@ pub type Stream = tokio::net::UnixStream;
 /// The server's end of one client's connection.
 pub type Connection = tokio::net::UnixStream;
 
-/// Where this user's sockets live: `$KEEPANE_TMPDIR`, else
-/// `$XDG_RUNTIME_DIR`, else `/tmp`, then `keepane-<uid>`.
+/// Where this user's sockets live: `socket_base()`, then `keepane-<uid>`.
 fn socket_dir() -> PathBuf {
-    let base = crate::legacy::var_os("KEEPANE_TMPDIR")
+    socket_base().join(format!("keepane-{}", unsafe { libc::getuid() }))
+}
+
+/// `$KEEPANE_TMPDIR`, else `$XDG_RUNTIME_DIR`, else `/tmp`.
+pub fn socket_base() -> PathBuf {
+    crate::legacy::var_os("KEEPANE_TMPDIR")
         .or_else(|| std::env::var_os("XDG_RUNTIME_DIR"))
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join(format!("keepane-{}", unsafe { libc::getuid() }))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
 /// The socket for `socket_name`. The name is reduced to `[A-Za-z0-9_.-]`

@@ -8843,6 +8843,33 @@ async fn an_agents_message_is_submitted_by_an_enter_of_its_own() {
     h.cli(&["kill-server"]).await;
 }
 
+/// Wait until a program this process just wrote can run, running it with
+/// `args` (which must end it at once). A test on another thread that forks
+/// while the file is open for writing holds it open in its child until that
+/// child execs, and until then Linux refuses to run it (ETXTBSY): running it
+/// until it is not refused waits exactly that out.
+fn ready_to_run(exe: &std::path::Path, args: &[&str]) {
+    for _ in 0..250 {
+        match std::process::Command::new(exe).args(args).output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            r => {
+                let o = r.unwrap();
+                assert!(o.status.success(), "{} {args:?}: {o:?}", exe.display());
+                return;
+            }
+        }
+    }
+    panic!("{}: still busy after 5 seconds", exe.display());
+}
+
+/// keepane copied to `to`, ready to run.
+fn copy_keepane(to: &std::path::Path) {
+    std::fs::copy(env!("CARGO_BIN_EXE_keepane"), to).unwrap();
+    ready_to_run(to, &["-V"]);
+}
+
 /// An agent pane is told free by its agent's own transcript, with no hook
 /// at all: a turn over (the first one seen only says where it stands, it is
 /// not told); a message's turn over ends the message, told; one broken off
@@ -8861,7 +8888,7 @@ async fn an_agents_transcript_says_when_it_is_free() {
         std::fs::create_dir_all(d).unwrap();
     }
     let fake = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
-    std::fs::copy(env!("CARGO_BIN_EXE_keepane"), &fake).unwrap();
+    copy_keepane(&fake);
     unsafe { std::env::set_var("CODEX_HOME", &home) };
     let h = Harness::start("turns").await;
     h.cli(&["set", "-g", "done-events", "agent task"]).await;
@@ -9743,14 +9770,16 @@ async fn a_panes_agent_is_read_from_its_transcript() {
     let argv = {
         use std::os::unix::fs::PermissionsExt;
         let exe = bin.join("claude");
-        std::fs::write(&exe, "#!/bin/sh\nsleep 600\n").unwrap();
+        std::fs::write(&exe, "#!/bin/sh\n[ \"$1\" = settle ] && exit 0\nsleep 600\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ready_to_run(&exe, &["settle"]);
         vec![exe.to_string_lossy().into_owned()]
     };
     #[cfg(target_os = "macos")]
     let argv = {
         let exe = bin.join("claude");
         std::fs::copy("/bin/sleep", &exe).unwrap();
+        ready_to_run(&exe, &["0"]);
         vec![exe.to_string_lossy().into_owned(), "600".into()]
     };
     let prices = root.join("prices.json");
@@ -9882,7 +9911,7 @@ fn a_logon_command_of_a_gone_keepane_is_taken_over_by_the_installed_one() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let installed = root.join("keepane.exe");
-    std::fs::copy(env!("CARGO_BIN_EXE_keepane"), &installed).unwrap();
+    copy_keepane(&installed);
     let gone = r"C:\keepane-e2e-gone\0.1.0\keepane.exe";
     let plant = || {
         let data = format!(r#"conhost.exe --headless "{gone}" -L {sock} __server --restore"#);
@@ -9931,5 +9960,135 @@ fn a_logon_command_of_a_gone_keepane_is_taken_over_by_the_installed_one() {
 
     let _ = keepane::startup::remove(&sock);
     assert!(registered().is_none());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `keepane startup` on macOS (a launchd agent) and Linux (a systemd user
+/// unit), in a home of the test's own: `on` registers the name on the PATH
+/// (Homebrew's `bin/keepane` link), not the versioned Cellar file it was
+/// run as, with the PATH it was run with; a registration of a keepane that
+/// is gone is taken over by the installed one at its next start, said once,
+/// and not by one under test directories or in cargo's target folder;
+/// `off` removes it.
+#[cfg(unix)]
+#[test]
+fn startup_registers_the_stable_name_and_follows_the_installed_keepane() {
+    let sock = format!("e2e-startup-{}", std::process::id());
+    let root = std::env::temp_dir().join(format!("keepane-e2e-startup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    let cellar = root.join("Cellar/keepane/9.9.9/bin");
+    std::fs::create_dir_all(&cellar).unwrap();
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let installed = cellar.join("keepane");
+    copy_keepane(&installed);
+    let stable = root.join("bin/keepane");
+    std::os::unix::fs::symlink(&installed, &stable).unwrap();
+    let run = root.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(root.join("bin")).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+    )
+    .unwrap();
+    let file = if cfg!(target_os = "macos") {
+        home.join(format!("Library/LaunchAgents/tech.dfine.keepane.{sock}.plist"))
+    } else {
+        home.join(format!(".config/systemd/user/keepane-{sock}.service"))
+    };
+    let keepane = |exe: &std::path::Path, args: &[&str], test_dirs: bool| {
+        let mut c = std::process::Command::new(exe);
+        c.arg("-L").arg(&sock).args(args);
+        c.env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env("XDG_RUNTIME_DIR", &run)
+            .env("PATH", &path)
+            .env("KEEPANE_NO_UPDATE_CHECK", "1");
+        for v in ["KEEPANE", "KEEPANE_TMPDIR", "DBUS_SESSION_BUS_ADDRESS"] {
+            c.env_remove(v);
+        }
+        for v in ["KEEPANE_LOG_DIR", "KEEPANE_SESSIONS_DIR", "KEEPANE_HISTORY_DIR", "KEEPANE_CONFIG"] {
+            c.env_remove(v);
+        }
+        if test_dirs {
+            c.env("KEEPANE_SESSIONS_DIR", root.join("sessions"));
+        }
+        let o = c.output().unwrap();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+
+    let (code, out, err) = keepane(&installed, &["startup", "on"], false);
+    if cfg!(target_os = "linux") && !std::path::Path::new("/run/systemd/system").is_dir() {
+        assert_eq!(code, Some(1), "{out}{err}");
+        assert!(err.contains("systemd does not run here"), "{err}");
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+    assert_eq!(code, Some(0), "{out}{err}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let stable_s = stable.to_string_lossy().into_owned();
+    assert!(text.contains(&stable_s), "the name on the PATH:\n{text}");
+    assert!(!text.contains("Cellar"), "not the versioned file:\n{text}");
+    assert!(text.contains(&*path.to_string_lossy()), "the PATH it was run with:\n{text}");
+    let pinned = if cfg!(target_os = "macos") {
+        format!("<key>KEEPANE_TMPDIR</key>\n\t\t<string>{}</string>", run.display())
+    } else {
+        format!("Environment=\"KEEPANE_TMPDIR={}\"", run.display())
+    };
+    assert!(text.contains(&pinned), "the sockets' folder this client uses:\n{text}");
+    assert!(out.contains(&format!("runs:  {stable_s} -L {sock} __server --restore")), "{out}");
+    let (code, out, _) = keepane(&installed, &["startup", "status"], false);
+    assert_eq!(code, Some(0));
+    assert!(out.contains("installed, runs at login") && out.contains(&stable_s), "{out}");
+
+    // Now it runs a keepane that is gone.
+    let gone = "/keepane-e2e-gone/0.1.0/keepane";
+    std::fs::write(&file, text.replace(&stable_s, gone)).unwrap();
+    let registered = || std::fs::read_to_string(&file).unwrap();
+    let (_, _, err) = keepane(&installed, &["list-sessions"], true);
+    assert!(registered().contains(gone), "test dirs touched it: {err}");
+    let (_, _, err) = keepane(std::path::Path::new(env!("CARGO_BIN_EXE_keepane")), &["list-sessions"], false);
+    assert!(registered().contains(gone), "a cargo build took it: {err}");
+    let (_, _, err) = keepane(&installed, &["list-sessions"], false);
+    assert_eq!(registered(), text, "back to the name on the PATH, the rest as it was\n{err}");
+    assert!(
+        err.contains(&format!("keepane: start at login now runs {stable_s} (it ran {gone}, which is gone)")),
+        "{err}"
+    );
+    let (_, _, err) = keepane(&installed, &["list-sessions"], false);
+    assert!(!err.contains("start at login"), "said again: {err}");
+    // Several started at once after an update: each may take it over, and
+    // none fails at it (each writes through a temp file of its own).
+    for round in 0..5 {
+        std::fs::write(&file, text.replace(&stable_s, gone)).unwrap();
+        let errs: Vec<String> = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..8).map(|_| s.spawn(|| keepane(&installed, &["list-sessions"], false).2)).collect();
+            runs.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        assert!(errs.iter().all(|e| !e.contains("still runs")), "round {round}: {errs:#?}");
+        assert!(errs.iter().any(|e| e.contains("start at login now runs")), "round {round}: {errs:#?}");
+        assert_eq!(registered(), text, "round {round}");
+    }
+    let leftovers = std::fs::read_dir(file.parent().unwrap())
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+    assert_eq!(leftovers, 0);
+
+    let (code, out, _) = keepane(&installed, &["startup", "off"], false);
+    assert_eq!(code, Some(0));
+    assert!(out.contains("removed"), "{out}");
+    assert!(!file.exists());
+    let (code, out, _) = keepane(&installed, &["startup", "status"], false);
+    assert_eq!(code, Some(1));
+    assert!(out.contains("not installed"), "{out}");
     let _ = std::fs::remove_dir_all(&root);
 }

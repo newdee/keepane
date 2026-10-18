@@ -122,3 +122,24 @@ pub fn spawn_self(args: &[&str], _breakaway: bool) -> Result<()> {
     c.spawn().with_context(|| format!("spawn {}", args.join(" ")))?;
     Ok(())
 }
+
+/// For tests: wait until a program this process just wrote can run, by
+/// running it with `args` (which must end it at once). A test on another
+/// thread that forks while the file is open for writing holds it open in
+/// its child until that child execs, and until then Linux refuses to run
+/// it (ETXTBSY).
+#[cfg(test)]
+pub(crate) fn wait_runnable(exe: &std::path::Path, args: &[&str]) {
+    for _ in 0..500 {
+        match std::process::Command::new(exe).args(args).status() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            r => {
+                assert!(r.unwrap().success(), "{} {args:?}", exe.display());
+                return;
+            }
+        }
+    }
+    panic!("{}: still busy after 5 seconds", exe.display());
+}

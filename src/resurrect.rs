@@ -123,15 +123,20 @@ impl SavedFile {
     }
 
     /// Write atomically (temp file + rename) so a crash mid-write never
-    /// leaves a truncated file behind.
+    /// leaves a truncated file behind; a write or rename that fails takes
+    /// the temp file away with it.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, self.to_json()).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(())
+        let written = std::fs::write(&tmp, self.to_json())
+            .map_err(|e| format!("{}: {e}", tmp.display()))
+            .and_then(|()| std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display())));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written
     }
 
     pub fn load(path: &Path) -> Result<SavedFile, String> {
@@ -278,6 +283,12 @@ mod tests {
         .unwrap();
         assert!(SavedFile::load(&dir.join("old.json")).unwrap_err().contains("version 99"));
         assert!(find(&dir, "nope").is_none());
+        // A save that cannot land (a folder in its place) says so and leaves
+        // no temp file behind.
+        let blocked = dir.join("blocked.json");
+        std::fs::create_dir_all(&blocked).unwrap();
+        assert!(f.save(&blocked).is_err());
+        assert!(!blocked.with_extension("json.tmp").exists(), "temp file left behind");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

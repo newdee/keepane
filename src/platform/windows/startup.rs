@@ -7,6 +7,7 @@
 //! at logon; `conhost --headless` in front of it is what keeps a console
 //! window from flashing up for a server that has no console anyway.
 
+use crate::takeover::{self, Version};
 use anyhow::{Context, Result, bail};
 use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows_sys::Win32::System::Registry::{
@@ -205,42 +206,9 @@ pub fn run(socket: &str, args: &[String]) -> Result<i32> {
 }
 
 // ---------------------------------------------------------------------------
-// The registrations follow the newest keepane.
-//
-// What keepane registers for itself runs one exe by its full path: the
-// logon command above and the Windows Terminal profile. An install that
-// puts each version in a folder of its own (Scoop with `no_junction`, a
-// hand-kept folder per version) leaves that
-// path on the old version after an update, and on nothing once the old
-// folder is cleaned up: logon then starts nothing, and says nothing. So
-// keepane, as a command starts (not the server, not Tab completion, not
-// the commands that set these: main.rs), looks at both and takes over the
-// ones that run a keepane older than itself or one that is gone; one that
-// runs a newer keepane, the same version elsewhere, or one whose version
-// cannot be read is left as it is, so two installs never take turns. (The
-// notification link needs none of this: each server registers itself.)
-
-/// A keepane version, as `keepane -V` prints it.
-pub(crate) type Version = (u64, u64, u64);
-
-/// "keepane 0.38.1" (or "0.38.1"), into its numbers.
-pub(crate) fn parse_version(s: &str) -> Option<Version> {
-    let s = s.trim();
-    let s = s.strip_prefix("keepane ").unwrap_or(s);
-    // A pre-release or build suffix is not a version of its own here.
-    let s = s.split(['-', '+', ' ']).next()?;
-    let mut n = s.split('.').map(|p| p.parse::<u64>().ok());
-    let v = (n.next()??, n.next()??, n.next()??);
-    if n.next().is_some() {
-        return None;
-    }
-    Some(v)
-}
-
-/// This program's version.
-pub(crate) fn this_version() -> Version {
-    parse_version(env!("CARGO_PKG_VERSION")).expect("the crate's version is three numbers")
-}
+// The registrations follow the newest keepane (crate::takeover): the logon
+// command above and the Windows Terminal profile both run keepane by its
+// full path.
 
 /// The exe a registered command line runs: its first quoted path (both the
 /// logon command and the profile quote it).
@@ -250,149 +218,15 @@ pub(crate) fn exe_of(cmd: &str) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(&cmd[start..start + len])).filter(|p| !p.as_os_str().is_empty())
 }
 
-/// What a keepane exe says its version is (`-V`, which answers before
-/// anything else runs), asked without a window and given five seconds.
-pub(crate) fn version_of(exe: &std::path::Path) -> Option<Version> {
-    version_within(exe, std::time::Duration::from_secs(5))
-}
-
-fn version_within(exe: &std::path::Path, wait: std::time::Duration) -> Option<Version> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut child = Command::new(exe)
-        .arg("-V")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .ok()?;
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    let mut out = String::new();
-    use std::io::Read;
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    parse_version(out.lines().next()?)
-}
-
-/// `ask` (`version_of`), remembered in `cache` by the exe's path, size and
-/// time of writing: a keepane that is not the registered one (an older
-/// install still on the PATH) then does not start the registered one on
-/// each of its own starts. A changed file is asked again; no answer is not
-/// remembered; the last 16 are kept.
-pub(crate) fn version_cached(
-    exe: &std::path::Path,
-    cache: &std::path::Path,
-    ask: impl Fn(&std::path::Path) -> Option<Version>,
-) -> Option<Version> {
-    let meta = std::fs::metadata(exe).ok()?;
-    let written = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    // Windows names have no tabs, so a tab separates the fields.
-    let key = format!("{}\t{}\t{written}", exe.display(), meta.len());
-    let text = std::fs::read_to_string(cache).unwrap_or_default();
-    for line in text.lines() {
-        if let Some((k, v)) = line.rsplit_once('\t')
-            && k == key
-        {
-            return parse_version(v);
-        }
-    }
-    let v = ask(exe)?;
-    let path_part = format!("{}\t", exe.display());
-    let mut kept: Vec<String> =
-        text.lines().filter(|l| !l.starts_with(&path_part) && !l.is_empty()).map(str::to_string).collect();
-    kept.push(format!("{key}\t{}.{}.{}", v.0, v.1, v.2));
-    let start = kept.len().saturating_sub(16);
-    if let Some(dir) = cache.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(cache, kept[start..].join("\n") + "\n");
-    Some(v)
-}
-
-/// Why a registration should run this keepane instead.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Stale {
-    /// The exe it runs is not there any more.
-    Gone,
-    /// It runs an older keepane.
-    Older(Version),
-}
-
-/// The same file? Compared as Windows does (case and `/` do not matter),
-/// and through links when both exist (a junction such as Scoop's
-/// `current` names the same exe as the version folder it points at).
-fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
-    let norm = |p: &std::path::Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
-    if norm(a) == norm(b) {
-        return true;
-    }
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(x), Ok(y)) => norm(&x) == norm(&y),
-        _ => false,
-    }
-}
-
-/// Whether a registration running `registered` should run `me` (version
-/// `mine`) instead; `version_of` asks an exe its version.
-pub(crate) fn stale(
-    registered: &std::path::Path,
-    me: &std::path::Path,
-    mine: Version,
-    version_of: impl Fn(&std::path::Path) -> Option<Version>,
-) -> Option<Stale> {
-    if same_file(registered, me) {
-        return None;
-    }
-    if !registered.is_file() {
-        return Some(Stale::Gone);
-    }
-    match version_of(registered) {
-        Some(v) if v < mine => Some(Stale::Older(v)),
-        _ => None,
-    }
-}
-
 /// The logon command and the Windows Terminal profile of `socket`, moved to
 /// this keepane where they run an older one or one that is gone; one line
-/// for each moved. Only where keepane runs with the real places (not under
-/// a test's own directories, as `legacy::uses_real_dirs` says).
+/// for each moved. Only from an installed keepane (`takeover::installed_self`).
 pub fn refresh_registrations(socket: &str) -> Vec<String> {
-    if !crate::legacy::uses_real_dirs() {
-        return Vec::new();
-    }
-    let Ok(me) = std::env::current_exe() else { return Vec::new() };
-    // A keepane just built, run from cargo's target folder, is newer than
-    // the installed one whenever the version was raised for a release: it
-    // must not take the installed one's place (`cargo clean` would then
-    // leave logon with nothing to start).
-    if is_cargo_build(&me) {
-        return Vec::new();
-    }
+    let Some(me) = takeover::installed_self() else { return Vec::new() };
     let Ok(wt_dir) = super::wt::fragments_dir() else { return Vec::new() };
-    let cache = crate::logger::log_dir().join("exe-versions");
-    refresh_with(socket, &me, this_version(), &wt_dir, |exe| version_cached(exe, &cache, version_of))
-}
-
-/// Whether `exe` is in cargo's build output: a folder above it has the
-/// `CACHEDIR.TAG` cargo writes into every target directory.
-pub(crate) fn is_cargo_build(exe: &std::path::Path) -> bool {
-    exe.ancestors().skip(1).any(|d| {
-        std::fs::read_to_string(d.join("CACHEDIR.TAG"))
-            .is_ok_and(|t| t.starts_with("Signature: 8a477f597d28d172789f06886806bc55") && t.contains("cargo"))
+    let cache = takeover::cache_file();
+    refresh_with(socket, &me, takeover::this_version(), &wt_dir, |exe| {
+        takeover::version_cached(exe, &cache, takeover::version_of)
     })
 }
 
@@ -405,30 +239,23 @@ pub(crate) fn refresh_with(
     wt_dir: &std::path::Path,
     version_of: impl Fn(&std::path::Path) -> Option<Version>,
 ) -> Vec<String> {
-    let said = |what: &str, old: &std::path::Path, why: &Stale| {
-        let why = match why {
-            Stale::Gone => "which is gone".to_string(),
-            Stale::Older((a, b, c)) => format!("version {a}.{b}.{c}"),
-        };
-        format!("{what} now runs {} (it ran {}, {why})", me.display(), old.display())
-    };
     let me_s = me.to_string_lossy();
     let mut lines = Vec::new();
     if let Ok(Some(cmd)) = status(socket)
         && let Some(old) = exe_of(&cmd)
-        && let Some(why) = stale(&old, me, mine, &version_of)
+        && let Some(why) = takeover::stale(&old, me, mine, &version_of)
     {
         match install_exe(socket, &me_s) {
-            Ok(_) => lines.push(said("start at logon", &old, &why)),
+            Ok(_) => lines.push(takeover::said("start at logon", me, &old, &why)),
             Err(e) => lines.push(format!("start at logon still runs {}: {e:#}", old.display())),
         }
     }
     if let Ok(Some(cmd)) = super::wt::status_in(wt_dir, socket)
         && let Some(old) = exe_of(&cmd)
-        && let Some(why) = stale(&old, me, mine, &version_of)
+        && let Some(why) = takeover::stale(&old, me, mine, &version_of)
     {
         match super::wt::install_exe_in(wt_dir, socket, &me_s) {
-            Ok(_) => lines.push(said("the Windows Terminal profile", &old, &why)),
+            Ok(_) => lines.push(takeover::said("the Windows Terminal profile", me, &old, &why)),
             Err(e) => lines.push(format!("the Windows Terminal profile still runs {}: {e:#}", old.display())),
         }
     }
@@ -508,14 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_and_registered_exes_are_read() {
-        assert_eq!(parse_version("keepane 0.38.1\n"), Some((0, 38, 1)));
-        assert_eq!(parse_version("1.2.3"), Some((1, 2, 3)));
-        assert_eq!(parse_version("keepane 1.2.3-rc.1"), Some((1, 2, 3)));
-        for bad in ["keepane", "keepane 1.2", "1.2.3.4", "keepane x.y.z", ""] {
-            assert_eq!(parse_version(bad), None, "{bad:?}");
-        }
-        assert_eq!(this_version(), parse_version(env!("CARGO_PKG_VERSION")).unwrap());
+    fn registered_exes_are_read() {
         // As both registrations write them.
         let run = command_line(r"C:\Program Files\keepane\keepane.exe", "default");
         assert_eq!(exe_of(&run).unwrap(), std::path::Path::new(r"C:\Program Files\keepane\keepane.exe"));
@@ -523,136 +343,6 @@ mod tests {
         assert_eq!(exe_of(wt).unwrap(), std::path::Path::new(r"C:\s\apps\keepane\0.38.1\keepane.exe"));
         assert_eq!(exe_of("keepane.exe __server"), None, "nothing quoted");
         assert_eq!(exe_of(r#""" -L x"#), None, "an empty path");
-    }
-
-    /// Which registrations are taken over: one running an older keepane or
-    /// one that is gone; never the same file (however it is spelled or
-    /// linked), a newer one, the same version elsewhere, or one whose
-    /// version cannot be read.
-    #[test]
-    fn only_older_or_gone_keepanes_are_taken_over() {
-        let dir = std::env::temp_dir().join(format!("keepane-stale-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("0.38.1")).unwrap();
-        std::fs::create_dir_all(dir.join("0.39.0")).unwrap();
-        let old = dir.join("0.38.1").join("keepane.exe");
-        let me = dir.join("0.39.0").join("keepane.exe");
-        std::fs::write(&old, b"").unwrap();
-        std::fs::write(&me, b"").unwrap();
-        let mine = (0, 39, 0);
-        let says = |v: Option<Version>| move |_: &std::path::Path| v;
-        assert_eq!(stale(&old, &me, mine, says(Some((0, 38, 1)))), Some(Stale::Older((0, 38, 1))));
-        assert_eq!(stale(&old, &me, mine, says(Some((0, 39, 0)))), None, "the same version elsewhere");
-        assert_eq!(stale(&old, &me, mine, says(Some((0, 40, 0)))), None, "a newer one");
-        assert_eq!(stale(&old, &me, mine, says(None)), None, "a version that cannot be read");
-        assert_eq!(stale(&dir.join("gone.exe"), &me, mine, says(None)), Some(Stale::Gone));
-        // This very file, spelled otherwise: never asked, never taken.
-        let shout = std::path::PathBuf::from(me.to_string_lossy().to_uppercase().replace('\\', "/"));
-        let asked = std::cell::Cell::new(false);
-        assert_eq!(
-            stale(&shout, &me, mine, |_: &std::path::Path| {
-                asked.set(true);
-                Some((0, 1, 0))
-            }),
-            None
-        );
-        assert!(!asked.get());
-        // Through a junction (Scoop's `current`): the same exe.
-        let current = dir.join("current");
-        let made = std::process::Command::new("cmd")
-            .args(["/c", "mklink", "/J"])
-            .arg(&current)
-            .arg(dir.join("0.39.0"))
-            .output()
-            .unwrap();
-        assert!(made.status.success(), "mklink /J: {}", String::from_utf8_lossy(&made.stderr));
-        assert_eq!(stale(&current.join("keepane.exe"), &me, mine, says(Some((0, 1, 0)))), None);
-        let _ = std::fs::remove_dir(&current);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The version a program says, asked for real: a stand-in that answers,
-    /// one that says something else, one too slow, one that is not there.
-    #[test]
-    fn a_version_is_asked_of_the_program_itself() {
-        let dir = std::env::temp_dir().join(format!("keepane-asked-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let says = dir.join("says.cmd");
-        std::fs::write(&says, "@echo keepane 0.1.2\r\n").unwrap();
-        assert_eq!(version_of(&says), Some((0, 1, 2)));
-        let other = dir.join("other.cmd");
-        std::fs::write(&other, "@echo something else\r\n").unwrap();
-        assert_eq!(version_of(&other), None);
-        let slow = dir.join("slow.cmd");
-        std::fs::write(&slow, "@ping -n 4 127.0.0.1 >nul\r\n@echo keepane 0.1.2\r\n").unwrap();
-        let t = std::time::Instant::now();
-        assert_eq!(version_within(&slow, std::time::Duration::from_millis(300)), None);
-        assert!(t.elapsed() < std::time::Duration::from_secs(2), "not waited out: {:?}", t.elapsed());
-        assert_eq!(version_of(&dir.join("nothing.exe")), None);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A version asked once is remembered while the file stays the same;
-    /// a changed file is asked again; no answer is not remembered; the
-    /// cache keeps the last 16.
-    #[test]
-    fn a_version_once_asked_is_remembered_for_the_same_file() {
-        let dir = std::env::temp_dir().join(format!("keepane-cached-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("keepane.exe");
-        let cache = dir.join("data").join("exe-versions");
-        std::fs::write(&exe, b"one").unwrap();
-        let asked = std::cell::Cell::new(0);
-        let ask = |v: Option<Version>| {
-            let asked = &asked;
-            move |_: &std::path::Path| {
-                asked.set(asked.get() + 1);
-                v
-            }
-        };
-        assert_eq!(version_cached(&exe, &cache, ask(Some((0, 38, 1)))), Some((0, 38, 1)));
-        assert_eq!(version_cached(&exe, &cache, ask(Some((9, 9, 9)))), Some((0, 38, 1)), "remembered");
-        assert_eq!(asked.get(), 1);
-        // Replaced by another build: asked again, and only that is kept for it.
-        std::fs::write(&exe, b"another one").unwrap();
-        assert_eq!(version_cached(&exe, &cache, ask(Some((0, 39, 0)))), Some((0, 39, 0)));
-        assert_eq!(asked.get(), 2);
-        assert_eq!(std::fs::read_to_string(&cache).unwrap().lines().count(), 1);
-        // No answer: not remembered, asked the next time.
-        let other = dir.join("other.exe");
-        std::fs::write(&other, b"x").unwrap();
-        assert_eq!(version_cached(&other, &cache, ask(None)), None);
-        assert_eq!(version_cached(&other, &cache, ask(Some((0, 1, 0)))), Some((0, 1, 0)));
-        assert_eq!(asked.get(), 4);
-        // Not there: not asked.
-        assert_eq!(version_cached(&dir.join("gone.exe"), &cache, ask(Some((0, 1, 0)))), None);
-        assert_eq!(asked.get(), 4);
-        // Many exes: the last 16.
-        for i in 0..20 {
-            let e = dir.join(format!("k{i}.exe"));
-            std::fs::write(&e, b"k").unwrap();
-            version_cached(&e, &cache, ask(Some((0, 0, i))));
-        }
-        let text = std::fs::read_to_string(&cache).unwrap();
-        assert_eq!(text.lines().count(), 16, "{text}");
-        assert!(text.contains("k19.exe") && !text.contains("k3.exe\t"), "{text}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_cargo_build_is_told_from_an_install() {
-        let me = std::env::current_exe().unwrap(); // this test, in target\debug\deps
-        assert!(is_cargo_build(&me), "{}", me.display());
-        let dir = std::env::temp_dir().join(format!("keepane-installed-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(!is_cargo_build(&dir.join("keepane.exe")));
-        // Another program's CACHEDIR.TAG is not cargo's.
-        std::fs::write(dir.join("CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n# by another tool\n")
-            .unwrap();
-        assert!(!is_cargo_build(&dir.join("keepane.exe")));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Both registrations, for real (the Run key under a throwaway socket

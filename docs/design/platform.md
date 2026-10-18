@@ -36,7 +36,7 @@ its test run is the same, test by test.
 | `proccwd`, `sysinfo::program_of`: a pane's current directory and program | process environment block, toolhelp | `/proc/<pid>/cwd` and `/proc/<pid>/stat`; macOS `proc_pidinfo` |
 | `sysinfo`: CPU, memory, battery, the host's name, the home as `~` | Win32, `COMPUTERNAME` | `/proc/stat`, `/proc/meminfo`, `/sys/class/power_supply`, `gethostname`; macOS `sysctl`, the host's CPU ticks (mach), no battery (IOKit) yet |
 | `shutdown`: save before the machine goes | `WM_QUERYENDSESSION` | `SIGTERM` / `SIGHUP` to the server |
-| `startup`: the server at logon | per-user `Run` value, `conhost --headless` | later: a systemd user unit / a launchd agent |
+| `startup`: the server at logon | per-user `Run` value, `conhost --headless` | macOS: a launchd agent in `~/Library/LaunchAgents`; Linux: a systemd user unit enabled for `default.target` (`KillMode=process`); both with the `PATH`, `SHELL` and locale `startup on` ran with, and the name the `PATH` finds for the program. What both share (taking an older keepane's registration over) is `takeover` |
 | `shell::SETS_TERM`: `TERM` in panes | no: ConPTY sets up its own | yes: `default-terminal` (`xterm-256color`), never the server's own `TERM` |
 | `console::PTY_HAS_SCREEN`: a resumed pane's saved output | ConPTY keeps a screen of its own and repaints from it: a helper process (`keepane __replay`) prints the text into the console before the program starts | the pty keeps none: the text goes straight into keepane's screen model |
 

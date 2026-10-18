@@ -135,7 +135,7 @@ tar xzf keepane-v<版本>-linux-x86_64.tar.gz
 install keepane-v<版本>-linux-x86_64/keepane ~/.local/bin/
 ```
 
-也可以从源码编译（见下）。server 监听的 socket 在 `$XDG_RUNTIME_DIR/keepane-<uid>/`（没有这个变量就用 `/tmp/keepane-<uid>/`），这个目录只有你自己能进。`keepane startup`、`keepane update` 和 Windows Terminal 配置是 Windows 上的功能：在 Linux 和 macOS 上，想登录时启动 server 就写进自己的登录脚本，升级按当初的安装方式来（`brew upgrade keepane`，或从 Releases 下载；`keepane update` 会告诉你用哪种）。
+也可以从源码编译（见下）。server 监听的 socket 在 `$XDG_RUNTIME_DIR/keepane-<uid>/`（没有这个变量就用 `/tmp/keepane-<uid>/`），这个目录只有你自己能进。`keepane startup on` 让 server 在登录时启动（macOS 上是 launchd agent，Linux 上是 systemd 用户 unit，见下文）。`keepane update` 和 Windows Terminal 配置是 Windows 上的功能：在 Linux 和 macOS 上，升级按当初的安装方式来（`brew upgrade keepane`，或从 Releases 下载；`keepane update` 会告诉你用哪种）。
 
 ### Windows
 
@@ -384,7 +384,7 @@ keepane save-session -a     # 现在就把每个 session 各存一遍（prefix C
 
 发给 `shell` 模式 pane 的消息在那里也是一条命令，会带着信封头（`<# keepane #12 from %builder #>`）进这个历史。`keepane shell-history -t %3` 把历史读出来，消息那行会标出来（`✉ #12 %builder  cargo test`）；`-c` 只看命令，去掉消息；`-m` 改为列出事件日志里所有发给这个 pane 的消息（任何模式），带上每条的处理结果；`-n 20` 只看最后 20 条。
 
-想让这一切在登录 Windows 时自动发生：
+想让这一切在登录时自动发生：
 
 ```powershell
 keepane startup on          # 登录时启动 server，把存过的 session 全恢复出来
@@ -392,9 +392,9 @@ keepane startup status      # 看看注册了什么
 keepane startup off         # 取消
 ```
 
-它只在当前用户的 `Run` 注册表键下写一个值，不需要管理员权限，也不碰任务计划；server 通过 `conhost --headless` 启动，登录时不会闪出控制台窗口。重启之后 `keepane attach` 进去，东西都在。手机页面（`keepane web`，见下文）原来开着的话，也会按原来的参数重新打开（加 `-k`，二维码就不变）；登录后网络还没就绪时，每 10 秒重试一次。
+在 Windows 上，它只在当前用户的 `Run` 注册表键下写一个值，不需要管理员权限，也不碰任务计划；server 通过 `conhost --headless` 启动，登录时不会闪出控制台窗口。在 macOS 上，它写一个 launchd agent：`~/Library/LaunchAgents/tech.dfine.keepane.plist`。在 Linux 上，它写一个 systemd 用户 unit：`~/.config/systemd/user/keepane.service`，挂在 `default.target` 下。这两种都记下运行 `startup on` 时的 `PATH`、`SHELL` 和语言区域设置，所以 pane 里能找到的程序和你的 shell 一样。写完不会马上启动 server，下次登录时才启动。Linux 上注销时 server 会停（先保存）；用 `loginctl enable-linger` 让用户的 systemd 一直运行，server 就不停，开机时也会启动。没有 systemd 的地方（容器、没开 systemd 的 WSL），`startup on` 会说明原因，什么也不写。重启之后 `keepane attach` 进去，东西都在。手机页面（`keepane web`，见下文）原来开着的话，也会按原来的参数重新打开（加 `-k`，二维码就不变）；登录后网络还没就绪时，每 10 秒重试一次。
 
-这个值按完整路径运行 keepane，下面的 Windows Terminal profile 也一样。升级后新版装进了自己的文件夹（Scoop 设了 `no_junction`、或者每个版本一个文件夹）时，之后第一次运行的 keepane 会把这两处都改成自己，每改一处用一行字告诉你；旧文件夹已经被删掉时也一样。keepane 不会从更新的版本手里接过来。
+登录启动项按完整路径运行 keepane，下面的 Windows Terminal profile 也一样。升级后新版装进了自己的文件夹（Scoop 设了 `no_junction`、每个版本一个文件夹、Homebrew 的 Cellar）时，之后第一次运行的 keepane 会把这两处都改成自己，每改一处用一行字告诉你；旧文件夹已经被删掉时也一样。keepane 不会从更新的版本手里接过来。在 macOS 和 Linux 上，`startup on` 登记的是 `PATH` 里找到的那个名字（Homebrew 的 `bin/keepane`，每次升级都会指向新版），不是 Cellar 里带版本号的文件。
 
 升级：装了新版 keepane，已经在跑的 server 不会被换掉。它还是旧程序，你的 session 都在它里面。
 
@@ -855,7 +855,7 @@ CI 在 Windows、Linux、macOS 上都跑这两步。平台相关的代码在 `sr
 
 ## 还没做的
 
-Linux 和 macOS 上暂时没有 `keepane startup`（登录时启动 server）、`keepane update`（只提示怎么升级，用 Homebrew 装的就提示 `brew upgrade keepane`）和带“跳到 pane”按钮的桌面通知。
+Linux 和 macOS 上暂时没有 `keepane update`（只提示怎么升级，用 Homebrew 装的就提示 `brew upgrade keepane`）和带“跳到 pane”按钮的桌面通知。
 
 与 tmux 相比，目前有这些差异：
 
