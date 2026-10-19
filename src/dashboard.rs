@@ -1857,10 +1857,12 @@ fn strip(s: &str) -> String {
 }
 
 /// A panel: a border with its title (and, on the right, `right`), `lines`
-/// inside, all in `r`. The focused panel's border is green.
+/// inside, all in `r`. The focused panel's border is green, the others the
+/// theme's faint ink (bright black): a colour of its own, where dim only
+/// halves the text's and fades into a light page.
 fn boxed(title: &str, right: &str, lines: Vec<String>, r: Rect, focused: bool) -> Vec<String> {
     let (w, inner) = (r.w, r.inner_w());
-    let border = if focused { "\x1b[1;32m" } else { "\x1b[2m" };
+    let border = if focused { "\x1b[1;32m" } else { "\x1b[90m" };
     // The right-hand text (the tabs) only where the title keeps some room.
     let right_w = width_of(right);
     let with_right = right_w > 0 && inner >= right_w + 12;
@@ -2090,6 +2092,18 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A panel's border: green when it has the keys, else bright black (a
+    /// colour the theme gives, not dim, which fades into a light page).
+    #[test]
+    fn a_panel_border_is_green_or_faint_ink() {
+        let r = Rect { x: 0, y: 0, w: 20, h: 4 };
+        let on = boxed("[1] Panes", "", vec!["a".into()], r, true);
+        let off = boxed("[1] Panes", "", vec!["a".into()], r, false);
+        assert!(on.iter().all(|l| l.starts_with("\x1b[1;32m")), "{on:?}");
+        assert!(off.iter().all(|l| l.starts_with("\x1b[90m")), "{off:?}");
+        assert!(!off.concat().contains("\x1b[2m"), "no dim: {off:?}");
+    }
 
     fn row(id: &str, session: &str, name: &str, mode: &str, idle: bool, inbox: usize) -> PaneRow {
         PaneRow {

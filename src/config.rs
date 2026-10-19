@@ -547,8 +547,8 @@ impl Default for Options {
             // Vitesse Dark's 16 (black, red, green, yellow, blue, magenta,
             // cyan, white, then the bright ones).
             pane_colours: [
-                0x393a34, 0xcb7676, 0x4d9375, 0xe6cc77, 0x6394bf, 0xd9739f, 0x5eaab5, 0xdbd7ca, 0x818181, 0xcb7676,
-                0x4d9375, 0xe6cc77, 0x6394bf, 0xd9739f, 0x5eaab5, 0xffffff,
+                0x393a34, 0xdc696c, 0x2b9870, 0xefca4b, 0x4f95cf, 0xec60a1, 0x38aebe, 0xdbd7ca, 0x818181, 0xdc696c,
+                0x2b9870, 0xefca4b, 0x4f95cf, 0xec60a1, 0x38aebe, 0xffffff,
             ]
             .map(|c: u32| Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8))
             .to_vec(),
@@ -1674,6 +1674,12 @@ mod tests {
                 assert!(ratio(c, pane) >= 4.5, "{theme}: {name} on the panes: {:.2}:1", ratio(c, pane));
                 assert!(ratio(c, bar) >= 4.5, "{theme}: {name} on the bar: {:.2}:1", ratio(c, bar));
             }
+            // The key hint rows (render.rs `HINT_BAR`): their text white,
+            // keys yellow and notes bright white, on black.
+            let p = &o.pane_colours;
+            for (name, c) in [("white", p[7]), ("yellow", p[3]), ("bright white", p[15])] {
+                assert!(ratio(c, p[0]) >= 4.5, "{theme}: {name} on black (a hint row): {:.2}:1", ratio(c, p[0]));
+            }
             let border = ratio(o.pane_border_fg, pane);
             assert!(border >= 3.0, "{theme}: the border: {border:.2}:1");
             assert!(ratio(o.pane_border_active_fg, pane) >= 3.0, "{theme}: the active border");
@@ -1723,7 +1729,7 @@ mod tests {
         o.set("theme", "tokyo-night").unwrap();
         assert_eq!((o.window_bg, o.pane_colours.len()), (Color::Default, 0));
         o.set("theme", "paper").unwrap();
-        assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x39, 0x3a, 0x34), Color::Rgb(0xfd, 0xfd, 0xfb)));
+        assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x33, 0x30, 0x2a), Color::Rgb(0xf0, 0xe7, 0xd2)));
         o.set("theme", "paper-dark").unwrap();
         for n in first.iter().map(String::as_str).chain(["theme"]) {
             assert_eq!(o.get(n), default.get(n), "{n} after tokyo-day, tokyo-night, paper and back");
@@ -1776,7 +1782,7 @@ mod tests {
     #[test]
     fn pane_colours_are_sixteen_or_none() {
         let mut o = Options::default();
-        assert!(o.get("pane-colours").unwrap().starts_with("#393a34 #cb7676 "), "paper-dark's");
+        assert!(o.get("pane-colours").unwrap().starts_with("#393a34 #dc696c "), "paper-dark's");
         let fifteen = vec!["red"; 15].join(" ");
         assert!(o.set("pane-colours", &fifteen).unwrap_err().contains("16"));
         let sixteen = format!("{fifteen},#112233");

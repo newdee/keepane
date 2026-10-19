@@ -4463,3 +4463,37 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 嵌套被拒时的提示 "sessions should be nested with care, unset KEEPANE to force" 不准：只清 `KEEPANE` 仍会被拒（默认 socket 下空值当 `default`；`-L` 下客户端只看 `KEEPANE_PANE`），要两个都清。已告诉用户，等用户决定改不改。
   - 网页端（输入框）不经过 `handle_key`，`passthrough` 对网页输入没有影响；网页全屏时抓整个键盘是另一个需求，待定。
 - 发版时 CI 的 macOS 跑出问题（0.40.0 第一次推送）：新 e2e 断言 `got: 02`，macOS 的 `od -An -tx1` 在前面补了 11 个空格（`got:           02`），断言不认。产品没错，是测试的边界遗漏，个性：仓里另 2 处 `od -An`（e2e.rs 的 alternate-screen 键和 `code=` 那条）早已用 `tr` 去空白，只这处漏了。改成 `od -An -tx1 | tr -d ' '`，断言 `got:02`（Windows 仍是 `got:2`）。复验：fmt、clippy（Windows、macOS 目标）0；该测试 Linux 0/10 失败、Windows 0/5 失败；macOS 由 CI 复验。
+
+## 143. paper 换成 sepia 纸色，两个 paper 主题颜色更鲜艳，`C-b w` / `C-b ?` / 菜单 / `C-b v` / `C-b t` 着色
+
+用户说 paper 太亮（"too light"），要"更像纸的颜色"，选了 sepia；又说 paper 和 paper-dark 要更多颜色，举例 `C-b v` / `w` / `t`。
+
+- 做法：
+  - paper：底色 `#fdfdfb` → `#f0e7d2`，状态栏 `#eceae4` → `#e3d8bf`，灰色墨水改成暖灰（正文 `#33302a`、soft `#5a5346`、muted `#635b4e`、线 `#8a8172`），朱砂 `#a53736`。
+  - 16 色：OKLCH 色度最多提高一半（不出 sRGB），黄色从橄榄转成赭黄（色相 -22°），然后只在需要时压暗，保证在窗格和状态栏上都 ≥ 4.5:1。paper-dark 的 6 个彩色色度提高约三分之一，亮度不变（原来就够对比度）。
+  - `C-b w` 结构图：方框按类型着色（根/机器 青、session 蓝、window 紫、pane 绿），名字用正文色，info 和连线用淡色（色 8），选中的框整块黄色；方块树视图 pane 块从灰改成绿，和结构图一致。
+  - 列表和菜单：行首 `(x) ` 键名黄色加粗；只有 `-` 的分隔行画成淡色 `─`；session 列表里 session 行蓝色加粗。
+  - 所有列表/菜单/`list-keys` 的底部提示条：整条黄底 → 安静底条（色 7 字、色 0 底，主题把它画成纸的边色），键名黄色加粗，右端标记（tag、filter）亮白加粗。
+  - `C-b ?` 前缀面板：每组标题各一色（蓝、紫、绿、青）。
+  - `C-b v` 仪表盘：不在焦点上的面板边框从 dim 改成色 8（dim 在浅色页面上会淡到看不见）。
+  - `C-b t` 时钟：没设 `clock-mode-colour` 且主题有自己的 16 色时，时用活动边框色、分用黄色、冒号淡色；设了 `clock-mode-colour` 或主题用终端自己的颜色时（tokyo-night 等，终端可能是白底）仍是单色。日历：月份名用"时"的颜色，星期名淡色，周末红色。
+  - paper.nvim（另一个仓库，本地提交 593436c，未推送）：浅色版换成同一套 sepia，`:terminal` 用新的 16 色；916 项检查全过。
+  - 没改：网站（docs/style.css）的浅色仍是 dfine.tech 的白色；README 里的截图还是旧颜色，发版前重拍。
+- 会不会引入新 bug：
+  - 改的是颜色，不碰布局：所有 chart/tree/list 的布局测试原样通过。
+  - 提示条的分组按两个空格切：唯一不合规的串 `+ - fold`（History）改成 `+/- fold`。
+  - 黄色只在主题自带 16 色时用于时钟的分钟，避免浅色终端上黄字看不清；提示条用"色 0 底、色 7 字"这一对，在任何终端调色板上都可读。
+  - 列表行首键名按字节切，`) ` 是 ASCII，切点一定在字符边界上（测试含 `(中) 名字`）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路（变异） | 19 个变异（各种颜色改回旧样、提示条键名不上色、计数被当成键、分隔行不画、session 不着色、时钟分/冒号同色、周末不红、星期名不淡、面板标题无色、仪表盘边框 dim、paper 底色改回白、黄色太浅等）18 个被抓到；**存活 1 个**：方块树 pane 块改回灰色没有测试。复查又发现 2 处规则没测试：时钟"无主题配色时单色"的判断写在渲染循环里无法测；chart 缩成一行/编号时括号着色 | **有问题** ×3：加方块树着色测试；时钟判断提成 `clock_ink()` 并测 3 种情况；chart 一行、编号两级加颜色断言。之后 21/21 变异被抓到（不计数） |
+| 2 | 边界与退化输入 + 文档一致性 | 9 种怪行（`(`、`()`、`() x`、`(x)`、`(中) 名字`、空行、单个 `-`、7 字符键、全角括号）× 7 种宽 × 4 种高 = 28 种尺寸 0 次 panic，只有 `(中) ` 被当成键；12 个月的日历逐格检查：周末全红、工作日 0 个误染。但 grep 发现 README、README.zh-CN 和 render.rs 两处注释仍写"方框用终端自己的颜色" | **有问题**：4 处文字改掉（不计数） |
+| 3 | 静态一致性 + 全量 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 全量 463 + 10 + 130 全过；旧说法 grep（"terminal's own colours"、"open box"、"highlight colour"、"black on yellow"、面板边框描述）0 处残留；man 新增 7 行最长 74 列 | 干净（1/3） |
+| 4 | 可复现性（Linux） | 新着色测试（render、仪表盘、clock_ink 共 41 个）连跑 20 次 0 失败；Linux 全量 450 + 130；fmt、clippy 0 | 干净（2/3） |
+| 5 | 用户路径（真实录屏） | paper、paper-dark、tokyo-night 三个主题实录 `C-b w`、菜单、`C-b ?`、仪表盘、时钟并渲染成图逐张看：paper picker 的帧数据里 session 蓝 `#035fa0` 6 处、window 紫 `#b50165` 8 处、选中赭黄 `#815501` 12 处、淡色 `#5e584d` 11 处；提示条第一组 `hjkl` 已上色；时钟时/分两色；tokyo-night 下提示条和方框都可读 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - README / 网站截图（含 `-light` 图和手机图）仍是旧颜色，发版前用 tools/make-demos.ps1、make-phone-shots.ps1 重拍。
+  - paper.nvim 的 593436c 未推送；它的截图 assets/paper.png 也是旧的白底。
+  - 网站浅色仍是 dfine.tech 的白色 `#fdfdfb`，没跟着换。

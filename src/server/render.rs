@@ -678,9 +678,8 @@ pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
     } else {
         "press any key".to_string()
     };
-    let hint_style = Style::colors(Color::Idx(0), Color::Idx(3));
-    g.fill(Rect { x: area.x, y: area.y + area.h - 1, w: area.w, h: 1 }, hint_style);
-    g.put_str(area.x, area.y + area.h - 1, &hint, hint_style, area.w);
+    g.fill(Rect { x: area.x, y: area.y + area.h - 1, w: area.w, h: 1 }, HINT_BAR);
+    g.put_str(area.x, area.y + area.h - 1, &hint, HINT_BAR, area.w);
 }
 
 /// The prefix's panel (`prefix-hint`): what the next key does, a column a
@@ -752,7 +751,9 @@ pub fn draw_key_hint(
     if !footer.is_empty() {
         g.put_str(x0 + 2, y1, &format!(" {footer} "), border, bw.saturating_sub(4));
     }
-    let head = Style { bold: true, ..plain };
+    // Each group's name in a colour of its own, in the tree's order (blue,
+    // purple, green, cyan), so the columns read apart.
+    let heads = [Color::Idx(4), Color::Idx(5), Color::Idx(2), Color::Idx(6)];
     let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) };
     let bottom = y1; // rows from here on are the border's
     let mut y = y0 + 1;
@@ -764,6 +765,7 @@ pub fn draw_key_hint(
             let (name, entries) = &groups[i];
             let limit = |row: u16| row < bottom;
             if limit(y) {
+                let head = Style { bold: true, ..Style::colors(heads[i % heads.len()], Color::Default) };
                 g.put_str(x, y, name, head, cw);
             }
             for (n, e) in entries.iter().enumerate() {
@@ -946,23 +948,46 @@ pub fn draw_pane_number(g: &mut Grid, rect: Rect, number: usize, colour: Color, 
 /// (the bars need theirs, with their names and figures under them).
 pub const ANIMATION_KEEPS: u16 = 10;
 
+/// The clock's colours: the hours (and AM / PM, today in the calendar, the
+/// time as text when small), the minutes, and the colon between them. One
+/// colour (`clock-mode-colour`) is all three.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ClockInk {
+    pub hours: Color,
+    pub minutes: Color,
+    pub colon: Color,
+}
+
+impl From<Color> for ClockInk {
+    fn from(c: Color) -> Self {
+        ClockInk { hours: c, minutes: c, colon: c }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_clock(
     g: &mut Grid,
     rect: Rect,
     now: chrono::DateTime<chrono::Local>,
     hours: u8,
-    colour: Color,
+    ink: impl Into<ClockInk>,
     lines: &[(String, Option<Color>)],
     calendar: bool,
     below: bool,
 ) -> Option<Rect> {
+    let ink: ClockInk = ink.into();
     let (time, ampm) = if hours == 12 {
         (now.format("%-I:%M").to_string(), now.format("%p").to_string())
     } else {
         (now.format("%H:%M").to_string(), String::new())
     };
-    let style = Style::colors(colour, Color::Default);
+    let style = Style::colors(ink.hours, Color::Default);
+    let colon = time.find(':').unwrap_or(time.len());
+    let digit = |i: usize| match i.cmp(&colon) {
+        std::cmp::Ordering::Less => style,
+        std::cmp::Ordering::Equal => Style::colors(ink.colon, Color::Default),
+        std::cmp::Ordering::Greater => Style::colors(ink.minutes, Color::Default),
+    };
     g.fill(rect, Style::default());
     if rect.w == 0 || rect.h == 0 {
         return None;
@@ -992,7 +1017,7 @@ pub fn draw_clock(
     }
     let free = rect.h - total;
     let y0 = rect.y + if below { free / 3 } else { free / 2 };
-    draw_big_text(g, Rect { x: rect.x, y: y0, w: rect.w, h: 5 }, &time, style);
+    draw_big_text_with(g, Rect { x: rect.x, y: y0, w: rect.w, h: 5 }, &time, digit);
     let x_end = rect.x + (rect.w - big_w) / 2 + big_w;
     if !ampm.is_empty() && x_end + 2 <= rect.x + rect.w {
         g.put_str(x_end, y0 + 4, &ampm, style, 2);
@@ -1004,9 +1029,21 @@ pub fn draw_clock(
         g.put_str(x, y0 + 6 + i as u16, text, line_style, rect.x + rect.w - x);
     }
     if let Some((rows, (ty, tx))) = &month {
+        // The month's name in the hours' colour, the days' names faint, the
+        // weekend (the last two columns, from 15) red.
         let x = rect.x + (rect.w - 20) / 2;
+        let weekend = Style::colors(Color::Idx(1), Color::Default);
         for (i, r) in rows.iter().enumerate() {
-            g.put_str(x, y0 + month_at + i as u16, r, Style::default(), 20);
+            let y = y0 + month_at + i as u16;
+            let (head, end) = match i {
+                0 => (Style { bold: true, ..style }, None),
+                1 => (Style::colors(Color::Idx(8), Color::Default), Some(weekend)),
+                _ => (Style::default(), Some(weekend)),
+            };
+            g.put_str(x, y, r, head, 20);
+            if let (Some(end), Some(tail)) = (end, r.get(15..)) {
+                g.put_str(x + 15, y, tail, end, 5);
+            }
         }
         let today = Style { inverse: true, ..style };
         let day = &rows[*ty][*tx..*tx + 2];
@@ -1019,6 +1056,12 @@ pub fn draw_clock(
 /// Draw digits and `:` as 3x5 blocks centred in `rect`; false when there is
 /// no room. Used by `display-panes` and `clock-mode`.
 pub fn draw_big_text(g: &mut Grid, rect: Rect, text: &str, style: Style) -> bool {
+    draw_big_text_with(g, rect, text, |_| style)
+}
+
+/// `draw_big_text` with each character in a style of its own, by its place
+/// in `text`.
+fn draw_big_text_with(g: &mut Grid, rect: Rect, text: &str, style_of: impl Fn(usize) -> Style) -> bool {
     const DIGITS: [[u8; 5]; 10] = [
         [0b111, 0b101, 0b101, 0b101, 0b111], // 0
         [0b010, 0b110, 0b010, 0b010, 0b111], // 1
@@ -1050,7 +1093,7 @@ pub fn draw_big_text(g: &mut Grid, rect: Rect, text: &str, style: Style) -> bool
                 if bits & (1 << (2 - col)) != 0 {
                     // A solid block rather than a coloured space, so it shows
                     // whatever the pane's background is.
-                    g.set(x0 + i as u16 * digit_w + col, y0 + row as u16, Cell::new("█", false, style));
+                    g.set(x0 + i as u16 * digit_w + col, y0 + row as u16, Cell::new("█", false, style_of(i)));
                 }
             }
         }
@@ -1143,20 +1186,54 @@ pub fn draw_notice(
 }
 
 pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize, actions: &str, status: &str) {
+    draw_chooser_tinted(g, area, lines, &[], sel, top, actions, status);
+}
+
+/// `draw_chooser` with line `i` in colour `tints[i]` when it has one (a
+/// session in the session list). Either way a line's leading key, `(x)`,
+/// is yellow and bold, and a line of only `-` is drawn as a faint rule.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_chooser_tinted(
+    g: &mut Grid,
+    area: Rect,
+    lines: &[String],
+    tints: &[Option<Color>],
+    sel: usize,
+    top: usize,
+    actions: &str,
+    status: &str,
+) {
     if area.h == 0 || area.w == 0 {
         return;
     }
     let style = Style::colors(Color::Default, Color::Default);
     let hi = Style::colors(Color::Idx(0), Color::Idx(3));
+    let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) };
+    let rule = Style::colors(Color::Idx(8), Color::Default);
     g.fill(area, style);
     let body_h = area.h.saturating_sub(1) as usize;
     for (row, (i, line)) in lines.iter().enumerate().skip(top).take(body_h).enumerate() {
         let y = area.y + row as u16;
-        let st = if i == sel { hi } else { style };
         if i == sel {
             g.fill(Rect { x: area.x, y, w: area.w, h: 1 }, hi);
+            g.put_str(area.x, y, line, hi, area.w);
+            continue;
         }
-        g.put_str(area.x, y, line, st, area.w);
+        if !line.is_empty() && line.chars().all(|c| c == '-') {
+            g.put_str(area.x, y, &"─".repeat(line.chars().count()), rule, area.w);
+            continue;
+        }
+        let st = match tints.get(i).copied().flatten() {
+            Some(c) => Style { bold: true, ..Style::colors(c, Color::Default) },
+            None => style,
+        };
+        // `(x) ` first: the key that picks the line.
+        let lead = line
+            .strip_prefix('(')
+            .and_then(|r| r.find(") ").filter(|&n| (1..=6).contains(&n)).map(|n| n + 3))
+            .unwrap_or(0);
+        let used = g.put_str(area.x, y, &line[..lead], key, area.w);
+        g.put_str(area.x + used, y, &line[lead..], st, area.w - used);
     }
     draw_chooser_footer(g, area, lines.len(), sel, "j/k move  g/G top/bottom", actions, status);
 }
@@ -1190,7 +1267,8 @@ pub fn tree_leads(depths: &[usize]) -> Vec<String> {
 
 /// The session tree as blocks: each line its tree lines, then a block in
 /// its level's colour (the root cyan, a session blue, a window purple, a
-/// pane grey; the selected one yellow) with its number and what it is.
+/// pane green, as in the chart; the selected one yellow) with its number
+/// and what it is.
 /// `rows` are (tree lines, block text, depth).
 pub fn draw_tree(
     g: &mut Grid,
@@ -1207,13 +1285,8 @@ pub fn draw_tree(
     g.fill(area, Style::colors(Color::Default, Color::Default));
     let line = Style::colors(Color::Idx(8), Color::Default);
     let block = |depth: usize, selected: bool| {
-        let (fg, bg) = match (selected, depth) {
-            (true, _) => (Color::Idx(0), Color::Idx(3)),
-            (_, 0) => (Color::Idx(0), Color::Idx(6)),
-            (_, 1) => (Color::Idx(0), Color::Idx(4)),
-            (_, 2) => (Color::Idx(0), Color::Idx(5)),
-            _ => (Color::Idx(15), Color::Idx(8)),
-        };
+        let bg = if selected { Color::Idx(3) } else { chart_colour(depth) };
+        let fg = Color::Idx(0);
         Style { bold: selected || depth < 2, ..Style::colors(fg, bg) }
     };
     let body_h = area.h.saturating_sub(1) as usize;
@@ -1236,6 +1309,27 @@ pub struct ChartNode {
     pub title: String,
     pub info: String,
     pub active: bool,
+}
+
+/// A level's colour in the session tree, by depth (`draw_tree`): the root
+/// cyan, a session blue, a window purple, a pane green.
+fn chart_colour(depth: usize) -> Color {
+    match depth {
+        0 => Color::Idx(6),
+        1 => Color::Idx(4),
+        2 => Color::Idx(5),
+        _ => Color::Idx(2),
+    }
+}
+
+/// The same colours by what a chart block is (a machine, the root: cyan).
+fn kind_colour(kind: &str) -> Color {
+    match kind {
+        "session" => Color::Idx(4),
+        "window" => Color::Idx(5),
+        "pane" => Color::Idx(2),
+        _ => Color::Idx(6),
+    }
 }
 
 /// Columns between two blocks of a chart row.
@@ -1420,9 +1514,10 @@ fn chart_bar(g: &mut Grid, area: Rect, y: u16, parent: i32, mids: &[i32], style:
 /// The session tree as a chart (`choose-tree-style chart`): the `keepane`
 /// root on the first row; then the machines when this one is paired; the
 /// sessions; the windows; the panes. Each row is spread across and joined
-/// to its parents by lines. Every block is an open box in the terminal's
-/// own colours with what it is in its top border, the selected one in the
-/// highlight colour; the names on the selected branch are bold.
+/// to its parents by lines (faint). Every block is an open box in its
+/// kind's colour (`kind_colour`) with what it is in its top border, its
+/// name in the text's colour and its info faint, the selected one all in
+/// the highlight colour; the names on the selected branch are bold.
 ///
 /// `all` off, only the selected branch is open: the sessions of the
 /// machine on it, the windows of its session, that window's panes; a row
@@ -1436,7 +1531,7 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, all
         return;
     }
     g.fill(area, Style::colors(Color::Default, Color::Default));
-    let line = Style::colors(Color::Default, Color::Default);
+    let line = Style::colors(Color::Idx(8), Color::Default);
     let depths: Vec<usize> = nodes.iter().map(|n| n.depth).collect();
     let active: Vec<bool> = nodes.iter().map(|n| n.active).collect();
     let path = chart_path(&depths, &active, sel);
@@ -1588,12 +1683,32 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, all
         }
     }
     let mid = |i: usize| xs[i] + chart_join_at(&nodes[i], ws[i], level) as i32;
-    let style_of = |i: usize, name: bool| {
+    // A block's box in its kind's colour, its name in the text's (bold on the
+    // selected branch), its info faint; the selected block all yellow.
+    let edge_of = |i: usize| {
         if i == sel {
             Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) }
         } else {
-            Style { bold: name && path.contains(&i), ..Style::colors(Color::Default, Color::Default) }
+            Style::colors(kind_colour(nodes[i].kind), Color::Default)
         }
+    };
+    let text_of = |i: usize, name: bool| {
+        if i == sel {
+            edge_of(i)
+        } else if name {
+            Style { bold: path.contains(&i), ..Style::colors(Color::Default, Color::Default) }
+        } else {
+            Style::colors(Color::Idx(8), Color::Default)
+        }
+    };
+    // `s` from column `x` of the chart, cut at both edges.
+    let put = |g: &mut Grid, x: i32, y: usize, s: &str, style: Style| {
+        let w = s.width() as i32;
+        if x >= aw || x + w <= 0 {
+            return;
+        }
+        let (sx, s) = if x < 0 { (0, skip_cols(s, (-x) as usize)) } else { (x, s.to_string()) };
+        g.put_str(area.x + sx as u16, y as u16, &s, style, (aw - sx) as u16);
     };
     // Up and down in the middle too, when it fits; else from the top.
     let (top, bottom) = (area.y as usize, area.y as usize + body_h);
@@ -1633,13 +1748,35 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, all
             } else {
                 chart_lines(&nodes[i], w, level, r == 0, joined && r > 0, down)
             };
+            let last = lines.len().saturating_sub(1);
             for (dy, s) in lines.iter().enumerate() {
                 let yy = y + dy;
                 if yy >= bottom {
                     break;
                 }
-                let (sx, s) = if x < 0 { (0, skip_cols(s, (-x) as usize)) } else { (x, s.clone()) };
-                g.put_str(area.x + sx as u16, yy as u16, &s, style_of(i, dy == 1 || height == 1), (aw - sx) as u16);
+                let text = text_of(i, dy == 1 || height == 1);
+                // How many characters at each end are the block's edge: a
+                // box's `│ ` and ` │`, a line's `[` and `]`; its top and
+                // bottom borders are all edge; the root's one line none.
+                let ends = match level {
+                    _ if r == 0 && height == 1 => 0,
+                    ChartLevel::Box(_) if dy == 0 || dy == last => usize::MAX,
+                    ChartLevel::Box(_) if w >= 4 => 2,
+                    _ if w >= 2 && !matches!(level, ChartLevel::Box(_)) => 1,
+                    _ => 0,
+                };
+                let cs: Vec<char> = s.chars().collect();
+                if ends == usize::MAX || ends * 2 >= cs.len() {
+                    put(g, x, yy, s, if ends == 0 { text } else { edge_of(i) });
+                    continue;
+                }
+                let (a, rest) = cs.split_at(ends);
+                let (mid, b) = rest.split_at(rest.len() - ends);
+                let (a, mid, b): (String, String, String) =
+                    (a.iter().collect(), mid.iter().collect(), b.iter().collect());
+                put(g, x, yy, &a, edge_of(i));
+                put(g, x + a.width() as i32, yy, &mid, text);
+                put(g, x + (a.width() + mid.width()) as i32, yy, &b, edge_of(i));
             }
         }
         // More of the row than the screen shows: a mark at that end, on
@@ -1659,18 +1796,48 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, all
 /// note (tags, the filter) at the right end.
 fn draw_chooser_footer(g: &mut Grid, area: Rect, count: usize, sel: usize, moves: &str, actions: &str, status: &str) {
     let hint = format!("[{}/{count}] {moves}  {actions}  q quit", if count == 0 { 0 } else { sel + 1 });
-    let hint_style = Style::colors(Color::Idx(0), Color::Idx(3));
     let y = area.y + area.h - 1;
-    g.fill(Rect { x: area.x, y, w: area.w, h: 1 }, hint_style);
-    g.put_str(area.x, y, &hint, hint_style, area.w);
+    draw_hint_bar(g, Rect { x: area.x, y, w: area.w, h: 1 }, &hint);
     if !status.is_empty() {
         let w = (status.width() as u16).min(area.w);
         let x = area.x + area.w - w;
         // A space before it so it never runs into a clipped hint.
         if x > area.x {
-            g.put_str(x - 1, y, " ", hint_style, 1);
+            g.put_str(x - 1, y, " ", HINT_BAR, 1);
         }
-        g.put_str(x, y, status, hint_style, w);
+        g.put_str(x, y, status, Style { bold: true, ..Style::colors(Color::Idx(15), Color::Idx(0)) }, w);
+    }
+}
+
+/// A hint row's own colours: white on black, which the theme's 16 make its
+/// quiet bar (the light paper's darker edge, the dark paper's lighter one),
+/// and which read on any terminal's own.
+const HINT_BAR: Style = Style::colors(Color::Idx(7), Color::Idx(0));
+
+/// A row of key hints across `r` (its first row): groups apart by two
+/// spaces, each a key then what it does (`x kill`); the keys yellow and
+/// bold, the rest in the bar's text. A `[…] ` first (where the cursor is)
+/// is text too.
+fn draw_hint_bar(g: &mut Grid, r: Rect, hint: &str) {
+    let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Idx(0)) };
+    g.fill(Rect { h: 1, ..r }, HINT_BAR);
+    let mut x = 0u16;
+    // `[2/8] ` first: text, then the groups.
+    let (count, hint) = match hint.strip_prefix('[').and_then(|h| h.split_once("] ")) {
+        Some((n, rest)) => (format!("[{n}] "), rest),
+        None => (String::new(), hint),
+    };
+    x += g.put_str(r.x, r.y, &count, HINT_BAR, r.w);
+    for (n, group) in hint.split("  ").enumerate() {
+        let lead = if n == 0 { "" } else { "  " };
+        let (k, rest) = group.split_once(' ').unwrap_or((group, ""));
+        let gap = if k.is_empty() || rest.is_empty() { "" } else { " " };
+        for (s, st) in [(lead, HINT_BAR), (k, key), (gap, HINT_BAR), (rest, HINT_BAR)] {
+            if x >= r.w {
+                return;
+            }
+            x += g.put_str(r.x + x, r.y, s, st, r.w - x);
+        }
     }
 }
 
@@ -1954,7 +2121,9 @@ mod tests {
         assert_eq!(row(&g, 0).trim_end(), "line0");
         assert_eq!(row(&g, 1).trim_end(), "line1");
         assert_eq!(row(&g, 2).trim_end(), "[2 of 5 lines] press any key");
-        assert_eq!(g.get(0, 2).style.bg, Color::Idx(3));
+        // The hint on the quiet bar: white on black, which a theme makes its own.
+        assert_eq!((g.get(0, 2).style.fg, g.get(0, 2).style.bg), (Color::Idx(7), Color::Idx(0)));
+        assert_eq!(g.get(39, 2).style.bg, Color::Idx(0), "across the whole row");
         // Row 3 is outside the area and untouched.
         assert_eq!(row(&g, 3).trim_end(), "");
         draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines[..1]);
@@ -1987,6 +2156,11 @@ mod tests {
         let left = r[6].find('│').unwrap();
         assert_eq!(left, 80 - r[6].trim_start().chars().count() - left, "centred");
         assert_eq!(g.get(left as u16 + 2, 7).style.fg, Color::Idx(3), "the keys stand out");
+        // Each group's name in a colour of its own: blue, then purple.
+        let win = r[6].find("Windows").unwrap() as u16;
+        let names = (g.get(left as u16 + 2, 6).style, g.get(win, 6).style);
+        assert_eq!((names.0.fg, names.1.fg), (Color::Idx(4), Color::Idx(5)), "{names:?}");
+        assert!(names.0.bold && names.1.bold);
         // Narrow: the second group below the first.
         let mut g = Grid::new(30, 12);
         draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 30, h: 12 }, "C-b", &groups, "? every key");
@@ -2577,6 +2751,28 @@ mod tests {
         assert_eq!(tree_leads(&[0, 3]).len(), 2);
     }
 
+    /// The tree view's blocks: each level its colour as in the chart (the
+    /// root cyan, a session blue, a window purple, a pane green), the
+    /// selected one yellow, the tree lines faint.
+    #[test]
+    fn the_tree_blocks_wear_their_levels_colours() {
+        let rows: Vec<(String, String, usize)> = tree_leads(&[0, 1, 2, 3, 3])
+            .into_iter()
+            .zip(["keepane", "1 dev", "2 edit", "3 pwsh", "4 pwsh"])
+            .zip([0, 1, 2, 3, 3])
+            .map(|((lead, text), d)| (lead, text.to_string(), d))
+            .collect();
+        let mut g = Grid::new(30, 6);
+        draw_tree(&mut g, Rect { x: 0, y: 0, w: 30, h: 6 }, &rows, 4, 0, "", "");
+        let block = |y: u16| {
+            let x = (0..30).find(|&x| g.get(x, y).style.bg != Color::Default).expect("a block");
+            g.get(x, y).style.bg
+        };
+        let want = [Color::Idx(6), Color::Idx(4), Color::Idx(5), Color::Idx(2), Color::Idx(3)];
+        assert_eq!((0..5).map(block).collect::<Vec<_>>(), want);
+        assert_eq!(g.get(0, 1).style.fg, Color::Idx(8), "the tree lines faint");
+    }
+
     /// A theme's colours: the palette's first 16 everywhere, the default
     /// colours everywhere but the status line, nothing at all when the theme
     /// leaves the colours to the terminal.
@@ -2705,8 +2901,8 @@ mod tests {
 
     /// Four rows of boxes: the root centred, the sessions, the session's
     /// windows, the window's panes, joined by lines; each box says what it
-    /// is in its top border; all in the terminal's colours but the selected
-    /// one, in the highlight colour; nothing filled.
+    /// is in its top border; each in its kind's colour, the selected one in
+    /// the highlight colour; nothing filled.
     #[test]
     fn the_chart_draws_its_rows() {
         let nodes = chart_nodes();
@@ -2735,7 +2931,7 @@ mod tests {
         let col = |y: usize, c: char| t[y].chars().position(|x| x == c).unwrap();
         assert_eq!(t[s - 1].chars().nth(col(bar, '┌')), Some('┴'), "{all}");
         // Colours: nothing filled; the selected pane yellow and bold; the
-        // others in the terminal's own colours, the branch's names bold.
+        // others' names in the text's colour, the branch's bold.
         let cell = |y: usize, s: &str| g.get(t[y][..t[y].find(s).unwrap()].width() as u16, y as u16).clone();
         assert!((0..24).all(|y| (0..80).all(|x| g.get(x, y).style.bg == Color::Default || y == 23)), "nothing filled");
         let sel = cell(p, "4  1:pwsh*");
@@ -2744,8 +2940,175 @@ mod tests {
         assert!(dev.style.fg == Color::Default && dev.style.bold, "on the branch: bold");
         let ops = cell(s, "7  ops");
         assert!(ops.style.fg == Color::Default && !ops.style.bold, "off it: plain");
+        // Each box in its kind's colour (its border, the `│` beside its
+        // name), its info faint, the joins faint; the selected box all yellow.
+        let at = |y: usize, s: &str| t[y][..t[y].find(s).unwrap()].width() as u16;
+        let fg = |x: u16, y: usize| g.get(x, y as u16).style.fg;
+        assert_eq!(fg(at(s - 1, "┌ session "), s - 1), Color::Idx(4), "a session's border blue");
+        assert_eq!(fg(at(s, "1  dev") - 2, s), Color::Idx(4), "and its side");
+        assert_eq!(fg(at(w - 1, "┌ window "), w - 1), Color::Idx(5), "a window's purple");
+        assert_eq!(fg(at(p - 1, "┌ pane "), p - 1), Color::Idx(2), "a pane's green");
+        assert_eq!(fg(at(r0 - 1, "┌"), r0 - 1), Color::Idx(6), "the root's cyan");
+        assert_eq!(fg(at(s + 1, "2 windows"), s + 1), Color::Idx(8), "the info faint");
+        assert_eq!(fg(col(bar, '┌') as u16, bar), Color::Idx(8), "the joins faint");
+        let sel_box = t[p - 1].rfind("┌ pane ").map(|b| t[p - 1][..b].width() as u16).unwrap();
+        assert!(t[p - 1][..].matches("┌ pane ").count() == 2, "{all}");
+        assert_eq!(fg(sel_box, p - 1), Color::Idx(3), "the selected box's border yellow");
         // The footer says where the cursor is and how to move.
         assert!(t[23].starts_with("[5/10] hjkl move  Enter go"), "{:?}", t[23]);
+    }
+
+    /// A key hint row: on the quiet bar (white on black, the theme's own),
+    /// each group's key yellow and bold, the rest and the count in the
+    /// bar's text; a note at the right end bold.
+    #[test]
+    fn a_hint_bar_marks_its_keys() {
+        let mut g = Grid::new(60, 3);
+        draw_chooser(&mut g, Rect { x: 0, y: 0, w: 60, h: 3 }, &["a".into(), "b".into()], 1, 0, "x kill", "[1 tagged]");
+        let t: String = (0..60).map(|x| g.get(x, 2).text()).collect();
+        assert!(t.starts_with("[2/2] j/k move  g/G top/bottom  x kill  q quit"), "{t:?}");
+        let style = |s: &str| g.get(t[..t.find(s).unwrap()].width() as u16, 2).style;
+        for k in ["j/k", "g/G", "x kill", "q quit"] {
+            let st = style(k);
+            assert!(st.fg == Color::Idx(3) && st.bold && st.bg == Color::Idx(0), "{k}: {st:?}");
+        }
+        // What a key does, and the count: the bar's text.
+        for word in ["[2/2]", "move", "top/bottom", "kill", "quit"] {
+            let st = style(word);
+            assert!(st.fg == Color::Idx(7) && !st.bold && st.bg == Color::Idx(0), "{word}: {st:?}");
+        }
+        let note = style("[1 tagged]");
+        assert!(note.fg == Color::Idx(15) && note.bold, "{note:?}");
+        assert_eq!(g.get(50, 2).style.bg, Color::Idx(0), "the bar across the row");
+    }
+
+    /// A list line's leading key `(x)` yellow and bold, a line of `-` a
+    /// faint rule, a tinted line (a session) in its colour; the selected
+    /// line black on yellow whatever it is.
+    #[test]
+    fn a_list_marks_keys_rules_and_sessions() {
+        let lines: Vec<String> = ["(h) Split", "----", "(0) - dev: 1 windows", "plain", "(toolongkey) x"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let tints = [None, None, Some(Color::Idx(4)), None, None];
+        let mut g = Grid::new(30, 6);
+        draw_chooser_tinted(&mut g, Rect { x: 0, y: 0, w: 30, h: 6 }, &lines, &tints, 3, 0, "", "");
+        let row = |y: u16| (0..30).map(|x| g.get(x, y).text()).collect::<String>();
+        let key = g.get(0, 0).style;
+        assert!(key.fg == Color::Idx(3) && key.bold, "(h): {key:?}");
+        assert_eq!(g.get(4, 0).style.fg, Color::Default, "what it does: plain");
+        assert_eq!((row(1).trim_end(), g.get(0, 1).style.fg), ("────", Color::Idx(8)), "a faint rule");
+        assert_eq!(g.get(0, 2).style.fg, Color::Idx(3), "a session's key yellow");
+        let dev = g.get(4, 2).style;
+        assert!(dev.fg == Color::Idx(4) && dev.bold, "the session blue: {dev:?}");
+        assert_eq!((g.get(0, 3).style.fg, g.get(0, 3).style.bg), (Color::Idx(0), Color::Idx(3)), "selected");
+        assert_eq!(g.get(0, 4).style.fg, Color::Default, "not a key: too long");
+    }
+
+    /// Odd lines and sizes: no panic, and the key mark only on a real
+    /// `(x) ` lead (wide characters inside counted by bytes, cut on a
+    /// character).
+    #[test]
+    fn list_keys_and_hint_bars_hold_at_the_edges() {
+        let lines: Vec<String> = ["(", "()", "() x", "(x)", "(中) 名字", "", "-", "(1234567) x", "（全角） x"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut drawn = 0;
+        for w in [0, 1, 2, 3, 5, 8, 40] {
+            for h in [0, 1, 2, 12] {
+                let mut g = Grid::new(w.max(1), h.max(1));
+                draw_chooser_tinted(
+                    &mut g,
+                    Rect { x: 0, y: 0, w, h },
+                    &lines,
+                    &[Some(Color::Idx(4))],
+                    99,
+                    0,
+                    "x kill",
+                    "[f]",
+                );
+                draw_hint_bar(&mut g, Rect { x: 0, y: 0, w, h: 1 }, "");
+                draw_hint_bar(&mut g, Rect { x: 0, y: 0, w, h: 1 }, "[1/2]");
+                draw_hint_bar(&mut g, Rect { x: 0, y: 0, w, h: 1 }, "[1/2] ");
+                draw_hint_bar(&mut g, Rect { x: 0, y: 0, w, h: 1 }, "  a  b ");
+                drawn += 1;
+            }
+        }
+        assert_eq!(drawn, 28);
+        let mut g = Grid::new(40, 12);
+        draw_chooser_tinted(&mut g, Rect { x: 0, y: 0, w: 40, h: 12 }, &lines, &[], 99, 0, "", "");
+        let keyed: Vec<usize> = (0..lines.len()).filter(|&y| g.get(0, y as u16).style.bold).collect();
+        assert_eq!(keyed, [4], "only `(中) ` is a key: {keyed:?}");
+        assert_eq!(g.get(3, 4).style.fg, Color::Idx(3), "past the wide character, still the key");
+        assert_eq!(g.get(5, 4).style.fg, Color::Default, "the name after it plain");
+        assert_eq!(g.get(0, 6).text(), "─", "one dash: a rule");
+    }
+
+    /// Every month's weekend red, whatever day it starts on: the last two
+    /// columns of each week, never a weekday.
+    #[test]
+    fn every_months_weekend_is_red() {
+        use chrono::TimeZone;
+        for month in 1..=12 {
+            let now = chrono::Local.with_ymd_and_hms(2026, month, 1, 9, 5, 0).unwrap();
+            let mut g = Grid::new(30, 17);
+            draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 17 }, now, 24, Color::Idx(4), &[], true, false);
+            let text = |y: u16| (0..30).map(|x| g.get(x, y).text()).collect::<String>();
+            let head = (0..17).find(|&y| text(y).contains("Mo Tu")).expect("the calendar");
+            let x0 = text(head).find("Mo").unwrap() as u16;
+            for y in head + 1..17 {
+                for x in x0..x0 + 20 {
+                    let t = g.get(x, y).text();
+                    if t.trim().is_empty() || g.get(x, y).style.inverse {
+                        continue;
+                    }
+                    let weekend = x - x0 >= 15;
+                    let red = g.get(x, y).style.fg == Color::Idx(1);
+                    assert_eq!(red, weekend, "month {month}, row {y}, column {}: {t:?}", x - x0);
+                }
+            }
+        }
+    }
+
+    /// The clock: the hours, the colon and the minutes each in their ink;
+    /// one colour (`clock-mode-colour`) is all of it. The month's name in
+    /// the hours' colour, the days' names faint, the weekend red.
+    #[test]
+    fn the_clock_wears_its_inks() {
+        use chrono::TimeZone;
+        let now = chrono::Local.with_ymd_and_hms(2026, 10, 16, 14, 25, 0).unwrap();
+        let ink = ClockInk { hours: Color::Idx(1), minutes: Color::Idx(3), colon: Color::Idx(8) };
+        let mut g = Grid::new(30, 16);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 16 }, now, 24, ink, &[], true, false);
+        // 14:25 is 5 characters of 4 columns, centred: from column 5.
+        let want = [Color::Idx(1), Color::Idx(1), Color::Idx(8), Color::Idx(3), Color::Idx(3)];
+        let mut seen = [0; 5];
+        for (x, y) in (0..g.rows).flat_map(|y| (0..g.cols).map(move |x| (x, y))) {
+            if g.get(x, y).text() == "█" {
+                let i = usize::from((x - 5) / 4);
+                assert_eq!(g.get(x, y).style.fg, want[i], "character {i} at {x},{y}");
+                seen[i] += 1;
+            }
+        }
+        assert!(seen.iter().all(|&n| n > 0), "every character drawn: {seen:?}");
+        let text = |y: u16| (0..30).map(|x| g.get(x, y).text()).collect::<String>();
+        let head = (0..16).find(|&y| text(y).contains("Mo Tu")).expect("the calendar");
+        let x = text(head).find("Mo").unwrap() as u16;
+        let name = text(head - 1).find("October").unwrap() as u16;
+        assert_eq!(g.get(name, head - 1).style.fg, Color::Idx(1), "the month in the hours' colour");
+        assert_eq!(g.get(x, head).style.fg, Color::Idx(8), "the days' names faint");
+        assert_eq!(g.get(x + 15, head).style.fg, Color::Idx(1), "Sa red");
+        assert_eq!(g.get(x + 18, head + 1).style.fg, Color::Idx(1), "a Sunday red");
+        assert_eq!(g.get(x, head + 1).style.fg, Color::Default, "a Monday plain");
+        // One colour: all of it.
+        let mut g = Grid::new(30, 8);
+        draw_clock(&mut g, Rect { x: 0, y: 0, w: 30, h: 8 }, now, 24, Color::Idx(4), &[], false, false);
+        assert!(
+            (0..8).all(|y| (0..30).all(|x| g.get(x, y).text() != "█" || g.get(x, y).style.fg == Color::Idx(4))),
+            "one colour"
+        );
     }
     /// `a`: every node at once, each parent over its own; boxes when they
     /// fit, else one line each, else numbers, scrolled to the selection.
@@ -2813,18 +3176,34 @@ mod tests {
         eprintln!("{all}");
         assert_eq!(all.matches("┌ pane").count(), 4, "still boxes: {all}");
         assert!(t.iter().any(|r| r.contains("3  0:") && r.contains('…')), "{all}");
-        // Narrower: one line each, still joined.
-        let (t, _) = draw(56, 24, 4);
+        // Narrower: one line each, still joined; the brackets in the kind's
+        // colour, the name in the text's.
+        let (t, g) = draw(56, 24, 4);
         let all = t.join("\n");
         eprintln!("{all}");
         assert!(!all.contains("┌ pane") && all.contains("[4  1:pwsh*]") && all.contains("[9  0:ping*]"), "{all}");
         assert!(all.contains('┴') || all.contains('┬') || all.contains('┌'), "joined: {all}");
+        let at = |t: &[String], s: &str| {
+            let y = t.iter().position(|r| r.contains(s)).unwrap();
+            (t[y][..t[y].find(s).unwrap()].width() as u16, y as u16)
+        };
+        let (x, y) = at(&t, "[9  0:ping*]");
+        assert_eq!((g.get(x, y).style.fg, g.get(x + 1, y).style.fg), (Color::Idx(2), Color::Default), "a pane's line");
+        assert_eq!(g.get(x + 11, y).style.fg, Color::Idx(2), "its closing bracket");
         // Narrower still: numbers; too narrow even so: scrolled, the
         // selection in view, ‹ › at the edges.
-        let (t, _) = draw(30, 24, 4);
+        let (t, g) = draw(30, 24, 4);
         let all = t.join("\n");
         eprintln!("{all}");
         assert!(all.contains("[4]") && all.contains("[9]") && !all.contains("pwsh"), "{all}");
+        let (x, y) = at(&t, "[7]");
+        assert_eq!(
+            (g.get(x, y).style.fg, g.get(x + 1, y).style.fg),
+            (Color::Idx(4), Color::Default),
+            "a session's number"
+        );
+        let (x, y) = at(&t, "[4]");
+        assert_eq!(g.get(x + 1, y).style.fg, Color::Idx(3), "the selected number yellow");
         let mut many =
             vec![ChartNode { kind: "", depth: 0, title: "keepane".into(), info: String::new(), active: false }];
         many.push(ChartNode { kind: "session", depth: 1, title: "1  s".into(), info: String::new(), active: false });

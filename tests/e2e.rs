@@ -3043,7 +3043,7 @@ async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
     let (code, _, err) = h.cli(&["set", "-g", "theme", "paper-dark"]).await;
     assert_eq!(code, 0, "{err}");
     c.wait_for("the dark paper", |s| bg_at(s) == Some(Color::Rgb(0x17, 0x17, 0x16))).await;
-    c.wait_for("Vitesse Dark's red", |s| red_cell(s) == Some(Color::Rgb(0xcb, 0x76, 0x76))).await;
+    c.wait_for("Paper Dark's red", |s| red_cell(s) == Some(Color::Rgb(0xdc, 0x69, 0x6c))).await;
     let (code, _, err) = h.cli(&["set", "-g", "theme", "tokyo-day"]).await;
     assert_eq!(code, 0, "{err}");
     c.wait_for("light panes", |s| bg_at(s) == Some(Color::Rgb(0xe1, 0xe2, 0xe7))).await;

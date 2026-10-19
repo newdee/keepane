@@ -43,8 +43,8 @@ if ($installed -notcontains $FontName) {
 # Paper Dark, as the recordings' keepane theme (themes/paper-dark.conf, the
 # default look) sets the panes.
 $palette = @(
-    "#393a34", "#cb7676", "#4d9375", "#e6cc77", "#6394bf", "#d9739f", "#5eaab5", "#dbd7ca",
-    "#818181", "#cb7676", "#4d9375", "#e6cc77", "#6394bf", "#d9739f", "#5eaab5", "#ffffff"
+    "#393a34", "#dc696c", "#2b9870", "#efca4b", "#4f95cf", "#ec60a1", "#38aebe", "#dbd7ca",
+    "#818181", "#dc696c", "#2b9870", "#efca4b", "#4f95cf", "#ec60a1", "#38aebe", "#ffffff"
 )
 $defaultFg = "#cecabe"
 $defaultBg = "#171716"
@@ -54,11 +54,11 @@ $titleFg = "#87837b"; $accentFg = "#dd625e"; $sideFg = "#cecabe"; $sideMuted = "
 if ($Light) {
     # Paper, as themes/paper.conf sets the panes.
     $palette = @(
-        "#eceae4", "#9e5252", "#1e754f", "#776723", "#296aa3", "#a13865", "#20727e", "#5d5b55",
-        "#6a6863", "#9e5252", "#1e754f", "#776723", "#296aa3", "#a13865", "#20727e", "#393a34"
+        "#e3d8bf", "#a6363d", "#046641", "#815501", "#035fa0", "#b50165", "#036470", "#5a5346",
+        "#5e584d", "#a6363d", "#046641", "#815501", "#035fa0", "#b50165", "#036470", "#33302a"
     )
-    $defaultFg = "#393a34"; $defaultBg = "#fdfdfb"; $chromeBg = "#eceae4"
-    $titleFg = "#6b6860"; $accentFg = "#b83e3c"; $sideFg = "#393a34"; $sideMuted = "#5d5b55"
+    $defaultFg = "#33302a"; $defaultBg = "#f0e7d2"; $chromeBg = "#e3d8bf"
+    $titleFg = "#635b4e"; $accentFg = "#a53736"; $sideFg = "#33302a"; $sideMuted = "#5a5346"
 }
 
 function To-Color([string]$spec, [string]$fallback) {

@@ -8817,6 +8817,7 @@ impl Server {
             let now = chrono::Local::now();
             let w = &self.sessions[spos].windows[self.sessions[spos].cur];
             let colour = self.opts.clock_mode_colour.unwrap_or(self.opts.pane_border_active_fg);
+            let ink = clock_ink(&self.opts);
             let palette = clockanim::Palette { colours: self.opts.pane_colours.clone(), bg: self.opts.window_bg };
             for (id, rect) in w.rects.iter().filter(|(id, _)| w.pane(*id).is_some_and(|p| p.clock)) {
                 let Some(p) = w.pane(*id) else { continue };
@@ -8837,7 +8838,7 @@ impl Server {
                     *rect,
                     now,
                     self.opts.clock_mode_style,
-                    colour,
+                    ink,
                     lines,
                     self.opts.clock_mode_info,
                     anim.is_some(),
@@ -8970,7 +8971,7 @@ impl Server {
                 ChooserKind::Tree { .. } => "x kill  D delete  f filter  v chart",
                 ChooserKind::Clients => "Enter detach  f filter",
                 ChooserKind::Buffers => "Enter paste  f filter",
-                ChooserKind::History { .. } => "Enter open  + - fold",
+                ChooserKind::History { .. } => "Enter open  +/- fold",
                 _ => "Enter select",
             };
             let mut status = Vec::new();
@@ -9016,7 +9017,25 @@ impl Server {
                     .collect();
                 render::draw_tree(&mut grid, area, &rows, ch.sel, ch.top, actions, &status.join(" "));
             } else {
-                render::draw_chooser(&mut grid, area, &ch.lines, ch.sel, ch.top, actions, &status.join(" "));
+                // The session list: each session's line blue, as in the tree.
+                let tints: Vec<Option<vt100::Color>> = ch
+                    .items
+                    .iter()
+                    .map(|i| {
+                        matches!(i, ChooserItem::Tree(_, None) | ChooserItem::Remote(_, _, None, _))
+                            .then_some(vt100::Color::Idx(4))
+                    })
+                    .collect();
+                render::draw_chooser_tinted(
+                    &mut grid,
+                    area,
+                    &ch.lines,
+                    &tints,
+                    ch.sel,
+                    ch.top,
+                    actions,
+                    &status.join(" "),
+                );
             }
             cursor = None;
         }
@@ -9830,6 +9849,22 @@ fn selected_text(p: &mut Pane) -> Result<String, String> {
     Ok(text)
 }
 
+/// The clock's inks: `clock-mode-colour` is the whole clock; else the hours
+/// in the active border's colour and, with a theme's own 16 colours (read
+/// on its page, so yellow is never drawn on a light terminal's white), the
+/// minutes yellow and the colon faint.
+fn clock_ink(opts: &Options) -> render::ClockInk {
+    match opts.clock_mode_colour {
+        Some(c) => render::ClockInk::from(c),
+        None if opts.pane_colours.len() == 16 => render::ClockInk {
+            hours: opts.pane_border_active_fg,
+            minutes: vt100::Color::Idx(3),
+            colon: vt100::Color::Idx(8),
+        },
+        None => render::ClockInk::from(opts.pane_border_active_fg),
+    }
+}
+
 /// Put a clock on `p`: a turn more (`cycle`'s next kind), and a kind picked
 /// at random for it, never the one it had before (`random`).
 fn clock_on(p: &mut Pane, seed: u64) {
@@ -10121,6 +10156,27 @@ mod tests {
         assert!(typing(&r(true, 0x41)) && typing(&r(true, 0x26)), "a letter, an arrow");
         assert!(!typing(&r(false, 0x0D)), "an Enter let go");
         assert!(!typing(&r(true, 0x10)) && !typing(&r(true, 0xA2)) && !typing(&r(true, 0x5B)), "a modifier alone");
+    }
+
+    #[test]
+    fn the_clock_takes_two_inks_only_on_a_themes_page() {
+        use vt100::Color;
+        let mut o = Options::default();
+        let ink = clock_ink(&o);
+        assert_eq!(
+            (ink.hours, ink.minutes, ink.colon),
+            (o.pane_border_active_fg, Color::Idx(3), Color::Idx(8)),
+            "paper-dark: hours, minutes, colon"
+        );
+        o.set("clock-mode-colour", "blue").unwrap();
+        assert_eq!(clock_ink(&o), render::ClockInk::from(Color::Idx(4)), "one colour set: all of it");
+        o.set("clock-mode-colour", "default").unwrap();
+        o.set("theme", "tokyo-night").unwrap();
+        assert_eq!(
+            clock_ink(&o),
+            render::ClockInk::from(o.pane_border_active_fg),
+            "the terminal's own colours: no yellow on what may be white"
+        );
     }
 
     #[test]
