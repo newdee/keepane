@@ -3,9 +3,10 @@
 //! is running (its newest descendant, from `/proc/<pid>/stat`); a directory
 //! with the home written `~`; for the clock's animation, the cores, disks,
 //! network, temperature, CPU power, battery draw and the system's own counts
-//! (see `counters`). macOS reads the same through `sysctl`, mach and
-//! `proc_pidinfo` (no disks, temperature, power, context switches,
-//! interrupts or threads).
+//! (see `counters`). macOS reads the same through `sysctl`, mach,
+//! `proc_pidinfo` and IOKit (the disks); its context switches and threads
+//! are those of the processes this user may look into; no temperature,
+//! power or interrupts.
 
 use crate::sysinfo::human_bytes;
 use std::collections::HashMap;
@@ -367,17 +368,80 @@ mod readings {
     }
     const PROCESSOR_CPU_LOAD_INFO: i32 = 2;
 
-    /// Each core's (busy, total) ticks; no public interface gives the
-    /// context switches or interrupts.
+    /// Each core's (busy, total) ticks, and the context switches: no public
+    /// interface counts them for the whole system, so they are the
+    /// processes' own (`switches`). No interrupts.
     pub fn stat() -> (Vec<(u64, u64)>, Option<u64>, Option<u64>) {
-        (cores(), None, None)
+        (cores(), switches(&task_infos()), None)
     }
 
-    /// Processes (as many as `proc_listallpids` gives); threads need a
-    /// look into each process: not read.
+    /// Processes (as many as `proc_listallpids` gives), and the threads of
+    /// those this user may look into.
     pub fn tasks() -> (Option<u64>, Option<u64>) {
         let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-        ((n > 0).then_some(n as u64), None)
+        let infos = task_infos();
+        let threads = infos.iter().map(|(_, t)| t.pti_threadnum.max(0) as u64).sum::<u64>();
+        ((n > 0).then_some(n as u64), (!infos.is_empty()).then_some(threads))
+    }
+
+    /// Every process this user may look into (others' are refused), with
+    /// its task info (`proc_pidinfo`): its context switches and threads.
+    /// One look serves `stat` and `tasks` (a `counters` asks both).
+    fn task_infos() -> Vec<(libc::pid_t, libc::proc_taskinfo)> {
+        type Infos = Vec<(libc::pid_t, libc::proc_taskinfo)>;
+        static LAST: std::sync::Mutex<Option<(std::time::Instant, Infos)>> = std::sync::Mutex::new(None);
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, infos)) = &*last
+            && at.elapsed() < std::time::Duration::from_millis(100)
+        {
+            return infos.clone();
+        }
+        let infos = look_into_tasks();
+        *last = Some((std::time::Instant::now(), infos.clone()));
+        infos
+    }
+
+    fn look_into_tasks() -> Vec<(libc::pid_t, libc::proc_taskinfo)> {
+        let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        if n <= 0 {
+            return Vec::new();
+        }
+        let mut pids = vec![0 as libc::pid_t; n as usize + 64];
+        let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+        let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        pids[..n.max(0) as usize]
+            .iter()
+            .filter_map(|&pid| {
+                let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+                let got = unsafe {
+                    libc::proc_pidinfo(
+                        pid,
+                        libc::PROC_PIDTASKINFO,
+                        0,
+                        (&mut info as *mut libc::proc_taskinfo).cast(),
+                        size,
+                    )
+                };
+                (got == size).then_some((pid, info))
+            })
+            .collect()
+    }
+
+    /// The context switches of the processes in `infos`, as a running total
+    /// that never goes back: what each one did since the last reading
+    /// (all it did, for one that is new), added up. A process that ends
+    /// takes its count with it, so the plain sum would fall.
+    fn switches(infos: &[(libc::pid_t, libc::proc_taskinfo)]) -> Option<u64> {
+        static SEEN: std::sync::Mutex<Option<(std::collections::HashMap<libc::pid_t, u64>, u64)>> =
+            std::sync::Mutex::new(None);
+        if infos.is_empty() {
+            return None;
+        }
+        let now: std::collections::HashMap<libc::pid_t, u64> =
+            // (A 32-bit count, wrapping: read unsigned.)
+            infos.iter().map(|(pid, t)| (*pid, u64::from(t.pti_csw as u32))).collect();
+        Some(super::running_total(&mut SEEN.lock().unwrap_or_else(|e| e.into_inner()), now))
     }
 
     /// (total, free) bytes of swap, from `vm.swapusage`.
@@ -420,9 +484,96 @@ mod readings {
         out
     }
 
-    /// The disks need IOKit: not read.
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOServiceMatching(name: *const libc::c_char) -> *mut libc::c_void;
+        fn IOServiceGetMatchingServices(main: u32, matching: *mut libc::c_void, found: *mut u32) -> i32;
+        fn IOIteratorNext(iterator: u32) -> u32;
+        fn IORegistryEntryCreateCFProperty(
+            entry: u32,
+            key: *const libc::c_void,
+            allocator: *const libc::c_void,
+            options: u32,
+        ) -> *const libc::c_void;
+        fn IOObjectRelease(object: u32) -> i32;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringCreateWithCString(
+            allocator: *const libc::c_void,
+            text: *const libc::c_char,
+            encoding: u32,
+        ) -> *const libc::c_void;
+        fn CFDictionaryGetValue(dict: *const libc::c_void, key: *const libc::c_void) -> *const libc::c_void;
+        fn CFNumberGetValue(number: *const libc::c_void, kind: isize, value: *mut libc::c_void) -> u8;
+        fn CFGetTypeID(cf: *const libc::c_void) -> usize;
+        fn CFDictionaryGetTypeID() -> usize;
+        fn CFNumberGetTypeID() -> usize;
+        fn CFRelease(cf: *const libc::c_void);
+    }
+    const UTF8: u32 = 0x0800_0100;
+    const SINT64: isize = 4;
+
+    /// A CoreFoundation string, released when dropped.
+    struct CfString(*const libc::c_void);
+    impl CfString {
+        fn new(s: &str) -> Option<CfString> {
+            let c = CString::new(s).ok()?;
+            let p = unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), UTF8) };
+            (!p.is_null()).then_some(CfString(p))
+        }
+    }
+    impl Drop for CfString {
+        fn drop(&mut self) {
+            unsafe { CFRelease(self.0) };
+        }
+    }
+
+    /// Bytes the disks have read and written, as `iostat` counts them: each
+    /// block storage driver's `Statistics` (IOKit), which holds a disk's
+    /// totals since it came; an APFS volume has none of its own, so its
+    /// bytes count once, on its disk.
     pub fn disk() -> Option<(u64, u64)> {
-        None
+        let (stats, read, written) =
+            (CfString::new("Statistics")?, CfString::new("Bytes (Read)")?, CfString::new("Bytes (Write)")?);
+        let matching = unsafe { IOServiceMatching(c"IOBlockStorageDriver".as_ptr()) };
+        if matching.is_null() {
+            return None;
+        }
+        let mut found = 0u32;
+        // (It takes the matching dictionary's reference.)
+        if unsafe { IOServiceGetMatchingServices(0, matching, &mut found) } != 0 {
+            return None;
+        }
+        let number = |dict: *const libc::c_void, key: &CfString| -> Option<u64> {
+            let v = unsafe { CFDictionaryGetValue(dict, key.0) };
+            if v.is_null() || unsafe { CFGetTypeID(v) != CFNumberGetTypeID() } {
+                return None;
+            }
+            let mut out = 0i64;
+            (unsafe { CFNumberGetValue(v, SINT64, (&mut out as *mut i64).cast()) } != 0).then_some(out.max(0) as u64)
+        };
+        let mut sum: Option<(u64, u64)> = None;
+        loop {
+            let driver = unsafe { IOIteratorNext(found) };
+            if driver == 0 {
+                break;
+            }
+            let dict = unsafe { IORegistryEntryCreateCFProperty(driver, stats.0, std::ptr::null(), 0) };
+            if !dict.is_null() {
+                if unsafe { CFGetTypeID(dict) == CFDictionaryGetTypeID() } {
+                    let (r, w) = sum.unwrap_or_default();
+                    sum = Some((
+                        r.saturating_add(number(dict, &read).unwrap_or(0)),
+                        w.saturating_add(number(dict, &written).unwrap_or(0)),
+                    ));
+                }
+                unsafe { CFRelease(dict) };
+            }
+            unsafe { IOObjectRelease(driver) };
+        }
+        unsafe { IOObjectRelease(found) };
+        sum
     }
 
     /// Bytes, then packets, received and sent by the Ethernet and Wi-Fi
@@ -559,6 +710,24 @@ mod readings {
 
 pub use readings::usage_of;
 use readings::{battery, cpu_times, memory, processes};
+
+/// Counts kept per process (`now`, by pid) as one running total that never
+/// goes back: to the total in `seen`, what each process did since then
+/// (all it did, for one that is new; nothing, for one whose count went
+/// back: its pid taken by another, or its count wrapped); the first time,
+/// what they all did so far. A process that ends takes its count with it,
+/// so their plain sum would fall. `seen` keeps this reading for the next.
+#[cfg(any(target_os = "macos", test))]
+fn running_total(seen: &mut Option<(HashMap<i32, u64>, u64)>, now: HashMap<i32, u64>) -> u64 {
+    let total = match seen.take() {
+        None => now.values().sum(),
+        Some((before, total)) => {
+            total + now.iter().map(|(pid, c)| c.saturating_sub(before.get(pid).copied().unwrap_or(0))).sum::<u64>()
+        }
+    };
+    *seen = Some((now, total));
+    total
+}
 
 /// The machine's running totals for the clock's animation: each core,
 /// memory, the disks, the network, the CPU's temperature, context switches
@@ -748,12 +917,53 @@ mod tests {
         assert!(l.cpu > 0.0 && l.cpu <= 1.0, "a core was busy: {l:?}");
         assert!(b.processes.is_some_and(|p| p > 0), "{b:?}");
         assert!(b.swap.is_some_and(|(t, f)| f <= t), "{b:?}");
-        // Linux counts the context switches (the spin above made some),
-        // the interrupts and the threads too.
-        if cfg!(not(target_os = "macos")) {
-            assert!(l.switches.is_some_and(|s| s > 0.0) && l.interrupts.is_some(), "{l:?}");
-            assert!(b.threads.is_some_and(|t| t >= 1), "{b:?}");
+        // The context switches (the spin above made some) and the threads,
+        // everywhere; the interrupts on Linux. macOS reads the disks too
+        // (Linux's /proc/diskstats can have no hardware disk in a container).
+        assert!(l.switches.is_some_and(|s| s > 0.0), "{l:?}");
+        assert!(b.threads.is_some_and(|t| t >= 1), "{b:?}");
+        if cfg!(target_os = "macos") {
+            assert!(a.disk.is_some() && b.disk.is_some(), "IOKit's disk statistics: {b:?}");
+        } else {
+            assert!(l.interrupts.is_some(), "{l:?}");
         }
+    }
+
+    /// The processes' counts (macOS's context switches) as one total: what
+    /// each did since the last reading; a process that ends, a new one, a
+    /// pid taken again, a count that wrapped.
+    #[test]
+    fn a_running_total_of_processes_never_goes_back() {
+        let map = |v: &[(i32, u64)]| v.iter().copied().collect::<HashMap<i32, u64>>();
+        let mut seen = None;
+        assert_eq!(running_total(&mut seen, map(&[(1, 100), (2, 50)])), 150, "the first time: all so far");
+        assert_eq!(running_total(&mut seen, map(&[(1, 130), (2, 60)])), 190, "+30 +10");
+        assert_eq!(running_total(&mut seen, map(&[(1, 131)])), 191, "2 ended: +1, not -60");
+        assert_eq!(running_total(&mut seen, map(&[(1, 131), (3, 7)])), 198, "3 is new: all of its 7");
+        assert_eq!(
+            running_total(&mut seen, map(&[(1, 5), (3, 9)])),
+            200,
+            "1 went back (a new process, or wrapped): +0, +2"
+        );
+        assert_eq!(running_total(&mut seen, map(&[(1, 8), (3, 9)])), 203, "and goes on from 5");
+        assert_eq!(running_total(&mut seen, map(&[])), 203, "none at all");
+        assert_eq!(running_total(&mut seen, map(&[(4, 1)])), 204);
+    }
+
+    /// macOS: the processes' switches add up to a total that never goes
+    /// back, though a process that ends takes its own count with it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_switches_never_go_back_when_a_process_ends() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let a = readings::stat().1.expect("switches");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let b = readings::stat().1.expect("switches");
+        assert!(b >= a, "{a} then {b}");
+        let (_, threads) = readings::tasks();
+        assert!(threads.is_some_and(|t| t >= 1), "{threads:?}");
     }
 
     /// The CPU's energy from RAPL: each package's total, its parts (and

@@ -452,9 +452,10 @@ stays until `q` (tmux's goes at any key); the prefix still works under it.
 It is drawn in the 16 colours a theme sets with `pane-colours` (the
 terminal's own colours when the theme sets none), so each theme colours it.
 The machine is read twice a second, and only while a clock is on screen.
-Not every figure can be read everywhere: macOS gives no disk figure, no
-context switches or interrupts, no threads and no power, and a figure the
-system does not give is left out, never made up. The temperature comes from
+Not every figure can be read everywhere: macOS gives no interrupts and no
+power, and counts the context switches and threads of the processes you may
+look into, not the whole system's; a figure the system does not give is
+left out, never made up. The temperature comes from
 a real CPU sensor only: on Linux the thermal zones and hwmon sensors; on
 Windows from LibreHardwareMonitor or OpenHardwareMonitor while one runs
 (Windows has none of its own: its ACPI thermal zone is a fixed figure on many

@@ -283,7 +283,7 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 
 时钟下方信息行的最后一行是 keepane 自己的情况：会话数、pane 数，以及启动以来送达的消息数。
 
-`pulse`、`matrix`、`starfield`、`life` 和 `donut` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 9 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有磁盘、上下文切换、中断、线程和功耗数字；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
+`pulse`、`matrix`、`starfield`、`life` 和 `donut` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 9 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有中断和功耗数字，上下文切换和线程数只算你能查看的进程，不是整个系统的；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
 
 <p align="center">
   <picture>

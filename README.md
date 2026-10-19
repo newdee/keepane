@@ -517,8 +517,9 @@ key); the prefix still works under it. It is drawn in the 16 colours a theme
 sets (`pane-colours`; the terminal's own when the theme sets none), so each
 theme colours it. The machine is read twice a second, only while a clock is on
 screen. A figure the system does not give is left out, never made up: macOS
-gives no disk figure, no context switches or interrupts, no threads and no
-power; the temperature comes from a real CPU sensor only (Linux: thermal
+gives no interrupts and no power, and counts the context switches and
+threads of the processes you may look into, not the whole system's; the
+temperature comes from a real CPU sensor only (Linux: thermal
 zones and hwmon; Windows: LibreHardwareMonitor or OpenHardwareMonitor while
 one runs, since Windows' own ACPI thermal zone is a fixed figure on many
 machines; macOS: none). The CPU's power is its own meter (RAPL): Windows reads
