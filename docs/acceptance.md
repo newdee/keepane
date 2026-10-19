@@ -4497,3 +4497,27 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - README / 网站截图（含 `-light` 图和手机图）仍是旧颜色，发版前用 tools/make-demos.ps1、make-phone-shots.ps1 重拍。
   - paper.nvim 的 593436c 未推送；它的截图 assets/paper.png 也是旧的白底。
   - 网站浅色仍是 dfine.tech 的白色 `#fdfdfb`，没跟着换。
+## 144. macOS 的心电图动画也画 4 条曲线：磁盘读写、上下文切换和线程
+
+用户报：时钟的 pulse 动画在 Windows 上有 4 条曲线，在 macOS 上只有 2 条（心跳/CPU、网络）。用户选了"磁盘用 IOKit + 切换数按能看的进程相加"。
+
+- 定性：个性（只有 macOS 缺；Windows、Linux 都是 4 条）；边界遗漏：macOS 的读数模块当初没实现磁盘（"needs IOKit: not read"）和切换数（没有全系统的公开接口），画图代码按"读不到就不画"正确工作，不用改。
+- 做法：
+  - 磁盘：IOKit 枚举 `IOBlockStorageDriver`，读每个的 `Statistics` 字典里的 `Bytes (Read)` / `Bytes (Write)` 相加（`iostat` 同源，不要 root）；APFS 卷没有自己的 driver，字节只算一次。
+  - 切换数和线程数：`proc_pidinfo(PROC_PIDTASKINFO)` 读当前用户能看的每个进程的 `pti_csw`、`pti_threadnum`（root 的进程会被拒，不算）。一次扫描 100 ms 内共用（`counters` 同时问 `stat` 和 `tasks`）。
+  - 切换数做成只增不减的累计：每个进程只加它自上次以来的增量（新进程加全部；计数变小的——pid 被复用或 32 位回绕——加 0）。直接相加不行：进程退出会带走它的计数，总数下降，`load` 会把下降当回绕记成 0。累计逻辑是纯函数 `running_total`，三平台都测。
+  - 中断仍没有（macOS 无公开接口）；pulse 的系统曲线在没有中断数时用切换数定高度（原有逻辑）。
+  - 文档：README、README.zh-CN、man 里"macOS 没有磁盘、切换、线程"改为"没有中断和功耗，切换和线程只算你能看的进程"。
+- 会不会引入新 bug：
+  - Linux、Windows 的读数代码没动；Linux 测试原来只在非 macOS 断言切换和线程，现在三处都断言，Linux 结果不变（451 + 130 全过）。
+  - macOS 的 `stat()` 多了一次进程扫描（约几百次系统调用），只在时钟显示时、每秒最多两次被调用。
+  - IOKit 对象：`Create` 规则得到的字典用 `CFRelease` 释放，迭代器和每个 driver 用 `IOObjectRelease` 释放，`CFDictionaryGetValue` 的值不释放。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 代码正确性（review） | 读代码发现 macOS 测试太弱：杀掉一个 `sleep` 进程后断言总数不降，但 50 ms 内别的进程的切换足以让"直接相加"也通过，测不出累计逻辑 | **有问题**：把累计提成纯函数 `running_total`，测 8 种情况（首次、增量、进程退出、新进程、pid 复用/回绕、继续、空、再出现）（不计数） |
+| 2 | 机制通路（变异，Linux） | 3 个变异（直接相加、新进程不算、首次为 0）3/3 被抓到；Linux 全量 451 + 130；fmt、clippy 0；macOS 目标 clippy 0 | 干净（1/3） |
+| 3 | 真机平台（CI macOS） | macOS 上 `the_counters_come_back_and_grow`（磁盘 `Some`、切换 > 0、线程 ≥ 1）、`the_switches_never_go_back_when_a_process_ends`、`a_running_total_…` 都通过；macOS lib 450、e2e 130；Linux、Windows 也全过 | 干净（2/3） |
+| 4 | 可复现性 | CI 整轮重跑（attempt 2）：三个平台再次全过，macOS 上同样 3 个测试通过，lib 450、e2e 130 | 干净（3/3），验收通过 |
+
+- 遗留：macOS 的温度、功耗、中断仍读不到（需要私有接口或 root），照旧不显示。
