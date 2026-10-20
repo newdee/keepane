@@ -452,9 +452,12 @@ pub fn expand(
                     }
                 }
                 Some('{') => {
-                    let name = take_balanced(&mut chars, '{', '}');
-                    let name = name.trim();
-                    if let Some(rest) = name.strip_prefix('?') {
+                    let raw = take_balanced(&mut chars, '{', '}');
+                    let name = raw.trim();
+                    // A conditional's branches are text, kept as written
+                    // (`…#[default]  }`: the spaces after it too); only a
+                    // name is trimmed.
+                    if let Some(rest) = raw.trim_start().strip_prefix('?') {
                         // The chosen branch is a format in its own right.
                         let branch = conditional(rest, ctx, cache, now);
                         flush(&mut out, &mut text, style);
@@ -726,6 +729,34 @@ mod tests {
             let s = style(mode, &mut cache);
             assert!(s.bold && s.fg != normal.fg, "{mode}: {s:?} against normal's {normal:?}");
         }
+        // Every mode apart from the branch after it, in each theme (a
+        // conditional's last branch keeps its spaces: `shellmain` once).
+        let themes = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/themes")).unwrap();
+        let mut rights = vec![("default".to_string(), right)];
+        for f in themes.map(|e| e.unwrap().path()) {
+            let mut o = crate::config::Options::default();
+            for (name, value) in crate::config::theme_settings(&std::fs::read_to_string(&f).unwrap()).unwrap() {
+                o.set(&name, &value).unwrap();
+            }
+            rights.push((f.file_name().unwrap().to_string_lossy().into_owned(), o.status_right));
+        }
+        let mut checked = Vec::new();
+        for (theme, right) in &rights {
+            for mode in ["normal", "ai", "shell"] {
+                let c = Context { pane_work_mode: mode.into(), git_branch: "main".into(), ..ctx() };
+                let text = plain(&expand(right, &c, &mut cache, Style::default(), now()));
+                // (A theme may show neither, or not the branch.)
+                if !(text.contains(mode) && text.contains("main")) {
+                    continue;
+                }
+                let apart = text.contains(&format!("{mode} ")) && !text.contains(&format!("{mode}main"));
+                assert!(apart, "{theme}, {mode}: {text:?}");
+                checked.push(theme.as_str());
+            }
+        }
+        for theme in ["default", "paper.conf", "paper-dark.conf", "tokyo-day.conf", "plain.conf"] {
+            assert_eq!(checked.iter().filter(|t| **t == theme).count(), 3, "{theme}: {checked:?}");
+        }
     }
 
     /// themes/plain.conf reverses the current window itself (the status
@@ -936,6 +967,14 @@ mod tests {
         let mut empty = ctx();
         empty.flags = String::new();
         assert_eq!(text("#{?window_flags,busy,idle}", &empty), "idle");
+        // The branches as written, spaces at either end of the last one too
+        // (the work mode on the bar: `…#[default]  }`, then the branch); a
+        // space before the `?` is not a branch's.
+        assert_eq!(text("#{?window_flags,busy  , idle  }x", &empty), " idle  x");
+        assert_eq!(text("#{?window_flags,busy  , idle  }x", &c), "busy  x");
+        assert_eq!(text("#{ ?window_flags,a,b }", &c), "a");
+        assert_eq!(text("#{?window_flags,#[bold]shell#[default]  ,}main", &c), "shell  main");
+        assert_eq!(text("#{ session_name }", &c), "main", "a name is trimmed");
         // A missing branch is empty, an unknown variable is false.
         assert_eq!(text("#{?window_flags,only}", &empty), "");
         assert_eq!(text("#{?nosuchvar,yes,no}", &c), "no");

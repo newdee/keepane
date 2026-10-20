@@ -4521,3 +4521,16 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 4 | 可复现性 | CI 整轮重跑（attempt 2）：三个平台再次全过，macOS 上同样 3 个测试通过，lib 450、e2e 130 | 干净（3/3），验收通过 |
 
 - 遗留：macOS 的温度、功耗、中断仍读不到（需要私有接口或 root），照旧不显示。
+## 145. 状态栏：work mode 不是 `normal` 时和后面的分支粘在一起（`shellmaster`）
+
+用户在 0.41.0 的报告里看到这个问题后说"fix it, and then release"。
+
+- 定性：共性：默认 `status-right` 和 8 个主题文件各有一处 `…#{pane_work_mode}#[default]  }`，都受影响（plain.conf 用 ` | ` 分隔，不经过这一段）；结构缺陷：`format::expand` 对 `#{…}` 的整个内容做了 `trim()`，本意是变量名容错（`#{ session_name }`），却也裁掉了条件式最后一个分支末尾的空格。0.40.0 的截图里已经是这样，不是新引入的。
+- 做法：只改这一处：变量名和比较式照旧 trim；条件式只去掉 `?` 前面的空白，分支原样保留（与 tmux 一致）。
+- 会不会引入新 bug：用户自己写的条件式，最后一个分支末尾的空格现在会显示出来（tmux 本来就显示）；状态栏非 `normal` 时多 2 列，`status-right-length 100` 之内；其他格式（窗口标签、边框）没有以空格结尾的条件分支（grep 9 个主题 + 默认：只有 work mode 这一处）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路（变异） | 新测试：条件式两端空格、`?` 前空格、带样式的分支、变量名仍 trim（5 条）；默认和 9 个主题 × 3 种模式的状态栏逐个展开，断言模式名后有空格、不出现 `{mode}main`（default、paper、paper-dark、tokyo-day、plain 各 3 次必须被检查到）。把修复改回旧写法：2 个测试失败 | 干净（1/3） |
+| 2 | 全量 + 静态 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 全量 463 + 10 + 130 全过 | 干净（2/3） |
+| 3 | 用户路径 + Linux | 实录 `C-b w` chart（paper-dark，pane 处于 shell 模式）：帧数据里不再有 `shellmaster`，截图状态栏为 `shell  master`；Linux 全量 451 + 130、fmt、clippy 0，新着色测试 20 次 0 失败 | 干净（3/3），验收通过 |
