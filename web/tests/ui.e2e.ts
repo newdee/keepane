@@ -57,7 +57,7 @@ test("desktop: send, menus, themes, rename, switch, fold, history, inbox, done",
     await screen.getByRole("button", "外观").tap();
     await screen.getByRole("menuitem", { name: /^Paper$/ }).tap();
     await expect.poll(() => kp("show", "-gv", "theme").trim()).toBe("paper");
-    await expect.poll(() => browser.evaluate(() => getComputedStyle(document.querySelector("pre.term")!.parentElement!).backgroundColor)).toBe("rgb(253, 253, 251)");
+    await expect.poll(() => browser.evaluate(() => getComputedStyle(document.querySelector("pre.term")!.parentElement!).backgroundColor)).toBe("rgb(240, 231, 210)");
     await screen.getByRole("button", "外观").tap();
     await entry(screen, "Paper Dark").tap();
     await expect.poll(() => kp("show", "-gv", "theme").trim()).toBe("paper-dark");

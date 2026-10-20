@@ -1183,7 +1183,7 @@ fn contrast((r1, g1, b1): (u8, u8, u8), (r2, g2, b2): (u8, u8, u8)) -> f64 {
 
 /// Text `fg` on `bg` as it is when it reads (3:1 or more, or either
 /// colour not known as RGB), else the one of `choices` that reads best on
-/// `bg`, when that reads better.
+/// `bg`, when that reads better. The page does the same (web/src/ansi.ts).
 fn legible(fg: Color, bg: Color, choices: [Color; 2]) -> Color {
     let (Some(f), Some(b)) = (rgb_of(fg), rgb_of(bg)) else { return fg };
     let now = contrast(f, b);

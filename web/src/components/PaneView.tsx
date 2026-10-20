@@ -240,8 +240,8 @@ export function PaneView(props: Props) {
   const now = hits.length ? hits[Math.min(hit, hits.length - 1)] : -1;
   const html = useMemo(() => {
     const mark = (i: number, h: string) => (hits.includes(i) ? `<span class="hit${i === now ? " now" : ""}">${h}</span>` : h);
-    if (!detail && !hits.length) return ansiToHtml(lines.join("\n"), theme.palette);
-    if (!detail) return lines.map((l, i) => mark(i, ansiToHtml(l, theme.palette))).join("\n");
+    if (!detail && !hits.length) return ansiToHtml(lines.join("\n"), theme);
+    if (!detail) return lines.map((l, i) => mark(i, ansiToHtml(l, theme))).join("\n");
     // capture-pane ends every coloured line with a reset, so each line can be
     // turned into HTML on its own.
     const at = new Map(screen.marks.map((m) => [m[0], m]));
@@ -251,10 +251,10 @@ export function PaneView(props: Props) {
         const g = m
           ? `<span class="stamp${m[3] ? " fail" : ""}" data-i="${i}">${stampText(m)}</span> `
           : " ".repeat(GUTTER);
-        return g + mark(i, ansiToHtml(l, theme.palette));
+        return g + mark(i, ansiToHtml(l, theme));
       })
       .join("\n");
-  }, [lines, screen.marks, detail, theme.palette, hits, now]);
+  }, [lines, screen.marks, detail, theme, hits, now]);
   useLayoutEffect(() => {
     const m = mainRef.current;
     if (m && stick && find === null) m.scrollTop = m.scrollHeight;
