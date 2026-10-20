@@ -1124,6 +1124,7 @@ pub fn recolor(g: &mut Grid, bar: Option<u16>, fg: Color, bg: Color, palette: &[
     let cols = usize::from(g.cols);
     for (i, cell) in g.cells.iter_mut().enumerate() {
         let s = &mut cell.style;
+        let (was_fg, was_bg) = (s.fg, s.bg);
         s.fg = map(s.fg);
         s.bg = map(s.bg);
         if bar != Some((i / cols.max(1)) as u16) {
@@ -1133,8 +1134,68 @@ pub fn recolor(g: &mut Grid, bar: Option<u16>, fg: Color, bg: Color, palette: &[
             if s.bg == Color::Default {
                 s.bg = bg;
             }
+            // Text whose colour the theme gave (the default, one of the 16)
+            // on a background the program painted itself: a program that
+            // took the terminal for a dark one paints its own dark box and
+            // leaves its text "default" or "white", which a light theme
+            // draws as dark ink, and the text is gone. Too close to its
+            // background (under 3:1, WCAG's least for large text), it takes the theme's text or paper,
+            // whichever reads; a colour the program chose itself is its own.
+            let themed = was_fg == Color::Default || matches!(was_fg, Color::Idx(n) if n < 16 && palette.is_some());
+            if themed && was_bg != Color::Default && !s.inverse {
+                s.fg = legible(s.fg, s.bg, [fg, bg]);
+            }
         }
     }
+}
+
+/// A colour as RGB: as given, or one of the 256 past the first 16
+/// (xterm's cube and greys); None for the first 16 or the default, whose
+/// look the terminal decides.
+fn rgb_of(c: Color) -> Option<(u8, u8, u8)> {
+    match c {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        Color::Idx(n) if n >= 232 => {
+            let v = 8 + 10 * (n - 232);
+            Some((v, v, v))
+        }
+        Color::Idx(n) if n >= 16 => {
+            let step = |k: u8| if k == 0 { 0 } else { 55 + 40 * k };
+            let n = n - 16;
+            Some((step(n / 36), step(n / 6 % 6), step(n % 6)))
+        }
+        _ => None,
+    }
+}
+
+/// WCAG's contrast between two colours, 1 to 21.
+fn contrast((r1, g1, b1): (u8, u8, u8), (r2, g2, b2): (u8, u8, u8)) -> f64 {
+    let lum = |r: u8, g: u8, b: u8| {
+        let ch = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+    };
+    let (x, y) = (lum(r1, g1, b1), lum(r2, g2, b2));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// Text `fg` on `bg` as it is when it reads (3:1 or more, or either
+/// colour not known as RGB), else the one of `choices` that reads best on
+/// `bg`, when that reads better.
+fn legible(fg: Color, bg: Color, choices: [Color; 2]) -> Color {
+    let (Some(f), Some(b)) = (rgb_of(fg), rgb_of(bg)) else { return fg };
+    let now = contrast(f, b);
+    if now >= 3.0 {
+        return fg;
+    }
+    choices
+        .into_iter()
+        .filter_map(|c| rgb_of(c).map(|rgb| (c, contrast(rgb, b))))
+        .filter(|&(_, r)| r > now)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map_or(fg, |(c, _)| c)
 }
 
 /// One `hints` pick: the thing found at `row`, `col` of the pane at `rect`
@@ -2803,6 +2864,59 @@ mod tests {
         g.put_str(0, 0, "x", Style::colors(Color::Idx(200), Color::Rgb(4, 5, 6)), 1);
         recolor(&mut g, None, fg, bg, &palette);
         assert_eq!((g.get(0, 0).style.fg, g.get(0, 0).style.bg), (Color::Idx(200), Color::Rgb(4, 5, 6)));
+    }
+
+    /// Paper: a program that took the terminal for a dark one paints its
+    /// input box black and leaves its text default or white; drawn as the
+    /// paper's ink, it would vanish. Text the theme coloured that falls
+    /// under 3:1 on a background the program painted takes the theme's text
+    /// or paper, whichever reads; everything that read already, and every
+    /// colour the program chose itself, stays as it was.
+    #[test]
+    fn the_themes_ink_never_vanishes_on_a_programs_own_background() {
+        let (ink, paper) = (Color::Rgb(0x33, 0x30, 0x2a), Color::Rgb(0xf0, 0xe7, 0xd2));
+        let mut palette = vec![Color::Rgb(0xe3, 0xd8, 0xbf); 16];
+        palette[1] = Color::Rgb(0xa6, 0x36, 0x3d);
+        palette[7] = Color::Rgb(0x5a, 0x53, 0x46);
+        palette[15] = ink;
+        let cases = [
+            // (fg, bg, what it becomes, why)
+            (Color::Default, Color::Rgb(0, 0, 0), paper, "default text on a black box"),
+            (Color::Default, Color::Rgb(30, 30, 30), paper, "on a near-black one"),
+            (Color::Default, Color::Idx(235), paper, "on a 256-colour grey"),
+            (Color::Idx(7), Color::Rgb(20, 20, 20), paper, "white, which the paper draws as ink"),
+            (Color::Idx(15), Color::Idx(16), paper, "bright white on the cube's black"),
+            (Color::Default, Color::Rgb(255, 255, 255), ink, "on white: reads already"),
+            (Color::Default, Color::Idx(4), ink, "on the theme's own colour: reads already"),
+            (Color::Idx(1), Color::Rgb(250, 250, 250), palette[1], "red on white reads"),
+            (Color::Rgb(40, 40, 40), Color::Rgb(0, 0, 0), Color::Rgb(40, 40, 40), "the program's own colour"),
+            (Color::Idx(244), Color::Rgb(0, 0, 0), Color::Idx(244), "one of the 256: the program's"),
+            (Color::Default, Color::Default, ink, "no background painted"),
+            (Color::Idx(7), Color::Idx(0), palette[7], "on the theme's own black: 5.4:1 already"),
+        ];
+        for (f, b, want, why) in cases {
+            let mut g = Grid::new(1, 1);
+            g.put_str(0, 0, "x", Style::colors(f, b), 1);
+            recolor(&mut g, None, ink, paper, &palette);
+            assert_eq!(g.get(0, 0).style.fg, want, "{why}");
+        }
+        // Reversed text is left as it is; so is the status line, and a
+        // theme that leaves the colours to the terminal.
+        let mut g = Grid::new(2, 2);
+        g.put_str(0, 0, "x", Style { inverse: true, ..Style::colors(Color::Default, Color::Rgb(0, 0, 0)) }, 1);
+        g.put_str(0, 1, "x", Style::colors(Color::Default, Color::Rgb(0, 0, 0)), 1);
+        recolor(&mut g, Some(1), ink, paper, &palette);
+        assert_eq!((g.get(0, 0).style.fg, g.get(0, 1).style.fg), (ink, Color::Default));
+        let mut g = Grid::new(1, 1);
+        g.put_str(0, 0, "x", Style::colors(Color::Default, Color::Rgb(0, 0, 0)), 1);
+        recolor(&mut g, None, Color::Default, Color::Default, &[]);
+        assert_eq!(g.get(0, 0).style.fg, Color::Default, "the terminal's colours: nothing known");
+        // The dark paper: a light box a program painted gets its text too.
+        let (dark_ink, dark_paper) = (Color::Rgb(0xce, 0xca, 0xbe), Color::Rgb(0x17, 0x17, 0x16));
+        let mut g = Grid::new(1, 1);
+        g.put_str(0, 0, "x", Style::colors(Color::Default, Color::Rgb(250, 250, 250)), 1);
+        recolor(&mut g, None, dark_ink, dark_paper, &[]);
+        assert_eq!(g.get(0, 0).style.fg, dark_paper);
     }
 
     #[test]

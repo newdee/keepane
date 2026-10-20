@@ -252,7 +252,7 @@ keepane kill-server
 | `S` | 开关 `synchronize-panes`：敲的东西同时进这个窗口的所有 pane，状态栏会多个 `S` |
 | `[` / `PgUp` | copy mode（下面单独说） |
 | `]` | 粘贴剪贴板 |
-| `:` | 命令行（`:split-window -h -c C:\src`、`:set mouse off` 之类；Tab 补命令名、flag、`-t` 后的目标和选项名） |
+| `:` | 命令行（`:split-window -h -c C:\src`、`:set mouse off` 之类；Tab 补命令名、flag、`-t` 后的目标和选项名；↑ / ↓ 或 `C-p` / `C-n` 翻出之前在这里执行过的命令，保留最近 100 条，server 停止后清空） |
 | `C-s` / `C-r` | 保存所有 session（各存各的文件）/ 恢复保存过的 session |
 | `d` | 脱离 |
 | `?` | 列出所有按键 |

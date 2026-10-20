@@ -212,7 +212,14 @@ struct Prompt {
     cursor: usize,
     /// Shown in place of the label until the next key: what Tab found.
     hint: Option<String>,
+    /// Up / Down at the `:` prompt: the line of the command history shown
+    /// now, and what was typed before the first Up (Down past the newest
+    /// puts it back).
+    browse: Option<(usize, String)>,
 }
+
+/// The most command lines `:` keeps for Up and Down (tmux keeps 100).
+const PROMPT_HISTORY: usize = 100;
 
 struct Drag {
     pane: PaneId,
@@ -887,6 +894,9 @@ pub struct Server {
     opts: Options,
     prefix_binds: HashMap<Key, Binding>,
     root_binds: HashMap<Key, Binding>,
+    /// The command lines run at `:`, oldest first, for Up and Down there
+    /// (every client's; not kept past the server).
+    prompt_history: Vec<String>,
     /// `bind -T copy-mode-vi`: keys in copy mode that run a command instead
     /// of copy mode's own meaning.
     copy_binds: HashMap<Key, Binding>,
@@ -1334,6 +1344,7 @@ impl Server {
             opts: Options::default(),
             prefix_binds: default_bindings(),
             root_binds: default_root_bindings(),
+            prompt_history: Vec::new(),
             copy_binds: HashMap::new(),
             sessions: Vec::new(),
             clients: HashMap::new(),
@@ -2002,9 +2013,11 @@ impl Server {
                 }
             }
             Event::Pane(PaneEvent::Output(id, generation, bytes)) => {
+                let colours = query_colours(&self.opts);
                 if let Some(p) = self.find_pane_mut(id)
                     && p.generation == generation
                 {
+                    p.set_query_colours(colours);
                     // pipe-pane and a recording see what the program wrote,
                     // not the screen.
                     let slow = p.pipe_write(&bytes);
@@ -5224,6 +5237,7 @@ impl Server {
                         input: initial,
                         cursor,
                         hint: None,
+                        browse: None,
                     });
                 }
                 Outcome::Ok
@@ -5239,6 +5253,7 @@ impl Server {
                         input: String::new(),
                         cursor: 0,
                         hint: None,
+                        browse: None,
                     });
                 }
                 Outcome::Ok
@@ -6701,6 +6716,15 @@ impl Server {
                     (KeyCode::Enter, _, _) => {
                         let prompt = c.prompt.take().unwrap();
                         let PromptKind::Command { template } = prompt.kind else { unreachable!() };
+                        // A line typed at `:` goes on its history (not the
+                        // same as the last again; the oldest go past 100).
+                        let h = &mut self.prompt_history;
+                        if template.is_none() && !prompt.input.trim().is_empty() && h.last() != Some(&prompt.input) {
+                            h.push(prompt.input.clone());
+                            if h.len() > PROMPT_HISTORY {
+                                h.remove(0);
+                            }
+                        }
                         let line = match template {
                             Some(t) => t.replace("%%", &crate::command::quote(&prompt.input)),
                             None => prompt.input,
@@ -6756,6 +6780,37 @@ impl Server {
                         let removed = head[cut..].chars().count();
                         p.input = format!("{}{}", &head[..cut], &p.input[idx..]);
                         p.cursor -= removed;
+                    }
+                    // Up / Down (C-p / C-n) at `:`: the lines run there
+                    // before, newest first; Down past the newest puts back
+                    // what was being typed.
+                    (KeyCode::Up, _, _) | (KeyCode::Char('p'), true, _)
+                        if matches!(p.kind, PromptKind::Command { template: None }) =>
+                    {
+                        let h = &self.prompt_history;
+                        if let Some(newest) = h.len().checked_sub(1) {
+                            let (at, draft) = match p.browse.take() {
+                                None => (newest, p.input.clone()),
+                                Some((i, draft)) => (i.saturating_sub(1), draft),
+                            };
+                            p.input = h[at].clone();
+                            p.cursor = p.input.chars().count();
+                            p.browse = Some((at, draft));
+                        }
+                    }
+                    (KeyCode::Down, _, _) | (KeyCode::Char('n'), true, _)
+                        if matches!(p.kind, PromptKind::Command { template: None }) =>
+                    {
+                        let h = &self.prompt_history;
+                        match p.browse.take() {
+                            Some((i, draft)) if i + 1 < h.len() => {
+                                p.input = h[i + 1].clone();
+                                p.browse = Some((i + 1, draft));
+                            }
+                            Some((_, draft)) => p.input = draft,
+                            None => {}
+                        }
+                        p.cursor = p.input.chars().count();
                     }
                     (KeyCode::Char(ch), false, false) => {
                         let idx = char_index(&p.input, p.cursor);
@@ -7407,6 +7462,7 @@ impl Server {
                     input: prev,
                     cursor,
                     hint: None,
+                    browse: None,
                 });
             }
             // The task board and the tree act on the tagged lines, else the
@@ -7540,6 +7596,7 @@ impl Server {
                 input: String::new(),
                 cursor: 0,
                 hint: None,
+                browse: None,
             });
         }
     }
@@ -7936,6 +7993,7 @@ impl Server {
                         input: String::new(),
                         cursor: 0,
                         hint: None,
+                        browse: None,
                     });
                 }
             }
@@ -9847,6 +9905,21 @@ fn selected_text(p: &mut Pane) -> Result<String, String> {
         }
     }
     Ok(text)
+}
+
+/// What a program asking a pane's colours is told: the theme's text,
+/// background and 16 where it sets them as RGB (`window-style`,
+/// `pane-colours`); nothing for the terminal's own.
+fn query_colours(opts: &Options) -> pane::QueryColours {
+    let rgb = |c: vt100::Color| match c {
+        vt100::Color::Rgb(r, g, b) => Some((r, g, b)),
+        _ => None,
+    };
+    let mut palette = [None; 16];
+    for (slot, c) in palette.iter_mut().zip(&opts.pane_colours) {
+        *slot = rgb(*c);
+    }
+    pane::QueryColours { fg: rgb(opts.window_fg), bg: rgb(opts.window_bg), palette }
 }
 
 /// The clock's inks: `clock-mode-colour` is the whole clock; else the hours

@@ -122,6 +122,62 @@ pub struct Callbacks {
     /// 7777;keepane-prompt`): the one signal a `shell` pane trusts. With the
     /// language that shell takes commands in.
     pub prompted: Option<super::actor::Syntax>,
+    /// The colours a program that asks is told (OSC 10, 11, 4).
+    pub colours: QueryColours,
+}
+
+/// The pane's colours as a program asking the terminal hears them (OSC 10
+/// the text, 11 the background, 4;n the palette's first 16): the theme's,
+/// when it draws the panes (`window-style`, `pane-colours`), since the
+/// terminal under keepane may be dark while the panes are light paper.
+/// None for a colour left to the terminal: no answer, as before (the
+/// program takes its own default).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QueryColours {
+    pub fg: Option<(u8, u8, u8)>,
+    pub bg: Option<(u8, u8, u8)>,
+    pub palette: [Option<(u8, u8, u8)>; 16],
+}
+
+impl QueryColours {
+    /// `OSC n;rgb:rrrr/gggg/bbbb ST`, as xterm answers.
+    fn answer(out: &mut Vec<u8>, what: &str, (r, g, b): (u8, u8, u8)) {
+        let w = |v: u8| u16::from(v) * 0x101;
+        out.extend_from_slice(format!("\x1b]{what};rgb:{:04x}/{:04x}/{:04x}\x1b\\", w(r), w(g), w(b)).as_bytes());
+    }
+
+    /// The answers to an OSC 10 / 11 / 4 query in `params`, if it is one:
+    /// `10;?`, `11;?`, xterm's run `10;?;?` (10 then 11), `4;n;?` (more
+    /// pairs after it too). A colour not known is not answered.
+    fn answers(&self, params: &[&[u8]], out: &mut Vec<u8>) {
+        let num = |p: &[u8]| std::str::from_utf8(p).ok()?.parse::<usize>().ok();
+        match params {
+            [first, rest @ ..] if matches!(*first, b"10" | b"11") => {
+                let start = if *first == b"10" { 10 } else { 11 };
+                for (i, q) in rest.iter().enumerate() {
+                    let colour = match (start + i, *q) {
+                        (10, b"?") => self.fg,
+                        (11, b"?") => self.bg,
+                        _ => None,
+                    };
+                    if let Some(c) = colour {
+                        Self::answer(out, &(start + i).to_string(), c);
+                    }
+                }
+            }
+            [b"4", pairs @ ..] => {
+                for pair in pairs.chunks(2) {
+                    if let [n, b"?"] = pair
+                        && let Some(n) = num(n)
+                        && let Some(Some(c)) = self.palette.get(n)
+                    {
+                        Self::answer(out, &format!("4;{n}"), *c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A shell's word about its prompt and its commands: FTCS (OSC 133, and
@@ -407,6 +463,10 @@ impl vt100::Callbacks for Callbacks {
         }
     }
     fn unhandled_osc(&mut self, screen: &mut vt100::Screen, params: &[&[u8]]) {
+        // Asked its colours: the theme's (the panes' paper, not the
+        // terminal's under keepane), so a program picks the right one of
+        // its light and dark looks.
+        self.colours.answers(params, &mut self.responses);
         // A full-screen program's screen is not the shell's: nothing there
         // is a prompt.
         let shell = !screen.alternate_screen();
@@ -1100,6 +1160,11 @@ impl Pane {
         let unfinished = self.actor.restarted();
         drop(old);
         Ok(unfinished)
+    }
+
+    /// What the pane tells a program that asks its colours (`QueryColours`).
+    pub fn set_query_colours(&mut self, c: QueryColours) {
+        self.parser.callbacks_mut().colours = c;
     }
 
     /// Feed process output into the terminal model; answer any queries.
@@ -2947,6 +3012,49 @@ mod tests {
         // Something else after the word is not keepane's marker.
         p.process_output(b"\x1b]7777;keepane-prompt;fish\x07");
         assert!(!p.prompted);
+    }
+
+    /// A program asking the colours (to pick its light or dark look) hears
+    /// the theme's: the text (OSC 10), the background (11), xterm's run of
+    /// both, a palette entry (4;n), several at once; ended by BEL or ST
+    /// alike. A colour the theme leaves to the terminal is not answered.
+    #[test]
+    fn colour_queries_are_answered_with_the_themes() {
+        let (tx, _rx) = channel();
+        let argv = exits_at_once();
+        let mut p = Pane::spawn(14, &argv, None, 20, 5, 10, &[], tx).unwrap();
+        let mut palette = [None; 16];
+        palette[1] = Some((0xa6, 0x36, 0x3d));
+        palette[15] = Some((0x33, 0x30, 0x2a));
+        p.set_query_colours(QueryColours { fg: Some((0x33, 0x30, 0x2a)), bg: Some((0xf0, 0xe7, 0xd2)), palette });
+        fn ask(p: &mut Pane, q: &[u8]) -> String {
+            p.parser.process(q);
+            String::from_utf8(std::mem::take(&mut p.parser.callbacks_mut().responses)).unwrap()
+        }
+        assert_eq!(ask(&mut p, b"\x1b]11;?\x07"), "\x1b]11;rgb:f0f0/e7e7/d2d2\x1b\\", "the background");
+        assert_eq!(ask(&mut p, b"\x1b]10;?\x1b\\"), "\x1b]10;rgb:3333/3030/2a2a\x1b\\", "the text, asked with ST");
+        assert_eq!(
+            ask(&mut p, b"\x1b]10;?;?\x07"),
+            "\x1b]10;rgb:3333/3030/2a2a\x1b\\\x1b]11;rgb:f0f0/e7e7/d2d2\x1b\\",
+            "both"
+        );
+        assert_eq!(ask(&mut p, b"\x1b]4;1;?\x07"), "\x1b]4;1;rgb:a6a6/3636/3d3d\x1b\\", "red");
+        assert_eq!(
+            ask(&mut p, b"\x1b]4;1;?;15;?;3;?\x07"),
+            "\x1b]4;1;rgb:a6a6/3636/3d3d\x1b\\\x1b]4;15;rgb:3333/3030/2a2a\x1b\\"
+        );
+        assert_eq!(ask(&mut p, b"\x1b]4;99;?\x07\x1b]4;x;?\x07\x1b]4;1\x07"), "", "no such entry, no number, no `?`");
+        assert_eq!(
+            ask(&mut p, b"\x1b]11;#ffffff\x07\x1b]12;?\x07"),
+            "",
+            "setting is not asking; 12 (the cursor) not answered"
+        );
+        // Left to the terminal: no answer, as before.
+        p.set_query_colours(QueryColours::default());
+        assert_eq!(ask(&mut p, b"\x1b]11;?\x07\x1b]10;?\x07\x1b]4;1;?\x07"), "");
+        // The title still set alongside.
+        p.process_output(b"\x1b]0;asked\x07\x1b]11;?\x07");
+        assert_eq!(p.title, "asked");
     }
 
     #[test]

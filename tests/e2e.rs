@@ -3014,6 +3014,122 @@ async fn a_commands_output_is_copied_and_copy_mode_steps_between_commands() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `:` keeps the lines run there: Up (C-p) brings back the newest, then
+/// older ones, stopping at the oldest; Down (C-n) goes back to newer and,
+/// past the newest, to what was being typed. A line run again from there
+/// runs; the same line twice in a row is kept once. Another prompt (a
+/// name to type) has no such history.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_command_prompt_brings_back_earlier_lines() {
+    const UP: u16 = 0x26;
+    const DOWN: u16 = 0x28;
+    let h = Harness::start("prompthist").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "p"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let last_row = |s: &vt100::Screen| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default();
+    // Nothing run yet: Up and Down leave what is typed.
+    c.prefix(':').await;
+    c.type_str("x").await;
+    c.key(UP, '\0', 0).await;
+    c.key(DOWN, '\0', 0).await;
+    c.type_str("y").await;
+    c.wait_for(":xy", |s| last_row(s).trim_end() == ":xy").await;
+    c.key(0x1b, '\x1b', 0).await;
+    for line in ["set -g @a one", "set -g @b two", "set -g @b two"] {
+        c.prefix(':').await;
+        c.type_str(line).await;
+        c.enter().await;
+    }
+    assert_eq!(h.cli(&["show", "-gv", "@b"]).await.1.trim(), "two");
+    h.cli(&["set", "-g", "@a", "zero"]).await;
+    c.prefix(':').await;
+    c.type_str("half typed").await;
+    for (key, want) in [
+        (UP, ":set -g @b two"),
+        (UP, ":set -g @a one"),
+        (UP, ":set -g @a one"), // the oldest: it stays
+        (DOWN, ":set -g @b two"),
+        (DOWN, ":half typed"),
+        (DOWN, ":half typed"),
+    ] {
+        c.key(key, '\0', 0).await;
+        c.wait_for(want, |s| last_row(s).trim_end() == want).await;
+    }
+    // C-p twice: the line before the newest (`@b two` was kept once), run again.
+    c.key(b'P' as u16, '\x10', LEFT_CTRL_PRESSED).await;
+    c.key(b'P' as u16, '\x10', LEFT_CTRL_PRESSED).await;
+    c.wait_for("set -g @a one", |s| last_row(s).trim_end() == ":set -g @a one").await;
+    c.key(b'N' as u16, '\x0e', LEFT_CTRL_PRESSED).await;
+    c.wait_for("C-n: newer", |s| last_row(s).trim_end() == ":set -g @b two").await;
+    c.key(UP, '\0', 0).await;
+    c.wait_for("back to it", |s| last_row(s).trim_end() == ":set -g @a one").await;
+    c.enter().await;
+    let mut ran = String::new();
+    for _ in 0..50 {
+        ran = h.cli(&["show", "-gv", "@a"]).await.1.trim().to_string();
+        if ran == "one" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(ran, "one", "the line brought back ran");
+    // Renaming a window: no history there; Up leaves the name as it is.
+    c.prefix(',').await;
+    c.wait_for("the rename prompt", |s| last_row(s).contains("(rename-window)")).await;
+    let before = last_row(c.screen.screen());
+    c.key(UP, '\0', 0).await;
+    c.key(b'P' as u16, '\x10', LEFT_CTRL_PRESSED).await;
+    c.frames_for(400).await;
+    assert_eq!(last_row(c.screen.screen()), before, "no history in another prompt");
+    h.cli(&["kill-server"]).await;
+}
+
+/// Paper, under a program that took the terminal for a dark one (an agent's
+/// input box): its black box with default text shows the text in the
+/// paper's colour, not the paper's ink, which would vanish. On Unix the
+/// program can ask (OSC 11) and hears the paper; Windows' console does not
+/// pass the question on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_programs_dark_box_keeps_its_text_on_light_paper() {
+    let h = Harness::start("darkbox").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "d"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let (code, _, err) = h.cli(&["set", "-g", "theme", "paper"]).await;
+    assert_eq!(code, 0, "{err}");
+    #[cfg(windows)]
+    let boxed: &[&str] =
+        &["pwsh", "-NoProfile", "-Command", "[Console]::Write(\"`e[48;2;0;0;0mtyped here`e[0m\"); Start-Sleep 60"];
+    #[cfg(unix)]
+    let boxed: &[&str] = &["/bin/sh", "-c", "printf '\\033[48;2;0;0;0mtyped here\\033[0m'; sleep 60"];
+    let boxed: Vec<String> = boxed.iter().map(|s| s.to_string()).collect();
+    let (code, _, err) = h.cli(&args(&["new-window", "-n", "box"], &boxed)).await;
+    assert_eq!(code, 0, "{err}");
+    let cell = |s: &vt100::Screen| {
+        (0..ROWS).find_map(|r| {
+            let col = s.rows(0, COLS).nth(r as usize)?.find("typed here")?;
+            let c = s.cell(r, col as u16)?;
+            Some((c.fgcolor(), c.bgcolor()))
+        })
+    };
+    let paper = vt100::Color::Rgb(0xf0, 0xe7, 0xd2);
+    c.wait_for("the text in the paper's colour on the box", |s| cell(s) == Some((paper, vt100::Color::Rgb(0, 0, 0))))
+        .await;
+    #[cfg(unix)]
+    {
+        let ask: Vec<String> = ["/bin/sh", "-c", "stty raw -echo; printf '\\033]11;?\\007'; r=$(head -c 23 | od -An -c | tr -d ' \\n'); stty sane; echo \"got:$r\"; sleep 60"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (code, _, err) = h.cli(&args(&["new-window", "-n", "ask"], &ask)).await;
+        assert_eq!(code, 0, "{err}");
+        let got = h.wait_capture("d:ask", "the answer", |t| t.contains("got:")).await;
+        assert!(got.contains("rgb:f0f0/e7e7/d2d2"), "{got}");
+    }
+    h.cli(&["kill-server"]).await;
+}
+
 /// `theme`: paper-dark, the default, and tokyo-day draw the panes (their
 /// default colours and the palette's first 16) whatever the terminal's are;
 /// tokyo-night leaves them to the terminal. The phone's page reads it and

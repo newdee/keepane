@@ -425,7 +425,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
 | `t` / `~` / `r` | clock, and under it the date (and UTC), other places' time (`clock-mode-zones`), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine, then the month with today marked when it fits (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`); below, something that moves with the machine (see below); `q` leaves it / recent messages / redraw |
 | `]` | paste the clipboard |
-| `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names) |
+| `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names; ↑ / ↓ or `C-p` / `C-n` bring back the lines run there before, the last 100, until the server stops) |
 | `d` | detach |
 | `?` | list key bindings |
 | (wait) | after the prefix, a key not pressed within half a second brings up a panel of what the keys do, by group (panes, windows, sessions, tools, and keys you bound yourself); the key then works as ever (`prefix-hint`, `prefix-hint-delay`) |
