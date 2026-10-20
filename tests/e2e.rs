@@ -3041,7 +3041,8 @@ async fn the_command_prompt_brings_back_earlier_lines() {
         c.type_str(line).await;
         c.enter().await;
     }
-    assert_eq!(h.cli(&["show", "-gv", "@b"]).await.1.trim(), "two");
+    // The keys reach the server on the client's line, the CLI on its own.
+    h.wait_for_cli("the lines run", &["show", "-gv", "@b"], |_, out| out.trim() == "two").await;
     h.cli(&["set", "-g", "@a", "zero"]).await;
     c.prefix(':').await;
     c.type_str("half typed").await;
@@ -3065,15 +3066,7 @@ async fn the_command_prompt_brings_back_earlier_lines() {
     c.key(UP, '\0', 0).await;
     c.wait_for("back to it", |s| last_row(s).trim_end() == ":set -g @a one").await;
     c.enter().await;
-    let mut ran = String::new();
-    for _ in 0..50 {
-        ran = h.cli(&["show", "-gv", "@a"]).await.1.trim().to_string();
-        if ran == "one" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(ran, "one", "the line brought back ran");
+    h.wait_for_cli("the line brought back ran", &["show", "-gv", "@a"], |_, out| out.trim() == "one").await;
     // Renaming a window: no history there; Up leaves the name as it is.
     c.prefix(',').await;
     c.wait_for("the rename prompt", |s| last_row(s).contains("(rename-window)")).await;
