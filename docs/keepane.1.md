@@ -435,13 +435,30 @@ game of life, more generations with the cores, sown with the context
 switches up to a share the memory in use sets. `donut` is a turning torus,
 faster with the cores, thicker with memory. `weather` is clouds with the
 cores, rain with the disks slanting in the network's wind, lightning with
-the interrupts, water as deep as the memory in use. In each of these six a
-message delivered shows as an `✉` (rising, a comet, on a glider, in the
-torus's hole, falling). In `pulse`, `matrix`, `starfield`, `life` and
-`donut` the colour goes from green through yellow to red with the CPU's
-temperature, or with the cores' load when there is no temperature; the bars
-are green at the bottom, yellow higher up and red at the top. `random` (the
-default) picks one of the nine each time the clock is put on a pane, never
+the interrupts, water as deep as the memory in use. `sharks` is a sea seen
+from above: a school of fish for each pane (six at most), faster the more it
+prints, turning more with the context switches; a shark hunting them, hungry
+sooner with the cores, longer with memory; all of it drifting with the
+network, glints with the disks. `hourglass` is the hour's glass, its sand
+run down as far as the hour has, the minute's and the day's beside it where
+they fit; grains falling faster with the cores, bouncing with the disks.
+`bonsai` is a tree growing through the day, a limb for each pane (six at
+most) shaking with its output, its leaves stirring quicker with the context
+switches, more leaves with memory, leaning in the network's wind, a leaf
+falling now and then, more with the disks. `orbits` is a planet for each
+core, faster the busier it is, round a sun bigger with memory, red when hot,
+flaring with the interrupts, an asteroid belt with the network. `radar` is a
+sweep faster with the cores, a blip for each pane bigger the more it prints,
+contacts with the network, clutter with the interrupts. In each of these 11
+a message delivered shows as an `✉` (rising, a comet, on a glider, in the
+torus's hole, falling, in a ripple the shark races to, through the glass's
+neck, from a leaf, a comet round the sun, in from the radar's rim). In
+`pulse`, `matrix`, `starfield`, `life` and `donut`, and in the shark's eyes,
+the hourglass's glass and the bonsai's leaves, the colour goes from green
+through yellow to red with the CPU's temperature, or with the cores' load
+when there is no temperature; the bars are green at the bottom, yellow
+higher up and red at the top. `random` (the default) picks one of the 14
+each time the clock is put on a pane, never
 the one it had before; `cycle` takes them in turn; a name sets that one;
 `off`, or `animation off`, leaves the clock still. Under a clock, `/` turns
 to the next kind and `?` to the one before, its name shown for a second;

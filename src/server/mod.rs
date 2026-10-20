@@ -8524,7 +8524,7 @@ impl Server {
             if p.clock_anim.as_ref().is_none_or(|(a, _)| a.kind != kind) {
                 p.clock_anim = Some((clockanim::Anim::new(kind, u64::from(id)), now));
             }
-            let input = clockanim::Input { load: load.clone(), outs, messages };
+            let input = clockanim::Input { load: load.clone(), outs, messages, day: clockanim::day_seconds(&wall) };
             if let Some((a, last)) = p.clock_anim.as_mut() {
                 a.step(now.duration_since(*last).as_secs_f64(), input);
                 *last = now;
@@ -10025,10 +10025,11 @@ mod tests {
     fn a_key_turns_the_clocks_kind() {
         use clockanim::Kind;
         assert_eq!(Kind::turned(Some(Kind::Pulse), true), Kind::Matrix);
-        assert_eq!(Kind::turned(Some(Kind::Pulse), false), Kind::Weather);
-        assert_eq!(Kind::turned(Some(Kind::Weather), true), Kind::Pulse);
+        assert_eq!(Kind::turned(Some(Kind::Pulse), false), Kind::Radar);
+        assert_eq!(Kind::turned(Some(Kind::Weather), true), Kind::Sharks);
+        assert_eq!(Kind::turned(Some(Kind::Radar), true), Kind::Pulse);
         assert_eq!(Kind::turned(None, true), Kind::Pulse);
-        assert_eq!(Kind::turned(None, false), Kind::Weather);
+        assert_eq!(Kind::turned(None, false), Kind::Radar);
         for k in Kind::ALL {
             assert_eq!(Kind::turned(Some(Kind::turned(Some(k), true)), false), k);
         }

@@ -499,14 +499,40 @@ moves with the machine and with keepane (`clock-mode-animation`):
   heavier with the disks and slanting in the network's wind, lightning with
   the interrupts, water as deep as the memory in use; each message an `✉`
   falling into it.
+- `sharks`: a sea seen from above. A school of fish for each pane of the
+  window (six at most), swimming faster the more the pane prints and
+  turning more with the context switches; a shark hunting them, hungry
+  sooner the busier the cores, longer with memory; all of it drifting with
+  the network, the water glinting with the disks; each message a ripple
+  with `✉` in it, the shark racing to it.
+- `hourglass`: the hour's glass, its sand run down as far as the hour has;
+  where they fit, the minute's (`60s`) on its left and the day's (`24h`) on
+  its right. Grains fall faster the busier the cores and bounce on the pile
+  with the disks; each message an `✉` falling through the neck.
+- `bonsai`: a tree in a pot, growing through the day (a sapling after
+  midnight, most of it by the morning, all of it by night), a limb for each
+  pane (six at most), its leaves always stirring (quicker with the context
+  switches) and shaking the more the pane prints; more leaves with memory,
+  leaning in the network's wind; a leaf falling now and then, more with the
+  disks; each message an `✉` falling from a leaf.
+- `orbits`: a planet for each core (the cores in groups past eight), each
+  going round faster the busier its cores; the sun bigger with memory, red
+  when the CPU is hot, flaring with the interrupts; an asteroid belt with
+  the network; each message a comet with `✉` at its head swinging round
+  the sun.
+- `radar`: a sweep turning faster the busier the cores; a blip for each
+  pane, lit as the sweep passes, bigger the more the pane prints; contacts
+  with the network, clutter by the middle with the interrupts; each message
+  an `✉` coming in from the rim.
 
 The lines over it end with keepane's own: its sessions and panes, and the
 messages it has delivered since it started.
 
-In `pulse`, `matrix`, `starfield`, `life` and `donut` the colour goes from
+In `pulse`, `matrix`, `starfield`, `life` and `donut`, and in the shark's
+eyes, the hourglass's glass and the bonsai's leaves, the colour goes from
 green through yellow to red with the CPU's temperature, or with the cores'
 load when there is no temperature; the bars are green at the bottom, yellow
-higher up and red at the top. `random` (the default) picks one of the nine
+higher up and red at the top. `random` (the default) picks one of the 14
 each time the clock is put on a pane, never the one it had before; `cycle`
 takes them in turn; a name sets that one; `off`, or `animation off`, leaves
 the clock still. Under a clock, `/` turns to the next kind and `?` to the
@@ -1401,7 +1427,7 @@ set -g log-history-days 30        # for how long; 0 keeps everything (log-histor
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
 set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
-set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, random (the default), cycle or off
+set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, sharks, hourglass, bonsai, orbits, radar, random (the default), cycle or off
 set -g clock-mode-zones "Asia/Shanghai,America/Los_Angeles"  # other places' time under the clock's date (IANA names, or a city alone: tokyo)
 set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
 set -g git-command C:\Tools\git\cmd\git.exe  # the git to run for the panes' repositories (default: the one found)

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 fn band() -> Rect {
     Rect { x: 2, y: 3, w: 60, h: 9 }
@@ -23,11 +24,16 @@ fn busy() -> Load {
     }
 }
 
-/// `steps` frames of `dt` with the same input, from a new animation.
+/// Half past nine in the morning, in seconds.
+const MORNING: f64 = 34_200.0;
+
+/// `steps` frames of `dt` with the same input, from a new animation, its
+/// clock from `MORNING`.
 fn run(kind: Kind, load: &Load, steps: usize, dt: f64) -> Anim {
     let mut a = Anim::new(kind, 7);
     for i in 0..steps {
-        a.step(dt, Input { load: load.clone(), outs: vec![i as u64 * 4000], messages: 0 });
+        let day = MORNING + i as f64 * dt;
+        a.step(dt, Input { load: load.clone(), outs: vec![i as u64 * 4000], messages: 0, day });
     }
     a
 }
@@ -37,7 +43,7 @@ fn run_with_messages(kind: Kind, load: &Load, steps: usize, dt: f64, at: &[usize
     let mut a = Anim::new(kind, 7);
     for i in 0..steps {
         let messages = at.iter().filter(|&&s| s <= i).count() as u64;
-        a.step(dt, Input { load: load.clone(), outs: vec![0], messages });
+        a.step(dt, Input { load: load.clone(), outs: vec![0], messages, day: MORNING + i as f64 * dt });
     }
     a
 }
@@ -264,7 +270,7 @@ fn the_bars_stand_for_each_figure() {
     let mut a = run(Kind::Bars, &full, 30, 0.066);
     let idle = Load { cores: vec![0.0], ..Load::default() };
     for _ in 0..5 {
-        a.step(0.066, Input { load: idle.clone(), outs: vec![0], messages: 0 });
+        a.step(0.066, Input { load: idle.clone(), outs: vec![0], ..Input::default() });
     }
     let g = drawn(&a, band(), &pal);
     assert!((0..g.cols).any(|x| g.get(x, band().y).text() == "▔"), "{}", text(&g));
@@ -876,4 +882,415 @@ fn the_weather_follows_the_machine() {
     let e = envelopes(&drawn(&a, full(), &pal));
     assert_eq!(e.len(), 1);
     assert_eq!(e[0].1, 3 + 6);
+}
+
+/// `steps` frames of `dt`, the input of each from `input`.
+fn run_by(kind: Kind, steps: usize, dt: f64, input: impl Fn(usize) -> Input) -> Anim {
+    let mut a = Anim::new(kind, 7);
+    for i in 0..steps {
+        a.step(dt, input(i));
+    }
+    a
+}
+
+/// The cells of `g` that read one of `marks`.
+fn marked(g: &Grid, marks: &[&str]) -> Vec<(u16, u16)> {
+    (0..g.rows)
+        .flat_map(|y| (0..g.cols).map(move |x| (x, y)))
+        .filter(|&(x, y)| marks.contains(&g.get(x, y).text()))
+        .collect()
+}
+
+/// The sea: a school a pane (six at most), each faster the more its pane
+/// prints; all of it drifting with the network, the fish turning more with
+/// the context switches; the shark hungry sooner and eating more the busier
+/// the cores, longer with memory, its eyes in the CPU's colour; glints with
+/// the disks; a message's ripple, `✉` in it, the shark racing to it.
+#[test]
+fn the_shark_hunts_a_school_a_pane() {
+    let pal = Palette::default();
+    let schools = |panes: usize| {
+        run_by(Kind::Sharks, 2, 0.066, |_| Input { outs: vec![0; panes], ..Input::default() }).sea.fish.len()
+    };
+    assert_eq!((schools(0), schools(3), schools(10)), (9, 27, 54));
+    let a = run_by(Kind::Sharks, 100, 0.066, |i| Input { outs: vec![0, i as u64 * 66_000], ..Input::default() });
+    let speed = |school: usize| {
+        let mut v: Vec<f64> = a
+            .sea
+            .fish
+            .iter()
+            .filter(|f| f.school == school && f.back.is_none())
+            .map(|f| (f.vx * f.vx + f.vy * f.vy).sqrt())
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    assert!(speed(1) > speed(0) * 1.4, "{} {}", speed(0), speed(1));
+    let with = |load: Load, steps: usize| {
+        run_by(Kind::Sharks, steps, 0.066, |_| Input { load: load.clone(), ..Input::default() })
+    };
+    let meals = |cpu: f32| with(Load { cpu, ..Load::default() }, 900).sea.meals;
+    assert!(meals(1.0) > meals(0.0) + 2, "{} {}", meals(0.0), meals(1.0));
+    let mid_x = |net: f64| {
+        let a = with(Load { net: Some((net, 0.0)), ..Load::default() }, 300);
+        a.sea.fish.iter().map(|f| f.x).sum::<f64>() / a.sea.fish.len() as f64
+    };
+    assert!(mid_x(1e9) > mid_x(0.0) + 5.0, "{} {}", mid_x(0.0), mid_x(1e9));
+    let turning = |switches: f64| {
+        let load = Load { switches: Some(switches), ..Load::default() };
+        let mut a = Anim::new(Kind::Sharks, 7);
+        let mut turned = 0.0;
+        for _ in 0..150 {
+            let before: Vec<f64> = a.sea.fish.iter().map(|f| f.vy.atan2(f.vx)).collect();
+            a.step(0.066, Input { load: load.clone(), ..Input::default() });
+            for (b, f) in before.iter().zip(&a.sea.fish) {
+                turned += (f.vy.atan2(f.vx) - b + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                turned = turned.abs();
+            }
+        }
+        turned
+    };
+    assert!(turning(1e6) > turning(1e3) * 1.3, "{} {}", turning(1e3), turning(1e6));
+    let body = ["@", "#", "*", "+", ";"];
+    let long = |memory: f32| {
+        marked(&drawn(&with(Load { memory: Some(memory), ..Load::default() }, 40), full(), &pal), &body).len()
+    };
+    assert!(long(1.0) > long(0.0) * 3 / 2, "{} {}", long(0.0), long(1.0));
+    let hot = drawn(&with(Load { temp: Some(90.0), ..Load::default() }, 40), full(), &pal);
+    let eyes = marked(&hot, &["o"]);
+    assert!(!eyes.is_empty() && eyes.iter().all(|&(x, y)| hot.get(x, y).style.fg == Color::Idx(RED)), "{}", text(&hot));
+    let glints = |disk: f64| {
+        let a = with(Load { disk: Some((disk, 0.0)), ..Load::default() }, 40);
+        cells(&drawn(&a, full(), &pal), |c| c.text() == "." && c.style.fg == Color::Idx(CYAN) && c.style.dim)
+    };
+    assert!(glints(1e9) > glints(0.0) * 3, "{} {}", glints(0.0), glints(1e9));
+    // A message: its envelope where it landed, rings round it; the shark
+    // nearer it 2 s on; all of it gone after 3 s.
+    let told = |steps: usize| run_with_messages(Kind::Sharks, &Load::default(), steps, 0.066, &[40]);
+    let (x, y) = sharks::landing(7, 0);
+    let near = |a: &Anim| ((a.sea.shark.x - x).powi(2) + (a.sea.shark.y - y).powi(2)).sqrt();
+    let g = drawn(&told(45), full(), &pal);
+    let e = envelopes(&g);
+    assert_eq!(e, vec![((x * 0.64).floor() as u16, (y * 28.0 / 60.0 / 2.0).floor() as u16)], "{}", text(&g));
+    assert!(!marked(&g, &["o"]).is_empty());
+    // The shark gets there within the ripple's 3 s, from wherever it was.
+    let mut a = told(41);
+    let closest = (41..85)
+        .map(|i| {
+            a.step(0.066, Input { messages: 1, day: MORNING + i as f64 * 0.066, outs: vec![0], ..Input::default() });
+            near(&a)
+        })
+        .fold(f64::INFINITY, f64::min);
+    assert!(closest < 4.0, "{} at the message, {closest} at the closest", near(&told(41)));
+    assert!(envelopes(&drawn(&told(90), full(), &pal)).is_empty());
+}
+
+/// The glasses: the hour's sand split as the hour has gone, the stream
+/// only while sand is left; the minute's and the day's beside it where
+/// there is room; grains falling faster the busier the cores, bouncing
+/// with the disks; the glass in the CPU's colour; a message's envelope
+/// falling through the neck.
+#[test]
+fn the_hourglass_runs_with_the_hour() {
+    let pal = Palette::default();
+    let at = |day: f64, load: Load| {
+        run_by(Kind::Hourglass, 10, 0.1, |_| Input { load: load.clone(), day, ..Input::default() })
+    };
+    // 14 rows: bulbs of 5 rows, 35 grains between them; the neck on row 7.
+    let sand = |a: &Anim| {
+        let g = drawn(a, full(), &pal);
+        let grains = marked(&g, &["▒", "░"]).into_iter().filter(|&(x, _)| x.abs_diff(32) <= 6);
+        let (above, below): (Vec<_>, Vec<_>) = grains.partition(|&(_, y)| y < 7);
+        let stream = (7..13).any(|y| [":", "."].contains(&g.get(32, y).text()));
+        (above.len(), below.len(), stream)
+    };
+    assert_eq!(sand(&at(36_000.0, Load::default())), (35, 0, true));
+    assert_eq!(sand(&at(37_800.0, Load::default())), (17, 18, true));
+    assert_eq!(sand(&at(39_599.9, Load::default())), (0, 35, true), "the last grains still falling");
+    let g = drawn(&at(36_000.0, Load::default()), full(), &pal);
+    assert!(text(&g).contains("60s") && text(&g).contains("24h"), "{}", text(&g));
+    // The small ones (bulbs of 3 rows, 15 grains, the neck on row 9): at
+    // 10:00:30 the minute's half run down, the day's 0.417 of the way.
+    let small = |g: &Grid, cx: u16| {
+        let grains = marked(g, &["▒", "░"]).into_iter().filter(|&(x, _)| x.abs_diff(cx) <= 4);
+        let (above, below): (Vec<_>, Vec<_>) = grains.partition(|&(_, y)| y < 9);
+        (above.len(), below.len())
+    };
+    let g = drawn(&at(36_030.0, Load::default()), full(), &pal);
+    assert_eq!((small(&g, 18), small(&g, 46)), ((7, 8), (9, 6)), "{}", text(&g));
+    let mut narrow = Grid::new(64, 14);
+    at(36_000.0, Load::default()).draw(&mut narrow, Rect { x: 0, y: 0, w: 30, h: 14 }, &pal);
+    assert!(!text(&narrow).contains("60s") && marked(&narrow, &["="]).len() == 26, "{}", text(&narrow));
+    // Tall and narrow: no wider than the band, both caps whole.
+    let mut tall = Grid::new(20, 40);
+    at(36_000.0, Load::default()).draw(&mut tall, Rect { x: 0, y: 0, w: 20, h: 40 }, &pal);
+    let caps = marked(&tall, &["="]);
+    assert!(caps.len() == 2 * 19 && caps.iter().all(|&(x, _)| (1..20).contains(&x)), "{}", text(&tall));
+    let fall = |cpu: f32| at(36_000.0, Load { cpu, ..Load::default() }).sand.fall;
+    assert!((fall(0.0) - 4.0).abs() < 1e-9 && (fall(1.0) - 20.0).abs() < 1e-9, "{} {}", fall(0.0), fall(1.0));
+    let bounces = |disk: f64| {
+        let a = at(37_800.0, Load { disk: Some((disk, 0.0)), ..Load::default() });
+        marked(&drawn(&a, full(), &pal), &["'"]).len()
+    };
+    assert!(bounces(0.0) == 0 && bounces(1e9) > 0, "{} {}", bounces(0.0), bounces(1e9));
+    let frame = |temp: f32| {
+        let g = drawn(&at(36_000.0, Load { temp: Some(temp), ..Load::default() }), full(), &pal);
+        g.get(32, 1).style.fg
+    };
+    assert_eq!((frame(40.0), frame(90.0)), (Color::Idx(GREEN), Color::Idx(RED)));
+    let a = run_with_messages(Kind::Hourglass, &Load::default(), 13, 0.1, &[10]);
+    assert_eq!(envelopes(&drawn(&a, full(), &pal)), vec![(32, 8)], "6 rows a second, 0.2 s");
+}
+
+/// The tree: a limb a pane (six at most), grown through the day; more
+/// leaves with memory, in the CPU's colour, shaking more with their pane's
+/// output and leaning in the network's wind; leaves falling with the
+/// disks; a message's envelope falling from a leaf.
+#[test]
+fn the_bonsai_grows_through_the_day() {
+    let pal = Palette::default();
+    let tree = |panes: usize, day: f64, load: Load| {
+        run_by(Kind::Bonsai, 10, 0.1, |i| Input {
+            load: load.clone(),
+            outs: (0..panes).map(|p| if p == 0 { i as u64 * 200_000 } else { 0 }).collect(),
+            day,
+            ..Input::default()
+        })
+    };
+    let limbs = |panes: usize| tree(panes, 0.0, Load::default()).tree.limbs.iter().filter(|b| b.depth == 1).count();
+    assert_eq!((limbs(0), limbs(3), limbs(9)), (1, 3, 6));
+    let band = Rect { x: 0, y: 0, w: 64, h: 14 };
+    let wood =
+        |day: f64| cells(&drawn(&tree(3, day, Load::default()), band, &pal), |c| c.style.fg == Color::Idx(YELLOW));
+    assert!(
+        wood(3_600.0) < wood(34_200.0) && wood(34_200.0) < wood(72_000.0),
+        "{} {} {}",
+        wood(3_600.0),
+        wood(34_200.0),
+        wood(72_000.0)
+    );
+    let leaves = |load: Load| drawn(&tree(3, 72_000.0, load), band, &pal);
+    let few = marked(&leaves(Load { memory: Some(0.0), ..Load::default() }), &["&", "*"]).len();
+    let many = marked(&leaves(Load { memory: Some(1.0), ..Load::default() }), &["&", "*"]).len();
+    assert!(many > few * 3 / 2, "{few} {many}");
+    let hot = leaves(Load { temp: Some(90.0), ..Load::default() });
+    let colours: Vec<Color> = marked(&hot, &["&", "*"]).into_iter().map(|(x, y)| hot.get(x, y).style.fg).collect();
+    assert!(colours.iter().all(|c| [Color::Idx(RED), Color::Idx(RED + 8)].contains(c)), "{colours:?}");
+    // How often the left limb's leaves (the first pane's) change place from
+    // one frame to the next over 2 s: more while its pane prints, more
+    // with the context switches.
+    let stirred = |rate: u64, switches: f64| {
+        let load = Load { switches: Some(switches), ..Load::default() };
+        let mut a = Anim::new(Kind::Bonsai, 7);
+        let mut last: Option<HashSet<(u16, u16)>> = None;
+        let mut moved = 0;
+        for i in 0..40u64 {
+            a.step(0.1, Input { load: load.clone(), outs: vec![i * rate, 0], day: 72_000.0, ..Input::default() });
+            let g = drawn(&a, band, &pal);
+            let now: HashSet<(u16, u16)> = marked(&g, &["&", "*"]).into_iter().filter(|&(x, _)| x < 32).collect();
+            if let Some(l) = &last
+                && i >= 20
+            {
+                moved += l.symmetric_difference(&now).count();
+            }
+            last = Some(now);
+        }
+        moved
+    };
+    let (quiet, printing) = (stirred(0, 1e3), stirred(200_000, 1e3));
+    assert!(quiet > 0 && printing > quiet * 3 / 2, "{quiet} {printing}");
+    let switching = stirred(0, 1e6);
+    assert!(switching > quiet * 3 / 2, "{quiet} {switching}");
+    let lean = |net: f64| {
+        let g = leaves(Load { net: Some((net, 0.0)), ..Load::default() });
+        let l = marked(&g, &["&", "*"]);
+        l.iter().map(|&(x, _)| f64::from(x)).sum::<f64>() / l.len() as f64
+    };
+    assert!(lean(1e9) > lean(0.0) + 0.3, "{} {}", lean(0.0), lean(1e9));
+    let falling = |disk: f64| marked(&leaves(Load { disk: Some((disk, 0.0)), ..Load::default() }), &[","]).len();
+    assert!(falling(0.0) <= 1 && falling(1e9) > falling(0.0) + 3, "{} {}", falling(0.0), falling(1e9));
+    let told = |steps: usize| run_with_messages(Kind::Bonsai, &Load::default(), steps, 0.1, &[10]);
+    let (a, b) = (envelopes(&drawn(&told(12), band, &pal)), envelopes(&drawn(&told(20), band, &pal)));
+    assert!(a.len() == 1 && b.len() == 1 && b[0].1 > a[0].1, "{a:?} {b:?}");
+    assert!(envelopes(&drawn(&told(80), band, &pal)).is_empty());
+}
+
+/// The sky: a planet a core (eight at most, the cores in groups past
+/// that), faster the busier; the sun bigger with memory, red when hot,
+/// flaring with the interrupts; the belt with the network; a message's
+/// comet across.
+#[test]
+fn the_planets_go_round_with_the_cores() {
+    let pal = Palette::default();
+    let sky = |load: Load, steps: usize| {
+        run_by(Kind::Orbits, steps, 0.066, |_| Input { load: load.clone(), ..Input::default() })
+    };
+    let n = |cores: Vec<f32>| sky(Load { cores, ..Load::default() }, 2).sky.angles.len();
+    assert_eq!((n(vec![]), n(vec![0.5; 4]), n(vec![0.5; 9]), n(vec![0.5; 64])), (1, 4, 5, 8));
+    assert_eq!(
+        orbits::planets(&Load { cores: (0..16).map(|i| (i % 2) as f32).collect(), ..Load::default() }),
+        vec![0.5; 8]
+    );
+    let turned = |level: f32| {
+        let (a, b) = (
+            sky(Load { cores: vec![level], ..Load::default() }, 10),
+            sky(Load { cores: vec![level], ..Load::default() }, 110),
+        );
+        b.sky.angles[0] - a.sky.angles[0]
+    };
+    assert!(turned(1.0) > turned(0.0) * 3.0, "{} {}", turned(0.0), turned(1.0));
+    let g = |load: Load| drawn(&sky(load, 30), full(), &pal);
+    let big = g(Load { memory: Some(0.8), ..Load::default() });
+    assert!(text(&big).contains("-(@)-") && !text(&g(Load { memory: Some(0.2), ..Load::default() })).contains("(@)"));
+    let hot = g(Load { temp: Some(90.0), ..Load::default() });
+    let sun = marked(&hot, &["@"])[0];
+    assert_eq!(hot.get(sun.0, sun.1).style.fg, Color::Idx(RED));
+    let belt = |net: f64| {
+        cells(&g(Load { net: Some((net, 0.0)), ..Load::default() }), |c| {
+            c.text() == "." && c.style.fg == Color::Idx(YELLOW)
+        })
+    };
+    assert!(belt(0.0) == 0 && belt(1e9) > 20, "{} {}", belt(0.0), belt(1e9));
+    let flares = |interrupts: f64| {
+        let mut a = Anim::new(Kind::Orbits, 7);
+        (0..30)
+            .map(|_| {
+                a.step(
+                    0.2,
+                    Input { load: Load { interrupts: Some(interrupts), ..Load::default() }, ..Input::default() },
+                );
+                marked(&drawn(&a, full(), &pal), &["*"]).len()
+            })
+            .sum::<usize>()
+    };
+    assert!(flares(1e3) == 0 && flares(1e6) > 20, "{} {}", flares(1e3), flares(1e6));
+    let told = |steps: usize| run_with_messages(Kind::Orbits, &Load::default(), steps, 0.066, &[10]);
+    assert_eq!(envelopes(&drawn(&told(40), full(), &pal)).len(), 1);
+    assert!(envelopes(&drawn(&told(80), full(), &pal)).is_empty(), "past the sun and gone after 4 s");
+}
+
+/// The screen: the sweep faster the busier the cores; a blip a pane, the
+/// loudest biggest; contacts with the network, clutter with the
+/// interrupts; a message's envelope coming in from the rim; the bearing.
+#[test]
+fn the_radar_sweeps_with_the_cores() {
+    let pal = Palette::default();
+    let scope = |load: Load, outs: Vec<u64>, steps: usize| {
+        run_by(Kind::Radar, steps, 0.05, |i| Input {
+            load: load.clone(),
+            outs: outs.iter().map(|o| o * i as u64).collect(),
+            ..Input::default()
+        })
+    };
+    let swept = |cpu: f32| scope(Load { cpu, ..Load::default() }, vec![0], 10).scope.sweep;
+    assert!((swept(0.0) - 0.75).abs() < 1e-9 && (swept(1.0) - 2.25).abs() < 1e-9, "{} {}", swept(0.0), swept(1.0));
+    let g = drawn(&scope(Load::default(), vec![0, 100_000, 0], 30), full(), &pal);
+    assert_eq!(marked(&g, &["@"]).len(), 1, "the one printing 2 MB a second: {}", text(&g));
+    assert_eq!(marked(&g, &["o", "O"]).len(), 2, "{}", text(&g));
+    assert!(text(&g).contains('°'));
+    // Each blip lit (bold, unfaded) as the sweep passes, faded later in
+    // the turn: over a turn, each of the three seen both ways.
+    let mut a = Anim::new(Kind::Radar, 7);
+    let mut seen: std::collections::HashMap<(u16, u16), (bool, bool)> = Default::default();
+    for _ in 0..90 {
+        a.step(0.05, Input { outs: vec![0; 3], ..Input::default() });
+        let g = drawn(&a, full(), &pal);
+        for (x, y) in marked(&g, &["o"]) {
+            let s = g.get(x, y).style;
+            let e = seen.entry((x, y)).or_default();
+            (e.0, e.1) = (e.0 || (s.bold && !s.dim), e.1 || s.dim);
+        }
+    }
+    assert!(seen.len() == 3 && seen.values().all(|&(lit, faded)| lit && faded), "{seen:?}");
+    // The glow: dots a little behind the sweep, none a little ahead.
+    let a = scope(Load::default(), vec![0], 30);
+    let g = drawn(&a, full(), &pal);
+    let (ry, sweep) = (6.5, a.scope.sweep);
+    let at = |da: f64| {
+        let t = sweep + da;
+        let (x, y) = ((32.0 + 13.0 * 0.7 * t.sin()).floor() as u16, (7.0 - ry * 0.7 * t.cos()).floor() as u16);
+        g.get(x, y).text().to_string()
+    };
+    assert_eq!((at(-0.3).as_str(), at(0.6).as_str()), (".", " "), "{}", text(&g));
+    let plus = |load: Load| marked(&drawn(&scope(load, vec![0], 30), full(), &pal), &["+"]).len();
+    assert!(plus(Load::default()) == 1 && plus(Load { net: Some((1e9, 0.0)), ..Load::default() }) > 5);
+    let dots = |interrupts: f64| {
+        marked(
+            &drawn(&scope(Load { interrupts: Some(interrupts), ..Load::default() }, vec![0], 30), full(), &pal),
+            &["."],
+        )
+        .len()
+    };
+    assert!(dots(1e6) > dots(1e3), "{} {}", dots(1e3), dots(1e6));
+    let told = |steps: usize| {
+        envelopes(&drawn(&run_with_messages(Kind::Radar, &Load::default(), steps, 0.05, &[10]), full(), &pal))
+    };
+    let middle = |e: &[(u16, u16)]| (f64::from(e[0].0) - 32.0).abs() / 2.0 + (f64::from(e[0].1) - 7.0).abs();
+    let (early, late) = (told(15), told(60));
+    assert!(early.len() == 1 && late.len() == 1 && middle(&late) < middle(&early), "{early:?} {late:?}");
+    assert!(told(80).is_empty(), "in by 3 s");
+}
+
+/// The time of day the clock gives the animation: seconds since midnight,
+/// the fraction kept; a leap second (nanoseconds past a billion) counts as
+/// its 59th second again, never as the next day.
+#[test]
+fn the_day_is_counted_in_seconds_from_midnight() {
+    use chrono::NaiveTime;
+    let at = |h, m, s, n| day_seconds(&NaiveTime::from_hms_nano_opt(h, m, s, n).unwrap());
+    assert_eq!(at(0, 0, 0, 0), 0.0);
+    assert_eq!(at(9, 30, 15, 500_000_000), 34_215.5);
+    assert_eq!(at(23, 59, 59, 999_000_000), 86_399.999);
+    assert!(at(23, 59, 59, 1_500_000_000) < 86_400.0);
+}
+
+/// A step of no time (NaN) moves nothing, in every kind: the same frame as
+/// a step of 0 s, and no panic.
+#[test]
+fn a_step_of_no_time_moves_nothing() {
+    let pal = Palette::default();
+    for kind in Kind::ALL {
+        let (mut a, mut b) = (run(kind, &busy(), 20, 0.066), run(kind, &busy(), 20, 0.066));
+        a.step(f64::NAN, Input { load: busy(), outs: vec![76_000], day: MORNING, ..Input::default() });
+        b.step(0.0, Input { load: busy(), outs: vec![76_000], day: MORNING, ..Input::default() });
+        assert_eq!(drawn(&a, band(), &pal), drawn(&b, band(), &pal), "{kind:?}");
+    }
+}
+
+/// Every new kind moves on an idle machine at any time of day and in any
+/// band a clock leaves it: its frame changes at least 3 times in a second
+/// at its own frame rate (what the e2e test counts on a real clock). The
+/// day in 50 steps and the last second of each hour (an hourglass nearly
+/// run down), bands 40 and 80 wide, 3 to 9 rows. (`bars` stands still
+/// when every figure is 0; a machine never gives that.)
+#[test]
+fn every_kind_moves_on_an_idle_machine() {
+    let pal = Palette::default();
+    let days: Vec<f64> = (0..48).map(|i| f64::from(i) * 1_800.0).chain([3_599.0, 86_399.0]).collect();
+    let bands: Vec<(u16, u16)> = [40u16, 80].into_iter().flat_map(|w| (3u16..=9).map(move |h| (w, h))).collect();
+    let mut checked = 0;
+    for kind in [Kind::Sharks, Kind::Hourglass, Kind::Bonsai, Kind::Orbits, Kind::Radar] {
+        for &day in &days {
+            let dt = kind.frame().as_secs_f64();
+            let mut a = Anim::new(kind, 7);
+            let (mut last, mut changes) = (vec![String::new(); bands.len()], vec![0; bands.len()]);
+            for i in 0..(2.0 / dt) as usize {
+                // The clock's time goes on with the frames, as the server's.
+                a.step(dt, Input { outs: vec![0], day: day - 1.0 + i as f64 * dt, ..Input::default() });
+                for (j, &(w, h)) in bands.iter().enumerate() {
+                    let mut g = Grid::new(w, h);
+                    a.draw(&mut g, Rect { x: 0, y: 0, w, h }, &pal);
+                    let now = text(&g);
+                    changes[j] += usize::from(i as f64 * dt >= 1.0 && now != last[j]);
+                    last[j] = now;
+                }
+            }
+            for (j, &n) in changes.iter().enumerate() {
+                assert!(n >= 3, "{kind:?} at {day} in {:?}: {n} changes in 1 s", bands[j]);
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 5 * 50 * 14);
 }

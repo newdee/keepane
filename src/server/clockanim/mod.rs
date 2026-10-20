@@ -1,26 +1,34 @@
 //! What moves under the clock (`clock-mode-animation`): a monitor's traces
 //! (`pulse`), falling characters (`matrix`), an equalizer (`bars`), flames
 //! (`fire`), a fish tank (`aquarium`), a flight through stars (`starfield`),
-//! Conway's game of life (`life`), a spinning torus (`donut`) or rain and
-//! lightning (`weather`), each moved by what the machine is doing (its
-//! cores, memory, disks, network, the CPU's temperature and power, context
-//! switches, interrupts, swap, processes) and by what keepane does (what
-//! the window's panes print, the messages it delivers).
+//! Conway's game of life (`life`), a spinning torus (`donut`), rain and
+//! lightning (`weather`), a shark hunting fish (`sharks`), sand running
+//! down (`hourglass`), a tree growing (`bonsai`), planets round a sun
+//! (`orbits`) or a radar's sweep (`radar`), each moved by what the machine
+//! is doing (its cores, memory, disks, network, the CPU's temperature and
+//! power, context switches, interrupts, swap, processes) and by what
+//! keepane does (what the window's panes print, the messages it delivers).
 //!
 //! It is drawn in the 16 colours only, so a theme's `pane-colours` colour
 //! it (the terminal's own when the theme sets none); a tail fades into the
 //! theme's background where both are known, else it is drawn dim.
 //!
-//! An `Anim` moves only by `step`, by the time it is given: the same steps
-//! give the same frames, whatever the time of day.
+//! An `Anim` moves only by `step`, by the time and the input it is given:
+//! the same steps give the same frames. The time of day comes in the input
+//! (`hourglass` and `bonsai` go by it); nothing reads the clock.
 
 mod aquarium;
 mod bars;
+mod bonsai;
 mod donut;
 mod fire;
+mod hourglass;
 mod life;
 mod matrix;
+mod orbits;
 mod pulse;
+mod radar;
+mod sharks;
 mod starfield;
 mod weather;
 
@@ -46,10 +54,15 @@ pub enum Kind {
     Life,
     Donut,
     Weather,
+    Sharks,
+    Hourglass,
+    Bonsai,
+    Orbits,
+    Radar,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 14] = [
         Kind::Pulse,
         Kind::Matrix,
         Kind::Bars,
@@ -59,6 +72,11 @@ impl Kind {
         Kind::Life,
         Kind::Donut,
         Kind::Weather,
+        Kind::Sharks,
+        Kind::Hourglass,
+        Kind::Bonsai,
+        Kind::Orbits,
+        Kind::Radar,
     ];
 
     /// Its name, as `clock-mode-animation` takes it.
@@ -73,6 +91,11 @@ impl Kind {
             Kind::Life => "life",
             Kind::Donut => "donut",
             Kind::Weather => "weather",
+            Kind::Sharks => "sharks",
+            Kind::Hourglass => "hourglass",
+            Kind::Bonsai => "bonsai",
+            Kind::Orbits => "orbits",
+            Kind::Radar => "radar",
         }
     }
 
@@ -108,10 +131,10 @@ impl Kind {
     /// The time between two frames: enough for each to look smooth, no more.
     pub fn frame(self) -> Duration {
         Duration::from_millis(match self {
-            Kind::Pulse | Kind::Donut => 50,
+            Kind::Pulse | Kind::Donut | Kind::Radar => 50,
             Kind::Matrix | Kind::Weather => 80,
-            Kind::Bars | Kind::Fire | Kind::Starfield | Kind::Life => 66,
-            Kind::Aquarium => 100,
+            Kind::Bars | Kind::Fire | Kind::Starfield | Kind::Life | Kind::Sharks | Kind::Orbits => 66,
+            Kind::Aquarium | Kind::Hourglass | Kind::Bonsai => 100,
         })
     }
 }
@@ -122,12 +145,19 @@ pub const MIN_H: u16 = 3;
 
 /// What moves it: the machine's load; how many bytes each pane of the
 /// clock's window has printed so far, in the window's order; how many
-/// messages keepane has delivered so far.
+/// messages keepane has delivered so far; the seconds since midnight, the
+/// clock's time.
 #[derive(Clone, Debug, Default)]
 pub struct Input {
     pub load: Load,
     pub outs: Vec<u64>,
     pub messages: u64,
+    pub day: f64,
+}
+
+/// The seconds since midnight at `t` (`Input::day`).
+pub fn day_seconds(t: &impl chrono::Timelike) -> f64 {
+    f64::from(t.num_seconds_from_midnight()) + f64::from(t.nanosecond() % 1_000_000_000) / 1e9
 }
 
 /// The theme's colours: its 16 (none: the terminal's own) and the panes'
@@ -157,6 +187,7 @@ impl Palette {
 // The 16 colours by their index.
 const RED: u8 = 1;
 const GREEN: u8 = 2;
+const BRIGHT_GREEN: u8 = 10;
 const YELLOW: u8 = 3;
 const BLUE: u8 = 4;
 const MAGENTA: u8 = 5;
@@ -316,6 +347,11 @@ pub struct Anim {
     life: life::Life,
     donut: donut::Donut,
     weather: weather::Weather,
+    sea: sharks::Sea,
+    sand: hourglass::Sand,
+    tree: bonsai::Tree,
+    sky: orbits::Sky,
+    scope: radar::Scope,
 }
 
 /// How fast a message's drop falls, rows a second, and how many are kept.
@@ -352,13 +388,19 @@ impl Anim {
             life: Default::default(),
             donut: Default::default(),
             weather: Default::default(),
+            sea: Default::default(),
+            sand: Default::default(),
+            tree: Default::default(),
+            sky: Default::default(),
+            scope: Default::default(),
         }
     }
 
     /// Move on by `dt` seconds with `input`. A long gap (a machine that
-    /// slept) moves it half a second, not the whole gap.
+    /// slept) moves it half a second, not the whole gap; no time (NaN),
+    /// not at all.
     pub fn step(&mut self, dt: f64, input: Input) {
-        let dt = dt.clamp(0.0, 0.5);
+        let dt = if dt.is_nan() { 0.0 } else { dt.clamp(0.0, 0.5) };
         self.t += dt;
         // A pane more or fewer: each starts again from nothing.
         match &self.outs_last {
@@ -403,6 +445,11 @@ impl Anim {
             Kind::Life => self.step_life(dt),
             Kind::Donut => self.step_donut(dt),
             Kind::Weather => self.step_weather(dt),
+            Kind::Sharks => self.step_sharks(dt),
+            Kind::Hourglass => self.step_hourglass(dt),
+            Kind::Bonsai => self.step_bonsai(dt),
+            Kind::Orbits => self.step_orbits(dt),
+            Kind::Radar => self.step_radar(dt),
         }
     }
 
@@ -422,6 +469,11 @@ impl Anim {
             Kind::Life => self.draw_life(g, band, pal),
             Kind::Donut => self.draw_donut(g, band, pal),
             Kind::Weather => self.draw_weather(g, band, pal),
+            Kind::Sharks => self.draw_sharks(g, band, pal),
+            Kind::Hourglass => self.draw_hourglass(g, band, pal),
+            Kind::Bonsai => self.draw_bonsai(g, band, pal),
+            Kind::Orbits => self.draw_orbits(g, band, pal),
+            Kind::Radar => self.draw_radar(g, band, pal),
         }
     }
 }

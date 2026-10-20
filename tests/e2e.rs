@@ -2290,6 +2290,11 @@ async fn under_the_clock_something_moves_with_the_machine() {
         ("life", &["▀", "▄"]),
         ("donut", &[]),
         ("weather", &["~"]),
+        ("sharks", &["<", ">", "^", "v", "@", "#", "*", ";"]),
+        ("hourglass", &["="]),
+        ("bonsai", &["[", "_"]),
+        ("orbits", &["."]),
+        ("radar", &["."]),
     ] {
         h.cli(&["set", "-g", "clock-mode-animation", kind]).await;
         c.prefix('t').await;
@@ -2358,7 +2363,7 @@ async fn under_the_clock_something_moves_with_the_machine() {
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     }
     let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "fireworks"]).await;
-    assert!(code != 0 && err.contains("one of aquarium, bars, cycle, donut, fire, life, matrix, off, pulse"), "{err}");
+    assert!(code != 0 && err.contains("one of aquarium, bars, bonsai, cycle, donut, fire, hourglass, life, matrix, off, orbits, pulse, radar, random, sharks"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

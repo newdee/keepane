@@ -280,10 +280,15 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 - `life`：康威生命游戏。CPU 越忙每秒演化的代数越多；上下文切换越多补种越快，存活细胞数的上限由内存占用决定；新生细胞高亮；每送达 1 条消息，在中央放出 1 个 glider，上面短暂显示 `✉`。
 - `donut`：旋转的圆环。CPU 越忙转得越快，内存占用越高圆环越粗；每送达 1 条消息，多转 1 圈，中间的洞里显示 `✉`。
 - `weather`：天气。CPU 越忙云越多；磁盘越忙雨越大，网络流量大时雨被风吹斜；中断越多闪电越多；内存占用越高积水越深；每送达 1 条消息，有 1 个 `✉` 落进水里。
+- `sharks`：俯视的海。窗口里每个 pane 一群鱼（最多 6 群），pane 输出越多游得越快，上下文切换越多转向越多；一条鲨鱼在追鱼，CPU 越忙饿得越快，内存占用越高鲨鱼越长；网络流量越大，水流把鱼和鲨鱼推得越远；磁盘越忙水面闪光越多；每送达 1 条消息，水面荡开 1 圈波纹，中间是 `✉`，鲨鱼冲过去。
+- `hourglass`：沙漏。中间的沙漏表示这个小时，沙子按这个小时过去的比例流到下面；放得下时，左边加一个分钟沙漏（`60s`），右边加一个一天的沙漏（`24h`）。CPU 越忙沙粒落得越快，磁盘越忙沙粒在沙堆上弹得越多；每送达 1 条消息，有 1 个 `✉` 从瓶颈落下。
+- `bonsai`：盆景。树在一天里长大（午夜后是小树苗，早上长出大半，晚上长全）；窗口里每个 pane 一根主枝（最多 6 根），叶子一直轻轻晃动（上下文切换越多晃得越快），pane 输出越多那根枝的叶子抖得越厉害；内存占用越高叶子越多，网络流量越大叶子被风吹得越斜；不时有叶子飘落，磁盘越忙落叶越多；每送达 1 条消息，有 1 个 `✉` 从叶子上飘落。
+- `orbits`：行星。每个 CPU 核心一颗行星（超过 8 个核心时分组合并），核心越忙转得越快；内存占用越高太阳越大，CPU 很热时太阳变红，中断越多太阳耀斑越多；网络流量越大小行星带越密；每送达 1 条消息，飞过 1 颗以 `✉` 为头的彗星，绕过太阳。
+- `radar`：雷达。CPU 越忙扫描线转得越快；窗口里每个 pane 一个光点，扫描线扫过时亮起，pane 输出越多光点越大；网络流量越大目标越多，中断越多中心的杂波越多；每送达 1 条消息，有 1 个 `✉` 从边缘向中心飞来。
 
 时钟下方信息行的最后一行是 keepane 自己的情况：会话数、pane 数，以及启动以来送达的消息数。
 
-`pulse`、`matrix`、`starfield`、`life` 和 `donut` 的颜色随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 9 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有中断和功耗数字，上下文切换和线程数只算你能查看的进程，不是整个系统的；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
+`pulse`、`matrix`、`starfield`、`life`、`donut` 的颜色，以及鲨鱼的眼睛、沙漏的玻璃和盆景的叶子，随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 14 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有中断和功耗数字，上下文切换和线程数只算你能查看的进程，不是整个系统的；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
 
 <p align="center">
   <picture>
@@ -707,7 +712,7 @@ set -g log-history-days 30        # 留几天；0 永久保留（log-history-dir
 set -g undo-kill-time 10          # 关掉的 pane / 窗口保留几秒可以找回（prefix u）；0 不保留
 set -g keep-zoom off              # 切到别的 pane 就取消最大化，和 tmux 一样（on：最大化跟着走）
 set -g animation off              # 不要焦点框飞过去的动画（animation-time 160：毫秒数，0 到 10000）
-set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、fire、aquarium、starfield、life、donut、weather、random（默认）、cycle 或 off
+set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、fire、aquarium、starfield、life、donut、weather、sharks、hourglass、bonsai、orbits、radar、random（默认）、cycle 或 off
 set -g clock-mode-zones "Asia/Shanghai,America/Los_Angeles"  # 时钟日期下方显示其他地方的时间（IANA 名称，也可以只写城市：tokyo）
 
 bind | split-window -h

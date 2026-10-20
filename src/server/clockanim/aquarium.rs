@@ -11,7 +11,7 @@ pub(super) struct Tank {
 
 /// The fish, facing right; each pane takes the next.
 const FISH: [&str; 4] = ["><>", "><(((o>", ">=>", "><))'>"];
-const FISH_COLOURS: [u8; 6] = [YELLOW, CYAN, MAGENTA, GREEN, BRIGHT_BLUE, RED];
+pub(super) const FISH_COLOURS: [u8; 6] = [YELLOW, CYAN, MAGENTA, GREEN, BRIGHT_BLUE, RED];
 /// How fast bubbles (and a message's envelope) rise, rows a second.
 const BUBBLE_RISE: f64 = 3.0;
 

@@ -72,7 +72,8 @@ pub struct Options {
     pub clock_mode_zones: Vec<chrono_tz::Tz>,
     /// What moves under the clock (`clock-mode-animation`): `pulse`,
     /// `matrix`, `bars`, `fire`, `aquarium`, `starfield`, `life`, `donut`,
-    /// `weather`; `random` (the default: one of them at random each time a
+    /// `weather`, `sharks`, `hourglass`, `bonsai`, `orbits`, `radar`;
+    /// `random` (the default: one of them at random each time a
     /// clock is put on a pane, never the one before), `cycle` (the next of
     /// them each time) or `off`; `animation off` stops it too.
     pub clock_mode_animation: String,
@@ -200,8 +201,25 @@ pub struct Options {
 }
 
 /// What `clock-mode-animation` can be.
-pub const CLOCK_ANIMATIONS: &[&str] =
-    &["aquarium", "bars", "cycle", "donut", "fire", "life", "matrix", "off", "pulse", "random", "starfield", "weather"];
+pub const CLOCK_ANIMATIONS: &[&str] = &[
+    "aquarium",
+    "bars",
+    "bonsai",
+    "cycle",
+    "donut",
+    "fire",
+    "hourglass",
+    "life",
+    "matrix",
+    "off",
+    "orbits",
+    "pulse",
+    "radar",
+    "random",
+    "sharks",
+    "starfield",
+    "weather",
+];
 
 /// What a pane can be done with (`done-events`).
 pub const DONE_EVENTS: &[&str] = &["command", "agent", "task", "exit"];
@@ -1560,7 +1578,7 @@ mod tests {
         }
         assert_eq!(CLOCK_ANIMATIONS.len(), kinds.len() + 3);
         let e = o.set("clock-mode-animation", "fireworks").unwrap_err();
-        assert!(e.contains("one of aquarium, bars, cycle, donut, fire, life, matrix, off, pulse, random"), "{e}");
+        assert!(e.contains("one of aquarium, bars, bonsai, cycle, donut, fire, hourglass, life, matrix, off"), "{e}");
         assert_eq!(o.clock_mode_animation, "random", "a refused value leaves the old one");
         assert_eq!(option_values("clock-mode-animation"), CLOCK_ANIMATIONS);
         assert_eq!(resolve_name("clock-mode-a").as_deref(), Ok("clock-mode-animation"));
