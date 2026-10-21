@@ -605,12 +605,13 @@ async fn attach_type_split_detach() {
     c.prefix('z').await;
     c.wait_for("unzoomed", |s| s.cell(0, COLS / 2).is_some_and(|c| c.contents() == "│")).await;
 
-    // Prefix ? shows the key table as an overlay; any key dismisses it.
+    // Prefix ? shows the key table as an overlay (longer than the window:
+    // it scrolls); any key but those dismisses it.
     c.prefix('?').await;
-    c.wait_for("overlay", |s| s.contents().contains("bind-key -T prefix") && s.contents().contains("press any key"))
+    c.wait_for("overlay", |s| s.contents().contains("-T prefix") && s.contents().contains("any other key closes"))
         .await;
     c.key(0x1B, '\x1b', 0).await;
-    c.wait_for("overlay gone", |s| !s.contents().contains("press any key")).await;
+    c.wait_for("overlay gone", |s| !s.contents().contains("any other key closes")).await;
 
     // split-window -d keeps the current pane; -b puts the new pane first.
     c.prefix(':').await;
@@ -1514,11 +1515,11 @@ async fn choose_tree_picker() {
     c.prefix('w').await;
     c.wait_for("picker", |s| s.contents().contains("j/k move")).await;
     c.prefix('?').await;
-    c.wait_for("keys overlay", |s| s.contents().contains("bind-key -T prefix")).await;
+    c.wait_for("keys overlay", |s| s.contents().contains("-T prefix")).await;
     c.type_str("q").await; // dismisses the overlay only
     c.wait_for("picker back", |s| {
         let t = s.contents();
-        t.contains("j/k move") && !t.contains("bind-key -T prefix")
+        t.contains("j/k move") && !t.contains("-T prefix")
     })
     .await;
 
@@ -3137,6 +3138,46 @@ async fn the_prompt_history_is_shown_and_cleared() {
     a.wait_for("the one line", |s| last_row(s).trim_end() == ":set -g @d four").await;
     let (code, _, _) = h.cli(&["show", "-gv", "@d"]).await;
     assert_eq!(code, 0, "the server is still up");
+    h.cli(&["kill-server"]).await;
+}
+
+/// Output longer than the window (`:list-commands`) opens at its end, as
+/// tmux's view mode does; Up, `g`, End and the wheel move through it, the
+/// hint saying which lines show; `q` puts it away.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_overlay_scrolls() {
+    let h = Harness::start("overscroll").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "o"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let (_, all, _) = h.cli(&["list-commands"]).await;
+    let all: Vec<&str> = all.lines().collect();
+    let n = all.len();
+    let body = ROWS as usize - 2; // less the status line and the hint
+    assert!(n > body, "{n} commands fit in {body} rows");
+    // Which lines the hint says show, and the first row.
+    let shown = |s: &vt100::Screen| {
+        let hint = s.rows(0, COLS).nth(ROWS as usize - 2).unwrap_or_default();
+        let first = s.rows(0, COLS).next().unwrap_or_default().trim_end().to_string();
+        (hint.split(" of ").next().unwrap_or_default().trim_start_matches('[').to_string(), first)
+    };
+    let at = |top: usize| (format!("{}-{}", top + 1, top + body), all[top].to_string());
+    c.prefix(':').await;
+    c.type_str("list-commands").await;
+    c.enter().await;
+    let end = n - body;
+    c.wait_for("at the end", |s| shown(s) == at(end)).await;
+    c.key(0x26, '\0', 0).await; // Up
+    c.wait_for("a line up", |s| shown(s) == at(end - 1)).await;
+    c.type_str("g").await;
+    c.wait_for("the start", |s| shown(s) == at(0)).await;
+    c.send(ClientMsg::Mouse(MouseRecord { x: 2, y: 2, buttons: (-120i16 as u16 as u32) << 16, ctrl: 0, flags: 4 }))
+        .await;
+    c.wait_for("the wheel down: three lines", |s| shown(s) == at(3)).await;
+    c.key(0x23, '\0', 0).await; // End
+    c.wait_for("the end again", |s| shown(s) == at(end)).await;
+    c.type_str("q").await;
+    c.wait_for("put away", |s| s.contents().contains("keepane>") && !s.contents().contains(" of ")).await;
     h.cli(&["kill-server"]).await;
 }
 

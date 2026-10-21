@@ -344,7 +344,7 @@ impl Server {
                         let mut lines = vec![title, String::new()];
                         lines.extend(screen.trim_end_matches('\n').lines().map(str::to_string));
                         if let Some(c) = self.clients.get_mut(&cid) {
-                            c.overlay = Some(lines);
+                            c.overlay = Some(super::Overlay::new(lines));
                         }
                     }
                     Ok(ans) => self.message(cid, &format!("{addr} said: {}", ans.text())),

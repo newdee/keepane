@@ -340,7 +340,7 @@ text prompt stays as typed. The defaults:
 | `,` / `$` | rename the window / the session |
 | `:` | the command prompt (Up / Down, `C-p` / `C-n`: the last 100 lines run there; `show-prompt-history` lists them, `clear-prompt-history` forgets them) |
 | `~` | recent messages |
-| `?` | list the keys |
+| `?` | list the keys (output longer than the window opens at its end and scrolls: Up / Down, `j` / `k`, PgUp / PgDn, `g` / `G`, the wheel; any other key closes it) |
 
 `F12`, without the prefix, turns `passthrough` on and off for the pane:
 while it is on, every key typed there goes to its program, the prefix and

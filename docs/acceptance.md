@@ -4672,3 +4672,28 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 - 遗留：
   - 在 `:` 里运行时，多行输出放进 overlay，只显示前 22 行（`[22 of 102 lines] press any key`），不能滚动；tmux 用可滚动的 view mode。`show-messages`、`list-keys`、`list-commands` 也是这样，是 overlay 的共同限制，这次没改。
   - 复制模式的搜索不记历史，所以 `-T search` 永远是空的。
+
+## 151. 长输出的 overlay 可以滚动
+
+用户要求：overlay（`:` 里运行的命令、`prefix ?` 等多行输出）只显示前 22 行，不能滚动；改成可以滚动。
+
+- 定性：共性，结构缺陷。所有多行输出（`show`、配置错误、link 的 peek）共用一个 overlay，它只有行、没有位置，多出的行被丢掉。收敛到一个 `Overlay { lines, top }`，3 处创建都走 `Overlay::new`，画、按键、滚轮共用同一个行数（`overlay_rows`，和画的时候同一个 window area）。
+- 做法：
+  - 打开时停在末尾，和 tmux 一样（WSL 里 tmux 3.6 实测：`run-shell 'seq 1 40'` 进 view-mode，显示 29–40，`scroll_position 28`）。
+  - 比窗口长时：↑ ↓ / `j` `k` / `C-p` `C-n` 一行，PgUp PgDn / `b` Space `C-f` 一页，`C-u` `C-d` 半页，`g` `G` / Home End 到头到尾，滚轮一格 3 行（和 pane 的历史一样）；其他键关闭（prefix `C-b` 也关闭，不翻页）。提示行：`[81-102 of 102 lines] ↑ ↓ PgUp PgDn g G, any other key closes`。
+  - 放得下，或者只有 1 行高：任意键关闭，提示还是 `press any key`，和原来一样。
+  - link 的 peek（远端 pane 的屏幕）原来从顶部显示；现在也从末尾显示：远端屏幕和窗口一样高时，末尾只挡住标题和空行，顶部会挡住最后 2 行（通常是提示符）。
+- 会不会引入新 bug：
+  - 短的 overlay：行为不变，单元测试对 17 个滚动键各查一次"放得下就关闭"；原来的配置错误 e2e（`press any key`）照常通过。
+  - 长的 overlay：打开位置从顶部变成末尾，`j` `k` 等键从关闭变成滚动。两个 e2e 测试原来找 `bind-key -T prefix`（list-keys 的开头），现在末尾是 `bind-key -r -T prefix ...`，改成找 `-T prefix`。
+  - 新 overlay 都从 `Overlay::new` 开始，位置重置；8 处清除 overlay 的代码没动。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路 + 全量 | 变异 11 个（打开位置、放得下就关闭、0 行、滚轮方向、滚轮无效、上下限、按键不滚、半页、画的时候忽略位置、0 行的提示、提示的编号）抓到 11 个；fmt 0；clippy Windows 0、macOS 目标 0；Windows 475 + 10 + 134 | 干净（1/3；下一轮有问题，重新计） |
+| 2 | 静态一致性 | 读整份 diff：`Client.overlay` 字段注释还写"按任意键关闭"；文档（README 中英、man page、tmux-parity）和按键表一致；tmux 的"按 x 不退出"在 3.6 上实测过 | **有问题**：改注释（不计数） |
+| 3 | 边界与退化输入 | 临时探测（已删）：行数 0/1/2/5/22/23/100/10000 × 高 0–7 × 宽 0/1/5/80 × 200 步（含改变行数）= 51200 次：越界 0、首行和提示不符 0，panic 0（把画的位置减 1 时探测报 5904 次）；e2e：状态栏关/开 × 底/顶 4 种布局，末尾编号、`k` 上一行、`G` 回末尾都对 | 干净（1/3） |
+| 4 | Linux + 可复现性 | Linux fmt 0、clippy 0、463 + 134；3 个 overlay e2e 连跑 5 次 5/5 | 干净（2/3） |
+| 5 | 代码正确性（状态） | 逐处看 overlay 的读写：3 处创建都经过 `Overlay::new`，8 处清除不变，按键路径保留 `swallow_up`，滚轮只在 overlay 上处理、点击照旧丢掉；变异 11/11；macOS 目标 clippy 0；Windows 475 + 10 + 134；3 个 overlay e2e 在 Windows 连跑 5 次 5/5 | 干净（3/3），验收通过 |
+
+- 遗留：tmux 的 view mode 用复制模式的全部按键（搜索、选择复制），这里只能滚动，其他键关闭。

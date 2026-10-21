@@ -661,20 +661,28 @@ impl Grid {
     }
 }
 
-/// Draw a block of text over `area` (tmux view mode). The last row of the
-/// area shows a hint; lines that do not fit are dropped.
-pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String]) {
+/// Draw a block of text over `area` (tmux view mode), from line `top` (kept
+/// within the lines, so `usize::MAX` shows the end). The last row of the
+/// area shows a hint: which lines these are and how to move when they do
+/// not all fit.
+pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String], top: usize) {
     if area.h == 0 || area.w == 0 {
         return;
     }
     let style = Style::colors(Color::Default, Color::Default);
     g.fill(area, style);
     let body_h = area.h.saturating_sub(1) as usize;
-    for (i, line) in lines.iter().take(body_h).enumerate() {
+    let top = top.min(lines.len().saturating_sub(body_h));
+    for (i, line) in lines.iter().skip(top).take(body_h).enumerate() {
         g.put_str(area.x, area.y + i as u16, line, style, area.w);
     }
-    let hint = if lines.len() > body_h {
-        format!("[{} of {}] press any key", body_h, crate::format::count(lines.len(), "line"))
+    let hint = if lines.len() > body_h && body_h > 0 {
+        format!(
+            "[{}-{} of {}] ↑ ↓ PgUp PgDn g G, any other key closes",
+            top + 1,
+            top + body_h,
+            crate::format::count(lines.len(), "line")
+        )
     } else {
         "press any key".to_string()
     };
@@ -2177,17 +2185,25 @@ mod tests {
         let mut g = Grid::new(40, 4);
         g.put_str(0, 0, "underneath", Style::default(), 40);
         let lines: Vec<String> = (0..5).map(|i| format!("line{i}")).collect();
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines);
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines, 0);
         let row = |g: &Grid, y: u16| (0..40).map(|x| g.get(x, y).text()).collect::<String>();
         assert_eq!(row(&g, 0).trim_end(), "line0");
         assert_eq!(row(&g, 1).trim_end(), "line1");
-        assert_eq!(row(&g, 2).trim_end(), "[2 of 5 lines] press any key");
+        assert_eq!(row(&g, 2).trim_end(), "[1-2 of 5 lines] ↑ ↓ PgUp PgDn g G, any");
+        // From a line further down; past the end, the last that fill it.
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 80, h: 3 }, &lines, 2);
+        assert_eq!((row(&g, 0).trim_end(), row(&g, 1).trim_end()), ("line2", "line3"));
+        assert!(row(&g, 2).starts_with("[3-4 of 5 lines]"));
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 80, h: 3 }, &lines, usize::MAX);
+        assert_eq!((row(&g, 0).trim_end(), row(&g, 1).trim_end()), ("line3", "line4"));
+        assert!(row(&g, 2).starts_with("[4-5 of 5 lines]"));
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines, 0);
         // The hint on the quiet bar: white on black, which a theme makes its own.
         assert_eq!((g.get(0, 2).style.fg, g.get(0, 2).style.bg), (Color::Idx(7), Color::Idx(0)));
         assert_eq!(g.get(39, 2).style.bg, Color::Idx(0), "across the whole row");
         // Row 3 is outside the area and untouched.
         assert_eq!(row(&g, 3).trim_end(), "");
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines[..1]);
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines[..1], usize::MAX);
         assert_eq!(row(&g, 2).trim_end(), "press any key");
         assert_eq!(row(&g, 1).trim_end(), "");
     }
@@ -2678,10 +2694,11 @@ mod tests {
             let out = diff(Some(&prev), &g, cursor);
             assert!(out.windows(4).any(|w| w == b"\x1b[2J"));
         }
-        // An overlay on a 1-row area draws only the hint.
+        // An overlay on a 1-row area draws only the hint, with no lines to
+        // move through (any key puts it away).
         let mut g = Grid::new(5, 1);
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 5, h: 1 }, &["x".into()]);
-        assert_eq!((0..5).map(|x| g.get(x, 0).text()).collect::<String>(), "[0 of");
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 5, h: 1 }, &["x".into()], usize::MAX);
+        assert_eq!((0..5).map(|x| g.get(x, 0).text()).collect::<String>(), "press");
     }
 
     #[test]

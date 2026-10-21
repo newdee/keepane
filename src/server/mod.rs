@@ -221,6 +221,50 @@ struct Prompt {
 /// The most command lines `:` keeps for Up and Down (tmux keeps 100).
 const PROMPT_HISTORY: usize = 100;
 
+/// Multi-line output over the window: its lines and the first one shown.
+/// It opens at the end, as tmux's view mode does; one longer than the
+/// window scrolls.
+struct Overlay {
+    lines: Vec<String>,
+    /// Kept within the lines when moved and when drawn, so `usize::MAX`
+    /// (where it opens) is the end.
+    top: usize,
+}
+
+impl Overlay {
+    fn new(lines: Vec<String>) -> Self {
+        Overlay { lines, top: usize::MAX }
+    }
+
+    /// Move by `delta` lines, `body` rows showing.
+    fn scroll(&mut self, delta: i64, body: usize) {
+        let last = self.lines.len().saturating_sub(body) as i64;
+        self.top = (self.top.min(last as usize) as i64).saturating_add(delta).clamp(0, last) as usize;
+    }
+}
+
+/// What a key does to an overlay of `len` lines with `body` rows showing:
+/// move it by so many lines, or (`None`) put it away. One that fits is put
+/// away by any key, as before it could scroll (and so is one with no rows
+/// to show lines in).
+fn overlay_key(k: Key, len: usize, body: usize) -> Option<i64> {
+    if len <= body || body == 0 {
+        return None;
+    }
+    let page = body.max(1) as i64;
+    Some(match (k.code, k.ctrl, k.alt) {
+        (KeyCode::Up, _, _) | (KeyCode::Char('k'), false, false) | (KeyCode::Char('p'), true, false) => -1,
+        (KeyCode::Down, _, _) | (KeyCode::Char('j'), false, false) | (KeyCode::Char('n'), true, false) => 1,
+        (KeyCode::PPage, _, _) | (KeyCode::Char('b'), false, false) => -page,
+        (KeyCode::NPage, _, _) | (KeyCode::Char(' '), false, false) | (KeyCode::Char('f'), true, false) => page,
+        (KeyCode::Char('u'), true, false) => -(page / 2).max(1),
+        (KeyCode::Char('d'), true, false) => (page / 2).max(1),
+        (KeyCode::Home, _, _) | (KeyCode::Char('g'), false, false) => i64::MIN,
+        (KeyCode::End, _, _) | (KeyCode::Char('G'), false, false) => i64::MAX,
+        _ => return None,
+    })
+}
+
 struct Drag {
     pane: PaneId,
     horizontal: bool,
@@ -552,9 +596,9 @@ struct Client {
     hints: Option<HintMode>,
     prompt: Option<Prompt>,
     message: Option<(String, Instant)>,
-    /// Multi-line command output shown over the window until a key is pressed
-    /// (tmux "view mode"), e.g. `list-keys`.
-    overlay: Option<Vec<String>>,
+    /// Multi-line command output shown over the window (tmux "view mode"),
+    /// e.g. `list-keys`, until a key that does not move it is pressed.
+    overlay: Option<Overlay>,
     chooser: Option<Chooser>,
     /// `display-popup`: a program in a box over the window, taking the keys.
     popup: Option<Popup>,
@@ -2417,7 +2461,7 @@ impl Server {
                 c.prefix_at = None;
                 c.repeat_until = None;
                 c.prompt = None;
-                c.overlay = config_errors;
+                c.overlay = config_errors.map(Overlay::new);
                 c.chooser = None;
                 c.popup = None;
                 c.message = None;
@@ -2443,7 +2487,7 @@ impl Server {
         self.note_message(&text.replace('\n', " "));
         if let Some(c) = self.clients.get_mut(&cid) {
             if text.contains('\n') {
-                c.overlay = Some(text.lines().map(str::to_string).collect());
+                c.overlay = Some(Overlay::new(text.lines().map(str::to_string).collect()));
             } else {
                 c.message = Some((text.replace('\r', " "), Instant::now()));
             }
@@ -2759,6 +2803,13 @@ impl Server {
         let widx = self.resolve_window(sid, target)?;
         let pid = self.resolve_pane(sid, widx, target)?;
         Ok((sid, widx, pid))
+    }
+
+    /// The rows of an overlay's lines on this client: the window area as it
+    /// is drawn there, less the hint's row.
+    fn overlay_rows(&self, cid: ClientId) -> usize {
+        let (cols, rows) = self.clients.get(&cid).map(|c| (c.cols, c.rows)).unwrap_or_default();
+        self.window_area(cols, rows).h.saturating_sub(1) as usize
     }
 
     fn window_area(&self, cols: u16, rows: u16) -> Rect {
@@ -6343,9 +6394,15 @@ impl Server {
         }
 
         if c.overlay.is_some() {
-            if key.is_some() {
-                c.overlay = None;
+            if let Some(k) = key {
                 c.swallow_up.insert(rec.vk);
+                let body = self.overlay_rows(cid);
+                let c = self.clients.get_mut(&cid).unwrap();
+                let o = c.overlay.as_mut().unwrap();
+                match overlay_key(k, o.lines.len(), body) {
+                    Some(delta) => o.scroll(delta, body),
+                    None => c.overlay = None,
+                }
             }
             return;
         }
@@ -8056,9 +8113,21 @@ impl Server {
     fn handle_mouse(&mut self, cid: ClientId, m: MouseRecord) {
         let Some(c) = self.clients.get_mut(&cid) else { return };
         let Some(sid) = c.session else { return };
+        // An overlay takes the wheel, three lines a notch (as a pane's
+        // history does); clicks on it go nowhere.
+        if c.overlay.is_some() {
+            if m.flags & MOUSE_WHEELED != 0 {
+                let up = (m.buttons >> 16) as i16 > 0;
+                let body = self.overlay_rows(cid);
+                if let Some(o) = self.clients.get_mut(&cid).and_then(|c| c.overlay.as_mut()) {
+                    o.scroll(if up { -3 } else { 3 }, body);
+                }
+            }
+            return;
+        }
         // A popup owns the keyboard but not the mouse: the click would land
         // on a pane it covers, so drop it instead.
-        if c.prompt.is_some() || c.overlay.is_some() || c.popup.is_some() {
+        if c.prompt.is_some() || c.popup.is_some() {
             return;
         }
         let x = m.x.max(0) as u16;
@@ -9130,8 +9199,8 @@ impl Server {
         }
         // An overlay (a hook's message, a `run-shell` result) draws over the
         // picker, because the next key goes to the overlay, not the picker.
-        if let Some(lines) = &c.overlay {
-            render::draw_overlay(&mut grid, area, lines);
+        if let Some(o) = &c.overlay {
+            render::draw_overlay(&mut grid, area, &o.lines, o.top);
             cursor = None;
         }
         // The popup is the thing with the keyboard, so it draws last.
@@ -9990,6 +10059,58 @@ fn clock_kind(opts: &Options, p: &Pane) -> Option<clockanim::Kind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An overlay longer than its rows moves with the reader's keys, a line,
+    /// a page, half a page, to either end, and never past them; any other
+    /// key puts it away. One that fits, or has no rows, any key puts away.
+    #[test]
+    fn a_long_overlay_scrolls_and_a_short_one_closes() {
+        let k = |c: char| Key::ch(c);
+        let (len, body) = (100, 22);
+        let moves = [
+            (Key::plain(KeyCode::Up), -1),
+            (k('k'), -1),
+            (Key::ctrl('p'), -1),
+            (Key::plain(KeyCode::Down), 1),
+            (k('j'), 1),
+            (Key::ctrl('n'), 1),
+            (Key::plain(KeyCode::PPage), -22),
+            (k('b'), -22),
+            (Key::plain(KeyCode::NPage), 22),
+            (k(' '), 22),
+            (Key::ctrl('f'), 22),
+            (Key::ctrl('u'), -11),
+            (Key::ctrl('d'), 11),
+            (Key::plain(KeyCode::Home), i64::MIN),
+            (k('g'), i64::MIN),
+            (Key::plain(KeyCode::End), i64::MAX),
+            (k('G'), i64::MAX),
+        ];
+        for (key, want) in moves {
+            assert_eq!(overlay_key(key, len, body), Some(want), "{key:?}");
+            assert_eq!(overlay_key(key, 22, body), None, "fits: {key:?} closes");
+            assert_eq!(overlay_key(key, len, 0), None, "no rows: {key:?} closes");
+        }
+        // The prefix (C-b) and everything else put it away.
+        for key in [k('q'), Key::plain(KeyCode::Escape), Key::plain(KeyCode::Enter), Key::ctrl('b'), k('x')] {
+            assert_eq!(overlay_key(key, len, body), None, "{key:?}");
+        }
+        // It opens at the end and moves within the lines.
+        let mut o = Overlay::new((0..len).map(|i| i.to_string()).collect());
+        o.scroll(-1, body);
+        assert_eq!(o.top, 77, "one up from the end (78 is the last top)");
+        o.scroll(i64::MIN, body);
+        assert_eq!(o.top, 0);
+        o.scroll(-1, body);
+        assert_eq!(o.top, 0, "not past the start");
+        o.scroll(30, body);
+        assert_eq!(o.top, 30);
+        o.scroll(i64::MAX, body);
+        assert_eq!(o.top, 78, "not past the end");
+        // Grown taller (the client resized): the end is nearer.
+        o.scroll(0, 50);
+        assert_eq!(o.top, 50);
+    }
 
     /// Each clock put on a pane: `random` a kind other than the last, all
     /// of them in time; `cycle` the next in turn; a name that one; `off`

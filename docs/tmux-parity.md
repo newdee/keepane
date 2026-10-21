@@ -173,6 +173,13 @@ Searching: `/` forward (towards the newest line), `?` back through the scrollbac
 Missing: `copy-pipe` to a command (`copy-pipe-and-cancel` copies as
 `copy-selection` does), and the jump commands (`jump-to-forward`, `f`/`t`).
 
+View mode (what a `:` command or a key prints: `list-keys`,
+`show-messages`): it opens at its end, as tmux's does. Longer than the
+window, it moves with Up / Down or `j` / `k` (`C-p` / `C-n`), PgUp / PgDn
+(`b` / `Space`, `C-f`), `C-u` / `C-d`, `g` / `G` (Home / End) and the
+wheel; any other key closes it, where tmux's takes the copy-mode keys and
+closes on `q`. Shorter, any key closes it.
+
 ## Config file
 
 `~/.keepane.conf`, read as tmux reads its own: `\` continues a line,
