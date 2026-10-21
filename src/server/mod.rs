@@ -3655,6 +3655,29 @@ impl Server {
                 }
                 Outcome::Text(self.messages.iter().cloned().collect::<Vec<String>>().join("\n"))
             }
+            Cmd::PromptHistory { clear, kind } => {
+                // keepane keeps one history, the `:` prompt's: tmux's
+                // `command`; the other types have nothing in them.
+                let kinds: Vec<&str> = kind.map_or(crate::command::PROMPT_TYPES.to_vec(), |k| vec![k]);
+                if clear {
+                    if kinds.contains(&"command") {
+                        self.prompt_history.clear();
+                    }
+                    return Outcome::Ok;
+                }
+                // As tmux prints it: a heading and a blank line, the lines
+                // numbered oldest first, a blank line after each type.
+                let mut out = Vec::new();
+                for k in kinds {
+                    out.push(format!("History for {k}:"));
+                    out.push(String::new());
+                    if k == "command" {
+                        out.extend(self.prompt_history.iter().enumerate().map(|(i, l)| format!("{}: {l}", i + 1)));
+                    }
+                    out.push(String::new());
+                }
+                Outcome::Text(out.join("\n"))
+            }
             Cmd::SetEnvironment { name, value, remove } => {
                 self.env.retain(|(k, _)| *k != name);
                 match (remove, value) {
@@ -6789,9 +6812,11 @@ impl Server {
                     {
                         let h = &self.prompt_history;
                         if let Some(newest) = h.len().checked_sub(1) {
+                            // The list may have shrunk since the last Up
+                            // (clear-prompt-history from elsewhere).
                             let (at, draft) = match p.browse.take() {
                                 None => (newest, p.input.clone()),
-                                Some((i, draft)) => (i.saturating_sub(1), draft),
+                                Some((i, draft)) => (i.saturating_sub(1).min(newest), draft),
                             };
                             p.input = h[at].clone();
                             p.cursor = p.input.chars().count();

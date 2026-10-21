@@ -4644,3 +4644,31 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 网页的 pane 视图不画时钟，这 5 种只在终端里出现（和原来 9 种一样）。
   - `bars` 在所有数字都是 0 时不动（原来的设计，真实机器不会全零），没有放进空闲测试。
   - 顺带看到：docs/tmux-parity.md 的 `clear-prompt-history` 一行还写着"keepane keeps no prompt history"，0.42.0 已经有 `:` 历史，这次没改。
+
+## 150. `show-prompt-history` 和 `clear-prompt-history`
+
+用户要求：tmux-parity 里这两个命令原来写"no"，把它们实现出来。
+
+- 做法：
+  - `Cmd::PromptHistory { clear, kind }`，别名 `showphist`、`clearphist`（和 tmux 一样），`-T` 取 `command` 或 `search`，其他值报 `invalid type: X`（tmux 的原话）。
+  - keepane 只有一份历史：`:` 提示符的最近 100 条，对应 tmux 的 `command`；`search` 永远是空的。
+  - 输出格式照 tmux 源码 cmd-show-prompt-history.c：每种类型一个标题 `History for X:`、一个空行，然后 `1: 行` 从旧到新编号，最后一个空行。
+  - 类型表按 tmux 3.8（最新发布）：3.8 删掉了 `target` 和 `window-target`，只剩两种（tmux.h 的 `PROMPT_NTYPES 2`；3.7c 还是 4）。
+  - COMMANDS、FLAGS、ALIASES、`keepane --help`、README（中英）、man page、tmux-parity（两行改成 `part`：`search` 不记）、官网测试数（615 → 617）同步。
+- 定性（实现中看到的问题）：
+  - 别处清空历史后，正在翻历史的客户端按 ↑：索引 `i - 1` 可能超出变短的列表而 panic。边界遗漏，只在 ↑ 一处（↓ 已经有 `i + 1 < len` 的判断）；就地加 `.min(newest)`。原来长度不变的情况（满 100 条后挤掉最旧的）不受影响。
+- 会不会引入新 bug：
+  - `clear-` 原来是 `clear-history` 的唯一前缀，现在有两个命令，报 ambiguous（tmux 也一样）；`clearhist`、`clear-h` 不变。测试里写明。
+  - ↑ 的修改只在列表变短时生效；原来的提示符历史 e2e 测试照常通过。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路 + 全量 | 变异 7 个（含去掉 `.min(newest)`：服务器 panic，测试失败）抓到 7 个；fmt 0；clippy Windows 0、macOS 目标 0；Windows 474 + 10 + 133；Linux 462 + 133 | 干净（1/3；下一轮有问题，重新计） |
+| 2 | 静态一致性（对照 tmux 源码） | 输出格式、别名、错误提示和 tmux master 的 cmd-show-prompt-history.c 一致；类型表不一致：tmux 3.8 只有 `command`、`search`，我写了 4 种（3.7c 的） | **有问题**：改成 2 种，测试改成 `-T target` 报错；`search` 不记，parity 两行改成 `part`（不计数） |
+| 3 | 机制通路 + 全量 | 变异 7/7；fmt 0；clippy 0/0；Windows 474 + 10 + 133 | 干净（1/3） |
+| 4 | 边界与退化输入 | 临时探测（已删）：连跑 105 行，显示 100 条，编号 1 是第 6 行、100 是第 105 行；空行、全空格行 0 条进历史；`-T` 给两次以最后一次为准；`--` 退出码 0；`-x` 报 unknown flag；`-T ""` 报 `invalid type: `；在 `:` 里运行时它自己算最新一条；清空后 2 种类型都只剩标题 | 干净（2/3） |
+| 5 | 三平台 + 可复现性 | Linux fmt 0、clippy 0、462 + 133；提示符的 3 个 e2e 在 Windows、Linux 上各连跑 5 次，10/10 通过 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - 在 `:` 里运行时，多行输出放进 overlay，只显示前 22 行（`[22 of 102 lines] press any key`），不能滚动；tmux 用可滚动的 view mode。`show-messages`、`list-keys`、`list-commands` 也是这样，是 overlay 的共同限制，这次没改。
+  - 复制模式的搜索不记历史，所以 `-T search` 永远是空的。

@@ -3083,6 +3083,63 @@ async fn the_command_prompt_brings_back_earlier_lines() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `show-prompt-history` prints the `:` prompt's lines as tmux prints its
+/// types, `-T` one of them; `clear-prompt-history` empties them, `-T` of
+/// another type leaves them. A client browsing them while another clears
+/// them and runs one line goes on from that line, not past the end.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_prompt_history_is_shown_and_cleared() {
+    const UP: u16 = 0x26;
+    let h = Harness::start("phist").await;
+    let mut a = h.connect().await;
+    a.attach(&["new", "-s", "p"]).await;
+    a.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let last_row = |s: &vt100::Screen| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default();
+    let empty = "History for command:\n\n\nHistory for search:\n\n";
+    let (code, out, _) = h.cli(&["show-prompt-history"]).await;
+    assert_eq!((code, out.trim_end()), (0, empty.trim_end()));
+    for line in ["set -g @a one", "set -g @b two", "set -g @c three"] {
+        a.prefix(':').await;
+        a.type_str(line).await;
+        a.enter().await;
+    }
+    h.wait_for_cli("the lines run", &["show", "-gv", "@c"], |_, out| out.trim() == "three").await;
+    let (_, out, _) = h.cli(&["showphist", "-T", "command"]).await;
+    assert_eq!(out.trim_end(), "History for command:\n\n1: set -g @a one\n2: set -g @b two\n3: set -g @c three");
+    let (_, out, _) = h.cli(&["show-prompt-history"]).await;
+    assert!(out.starts_with("History for command:\n\n1: set -g @a one\n"), "{out}");
+    assert!(out.trim_end().ends_with("3: set -g @c three\n\nHistory for search:"), "{out}");
+    let (_, out, _) = h.cli(&["show-prompt-history", "-T", "search"]).await;
+    assert_eq!(out.trim_end(), "History for search:");
+    let (code, _, err) = h.cli(&["show-prompt-history", "-T", "bogus"]).await;
+    assert!(code != 0 && err.contains("invalid type: bogus"), "{code} {err}");
+    // Another type cleared: the command lines stay.
+    h.cli(&["clear-prompt-history", "-T", "search"]).await;
+    let (_, out, _) = h.cli(&["show-prompt-history", "-T", "command"]).await;
+    assert!(out.contains("3: set -g @c three"), "{out}");
+    // `a` browses to the newest; `b` clears and runs one line; `a`'s Up
+    // then shows that line (the only one), and the server lives on.
+    a.prefix(':').await;
+    a.key(UP, '\0', 0).await;
+    a.wait_for("the newest", |s| last_row(s).trim_end() == ":set -g @c three").await;
+    let mut b = h.connect().await;
+    b.attach(&["attach", "-t", "p"]).await;
+    b.wait_for("b attached", |s| s.contents().contains("keepane>")).await;
+    b.prefix(':').await;
+    b.type_str("clearphist").await;
+    b.enter().await;
+    h.wait_for_cli("cleared", &["show-prompt-history", "-T", "command"], |_, out| !out.contains("1:")).await;
+    b.prefix(':').await;
+    b.type_str("set -g @d four").await;
+    b.enter().await;
+    h.wait_for_cli("one line again", &["showphist", "-T", "command"], |_, out| out.contains("1: set -g @d four")).await;
+    a.key(UP, '\0', 0).await;
+    a.wait_for("the one line", |s| last_row(s).trim_end() == ":set -g @d four").await;
+    let (code, _, _) = h.cli(&["show", "-gv", "@d"]).await;
+    assert_eq!(code, 0, "the server is still up");
+    h.cli(&["kill-server"]).await;
+}
+
 /// Paper, under a program that took the terminal for a dark one (an agent's
 /// input box): its black box with default text shows the text in the
 /// paper's colour, not the paper's ink, which would vanish. On Unix the

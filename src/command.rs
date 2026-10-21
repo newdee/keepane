@@ -818,6 +818,13 @@ pub enum Cmd {
     },
     /// `show-messages`: the recent status-line messages, newest last.
     ShowMessages,
+    /// `show-prompt-history [-T type]` / `clear-prompt-history [-T type]`:
+    /// the lines run at the prompts, of one type or of all. keepane keeps
+    /// the `:` prompt's (tmux's `command`); the other types stay empty.
+    PromptHistory {
+        clear: bool,
+        kind: Option<&'static str>,
+    },
     /// `set-environment [-r] name [value]`: the environment new panes get.
     SetEnvironment {
         name: String,
@@ -985,6 +992,13 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)
             }
             Cmd::ShowMessages => f.write_str("show-messages"),
+            Cmd::PromptHistory { clear, kind } => {
+                f.write_str(if *clear { "clear-prompt-history" } else { "show-prompt-history" })?;
+                if let Some(k) = kind {
+                    write!(f, " -T {k}")?;
+                }
+                Ok(())
+            }
             Cmd::SetEnvironment { name, value, remove } => {
                 f.write_str("set-environment -g")?;
                 if *remove {
@@ -2174,6 +2188,11 @@ fn key_table(name: &str, table: &str) -> Result<KeyTable, String> {
 /// The most lines `web-tails` gives of each pane.
 pub const MAX_TAILS: usize = 8;
 
+/// tmux's prompt types, the `-T` of `show-prompt-history` and
+/// `clear-prompt-history`, in tmux's order (3.8 dropped `target` and
+/// `window-target`).
+pub const PROMPT_TYPES: &[&str] = &["command", "search"];
+
 /// Every command name, for the unambiguous-prefix lookup below.
 pub const COMMANDS: &[&str] = &[
     "attach-session",
@@ -2189,6 +2208,7 @@ pub const COMMANDS: &[&str] = &[
     "choose-tree",
     "choose-window",
     "clear-history",
+    "clear-prompt-history",
     "command-prompt",
     "copy-mode",
     "confirm-before",
@@ -2303,6 +2323,7 @@ pub const COMMANDS: &[&str] = &[
     "show-hooks",
     "show-messages",
     "show-options",
+    "show-prompt-history",
     "show-window-options",
     "source-file",
     "split-window",
@@ -2343,6 +2364,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("choose-tree", &["-s", "-w", "-Z"]),
     ("choose-window", &["-s", "-w", "-Z"]),
     ("clear-history", &["-t"]),
+    ("clear-prompt-history", &["-T"]),
     ("command-prompt", &["-p", "-I"]),
     ("copy-mode", &["-u", "-t"]),
     ("confirm-before", &["-p"]),
@@ -2442,6 +2464,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("show-hooks", &["-g"]),
     ("show-messages", &[]),
     ("show-options", &["-g", "-v", "-q", "-w", "-s"]),
+    ("show-prompt-history", &["-T"]),
     ("show-window-options", &["-g", "-v"]),
     ("source-file", &["-q"]),
     ("split-window", &["-h", "-v", "-b", "-d", "-f", "-c", "-t", "-N"]),
@@ -2632,6 +2655,8 @@ pub const ALIASES: &[(&str, &str)] = &[
     ("saved", "list-saved"),
     ("forget", "delete-saved"),
     ("clearhist", "clear-history"),
+    ("clearphist", "clear-prompt-history"),
+    ("showphist", "show-prompt-history"),
     ("capturep", "capture-pane"),
     ("cwd", "set-cwd"),
     ("source", "source-file"),
@@ -2741,6 +2766,21 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ShowMessages
+        }
+        "show-prompt-history" | "clear-prompt-history" => {
+            let mut kind = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-T" => {
+                        let t = a.value("-T")?;
+                        let k = PROMPT_TYPES.iter().find(|k| **k == t).ok_or_else(|| format!("invalid type: {t}"))?;
+                        kind = Some(*k);
+                    }
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::PromptHistory { clear: n == "clear-prompt-history", kind }
         }
         "set-environment" => {
             let mut remove = false;
@@ -4755,6 +4795,21 @@ mod tests {
         assert!(matches!(p("killp -a -t :.1"), Cmd::KillPane { all_but: true, .. }));
         assert!(matches!(p("kill-session -a"), Cmd::KillSession { all_but: true, .. }));
         assert!(matches!(p("send -l Enter"), Cmd::SendKeys { literal: true, .. }));
+    }
+
+    /// tmux's prompt-history commands: its aliases, `-T` one of its two
+    /// types (anything else refused), and back to text as typed.
+    #[test]
+    fn the_prompt_history_commands_parse() {
+        assert_eq!(p("showphist"), Cmd::PromptHistory { clear: false, kind: None });
+        assert_eq!(p("clearphist -T command"), Cmd::PromptHistory { clear: true, kind: Some("command") });
+        assert_eq!(p("show-prompt-history -T search").to_string(), "show-prompt-history -T search");
+        assert_eq!(parse_line("showphist -T target").unwrap_err(), "invalid type: target", "gone in tmux 3.8");
+        assert_eq!(p("clear-prompt-history").to_string(), "clear-prompt-history");
+        assert_eq!(parse_line("showphist -T bogus").unwrap_err(), "invalid type: bogus");
+        assert!(parse_line("showphist -T").unwrap_err().contains("missing value"));
+        assert!(parse_line("clearphist extra").unwrap_err().contains("unexpected argument"));
+        assert!(parse_line("clear-").unwrap_err().starts_with("ambiguous command"), "clear-history or this");
     }
 
     /// The completion table and the parser agree: every command is in the

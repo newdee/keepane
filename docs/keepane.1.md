@@ -338,7 +338,7 @@ text prompt stays as typed. The defaults:
 | `S` | send what is typed to every pane of the window |
 | `C-t` | each command's time at the end of its line |
 | `,` / `$` | rename the window / the session |
-| `:` | the command prompt (Up / Down, `C-p` / `C-n`: the last 100 lines run there) |
+| `:` | the command prompt (Up / Down, `C-p` / `C-n`: the last 100 lines run there; `show-prompt-history` lists them, `clear-prompt-history` forgets them) |
 | `~` | recent messages |
 | `?` | list the keys |
 
