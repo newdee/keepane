@@ -819,8 +819,8 @@ pub enum Cmd {
     /// `show-messages`: the recent status-line messages, newest last.
     ShowMessages,
     /// `show-prompt-history [-T type]` / `clear-prompt-history [-T type]`:
-    /// the lines run at the prompts, of one type or of all. keepane keeps
-    /// the `:` prompt's (tmux's `command`); the other types stay empty.
+    /// what was typed at the prompts, of one type or of both: `command`
+    /// (the `:` prompt) and `search` (`/` and `?`).
     PromptHistory {
         clear: bool,
         kind: Option<&'static str>,
@@ -2187,6 +2187,12 @@ fn key_table(name: &str, table: &str) -> Result<KeyTable, String> {
 
 /// The most lines `web-tails` gives of each pane.
 pub const MAX_TAILS: usize = 8;
+
+/// Why `new` is refused inside a pane, as tmux words it. `KEEPANE_PANE`
+/// alone makes a client nested (by the client for another server's pane,
+/// by the server for its own); unsetting `KEEPANE` instead only changes
+/// the server it talks to.
+pub const NESTED: &str = "sessions should be nested with care, unset KEEPANE_PANE to force";
 
 /// tmux's prompt types, the `-T` of `show-prompt-history` and
 /// `clear-prompt-history`, in tmux's order (3.8 dropped `target` and

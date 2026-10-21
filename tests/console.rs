@@ -393,11 +393,18 @@ fn nested_new_is_refused_and_detached_flag_allowed() {
     let mut t = Term::spawn_env(&["-L", &socket, "new", "-s", "inner"], 80, 24, &[("KEEPANE_PANE", "1")]);
     let code = t.wait_exit();
     assert_eq!(code, 1);
-    assert!(
-        t.parser.screen().contents().contains("sessions should be nested with care"),
-        "{}",
-        t.parser.screen().contents()
-    );
+    let said = "sessions should be nested with care, unset KEEPANE_PANE to force";
+    assert!(t.parser.screen().contents().contains(said), "{}", t.parser.screen().contents());
+    // A pane of this server (KEEPANE names it): the server refuses, the same words.
+    let here = [("KEEPANE", socket.as_str()), ("KEEPANE_PANE", "0")];
+    let mut t = Term::spawn_env(&["-L", &socket, "new", "-s", "inner"], 80, 24, &here);
+    assert_eq!(t.wait_exit(), 1);
+    assert!(t.parser.screen().contents().contains(said), "{}", t.parser.screen().contents());
+    // As it says: KEEPANE_PANE unset (KEEPANE kept), `new` attaches.
+    let mut t = Term::spawn_env(&["-L", &socket, "new", "-s", "forced"], 80, 24, &[("KEEPANE", socket.as_str())]);
+    t.wait_for("attached", |s| s.contents().contains("forced   0:"));
+    t.send("\x02d");
+    assert_eq!(t.wait_exit(), 0);
     // With -d it is allowed.
     let mut t = Term::spawn_env(&["-L", &socket, "new", "-d", "-s", "inner"], 80, 24, &[("KEEPANE_PANE", "1")]);
     assert_eq!(t.wait_exit(), 0);

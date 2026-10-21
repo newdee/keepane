@@ -198,8 +198,9 @@ enum PromptKind {
     /// `x` or `D` on picker lines with a session among them: on `y`, they
     /// go (and with `forget`, the sessions' saves too).
     ConfirmPicker { targets: Vec<ChooserItem>, forget: bool },
-    /// `/` or `?` in copy mode: the input is a pattern, not a command.
-    Search { back: bool },
+    /// `/` or `?` in copy mode, or (`in_overlay`) in an overlay: the input
+    /// is a pattern, not a command.
+    Search { back: bool, in_overlay: bool },
     /// `f` in a picker: the input filters its lines as it is typed;
     /// Escape puts `prev` back.
     Filter { prev: String },
@@ -218,8 +219,65 @@ struct Prompt {
     browse: Option<(usize, String)>,
 }
 
-/// The most command lines `:` keeps for Up and Down (tmux keeps 100).
+impl Prompt {
+    /// `/` (or `?`, `back`) in copy mode or in an overlay: empty, labelled
+    /// with its key.
+    fn search(back: bool, in_overlay: bool) -> Self {
+        Prompt {
+            kind: PromptKind::Search { back, in_overlay },
+            label: if back { "?".into() } else { "/".into() },
+            input: String::new(),
+            cursor: 0,
+            hint: None,
+            browse: None,
+        }
+    }
+}
+
+/// The most lines each prompt type keeps for Up and Down (tmux keeps 100).
 const PROMPT_HISTORY: usize = 100;
+
+/// The lines typed at the prompts, by tmux's prompt type, newest last:
+/// `command` what was run at `:`, `search` what was looked for with `/`
+/// and `?` (in copy mode and in an overlay). One list each for the server.
+#[derive(Default)]
+struct PromptHistory {
+    command: Vec<String>,
+    search: Vec<String>,
+}
+
+impl PromptHistory {
+    /// The list of a type from `crate::command::PROMPT_TYPES`.
+    fn of(&self, kind: &str) -> &Vec<String> {
+        if kind == "search" { &self.search } else { &self.command }
+    }
+
+    fn of_mut(&mut self, kind: &str) -> &mut Vec<String> {
+        if kind == "search" { &mut self.search } else { &mut self.command }
+    }
+
+    /// Keep `line` as the newest of its type: not a blank one, not the
+    /// newest again; past `PROMPT_HISTORY` the oldest goes.
+    fn add(&mut self, kind: &str, line: &str) {
+        let h = self.of_mut(kind);
+        if !line.trim().is_empty() && h.last().map(String::as_str) != Some(line) {
+            h.push(line.to_string());
+            if h.len() > PROMPT_HISTORY {
+                h.remove(0);
+            }
+        }
+    }
+}
+
+/// The history a prompt walks with Up and Down and adds to on Enter:
+/// `:`'s and the searches'; a template's or a name's has none.
+fn history_type(kind: &PromptKind) -> Option<&'static str> {
+    match kind {
+        PromptKind::Command { template: None } => Some("command"),
+        PromptKind::Search { .. } => Some("search"),
+        _ => None,
+    }
+}
 
 /// Multi-line output over the window: its lines and the first one shown.
 /// It opens at the end, as tmux's view mode does; one longer than the
@@ -229,11 +287,15 @@ struct Overlay {
     /// Kept within the lines when moved and when drawn, so `usize::MAX`
     /// (where it opens) is the end.
     top: usize,
+    /// The last search (`/` forward, `?` back) for `n` and `N`.
+    search: Option<(String, bool)>,
+    /// Where it was found: the line, and the columns it takes there.
+    hit: Option<(usize, u16, u16)>,
 }
 
 impl Overlay {
     fn new(lines: Vec<String>) -> Self {
-        Overlay { lines, top: usize::MAX }
+        Overlay { lines, top: usize::MAX, search: None, hit: None }
     }
 
     /// Move by `delta` lines, `body` rows showing.
@@ -241,18 +303,68 @@ impl Overlay {
         let last = self.lines.len().saturating_sub(body) as i64;
         self.top = (self.top.min(last as usize) as i64).saturating_add(delta).clamp(0, last) as usize;
     }
+
+    /// Look for `pattern` (any case) as copy mode does, a line at a time:
+    /// forward (down) or back (up), from the rows showing when `fresh`,
+    /// else past the last hit. A hit is marked, and brought into view (to
+    /// the middle) when it is not in it. False when there is none.
+    fn find(&mut self, pattern: &str, back: bool, fresh: bool, body: usize) -> bool {
+        let len = self.lines.len();
+        if len == 0 || pattern.is_empty() {
+            return false;
+        }
+        let top = self.top.min(len.saturating_sub(body));
+        let bottom = (top + body.max(1) - 1).min(len - 1);
+        let mut near: Box<dyn Iterator<Item = usize>> = match (self.hit.filter(|_| !fresh), back) {
+            (Some((at, ..)), false) => Box::new(at + 1..len),
+            (Some((at, ..)), true) => Box::new((0..at).rev()),
+            (None, false) => Box::new(top..len),
+            (None, true) => Box::new((0..=bottom).rev()),
+        };
+        let needle = pattern.to_lowercase();
+        let found = near.find_map(|i| {
+            let text = self.lines[i].to_lowercase();
+            text.find(&needle).map(|byte| {
+                let col = unicode_width::UnicodeWidthStr::width(&text[..byte]) as u16;
+                (i, col, unicode_width::UnicodeWidthStr::width(needle.as_str()) as u16)
+            })
+        });
+        let Some(hit) = found else { return false };
+        self.hit = Some(hit);
+        if hit.0 < top || hit.0 > bottom {
+            self.top = hit.0.saturating_sub(body / 2).min(len.saturating_sub(body));
+        } else {
+            self.top = top;
+        }
+        true
+    }
 }
 
-/// What a key does to an overlay of `len` lines with `body` rows showing:
-/// move it by so many lines, or (`None`) put it away. One that fits is put
-/// away by any key, as before it could scroll (and so is one with no rows
-/// to show lines in).
-fn overlay_key(k: Key, len: usize, body: usize) -> Option<i64> {
+/// What a key does to an overlay.
+#[derive(Debug, PartialEq)]
+enum OverlayMove {
+    /// Scroll by so many lines.
+    By(i64),
+    /// Ask for a pattern to look for, back (`?`) or forward (`/`).
+    Search {
+        back: bool,
+    },
+    /// Look again for the last pattern, the other way with `N`.
+    Again {
+        reverse: bool,
+    },
+    Close,
+}
+
+/// What key `k` does to an overlay of `len` lines with `body` rows
+/// showing. One that fits is put away by any key, as before it could
+/// scroll (and so is one with no rows to show lines in).
+fn overlay_key(k: Key, len: usize, body: usize) -> OverlayMove {
     if len <= body || body == 0 {
-        return None;
+        return OverlayMove::Close;
     }
     let page = body.max(1) as i64;
-    Some(match (k.code, k.ctrl, k.alt) {
+    OverlayMove::By(match (k.code, k.ctrl, k.alt) {
         (KeyCode::Up, _, _) | (KeyCode::Char('k'), false, false) | (KeyCode::Char('p'), true, false) => -1,
         (KeyCode::Down, _, _) | (KeyCode::Char('j'), false, false) | (KeyCode::Char('n'), true, false) => 1,
         (KeyCode::PPage, _, _) | (KeyCode::Char('b'), false, false) => -page,
@@ -261,7 +373,9 @@ fn overlay_key(k: Key, len: usize, body: usize) -> Option<i64> {
         (KeyCode::Char('d'), true, false) => (page / 2).max(1),
         (KeyCode::Home, _, _) | (KeyCode::Char('g'), false, false) => i64::MIN,
         (KeyCode::End, _, _) | (KeyCode::Char('G'), false, false) => i64::MAX,
-        _ => return None,
+        (KeyCode::Char(c @ ('/' | '?')), false, false) => return OverlayMove::Search { back: c == '?' },
+        (KeyCode::Char(c @ ('n' | 'N')), false, false) => return OverlayMove::Again { reverse: c == 'N' },
+        _ => return OverlayMove::Close,
     })
 }
 
@@ -635,6 +749,12 @@ struct Client {
 }
 
 impl Client {
+    /// The search prompt an overlay opened is up: the keys are its, not
+    /// the overlay's.
+    fn searching_overlay(&self) -> bool {
+        self.prompt.as_ref().is_some_and(|p| matches!(p.kind, PromptKind::Search { in_overlay: true, .. }))
+    }
+
     /// Queue a control message. Control messages are never dropped: when the
     /// queue is full (a console frozen by a QuickEdit selection blocks our
     /// writer) they wait in `pending` and go out before any further frame.
@@ -938,9 +1058,9 @@ pub struct Server {
     opts: Options,
     prefix_binds: HashMap<Key, Binding>,
     root_binds: HashMap<Key, Binding>,
-    /// The command lines run at `:`, oldest first, for Up and Down there
-    /// (every client's; not kept past the server).
-    prompt_history: Vec<String>,
+    /// What was typed at `:` and the searches, oldest first, for Up and
+    /// Down there (every client's; not kept past the server).
+    prompt_history: PromptHistory,
     /// `bind -T copy-mode-vi`: keys in copy mode that run a command instead
     /// of copy mode's own meaning.
     copy_binds: HashMap<Key, Binding>,
@@ -1388,7 +1508,7 @@ impl Server {
             opts: Options::default(),
             prefix_binds: default_bindings(),
             root_binds: default_root_bindings(),
-            prompt_history: Vec::new(),
+            prompt_history: PromptHistory::default(),
             copy_binds: HashMap::new(),
             sessions: Vec::new(),
             clients: HashMap::new(),
@@ -3604,7 +3724,7 @@ impl Server {
                 }
                 let inside = client.is_some_and(|c| c.pane_env.is_some() && c.session.is_none());
                 if inside && !detached && interactive {
-                    return Outcome::Error("sessions should be nested with care, unset KEEPANE to force".into());
+                    return Outcome::Error(crate::command::NESTED.into());
                 }
                 // `new -A` with no name (a bare `keepane`): into what is there
                 // rather than one more session: the one used last; else the
@@ -3707,12 +3827,10 @@ impl Server {
                 Outcome::Text(self.messages.iter().cloned().collect::<Vec<String>>().join("\n"))
             }
             Cmd::PromptHistory { clear, kind } => {
-                // keepane keeps one history, the `:` prompt's: tmux's
-                // `command`; the other types have nothing in them.
                 let kinds: Vec<&str> = kind.map_or(crate::command::PROMPT_TYPES.to_vec(), |k| vec![k]);
                 if clear {
-                    if kinds.contains(&"command") {
-                        self.prompt_history.clear();
+                    for k in kinds {
+                        self.prompt_history.of_mut(k).clear();
                     }
                     return Outcome::Ok;
                 }
@@ -3722,9 +3840,8 @@ impl Server {
                 for k in kinds {
                     out.push(format!("History for {k}:"));
                     out.push(String::new());
-                    if k == "command" {
-                        out.extend(self.prompt_history.iter().enumerate().map(|(i, l)| format!("{}: {l}", i + 1)));
-                    }
+                    let lines = self.prompt_history.of(k).iter().enumerate();
+                    out.extend(lines.map(|(i, l)| format!("{}: {l}", i + 1)));
                     out.push(String::new());
                 }
                 Outcome::Text(out.join("\n"))
@@ -6393,15 +6510,22 @@ impl Server {
             c.message = None;
         }
 
-        if c.overlay.is_some() {
+        // An overlay takes the keys, but for the search prompt it opened.
+        let searching = c.searching_overlay();
+        if c.overlay.is_some() && !searching {
             if let Some(k) = key {
                 c.swallow_up.insert(rec.vk);
                 let body = self.overlay_rows(cid);
                 let c = self.clients.get_mut(&cid).unwrap();
                 let o = c.overlay.as_mut().unwrap();
                 match overlay_key(k, o.lines.len(), body) {
-                    Some(delta) => o.scroll(delta, body),
-                    None => c.overlay = None,
+                    OverlayMove::By(delta) => o.scroll(delta, body),
+                    OverlayMove::Search { back } => c.prompt = Some(Prompt::search(back, true)),
+                    OverlayMove::Again { reverse } => match o.search.clone() {
+                        Some((pattern, back)) => self.search_overlay(cid, &pattern, back != reverse, false),
+                        None => self.message(cid, "no previous search"),
+                    },
+                    OverlayMove::Close => c.overlay = None,
                 }
             }
             return;
@@ -6781,7 +6905,12 @@ impl Server {
                     }
                     (KeyCode::Enter, _, _) if matches!(p.kind, PromptKind::Search { .. }) => {
                         let prompt = c.prompt.take().unwrap();
-                        let PromptKind::Search { back } = prompt.kind else { unreachable!() };
+                        let PromptKind::Search { back, in_overlay } = prompt.kind else { unreachable!() };
+                        self.prompt_history.add("search", &prompt.input);
+                        if in_overlay {
+                            self.search_overlay(cid, &prompt.input, back, true);
+                            return;
+                        }
                         let pid = self
                             .clients
                             .get(&cid)
@@ -6796,14 +6925,9 @@ impl Server {
                     (KeyCode::Enter, _, _) => {
                         let prompt = c.prompt.take().unwrap();
                         let PromptKind::Command { template } = prompt.kind else { unreachable!() };
-                        // A line typed at `:` goes on its history (not the
-                        // same as the last again; the oldest go past 100).
-                        let h = &mut self.prompt_history;
-                        if template.is_none() && !prompt.input.trim().is_empty() && h.last() != Some(&prompt.input) {
-                            h.push(prompt.input.clone());
-                            if h.len() > PROMPT_HISTORY {
-                                h.remove(0);
-                            }
+                        // A line typed at `:` goes on its history.
+                        if template.is_none() {
+                            self.prompt_history.add("command", &prompt.input);
                         }
                         let line = match template {
                             Some(t) => t.replace("%%", &crate::command::quote(&prompt.input)),
@@ -6861,13 +6985,11 @@ impl Server {
                         p.input = format!("{}{}", &head[..cut], &p.input[idx..]);
                         p.cursor -= removed;
                     }
-                    // Up / Down (C-p / C-n) at `:`: the lines run there
-                    // before, newest first; Down past the newest puts back
-                    // what was being typed.
-                    (KeyCode::Up, _, _) | (KeyCode::Char('p'), true, _)
-                        if matches!(p.kind, PromptKind::Command { template: None }) =>
-                    {
-                        let h = &self.prompt_history;
+                    // Up / Down (C-p / C-n) at `:` or a search: the lines
+                    // typed there before, newest first; Down past the
+                    // newest puts back what was being typed.
+                    (KeyCode::Up, _, _) | (KeyCode::Char('p'), true, _) if history_type(&p.kind).is_some() => {
+                        let h = self.prompt_history.of(history_type(&p.kind).unwrap());
                         if let Some(newest) = h.len().checked_sub(1) {
                             // The list may have shrunk since the last Up
                             // (clear-prompt-history from elsewhere).
@@ -6880,10 +7002,8 @@ impl Server {
                             p.browse = Some((at, draft));
                         }
                     }
-                    (KeyCode::Down, _, _) | (KeyCode::Char('n'), true, _)
-                        if matches!(p.kind, PromptKind::Command { template: None }) =>
-                    {
-                        let h = &self.prompt_history;
+                    (KeyCode::Down, _, _) | (KeyCode::Char('n'), true, _) if history_type(&p.kind).is_some() => {
+                        let h = self.prompt_history.of(history_type(&p.kind).unwrap());
                         match p.browse.take() {
                             Some((i, draft)) if i + 1 < h.len() => {
                                 p.input = h[i + 1].clone();
@@ -7021,6 +7141,22 @@ impl Server {
     /// `back` searches towards older lines, which is what `?` does (tmux's
     /// `search-backward`). `fresh` starts from the cursor line itself so that
     /// a new search can match what is already on screen.
+    /// `/` or `?` in an overlay (`fresh`, kept for `n` and `N`), or `n`
+    /// and `N` again: find `pattern` there, or say there is none.
+    fn search_overlay(&mut self, cid: ClientId, pattern: &str, back: bool, fresh: bool) {
+        if pattern.is_empty() {
+            return;
+        }
+        let body = self.overlay_rows(cid);
+        let Some(o) = self.clients.get_mut(&cid).and_then(|c| c.overlay.as_mut()) else { return };
+        if fresh {
+            o.search = Some((pattern.to_string(), back));
+        }
+        if !o.find(pattern, back, fresh, body) {
+            self.message(cid, &format!("no match: {pattern}"));
+        }
+    }
+
     fn search_in_copy_mode(&mut self, cid: ClientId, pid: PaneId, pattern: &str, back: bool, fresh: bool) {
         let pattern = pattern.to_string();
         if pattern.is_empty() {
@@ -8069,14 +8205,7 @@ impl Server {
             (KeyCode::Char('/'), false, false) | (KeyCode::Char('?'), false, false) => {
                 let back = k.code == KeyCode::Char('?');
                 if let Some(cl) = self.clients.get_mut(&cid) {
-                    cl.prompt = Some(Prompt {
-                        kind: PromptKind::Search { back },
-                        label: if back { "?".into() } else { "/".into() },
-                        input: String::new(),
-                        cursor: 0,
-                        hint: None,
-                        browse: None,
-                    });
+                    cl.prompt = Some(Prompt::search(back, false));
                 }
             }
             (KeyCode::Char('n'), false, false) | (KeyCode::Char('N'), false, false) => {
@@ -9191,17 +9320,23 @@ impl Server {
             }
             cursor = None;
         }
+        // An overlay (a hook's message, a `run-shell` result) draws over the
+        // picker, because the next key goes to the overlay, not the picker;
+        // under the status line's prompt or message, so that its own search
+        // prompt and "no match" show when there is no status line.
+        if let Some(o) = &c.overlay {
+            render::draw_overlay(&mut grid, area, &o.lines, o.top, o.hit);
+            cursor = None;
+        }
         if let Some((prompt, message)) = &notice
             && rows > 0
             && let Some(at) = render::draw_notice(&mut grid, rows - 1, prompt.as_ref(), message.as_deref())
         {
-            cursor = Some(at);
-        }
-        // An overlay (a hook's message, a `run-shell` result) draws over the
-        // picker, because the next key goes to the overlay, not the picker.
-        if let Some(o) = &c.overlay {
-            render::draw_overlay(&mut grid, area, &o.lines, o.top);
-            cursor = None;
+            // The cursor is the prompt's, unless the overlay takes the keys.
+            let searching = c.searching_overlay();
+            if c.overlay.is_none() || searching {
+                cursor = Some(at);
+            }
         }
         // The popup is the thing with the keyboard, so it draws last.
         if let Some(p) = c.popup.as_ref() {
@@ -10086,14 +10221,21 @@ mod tests {
             (Key::plain(KeyCode::End), i64::MAX),
             (k('G'), i64::MAX),
         ];
-        for (key, want) in moves {
-            assert_eq!(overlay_key(key, len, body), Some(want), "{key:?}");
-            assert_eq!(overlay_key(key, 22, body), None, "fits: {key:?} closes");
-            assert_eq!(overlay_key(key, len, 0), None, "no rows: {key:?} closes");
+        let searches = [
+            (k('/'), OverlayMove::Search { back: false }),
+            (k('?'), OverlayMove::Search { back: true }),
+            (k('n'), OverlayMove::Again { reverse: false }),
+            (k('N'), OverlayMove::Again { reverse: true }),
+        ];
+        let all = moves.into_iter().map(|(key, d)| (key, OverlayMove::By(d))).chain(searches);
+        for (key, want) in all {
+            assert_eq!(overlay_key(key, len, body), want, "{key:?}");
+            assert_eq!(overlay_key(key, 22, body), OverlayMove::Close, "fits: {key:?} closes");
+            assert_eq!(overlay_key(key, len, 0), OverlayMove::Close, "no rows: {key:?} closes");
         }
         // The prefix (C-b) and everything else put it away.
         for key in [k('q'), Key::plain(KeyCode::Escape), Key::plain(KeyCode::Enter), Key::ctrl('b'), k('x')] {
-            assert_eq!(overlay_key(key, len, body), None, "{key:?}");
+            assert_eq!(overlay_key(key, len, body), OverlayMove::Close, "{key:?}");
         }
         // It opens at the end and moves within the lines.
         let mut o = Overlay::new((0..len).map(|i| i.to_string()).collect());
@@ -10110,6 +10252,59 @@ mod tests {
         // Grown taller (the client resized): the end is nearer.
         o.scroll(0, 50);
         assert_eq!(o.top, 50);
+    }
+
+    /// `/` in an overlay looks down from the rows showing, `?` up from
+    /// them, any case; `n` goes on past the hit, the same way; a hit out of
+    /// view comes to the middle, one in view leaves it where it is; no
+    /// match changes nothing.
+    #[test]
+    fn an_overlay_finds_a_pattern() {
+        let body = 10;
+        let lines = (0..100).map(|i| if i % 25 == 3 { format!("x Wide 字 Key {i}") } else { format!("line {i}") });
+        let mut o = Overlay::new(lines.collect());
+        // From the end (rows 90-99 showing), back: line 78, brought to the middle.
+        assert!(o.find("key", true, true, body));
+        assert_eq!((o.hit, o.top), (Some((78, 10, 3)), 73), "after `x Wide 字 ` (字 two columns)");
+        assert!(o.find("key", true, false, body));
+        assert_eq!((o.hit, o.top), (Some((53, 10, 3)), 48));
+        // Forward from the hit: 78 again; then 3 from the top, fresh.
+        assert!(o.find("KEY", false, false, body));
+        assert_eq!(o.hit.map(|h| h.0), Some(78));
+        o.scroll(i64::MIN, body);
+        assert!(o.find("key", false, true, body));
+        assert_eq!((o.hit, o.top), (Some((3, 10, 3)), 0), "in view: it stays");
+        assert!(o.find("line 8", false, true, body));
+        assert_eq!((o.hit.map(|h| h.0), o.top), (Some(8), 0), "lower in view: it stays too");
+        // Past the last one: nothing, and nothing moves.
+        o.scroll(i64::MAX, body);
+        assert!(!o.find("key", false, true, body));
+        assert_eq!((o.hit.map(|h| h.0), o.top), (Some(8), 90), "the last hit and the view kept");
+        assert!(!o.find("nowhere", true, true, body));
+        assert!(!o.find("", false, true, body));
+        assert!(!Overlay::new(vec![]).find("x", false, true, body));
+    }
+
+    /// Each prompt type keeps its own lines: not a blank one, not the
+    /// newest twice, the last 100.
+    #[test]
+    fn the_prompt_history_keeps_a_list_a_type() {
+        let mut h = PromptHistory::default();
+        for line in ["a", "a", " ", "", "b"] {
+            h.add("command", line);
+        }
+        h.add("search", "x");
+        assert_eq!((h.of("command").clone(), h.of("search").clone()), (vec!["a".into(), "b".into()], vec!["x".into()]));
+        for i in 0..150 {
+            h.add("search", &i.to_string());
+        }
+        assert_eq!((h.of("search").len(), h.of("search")[0].as_str()), (100, "50"));
+        h.of_mut("search").clear();
+        assert!(h.of("search").is_empty() && h.of("command").len() == 2);
+        assert_eq!(history_type(&PromptKind::Command { template: None }), Some("command"));
+        assert_eq!(history_type(&PromptKind::Command { template: Some("x %%".into()) }), None);
+        assert_eq!(history_type(&PromptKind::Search { back: true, in_overlay: true }), Some("search"));
+        assert_eq!(history_type(&PromptKind::Filter { prev: String::new() }), None);
     }
 
     /// Each clock put on a pane: `random` a kind other than the last, all

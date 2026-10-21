@@ -523,7 +523,7 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
     // still be nested, which tmux refuses whatever server `TMUX` names. (For
     // this server's own panes the server says so.)
     if pane_env.is_none() && std::env::var_os("KEEPANE_PANE").is_some() && console.is_some() && attaches_new(&argv) {
-        eprintln!("sessions should be nested with care, unset KEEPANE to force");
+        eprintln!("{}", crate::command::NESTED);
         return Ok(1);
     }
     // A terminal about to attach to a server of another version is told

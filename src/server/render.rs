@@ -662,10 +662,10 @@ impl Grid {
 }
 
 /// Draw a block of text over `area` (tmux view mode), from line `top` (kept
-/// within the lines, so `usize::MAX` shows the end). The last row of the
-/// area shows a hint: which lines these are and how to move when they do
-/// not all fit.
-pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String], top: usize) {
+/// within the lines, so `usize::MAX` shows the end), a search's `hit` (the
+/// line, the columns it takes) in inverse. The last row of the area shows
+/// a hint: which lines these are and how to move when they do not all fit.
+pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String], top: usize, hit: Option<(usize, u16, u16)>) {
     if area.h == 0 || area.w == 0 {
         return;
     }
@@ -676,9 +676,17 @@ pub fn draw_overlay(g: &mut Grid, area: Rect, lines: &[String], top: usize) {
     for (i, line) in lines.iter().skip(top).take(body_h).enumerate() {
         g.put_str(area.x, area.y + i as u16, line, style, area.w);
     }
+    if let Some((at, col, w)) = hit
+        && (top..top + body_h).contains(&at)
+    {
+        let y = area.y + (at - top) as u16;
+        for x in col..col.saturating_add(w).min(area.w) {
+            g.invert(area.x + x, y);
+        }
+    }
     let hint = if lines.len() > body_h && body_h > 0 {
         format!(
-            "[{}-{} of {}] ↑ ↓ PgUp PgDn g G, any other key closes",
+            "[{}-{} of {}] ↑ ↓ PgUp PgDn g G / ? n N, any other key closes",
             top + 1,
             top + body_h,
             crate::format::count(lines.len(), "line")
@@ -2185,25 +2193,34 @@ mod tests {
         let mut g = Grid::new(40, 4);
         g.put_str(0, 0, "underneath", Style::default(), 40);
         let lines: Vec<String> = (0..5).map(|i| format!("line{i}")).collect();
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines, 0);
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines, 0, None);
         let row = |g: &Grid, y: u16| (0..40).map(|x| g.get(x, y).text()).collect::<String>();
         assert_eq!(row(&g, 0).trim_end(), "line0");
         assert_eq!(row(&g, 1).trim_end(), "line1");
-        assert_eq!(row(&g, 2).trim_end(), "[1-2 of 5 lines] ↑ ↓ PgUp PgDn g G, any");
+        assert_eq!(row(&g, 2).trim_end(), "[1-2 of 5 lines] ↑ ↓ PgUp PgDn g G / ? n");
         // From a line further down; past the end, the last that fill it.
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 80, h: 3 }, &lines, 2);
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 80, h: 3 }, &lines, 2, None);
         assert_eq!((row(&g, 0).trim_end(), row(&g, 1).trim_end()), ("line2", "line3"));
         assert!(row(&g, 2).starts_with("[3-4 of 5 lines]"));
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 80, h: 3 }, &lines, usize::MAX);
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 80, h: 3 }, &lines, usize::MAX, None);
         assert_eq!((row(&g, 0).trim_end(), row(&g, 1).trim_end()), ("line3", "line4"));
         assert!(row(&g, 2).starts_with("[4-5 of 5 lines]"));
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines, 0);
+        // A search's hit in inverse, on its row, its columns only; one out
+        // of view marks nothing.
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 80, h: 3 }, &lines, usize::MAX, Some((4, 2, 3)));
+        let inverse = |g: &Grid, y: u16| (0..g.cols).filter(|&x| g.get(x, y).style.inverse).collect::<Vec<u16>>();
+        assert_eq!((inverse(&g, 0), inverse(&g, 1)), (vec![], vec![2, 3, 4]));
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 80, h: 3 }, &lines, usize::MAX, Some((0, 2, 3)));
+        assert_eq!((inverse(&g, 0), inverse(&g, 1)), (vec![], vec![]));
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 4, h: 3 }, &lines, usize::MAX, Some((4, 2, 3)));
+        assert_eq!(inverse(&g, 1).len(), 2, "cut at the area's edge");
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines, 0, None);
         // The hint on the quiet bar: white on black, which a theme makes its own.
         assert_eq!((g.get(0, 2).style.fg, g.get(0, 2).style.bg), (Color::Idx(7), Color::Idx(0)));
         assert_eq!(g.get(39, 2).style.bg, Color::Idx(0), "across the whole row");
         // Row 3 is outside the area and untouched.
         assert_eq!(row(&g, 3).trim_end(), "");
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines[..1], usize::MAX);
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 40, h: 3 }, &lines[..1], usize::MAX, None);
         assert_eq!(row(&g, 2).trim_end(), "press any key");
         assert_eq!(row(&g, 1).trim_end(), "");
     }
@@ -2697,7 +2714,7 @@ mod tests {
         // An overlay on a 1-row area draws only the hint, with no lines to
         // move through (any key puts it away).
         let mut g = Grid::new(5, 1);
-        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 5, h: 1 }, &["x".into()], usize::MAX);
+        draw_overlay(&mut g, Rect { x: 0, y: 0, w: 5, h: 1 }, &["x".into()], usize::MAX, None);
         assert_eq!((0..5).map(|x| g.get(x, 0).text()).collect::<String>(), "press");
     }
 

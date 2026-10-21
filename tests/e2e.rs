@@ -3181,6 +3181,81 @@ async fn a_long_overlay_scrolls() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `?` and `/` in a long overlay look for a pattern, the hit in inverse;
+/// `n` goes on, `N` back; no match says so; Escape leaves the prompt and
+/// keeps the overlay. What was looked for, there and in copy mode, is the
+/// `search` history: Up at the next search brings it back, and
+/// `show-prompt-history -T search` lists it.
+#[tokio::test(flavor = "multi_thread")]
+async fn searches_find_in_an_overlay_and_are_kept() {
+    const UP: u16 = 0x26;
+    let h = Harness::start("ovsearch").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "o"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let last_row = |s: &vt100::Screen| s.rows(0, COLS).nth(ROWS as usize - 1).unwrap_or_default();
+    // The row a command is on, and whether its `kill-` is lit.
+    let lit = |s: &vt100::Screen, name: &str| {
+        let row = s.rows(0, COLS).position(|r| r.trim_end() == name)?;
+        Some((0..5).all(|x| s.cell(row as u16, x).is_some_and(|c| c.inverse())))
+    };
+    // Copy mode first: a search there is kept.
+    c.prefix('[').await;
+    c.type_str("/").await;
+    c.type_str("keepane").await;
+    c.enter().await;
+    c.key(0x1B, '\x1b', 0).await;
+    h.wait_for_cli("kept", &["showphist", "-T", "search"], |_, out| out.contains("1: keepane")).await;
+    c.prefix(':').await;
+    c.type_str("list-commands").await;
+    c.enter().await;
+    c.wait_for("the overlay", |s| s.contents().contains("/ ? n N")).await;
+    c.type_str("n").await;
+    c.wait_for("nothing to repeat", |s| last_row(s).contains("no previous search")).await;
+    // Back from the end: the nearest above is kill-window.
+    c.type_str("?").await;
+    c.wait_for("the search prompt", |s| last_row(s).trim_end() == "?").await;
+    c.type_str("kill-").await;
+    c.enter().await;
+    c.wait_for("kill-window lit", |s| lit(s, "kill-window") == Some(true)).await;
+    c.type_str("n").await;
+    c.wait_for("n: kill-session", |s| lit(s, "kill-session") == Some(true) && lit(s, "kill-window") == Some(false))
+        .await;
+    c.type_str("N").await;
+    c.wait_for("N: kill-window again", |s| lit(s, "kill-window") == Some(true)).await;
+    // N turned that one look only: n still goes back.
+    c.type_str("n").await;
+    c.wait_for("n: back again", |s| lit(s, "kill-session") == Some(true)).await;
+    // The overlay hides the cursor; its search prompt shows it.
+    assert!(c.screen.screen().hide_cursor(), "no cursor over the overlay");
+    c.type_str("/").await;
+    c.type_str("zzz").await;
+    c.enter().await;
+    c.wait_for("no match", |s| last_row(s).contains("no match: zzz")).await;
+    // Up at the next search: the newest first, then the ones before. With
+    // no status line the prompt still shows, over the overlay's hint.
+    h.cli(&["set", "-g", "status", "off"]).await;
+    c.type_str("/").await;
+    c.wait_for("the prompt's cursor", |s| last_row(s).trim_end() == "/" && !s.hide_cursor()).await;
+    for want in ["/zzz", "/kill-", "/keepane"] {
+        c.key(UP, '\0', 0).await;
+        c.wait_for(want, |s| last_row(s).trim_end() == want).await;
+    }
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("the prompt gone, the overlay kept", |s| {
+        !last_row(s).starts_with('/') && s.contents().contains("/ ? n N")
+    })
+    .await;
+    let (_, out, _) = h.cli(&["show-prompt-history", "-T", "search"]).await;
+    assert_eq!(out.trim_end(), "History for search:\n\n1: keepane\n2: kill-\n3: zzz");
+    h.cli(&["clear-prompt-history", "-T", "search"]).await;
+    let (_, out, _) = h.cli(&["show-prompt-history", "-T", "search"]).await;
+    assert_eq!(out.trim_end(), "History for search:");
+    c.type_str("q").await;
+    c.wait_for("put away", |s| !s.contents().contains("/ ? n N")).await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// Paper, under a program that took the terminal for a dark one (an agent's
 /// input box): its black box with default text shows the text in the
 /// paper's colour, not the paper's ink, which would vanish. On Unix the

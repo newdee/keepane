@@ -23,7 +23,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | choose-client | yes | `prefix D`; Enter detaches the client picked |
 | choose-tree | part | `-s`, `-w` (down to the panes); `f` filters by a substring (not a format), `t`/`T` tag, `x` kills the tagged, `-`/`+` fold and unfold a session or a window (in the tree and the list; the chart shows one branch, so it has nothing to fold); keepane draws it as a chart of rows by default, or a tree of blocks (`v` goes through them and tmux's list; `choose-tree-style chart|tree|list` picks the first) |
 | clear-history | yes | |
-| clear-prompt-history | part | `-T`; the `:` prompt keeps the last 100 lines run at it (Up/Down bring them back), one list for the server, in memory only; it is tmux's `command` type; `search` keeps nothing (tmux 3.8 has these two types) |
+| clear-prompt-history | yes | `-T` `command` (the last 100 lines run at `:`) or `search` (the last 100 patterns of `/` and `?`, in copy mode and in an overlay), tmux 3.8's two types; Up/Down at those prompts bring them back; one list each for the server, in memory only |
 | clock-mode | yes | `prefix t`; `q` leaves (tmux: any key), `/` and `?` turn the animation to the next kind and back, other keys are swallowed and the prefix still works; `clock-mode-style` (12/24) and `clock-mode-colour` as in tmux; keepane's own `clock-mode-info` adds the date, the pane, its last command, its agent, the machine and keepane's own sessions, panes and messages under the time, and `clock-mode-animation` (pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, sharks, hourglass, bonsai, orbits, radar; random, the default; cycle; off) something below that moves with the machine's load and keepane's messages |
 | command-prompt | part | `-p`, `-I`, `%%` template, Tab completes the command name, its flags, a `-t`/`-s` target, and after `set`/`show` the option name (abbreviations included) and a few-valued option's value; no `-k`, no numbered `%1` |
 | confirm-before | yes | `-p` |
@@ -76,7 +76,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | set-option / show-options | part | the options keepane implements, colours and styles included, each printed in a form `set` reads back; unknown ones accepted and ignored |
 | set-window-option / show-window-options | part | folded into `set-option`; `synchronize-panes` is per window and takes `-t` |
 | show-messages | yes | `prefix ~`, the last 100 |
-| show-prompt-history | part | `-T`; printed as tmux prints it (a heading per type, the lines numbered oldest first); `search` always empty (see clear-prompt-history) |
+| show-prompt-history | yes | `-T`; printed as tmux prints it (a heading per type, the lines numbered oldest first) |
 | source-file | yes | |
 | split-window | yes | `-h`, `-v`, `-c`, `-d`, `-b`, `-f`, `-t`; keepane's own `-N count` makes that many panes and tiles the window |
 | start-server | part | any client starts it |
@@ -158,7 +158,7 @@ Selecting and copying: `Space` or `v` starts a selection, `C-v` makes it a
 rectangle, `Enter` or `y` copies to both a new paste buffer and the Windows
 clipboard, `q` or Escape leaves.
 
-Searching: `/` forward (towards the newest line), `?` back through the scrollback, `n` and `N` to repeat, case-insensitive.
+Searching: `/` forward (towards the newest line), `?` back through the scrollback, `n` and `N` to repeat, case-insensitive; Up and Down at the prompt bring back earlier patterns (the `search` prompt history).
 
 `send-keys -X <command>` drives all of it from a script or a binding:
 `cursor-up/-down/-left/-right`, `next-word`, `next-word-end`,
@@ -177,8 +177,9 @@ View mode (what a `:` command or a key prints: `list-keys`,
 `show-messages`): it opens at its end, as tmux's does. Longer than the
 window, it moves with Up / Down or `j` / `k` (`C-p` / `C-n`), PgUp / PgDn
 (`b` / `Space`, `C-f`), `C-u` / `C-d`, `g` / `G` (Home / End) and the
-wheel; any other key closes it, where tmux's takes the copy-mode keys and
-closes on `q`. Shorter, any key closes it.
+wheel; `/` and `?` search it (any case, the hit in inverse), `n` and `N`
+go on. Any other key closes it, where tmux's takes all the copy-mode keys
+and closes on `q`. Shorter, any key closes it.
 
 ## Config file
 

@@ -26,7 +26,7 @@ Windows / panes (from inside a session, or with -t):
 Paste buffers:  set-buffer   list-buffers   show-buffer   delete-buffer   choose-buffer
   load-buffer file   save-buffer file   paste-buffer [-b name]
 Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   find-window
-  show-prompt-history [-T type]   clear-prompt-history [-T type]   (the lines run at prefix :)
+  show-prompt-history [-T command|search]   clear-prompt-history [-T command|search]   (what : and / took)
   set-environment name value   show-environment   refresh-client   select-layout [-n|-p|-E]
   choose-client (prefix D)   display-menu [-T title] name key command ...   (prefix > / <)
   display-popup [-E] [-C] [-w W] [-h H] [-d dir] [command...]   wait-for [-L|-U|-S] channel
