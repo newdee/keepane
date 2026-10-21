@@ -1,11 +1,11 @@
 {
-  "version": "0.42.1",
+  "version": "0.43.0",
   "description": "A terminal multiplexer whose panes keep running after you detach and can pass messages to each other, with tmux's keys and commands.",
   "homepage": "https://github.com/newdee/keepane",
   "license": "MIT",
-  "url": "https://github.com/newdee/keepane/releases/download/v0.42.1/keepane-v0.42.1-windows-x86_64.zip",
-  "hash": "8bfcdd4303a42642139d11ec357353621683232f19aac0acd67f70247a0e75e6",
-  "extract_dir": "keepane-v0.42.1-windows-x86_64",
+  "url": "https://github.com/newdee/keepane/releases/download/v0.43.0/keepane-v0.43.0-windows-x86_64.zip",
+  "hash": "50bd8f02d41d54d3daea397c349ed5a2765d7a0c51c7a8abbccff09e4113581a",
+  "extract_dir": "keepane-v0.43.0-windows-x86_64",
   "bin": "keepane.exe",
   "checkver": "github",
   "autoupdate": {
