@@ -23,7 +23,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | choose-client | yes | `prefix D`; Enter detaches the client picked |
 | choose-tree | part | `-s`, `-w` (down to the panes); `f` filters by a substring (not a format), `t`/`T` tag, `x` kills the tagged, `-`/`+` fold and unfold a session or a window (in the tree and the list; the chart shows one branch, so it has nothing to fold); keepane draws it as a chart of rows by default, or a tree of blocks (`v` goes through them and tmux's list; `choose-tree-style chart|tree|list` picks the first) |
 | clear-history | yes | |
-| clear-prompt-history | no | keepane keeps no prompt history |
+| clear-prompt-history | no | the `:` prompt keeps the last 100 lines run at it (Up/Down bring them back), one list for the server, in memory only: it goes when the server stops, so there is little to clear |
 | clock-mode | yes | `prefix t`; `q` leaves (tmux: any key), `/` and `?` turn the animation to the next kind and back, other keys are swallowed and the prefix still works; `clock-mode-style` (12/24) and `clock-mode-colour` as in tmux; keepane's own `clock-mode-info` adds the date, the pane, its last command, its agent, the machine and keepane's own sessions, panes and messages under the time, and `clock-mode-animation` (pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, sharks, hourglass, bonsai, orbits, radar; random, the default; cycle; off) something below that moves with the machine's load and keepane's messages |
 | command-prompt | part | `-p`, `-I`, `%%` template, Tab completes the command name, its flags, a `-t`/`-s` target, and after `set`/`show` the option name (abbreviations included) and a few-valued option's value; no `-k`, no numbered `%1` |
 | confirm-before | yes | `-p` |
@@ -76,6 +76,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | set-option / show-options | part | the options keepane implements, colours and styles included, each printed in a form `set` reads back; unknown ones accepted and ignored |
 | set-window-option / show-window-options | part | folded into `set-option`; `synchronize-panes` is per window and takes `-t` |
 | show-messages | yes | `prefix ~`, the last 100 |
+| show-prompt-history | no | Up at the `:` prompt walks the same list (see clear-prompt-history) |
 | source-file | yes | |
 | split-window | yes | `-h`, `-v`, `-c`, `-d`, `-b`, `-f`, `-t`; keepane's own `-N count` makes that many panes and tiles the window |
 | start-server | part | any client starts it |
