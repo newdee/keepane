@@ -5801,6 +5801,11 @@ impl Server {
                 let Some(exe) = pane::helper_exe() else {
                     return Outcome::Error("dashboard: no keepane.exe to run it with".into());
                 };
+                // It opens on the pane the client is in, not the first one.
+                let here = match self.resolve(None, Some(cid)) {
+                    Ok((_, _, pid)) => pid,
+                    Err(e) => return Outcome::Error(e),
+                };
                 let cmd = Cmd::DisplayPopup {
                     close: false,
                     close_on_exit: true,
@@ -5815,6 +5820,8 @@ impl Server {
                         self.socket.clone(),
                         "dashboard".into(),
                         "--popup".into(),
+                        "-t".into(),
+                        format!("%{here}"),
                     ],
                 };
                 self.exec(cmd, Some(cid))

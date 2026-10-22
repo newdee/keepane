@@ -590,6 +590,53 @@ fn show_keys_reports_the_prefix_and_quits_on_q() {
     assert!(s.contents().contains("->  C-b") && s.contents().contains("->  q"), "{}", s.contents());
 }
 
+/// prefix v opens the dashboard on the pane it was pressed in, not on the
+/// first pane of the list.
+#[test]
+fn prefix_v_opens_the_dashboard_on_the_current_pane() {
+    let socket = format!("dash-{}", std::process::id());
+    let mut t = Term::spawn(&["-L", &socket, "new", "-s", "t", "cmd.exe", "/q", "/k", "prompt keepane$g"], 100, 30);
+    t.wait_for("prompt", |s| s.contents().contains("keepane>"));
+    let kp = |args: &[&str]| {
+        let out = keepane().args(["-L", &socket]).args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    // Two panes, the second one current.
+    kp(&["split-window", "-h", "-t", "t", "cmd.exe", "/q", "/k", "prompt keepane$g"]);
+    kp(&["rename-pane", "-t", "t:0.0", "alpha"]);
+    kp(&["rename-pane", "-t", "t:0.1", "beta"]);
+    // The reversed row: the chosen pane in the focused list.
+    let picked = |s: &vt100::Screen| -> Option<String> {
+        let (rows, cols) = s.size();
+        (0..rows)
+            .find(|&y| (0..cols).any(|x| s.cell(y, x).is_some_and(|c| c.inverse())))
+            .map(|y| (0..cols).filter_map(|x| s.cell(y, x)).filter(|c| c.inverse()).map(|c| c.contents()).collect())
+    };
+    for (pane, name) in [("t:0.1", "beta"), ("t:0.0", "alpha")] {
+        kp(&["select-pane", "-t", pane]);
+        t.pump(Duration::from_millis(300));
+        t.send("\x02v");
+        t.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"));
+        t.wait_for(name, |s| picked(s).is_some_and(|r| r.contains(name)));
+        let row = picked(t.parser.screen()).unwrap();
+        let other = if name == "beta" { "alpha" } else { "beta" };
+        assert!(!row.contains(other), "{pane}: {row:?}");
+        t.send("q");
+        t.wait_for("the dashboard gone", |s| !s.contents().contains("[1] Panes"));
+    }
+    // Run in a pane, it opens on that pane (its KEEPANE_PANE).
+    kp(&["select-pane", "-t", "t:0.1"]);
+    t.pump(Duration::from_millis(300));
+    t.send("keepane dashboard\r");
+    t.wait_for("the dashboard in beta", |s| s.contents().contains("[1] Panes"));
+    t.wait_for("beta chosen", |s| picked(s).is_some_and(|r| r.contains("beta")));
+    t.send("q");
+    t.wait_for("the dashboard gone", |s| !s.contents().contains("[1] Panes"));
+
+    t.send("\x02d");
+    assert_eq!(t.wait_exit(), 0);
+}
+
 /// A kill-on-close job like the one OpenSSH puts each session in: whatever
 /// is still inside when the handle closes is ended with it.
 struct Job(windows_sys::Win32::Foundation::HANDLE);

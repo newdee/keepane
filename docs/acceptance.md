@@ -4844,3 +4844,26 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | 机制通路 + 全量 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 495 + 10 + 142；变异 20/20 | 干净（1/3） |
 | 4 | Linux + 可复现性 | Linux fmt 0、clippy 0、482 + 142；两个 e2e 连跑 5 次 5/5；Linux e2e 全量连跑 2 次 142/142 | 干净（2/3） |
 | 5 | 边界与退化输入 | 临时 e2e（已删）：一个 20 MB 的日志，最后一行才有要找的字，`find-text -H` 用了 235-248 ms，同时发的 `display-message` 7 ms 就答复了（日志在别的线程读）；`中文 needle a.*b [x]` 按原样找到（不当正则）；选择器打开后把那个 pane 关掉，再按 `y`、`r`、回车，三次都提示 "its pane is gone"，没有出错 | 干净（3/3），验收通过 |
+
+## 157. `prefix v` 的仪表盘从当前 pane 开始
+
+用户报告：`C-b v` 打开仪表盘时，高亮在第一个 pane，应该在当前 pane。
+
+- 定性：
+  - 个性。同类的 pane 列表都已经从当前 pane 开始：`choose-tree`（`prefix w`）、`choose-history`（`prefix /`）。`choose-marks`、`choose-buffer`、`find-text` 的列表按时间或命中排，从第一行开始是对的。只有仪表盘没有。
+  - 边界遗漏。仪表盘在弹窗里是另一个进程（`keepane dashboard --popup`），服务器没有告诉它是哪个 pane 打开的；`Board.chosen` 一开始是 `None`，`chosen_row()` 就落到第一行。
+- 做了什么：
+  - 服务器开弹窗时传 `-t %N`（打开它的客户端当前的 pane）。
+  - 在 pane 里直接运行 `keepane dashboard`：用这个 pane 自己的 `KEEPANE_PANE`（只在 `KEEPANE` 是同一个 socket 时）。
+  - 那个 pane 已经没了：照旧落到第一行。
+- 会不会引入新 bug：
+  - `dashboard::run` 只有 `main.rs` 一个调用方。
+  - 不带 `-t` 的 `--popup` 仍然接受（版本更旧的服务器会这样调用），行为和原来一样。
+  - `-t` 后面不是数字：报 "dashboard: bad pane"，退出码 1，不会打开一个空的仪表盘。
+- 测试：单元 `it_opens_on_the_pane_it_was_asked_from`（给出的 pane、已经没了的 pane、没给 pane；看反显的那一行）；console `prefix_v_opens_the_dashboard_on_the_current_pane`（真实 ConPTY：分别在第 2 个和第 1 个 pane 按 `C-b v`，反显行是这个 pane、不是另一个；在 pane 里运行 `keepane dashboard` 也一样）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 代码正确性 + 机制通路 + 全量 | 读 diff；fmt 0；clippy Windows 0；Windows 496 + 11 + 142；变异 3 个全部抓到：不设初始选中、服务器传 0、在 pane 里运行时不用 `KEEPANE_PANE`（console 测试都超时失败） | 干净（1/3） |
+| 2 | 跨平台 | Linux fmt 0、clippy 0、483 + 142；新单元测试连跑 3 次 3/3；macOS 目标 clippy 0 | 干净（2/3） |
+| 3 | 边界与退化输入 + 可复现性 | `--popup -t x`、`--popup -t %` 报 "bad pane"，退出码 1；`-t %1`（没有 `--popup`）、`--popup -t`（缺值）、`x` 报 "takes no arguments"，退出码 1；旧的 `--popup` 能过解析，走到打开控制台那一步；console 测试连跑 3 次 3/3 | 干净（3/3），验收通过 |

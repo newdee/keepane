@@ -280,9 +280,16 @@ fn main() {
         "mcp" => Some(rt.block_on(keepane::mcp::run(&socket))),
         // Every pane at a glance, in this terminal (prefix v opens it in a
         // popup, with `--popup`: going to a pane closes it).
+        // It opens on the pane it was asked from: the one given by prefix v
+        // (`-t %N`), else the one it runs in.
         "dashboard" | "dash" => match &args[1..] {
-            [] => Some(keepane::dashboard::run(&socket, &rt, false)),
-            [p] if p == "--popup" => Some(keepane::dashboard::run(&socket, &rt, true)),
+            [] => Some(keepane::dashboard::run(&socket, &rt, false, keepane::client::own_pane(&socket))),
+            // From an older server, which gave no pane.
+            [p] if p == "--popup" => Some(keepane::dashboard::run(&socket, &rt, true, None)),
+            [p, t, id] if p == "--popup" && t == "-t" => match id.trim_start_matches('%').parse() {
+                Ok(n) => Some(keepane::dashboard::run(&socket, &rt, true, Some(n))),
+                Err(_) => Some(Err(anyhow::anyhow!("dashboard: bad pane {id}"))),
+            },
             _ => Some(Err(anyhow::anyhow!("dashboard: takes no arguments"))),
         },
         _ => None,

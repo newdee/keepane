@@ -1980,9 +1980,9 @@ pub fn event_line(json: &str) -> String {
     format!("{at}  {colour}{ev:<9}{reset} {gist}")
 }
 
-/// `keepane dashboard [--popup]` (`--popup`: opened by prefix v, so going
-/// to a pane closes it).
-pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool) -> anyhow::Result<i32> {
+/// `keepane dashboard [--popup -t %N]` (`--popup`: opened by prefix v, so
+/// going to a pane closes it). Pane `here` is chosen first.
+pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option<u32>) -> anyhow::Result<i32> {
     use crate::console::{Console, InputEvent};
     let mut console = Console::open()?;
     console.enter_raw()?;
@@ -2011,6 +2011,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool) -> anyhow::R
     };
     let (cols, rows) = console.size();
     let mut board = Board::new(cols, rows);
+    board.chosen = here.map(|n| format!("%{n}"));
     let result = (|| -> anyhow::Result<()> {
         loop {
             let (code, out, err) = ask(&owned(&["list-panes", "-a", "-F", PANE_FORMAT]));
@@ -2134,6 +2135,29 @@ mod tests {
             row("%3", "ops", "", "normal", false, 0),
         ]);
         b
+    }
+
+    /// Opened from a pane (prefix v), that pane is the chosen one at once;
+    /// one that is gone by then leaves the first.
+    #[test]
+    fn it_opens_on_the_pane_it_was_asked_from() {
+        let rows = || {
+            vec![
+                row("%1", "work", "lead", "ai", false, 0),
+                row("%2", "work", "tester", "ai", true, 2),
+                row("%3", "ops", "", "normal", false, 0),
+            ]
+        };
+        for (here, want) in [(Some("%2"), "%2"), (Some("%9"), "%1"), (None, "%1")] {
+            let mut b = Board::new(120, 32);
+            b.chosen = here.map(String::from);
+            b.set_rows(rows());
+            assert_eq!(b.chosen_row().unwrap().id, want, "{here:?}");
+            // The reversed row in the focused list.
+            let frame = b.frame();
+            let picked = frame.split("\x1b[7m").nth(1).and_then(|s| s.split("\x1b[0m").next()).unwrap_or_default();
+            assert!(picked.contains(if want == "%2" { "tester" } else { "lead" }), "{here:?}: {picked:?}");
+        }
     }
 
     fn inbox(b: &mut Board) {
