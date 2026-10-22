@@ -767,6 +767,18 @@ pub enum Cmd {
         unlock: bool,
         signal: bool,
     },
+    /// `wait-output [-t pane] [-a] [-i] [-w time] text...`: block a client
+    /// until the pane prints a line holding one of the texts (in any case
+    /// with -i), and answer with that line. Only what comes after the
+    /// cursor counts, unless -a (what the pane already holds too); -w gives
+    /// up after that long, and the pane ending ends the wait.
+    WaitOutput {
+        target: Option<Target>,
+        all: bool,
+        ignore_case: bool,
+        wait: Option<u64>,
+        texts: Vec<String>,
+    },
     /// `%%` in `template` is replaced by the prompt input; `#S`/`#W` in
     /// `initial` expand to the session/window name.
     CommandPrompt {
@@ -1772,6 +1784,24 @@ impl fmt::Display for Cmd {
                 }
                 write!(f, " {}", quote(channel))
             }
+            Cmd::WaitOutput { target, all, ignore_case, wait, texts } => {
+                f.write_str("wait-output")?;
+                fmt_target(f, target)?;
+                if *all {
+                    f.write_str(" -a")?;
+                }
+                if *ignore_case {
+                    f.write_str(" -i")?;
+                }
+                if let Some(w) = wait {
+                    write!(f, " -w {w}")?;
+                }
+                f.write_str(" --")?;
+                for t in texts {
+                    write!(f, " {}", quote(t))?;
+                }
+                Ok(())
+            }
             Cmd::CommandPrompt { prompt, initial, template } => {
                 f.write_str("command-prompt")?;
                 if let Some(p) = prompt {
@@ -2341,6 +2371,7 @@ pub const COMMANDS: &[&str] = &[
     "undo-kill",
     "version",
     "wait-for",
+    "wait-output",
     "web-fit",
     "web-resume",
     "web-start",
@@ -2482,6 +2513,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("undo-kill", &[]),
     ("version", &[]),
     ("wait-for", &["-L", "-U", "-S"]),
+    ("wait-output", &["-a", "-i", "-t", "-w"]),
     ("web-fit", &["-t", "-x", "-y", "-u"]),
     ("web-resume", &[]),
     ("web-start", &["-p", "-b", "-r", "-k"]),
@@ -3860,6 +3892,26 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             Cmd::WaitFor { channel, lock, unlock, signal }
         }
+        "wait-output" => {
+            let (mut target, mut all, mut ignore_case, mut wait) = (None, false, false, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "-a" => all = true,
+                    "-i" => ignore_case = true,
+                    "-w" => wait = Some(duration(n, a.value("-w")?)?),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let texts = a.rest();
+            if texts.is_empty() {
+                return Err(format!("{n}: text required"));
+            }
+            if texts.iter().any(String::is_empty) {
+                return Err(format!("{n}: an empty text matches everything"));
+            }
+            Cmd::WaitOutput { target, all, ignore_case, wait, texts }
+        }
         "web-start" => {
             let mut o = crate::web::Options::default();
             while a.is_flag() {
@@ -5167,6 +5219,28 @@ mod tests {
         assert!(parse_line("wait-for").is_err());
         assert!(parse_line("wait-for -L -U x").unwrap_err().contains("exclusive"));
         assert!(parse_line("wait-for a b").is_err());
+
+        let w = p("wait-output -t dev -i -w 2m Listening 'ready in'");
+        assert_eq!(
+            w,
+            Cmd::WaitOutput {
+                target: Some(Target::parse("dev")),
+                all: false,
+                ignore_case: true,
+                wait: Some(120),
+                texts: vec!["Listening".into(), "ready in".into()],
+            }
+        );
+        assert_eq!(p(&w.to_string()), w);
+        // A text that looks like a flag goes after --.
+        let dash = p("wait-output -a -- -->");
+        assert_eq!(dash.to_string(), "wait-output -a -- -->");
+        assert_eq!(p(&dash.to_string()), dash);
+        assert!(parse_line("wait-output").unwrap_err().contains("text required"));
+        assert!(parse_line("wait-output -t x").unwrap_err().contains("text required"));
+        assert!(parse_line("wait-output ''").unwrap_err().contains("empty"));
+        assert!(parse_line("wait-output -w soon x").is_err());
+        assert!(parse_line("wait-output -x y").unwrap_err().contains("unknown flag"));
 
         // Prefixes and aliases reach the new commands.
         assert!(matches!(p("menu Kill x kill-pane"), Cmd::DisplayMenu { .. }));

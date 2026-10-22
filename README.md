@@ -949,7 +949,7 @@ costs, every 2 seconds): a turn over there frees the pane with no hook, about
 3 seconds late at the most, and a turn the person broke off (Esc), when no hook runs,
 frees it too, its message ending unfinished. The hook says it at once.
 
-The 24 tools:
+The 26 tools:
 
 | Tools | For |
 |---|---|
@@ -959,7 +959,8 @@ The 24 tools:
 | `create_session`, `create_window`, `split_pane`, `rename_pane`, `kill_pane` | make panes (each with a name, a mode and a first message), name any pane, close any pane |
 | `set_status`, `set_work_mode` | say what it is doing (the dashboard shows it); change its own pane's mode |
 | `list_tasks`, `show_task`, `query_events` | chains of messages, and the event log |
-| `list_links`, `link_info`, `read_screen`, `create_remote_pane` | the machines paired with this one, what one of them is, what a pane (here or there) shows, and a pane started there (`kill_pane` closes it) |
+| `wait_output` | wait until a pane prints a line holding a text (a server ready, a build failing), and get that line |
+| `list_links`, `link_info`, `read_screen`, `create_remote_pane`, `push_repo` | the machines paired with this one, what one of them is, what a pane (here or there) shows, a pane started there (`kill_pane` closes it), and the current branch's commits sent there |
 
 A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`,
 `gemini`, `cursor-agent` or `opencode`, in `shell` mode when it runs `pwsh`, `powershell`, `bash` or
@@ -1635,6 +1636,22 @@ Commands a script or a binding reaches for, beyond the obvious ones
 - `wait-for [-L|-U|-S] channel` blocks until another client signals the
   channel (or unlocks it), so two scripts can take turns: `keepane wait-for
   ready` waits, `keepane wait-for -S ready` releases it.
+- `wait-output [-t pane] [-a] [-i] [-w time] text...` blocks until the
+  pane prints a line holding one of the texts, prints that line and exits
+  0: start a dev server, then run the tests once it listens, without
+  polling `capture-pane`:
+
+  ```sh
+  keepane send-keys -t dev 'npm run dev' Enter
+  keepane wait-output -t dev -w 2m 'Local:' 'error' && npm test
+  ```
+
+  Only what comes after the cursor counts (a command typed after the wait
+  began counts too, since the pane shows it); `-a` takes what the pane
+  already holds as well, and a full-screen program's screen counts as it
+  is. `-i` ignores case, `-w` gives up after that long (`90`, `2m`, `1h`)
+  and exits 1, as it does when the pane's program ends or the pane goes.
+  An agent has it as the `wait_output` tool.
 - `display-menu [-T title] name key command ...` opens a menu over the
   window; an empty name is a separator. `display-popup [-E] [-w W] [-h H]
   [-x X] [-y Y] [-d dir] [command]` runs a program in a box over the window

@@ -133,6 +133,20 @@ fn tools() -> Vec<Value> {
             &["id"],
         ),
         tool(
+            "wait_output",
+            "Wait until a pane prints a line holding one of texts (a server's \"Listening on\", a build's \
+             \"error\"), and return that line. Only what it prints from now counts, unless existing. Fails \
+             when timeout_seconds (default 120) pass, or the pane's program ends, first.",
+            json!({
+                "pane": pane.clone(),
+                "texts": { "type": "array", "items": { "type": "string" }, "description": "Any of these, as plain text" },
+                "ignore_case": b("Match in any case"),
+                "existing": b("What the pane already shows counts too"),
+                "timeout_seconds": n("How long to wait (default 120)"),
+            }),
+            &["pane", "texts"],
+        ),
+        tool(
             "drop_message",
             "Delete a queued message from an inbox you may change.",
             json!({ "id": n("Message id") }),
@@ -280,6 +294,24 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             if let Some(w) = num("timeout_seconds") {
                 c.extend(["-w".into(), w]);
             }
+            c
+        }
+        "wait_output" => {
+            let mut c = vec!["wait-output".into(), "-t".into(), need("pane")?];
+            if a["ignore_case"].as_bool() == Some(true) {
+                c.push("-i".into());
+            }
+            if a["existing"].as_bool() == Some(true) {
+                c.push("-a".into());
+            }
+            c.extend(["-w".into(), num("timeout_seconds").unwrap_or_else(|| "120".into())]);
+            let texts: Vec<String> =
+                a["texts"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect();
+            if texts.is_empty() {
+                return Err("wait_output: 'texts' needs at least one text".into());
+            }
+            c.push("--".into());
+            c.extend(texts);
             c
         }
         "list_messages" => {
@@ -499,6 +531,7 @@ mod tests {
         let args = json!({
             "to": "%b", "text": "hi", "pane": "%b", "mode": "ai", "name": "n", "id": 3, "command": "claude",
             "args": ["-p", "x"], "wait_seconds": 5, "timeout_seconds": 5, "session": "s", "host": "10.0.0.1:7681",
+            "texts": ["ready"],
         });
         let moving = json!({"id": 3, "to": "top"});
         for t in tools() {
@@ -516,6 +549,19 @@ mod tests {
             ["send-message", "--to", "%b", "--", "-not a flag"]
         );
         assert!(command("send_message", &json!({"to": "%b"})).is_err());
+        // A pane's output: 120 seconds unless said; a text like a flag stays a text.
+        assert_eq!(
+            command("wait_output", &json!({"pane": "%dev", "texts": ["Listening", "-x"], "ignore_case": true}))
+                .unwrap(),
+            ["wait-output", "-t", "%dev", "-i", "-w", "120", "--", "Listening", "-x"]
+        );
+        assert_eq!(
+            command("wait_output", &json!({"pane": "%b", "texts": ["a"], "existing": true, "timeout_seconds": 9}))
+                .unwrap(),
+            ["wait-output", "-t", "%b", "-a", "-w", "9", "--", "a"]
+        );
+        assert!(command("wait_output", &json!({"pane": "%b", "texts": []})).is_err());
+        assert!(command("wait_output", &json!({"texts": ["a"]})).is_err());
         // Another machine: its panes, its screen (link.md); this one's screen.
         assert_eq!(command("list_panes", &json!({"host": "10.0.0.1:7681"})).unwrap(), ["link-panes", "10.0.0.1:7681"]);
         assert_eq!(

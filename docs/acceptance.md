@@ -4724,3 +4724,37 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 6 | 多客户端状态 | 临时 e2e（已删）：两个客户端各开一个长 overlay；a 的搜索提示符打开时 b 的 `k` 照常滚 b 的；a 找到后 a 有 5 格反色、b 有 0 格；b 按 `n` 说 "no previous search"（各自的搜索）；b 的 `/` ↑ 翻出 a 搜过的 `kill-`（历史是服务器的）；a 的 `n` 照常 | 干净（3/3），验收通过 |
 
 - 遗留：tmux 的 view mode 还能选中复制，这里不能。
+
+## 153. `wait-output`：等某个 pane 打出某段文字
+
+用户要求：照建议的顺序做（第 1 项）。
+
+- 做了什么：
+  - `wait-output [-t pane] [-a] [-i] [-w 时长] 文字...`：客户端挂起，直到 pane 打出一行含任一段文字，打印这一行，退出码 0。
+  - 只算开始等之后的内容：从光标所在行（折行算一行）读起，这一行开始等时已有的部分（提示符、敲进去的命令）不算。`-a` 把 pane 里已有的也算上。全屏程序（alternate screen）按它当前整屏算。
+  - `-i` 不分大小写；`-w` 用 `90`、`2m`、`1h`，超时退出码 1。
+  - pane 里的程序结束时报 `exited with N`；pane 被关（kill-pane、kill-window、会话结束）时报 `is gone`。
+  - 实现：新模块 `server/outwait.rs`。每次 pane 有输出，只在有等待者时读上次停下的地方到光标；下次从光标行的折行起点读，同一行不会被找到两次。
+  - MCP 加 `wait_output` 工具（默认 120 秒），README 的工具数从 24 改成 26：原来就少数了一个，`push_repo` 不在表里。
+- 会不会引入新 bug：
+  - 输出路径：每个 Output 事件多一次 `any`；没有等待者时不读屏幕。
+  - Exit 路径：在 popup 判断之前答复等待者，其余不变。
+  - `pane_closing`（kill-pane、kill-window、kill-session 共用）开头加了一句结束 `wait-output`，消息的处理不变。
+  - 服务器退出前答复所有挂起的客户端（第 4 轮发现）：`wait-for`、`send-message -w`、`read-message -w`、`trace-message -w` 原来等到连接断开，现在收到 `the server is exiting`，退出码 1。原来能正常返回的情况不变（e2e `wait_for_channels_signal_and_lock` 和消息的 `-w` 测试照常通过）。
+- 第 4 轮的问题定性：共性（所有挂起的命令：`wait-output`、`wait-for`、消息的 `-w`），结构缺陷（"挂起的客户端总会等到一个事件"这个假设，在服务器退出时不成立）。修法收敛到两处：pane 关闭的共用入口 `pane_closing`，以及服务器退出前的 `answer_waits_on_exit`。
+- 测试：单元 6 个（`server::outwait`）、e2e 1 个（`wait_output_holds_a_client_until_a_pane_prints`）、MCP 映射。官网测试数 622 → 629。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 全量（验收前） | Windows 483 + 10 + 135 里 1 个失败：`a_late_key_after_the_prefix_gets_a_panel`（"the panel late"），单跑 5/5；第 151 条第 6 轮记过它在并行负载下会超时，和这次改动无关 | 记录，未计轮 |
+| 1 | 机制通路 | 变异 17 个，存活 3 个：全屏程序的分支（测试的字画在光标行附近，删分支也找得到）、折行回溯（没测"上次停在折行第二行"）、tick 里的"pane 不见了"（走不到：pane 移除时进程总会结束） | **有问题**：两段测试补上，死代码删掉（不计数） |
+| 2 | 机制通路 + 全量 | 变异 16/16；fmt 0；clippy Windows 0、macOS 目标 0；Windows 483 + 10 + 136 | 干净（1/3；第 4 轮有问题，重新计） |
+| 3 | Linux + 可复现性 | Linux fmt 0、clippy 0、471 + 136；`wait_output` e2e 和 6 个单元测试连跑 5 次 5/5 | 干净（2/3；同上） |
+| 4 | 边界与退化输入 | 临时 e2e（已删）：30 个客户端等同一个 pane，一行输出答复 15 个、另 15 个继续等；5000 行一次涌出（history-limit 200），2.4 s 找到 `n4990`；改窗口尺寸、复制模式里都找到；中文和 emoji 文字找到；`-w 0` 1.0 s 超时。但关掉会话唯一的 pane 后，另 15 个 10 s 内没有答复：服务器在同一个事件里退出，pane 的 Exit 事件来不及到 | **有问题**：`pane_closing` 结束等待（`is gone`），服务器退出前答复 `wait-for` 和消息的 `-w`；e2e 加三种客户端在 kill-server 时的答复（不计数） |
+| 5 | 全量 | fmt 有 2 处没排版 | **有问题**：`cargo fmt`（不计数） |
+| 6 | 机制通路 + 静态 | 变异 19/19（加了 pane 关闭、退出时答复三种）；读代码发现 tick 的注释过时（还写着关闭由 `ended` 处理），`-i` 时报错信息里显示的是小写后的文字 | **有问题**：注释改对，原文和找的文字分开存，单元测试加一句（不计数） |
+| 7 | 机制通路 + 全量 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 483 + 10 + 136；变异 19/19 | 干净（1/3） |
+| 8 | Linux + 可复现性 | Linux fmt 0、clippy 0、471 + 136；`wait_output` e2e 和 6 个单元测试连跑 5 次 5/5 | 干净（2/3） |
+| 9 | 静态一致性 | 读整份 diff；README 中英、help、手册、官网、MCP 描述共 8 条说法逐条对到代码和测试，0 处不符；3 个服务器退出的地方都在所有会话结束后，所以 `answer_waits_on_exit` 不用再管 `wait-output`；新字段都有人读 | 干净（3/3），验收通过 |
+
+- 遗留：客户端断开后它的等待被删掉（`output_waits_client_gone`），这一点从外面看不出来，没有测试。

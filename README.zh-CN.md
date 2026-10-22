@@ -478,7 +478,7 @@ Codex（0.160 起）和 pi（1.0 起）默认在备用屏幕里画界面，和 v
 
 发给 `ai` 模式 pane 的消息，如果这个 pane 的 agent 启动以来从没报告过空闲，消息就会排队等着。`send-message` 会直接说明，并给出补上 hook 的 `setup` 命令；dashboard 和手机页上也会提示（`#{pane_unheard}`）。对 Claude Code、Codex 和 pi，keepane 还会读 agent 的会话记录（和统计花费一样，每 2 秒读一次）：记录里一轮结束了，即使没有 hook 也会把 pane 设为空闲，最多晚约 3 秒；用户按 Esc 打断时 hook 不会运行，但会话记录会记下，pane 同样变为空闲，正在处理的消息记为未完成。有 hook 时会立即生效。
 
-24 个工具：
+26 个工具：
 
 | 工具 | 用途 |
 |---|---|
@@ -488,7 +488,8 @@ Codex（0.160 起）和 pi（1.0 起）默认在备用屏幕里画界面，和 v
 | `create_session`、`create_window`、`split_pane`、`rename_pane`、`kill_pane` | 开 pane（可以带名字、模式和第一条消息），给任意 pane 改名、关掉任意 pane |
 | `set_status`、`set_work_mode` | 报告自己在做什么（dashboard 上显示）；改自己 pane 的模式 |
 | `list_tasks`、`show_task`、`query_events` | 消息链（任务）和事件日志 |
-| `list_links`、`link_info`、`read_screen`、`create_remote_pane` | 配过对的机器、某台机器的信息、某个 pane（本机或另一台）的屏幕，以及在另一台机器上开 pane（用 `kill_pane` 关） |
+| `wait_output` | 等某个 pane 打出含某段文字的一行（服务器就绪、构建报错），拿到这一行 |
+| `list_links`、`link_info`、`read_screen`、`create_remote_pane`、`push_repo` | 配过对的机器、某台机器的信息、某个 pane（本机或另一台）的屏幕、在另一台机器上开 pane（用 `kill_pane` 关），以及把当前分支的提交送过去 |
 
 通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini`、`cursor-agent`、`opencode` 的是 `ai` 模式，跑 `pwsh`、`powershell`、`bash`、`zsh` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（Windows 上是 `pwsh powershell claude codex`，其他系统是 `bash zsh sh claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。Claude Code 调用你没放行过的 MCP 工具前会先问你。
 
@@ -817,6 +818,14 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 
 - `pipe-pane [-o] [-I] [-O] [-t 目标] [命令]`：把 pane 打印的所有东西灌进一个命令的标准输入（`-O`，默认）；不给命令就是停。`keepane pipe-pane "$input | Add-Content build.log"` 就能一边编译一边留日志（PowerShell 会先把输入读完再跑，所以这个文件是管道停下时才写；想逐行落盘用 `cmd.exe /c findstr ... > 文件` 这种命令）。`-I` 反过来：命令打印什么就往 pane 里敲什么，命令输出完管道就结束（`-IO` 两个方向都要）。
 - `wait-for [-L|-U|-S] 通道`：挂在那儿等别人发信号（或者解锁），两个脚本可以互相等：一边 `keepane wait-for ready`，另一边 `keepane wait-for -S ready` 放行。
+- `wait-output [-t pane] [-a] [-i] [-w 时长] 文字...`：等到这个 pane 打出一行含其中任一段文字，打印这一行，退出码 0。比如先起开发服务器，等它开始监听再跑测试，不用反复 `capture-pane`：
+
+  ```sh
+  keepane send-keys -t dev 'npm run dev' Enter
+  keepane wait-output -t dev -w 2m 'Local:' 'error' && npm test
+  ```
+
+  只算光标之后新出现的内容（开始等之后才敲进去的命令也算，因为它显示在 pane 里）；`-a` 把 pane 里已有的内容也算上，全屏程序则按它当前的屏幕算。`-i` 不分大小写；`-w` 到时间就放弃（`90`、`2m`、`1h`），退出码 1，pane 里的程序结束或 pane 被关掉时也一样。agent 用 MCP 工具 `wait_output`。
 - `display-menu [-T 标题] 名字 键 命令 ...`：在窗口上弹个菜单，名字给空字符串就是一条分隔线。`display-popup [-E] [-w 宽] [-h 高] [-x 列] [-y 行] [-d 目录] [命令]` 是在窗口上开个小框跑程序（`-E` 程序退出就关，`-C` 从外面关掉；`-x` / `-y` 可以是列号/行号、百分比、`C` 居中、`R` / `B` 贴右边/底边，不给就居中）。
 - `choose-client`：列出连着的客户端，选一个踢下线。
 - `send-keys -X <copy 命令>`：用脚本开 copy mode 干活（`search-backward`、`begin-selection`、`copy-selection` ……名字和 tmux 一样）。

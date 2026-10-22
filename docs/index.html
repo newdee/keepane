@@ -91,7 +91,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>622</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>629</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -239,6 +239,7 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
           <li data-i18n="c35.p1">With <code>remain-on-exit</code>, a pane stays open after its program exits and shows <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts the program again in the same place.</li>
           <li data-i18n="c35.p2"><code>pipe-pane "$input | Add-Content build.log"</code> sends everything a pane prints to a command, and tells you if that command falls behind.</li>
           <li data-i18n="c35.p3">Scripts can wait on each other: <code>keepane wait-for ready</code> blocks until another client runs <code>keepane wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
+          <li data-i18n="c35.p4">A script can wait on a pane too: <code>keepane wait-output -t dev -w 2m 'Local:'</code> returns the line once the dev server prints it, so the tests start when it listens, with no polling.</li>
         </ul>
       </section>
 

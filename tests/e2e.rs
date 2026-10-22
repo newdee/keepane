@@ -4235,6 +4235,101 @@ async fn wait_for_channels_signal_and_lock() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `wait-output` holds a client until the pane prints one of its texts and
+/// answers with that line. What the pane held before does not count (-a
+/// takes it); -w gives up; the pane ending, or going, ends the wait.
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_output_holds_a_client_until_a_pane_prints() {
+    let h = Harness::start("waitout").await;
+    h.cli(&["set", "-g", "undo-kill-time", "0"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "w"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("w:0", "prompt", |s| s.contains("keepane>")).await;
+    h.cli(&["send-keys", "-t", "w:0", "echo old-marker", "Enter"]).await;
+    h.wait_capture("w:0", "the echo", |s| s.matches("old-marker").count() >= 2).await;
+
+    let (code, out, err) = h.cli(&["wait-output", "-a", "-t", "w:0", "old-marker"]).await;
+    assert_eq!((code, out.contains("old-marker")), (0, true), "-a: what is there counts: {out} {err}");
+    let (code, _, err) = h.cli(&["wait-output", "-w", "1", "-t", "w:0", "old-marker"]).await;
+    assert_eq!(code, 1, "without -a it is old");
+    assert!(err.contains("timed out: 'old-marker' not seen in %"), "{err}");
+
+    // The sum is printed, not typed: only the output holds it.
+    let mut w = h.connect().await;
+    w.command(&["wait-output", "-t", "w:0", "never-printed", "4123"], false).await;
+    assert!(tokio::time::timeout(Duration::from_millis(500), w.next()).await.is_err(), "answered before any output");
+    let sum = if cfg!(windows) { "set /a 4100+23" } else { "echo $((4100+23))" };
+    h.cli(&["send-keys", "-t", "w:0", sum, "Enter"]).await;
+    match w.next().await {
+        ServerMsg::Text(t) => assert_eq!(t.trim(), "4123"),
+        other => panic!("waiting client: {other:?}"),
+    }
+    assert!(matches!(w.next().await, ServerMsg::Done { code: 0 }));
+
+    // -i: any case.
+    let mut w = h.connect().await;
+    w.command(&["wait-output", "-i", "-t", "w:0", "shout"], false).await;
+    let shout = if cfg!(windows) { "echo SH^OUT" } else { "echo SH''OUT" };
+    h.cli(&["send-keys", "-t", "w:0", shout, "Enter"]).await;
+    match w.next().await {
+        ServerMsg::Text(t) => assert_eq!(t.trim(), "SHOUT"),
+        other => panic!("-i: {other:?}"),
+    }
+
+    // The pane's program ends: so does the wait.
+    h.cli(&["new-window", "-d", "-t", "w"]).await;
+    h.wait_capture("w:1", "prompt", |s| s.contains("keepane>")).await;
+    let mut w = h.connect().await;
+    w.command(&["wait-output", "-t", "w:1", "never-printed"], false).await;
+    h.cli(&["send-keys", "-t", "w:1", "exit", "Enter"]).await;
+    match w.next().await {
+        ServerMsg::Error(e) => assert!(e.contains("exited with 0; 'never-printed' not seen"), "{e}"),
+        other => panic!("ended pane: {other:?}"),
+    }
+    // The pane is killed: the wait ends within the second.
+    h.cli(&["new-window", "-d", "-t", "w"]).await;
+    let mut w = h.connect().await;
+    w.command(&["wait-output", "-t", "w:1", "never-printed"], false).await;
+    h.cli(&["kill-pane", "-t", "w:1"]).await;
+    match tokio::time::timeout(Duration::from_secs(5), w.next()).await {
+        Ok(ServerMsg::Error(e)) => assert!(e.contains("is gone"), "{e}"),
+        other => panic!("killed pane: {other:?}"),
+    }
+    // A pane whose program has already ended (kept by remain-on-exit) says
+    // so at once.
+    h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
+    h.cli(&["new-window", "-d", "-t", "w"]).await;
+    h.wait_capture("w:1", "prompt", |s| s.contains("keepane>")).await;
+    h.cli(&["send-keys", "-t", "w:1", "exit", "Enter"]).await;
+    h.wait_capture("w:1", "the end", |s| s.contains("exited with")).await;
+    let (code, _, err) = h.cli(&["wait-output", "-t", "w:1", "never-printed"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("exited with 0; 'never-printed' not seen"), "{err}");
+    let (code, _, err) = h.cli(&["wait-output", "-t", "nowhere", "x"]).await;
+    assert_eq!(code, 1, "{err}");
+
+    // The server exiting answers every client still waiting: on a pane's
+    // output, on a channel, on an inbox.
+    let mut out = h.connect().await;
+    out.command(&["wait-output", "-t", "w:0", "never-printed"], false).await;
+    let mut chan = h.connect().await;
+    chan.command(&["wait-for", "never-signalled"], false).await;
+    let mut inbox = h.connect().await;
+    inbox.command(&["read-message", "-t", "w:0", "-w", "60"], false).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    h.cli(&["kill-server"]).await;
+    for (what, c, says) in [
+        ("wait-output", &mut out, "is gone"),
+        ("wait-for", &mut chan, "exiting"),
+        ("read-message", &mut inbox, "exiting"),
+    ] {
+        match tokio::time::timeout(Duration::from_secs(5), c.next()).await {
+            Ok(ServerMsg::Error(e)) => assert!(e.contains(says), "{what}: {e}"),
+            other => panic!("{what}: {other:?}"),
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn display_menu_runs_an_entry_by_key_and_by_enter() {
     let h = Harness::start("menu").await;

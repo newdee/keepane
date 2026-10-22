@@ -129,7 +129,9 @@ Sessions save themselves to the data directory. `resume`, `list-saved`,
 (`show`), `show-window-options`, `bind-key` (`bind`), `unbind-key`
 (`unbind`), `list-keys`, `source-file`, `set-hook`, `show-hooks`,
 `set-environment`, `show-environment`, `run-shell`, `if-shell`,
-`wait-for`, `command-prompt`, `confirm-before`, `display-message`,
+`wait-for`, `wait-output` (block until a pane prints one of some texts,
+and print that line; `-a` counts what it already holds, `-i` any case,
+`-w` a time limit), `command-prompt`, `confirm-before`, `display-message`,
 `display-menu`, `display-popup`, `refresh-client`, `load-plugin`,
 `list-plugins`, `list-commands`, `notify` (a desktop notification).
 

@@ -21,6 +21,7 @@ mod link_tree;
 mod mail;
 mod newer;
 pub mod observe;
+mod outwait;
 pub mod pane;
 mod prices;
 mod public_ip;
@@ -1141,6 +1142,8 @@ pub struct Server {
     observe: observe::Store,
     /// Clients waiting in a `-w` for a message or an inbox.
     msg_waits: Vec<mail::MsgWait>,
+    /// Clients in `wait-output`, waiting for a pane to print something.
+    out_waits: Vec<outwait::OutWait>,
     /// Messages deleted lately, for `drop-message -u`.
     msg_dropped: Vec<mail::Dropped>,
     /// When old event log files were last cleared out (once a day).
@@ -1325,6 +1328,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
             srv.in_hook = false;
         }
         if srv.quit {
+            srv.answer_waits_on_exit();
             break;
         }
     }
@@ -1554,6 +1558,7 @@ impl Server {
             next_msg: 0,
             observe: observe::Store::default(),
             msg_waits: Vec::new(),
+            out_waits: Vec::new(),
             msg_dropped: Vec::new(),
             events_pruned: None,
             newer: newer::Check::default(),
@@ -2208,6 +2213,7 @@ impl Server {
                         self.note_message(&format!("pipe-pane %{id}: {command} is not keeping up; output dropped"));
                     }
                     self.note_output(id);
+                    self.output_waits_look(id);
                     if self.opts.log_history {
                         self.log_output(id);
                     }
@@ -2275,6 +2281,7 @@ impl Server {
                 }
                 let command = self.find_pane_mut(id).map(|p| p.command.clone()).unwrap_or_default();
                 log::info!("pane %{id} ({command}) exited with {code}");
+                self.output_waits_ended(id, code);
                 // A popup is not part of any window: it either goes away now
                 // (`-E`) or waits for a key, showing what the command left.
                 if let Some(cid) = self.popup_of_pane(id) {
@@ -2363,6 +2370,7 @@ impl Server {
             }
             Event::Gone(id) => {
                 self.mail_client_gone(id);
+                self.output_waits_client_gone(id);
                 let was_in = self.clients.remove(&id).and_then(|c| c.session);
                 if let Some(sid) = was_in {
                     self.fit_session(sid, None); // smallest/largest: one client fewer
@@ -2459,6 +2467,7 @@ impl Server {
                 self.autosave_changed();
                 self.history_tick();
                 self.mail_tick();
+                self.output_waits_tick();
                 self.newer_tick();
                 self.public_ip_tick();
                 self.agents_tick();
@@ -2490,6 +2499,20 @@ impl Server {
         }
         if self.had_session && self.sessions.is_empty() {
             self.quit = true;
+        }
+    }
+
+    /// The server is about to exit (`kill-server`, its last session gone):
+    /// a client still waiting for an answer gets one, rather than a closed
+    /// connection. (`wait-output` waits ended as their panes closed.)
+    fn answer_waits_on_exit(&mut self) {
+        self.mail_exiting();
+        let held: Vec<ClientId> = std::mem::take(&mut self.waits)
+            .into_values()
+            .flat_map(|w| w.waiters.into_iter().chain(w.lockers))
+            .collect();
+        for cid in held {
+            self.reply(cid, Outcome::Error("wait-for: the server is exiting".into()));
         }
     }
 
@@ -5894,6 +5917,9 @@ impl Server {
                     self.reply(id, Outcome::Ok);
                 }
                 out
+            }
+            Cmd::WaitOutput { target, all, ignore_case, wait, texts } => {
+                self.wait_output(cid, target.as_ref(), all, ignore_case, wait, texts)
             }
             Cmd::ChooseTree { sessions, windows } => {
                 let Some(cid) = cid else { return Outcome::Error("choose-tree: no client".into()) };

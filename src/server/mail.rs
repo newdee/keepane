@@ -1196,6 +1196,8 @@ impl Server {
     /// A pane is going away: what waited in its inbox is dropped, and
     /// what it was working on ends unfinished.
     pub(super) fn pane_closing(&mut self, pid: PaneId) {
+        // Whatever waits on its output gets no more of it.
+        self.output_waits_gone(pid);
         let Some(p) = self.find_pane_mut(pid) else { return };
         let queued: Vec<MsgId> = p.actor.inbox.drain(..).map(|m| m.id).collect();
         let current = p.actor.current.take();
@@ -1324,6 +1326,19 @@ impl Server {
             self.note_message(&format!(
                 "{dropped} undelivered messages were dropped when the server restarted; see the event log"
             ));
+        }
+    }
+
+    /// The server is about to exit: every `-w` is answered, as when its
+    /// time runs out.
+    pub(super) fn mail_exiting(&mut self) {
+        for w in std::mem::take(&mut self.msg_waits) {
+            let out = match w.kind {
+                WaitKind::Link { id, nonce } => self.link_send_answer(id, &nonce),
+                WaitKind::LinkTrace { id, nonce } => self.link_trace_answer(id, &nonce),
+                _ => Outcome::Error("the server is exiting".into()),
+            };
+            self.reply(w.cid, out);
         }
     }
 

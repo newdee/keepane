@@ -81,6 +81,8 @@ const ZH = {
     "<code>pipe-pane \"$input | Add-Content build.log\"</code> 把 pane 输出的所有内容交给一个命令；那个命令处理不过来时，keepane 会提示你。",
   "c35.p3":
     "脚本之间可以互相等待：<code>keepane wait-for ready</code> 会一直等，直到另一个客户端执行 <code>keepane wait-for -S ready</code>；<code>-L</code> 和 <code>-U</code> 可以当锁用。",
+  "c35.p4":
+    "脚本也可以等某个 pane：<code>keepane wait-output -t dev -w 2m 'Local:'</code> 等开发服务器打出这一行就返回它，测试在服务器开始监听时启动，不用轮询。",
 
   "ch.title": "跑了什么、什么时候、花了多久",
   "ch.sub":
