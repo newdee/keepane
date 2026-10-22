@@ -91,7 +91,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>649</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>653</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -194,21 +194,27 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
           </p>
         </header>
         <figure class="stage">
-          <img src="img/keepane-history.gif" width="880" loading="lazy" alt="Command times appear at the end of each command's line, the history picker lists pane positions and days, a day opens in a pager, and a pane closed by mistake comes back with C-b u" />
+          <img src="img/keepane-history.gif" width="880" loading="lazy" alt="Command times appear at the end of each command's line, the history picker lists pane positions and days, a day opens in a pager, C-b Y lists the commands run, / searches every day, and a pane closed by mistake comes back with C-b u" />
           <figcaption data-i18n="ch.caption">
             Three commands with their times, one of them failing; the history picker and a day in the pager;
-            a pane closed by mistake, back with <kbd>C-b u</kbd>.
+            <kbd>C-b Y</kbd> and the commands run; <kbd>/</kbd> through every day; a pane closed by mistake, back with <kbd>C-b u</kbd>.
           </figcaption>
         </figure>
         <div class="pair">
           <figure class="shot"><img src="img/timestamps.png" alt="Three commands, each with its start time, duration and a tick or a cross at the right end of its line" loading="lazy" /></figure>
           <figure class="shot"><img src="img/viewer.png" alt="A day of history in the pager popup, each command after a grey line with its time" loading="lazy" /></figure>
         </div>
+        <div class="pair">
+          <figure class="shot"><img src="img/commands.png" alt="The C-b Y list: the commands the panes ran, newest first, each with a tick or a cross, when it ended, how long it took and its pane" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/history-search.png" alt="The history picker after / and a word: the matching lines of every day, each with its date, weekday and pane" loading="lazy" /></figure>
+        </div>
         <ul class="points">
           <li data-i18n="ch.p1">The time goes in the blank end of the line. The pane keeps its width and nothing is added to what the program printed. On the phone, When each command ran, in the view menu, puts the times in a column of their own.</li>
           <li data-i18n="ch.p2">What scrolls off a pane is written to a file for that pane and day, kept for 30 days, with a line of times before each command. In the pager, <kbd>[</kbd> and <kbd>]</kbd> jump from command to command and <kbd>/</kbd> searches.</li>
           <li data-i18n="ch.p3">Closed the wrong pane or window? It is kept for 10 seconds with its program still running, and <kbd>C-b u</kbd> puts it back where it was.</li>
           <li data-i18n="ch.p4"><kbd>C-b y</kbd> copies what the last command printed, and nothing else: a failing test's output, ready for an issue or an agent.</li>
+          <li data-i18n="ch.p5"><kbd>C-b Y</kbd> lists the commands every pane ran, newest first. <kbd>Enter</kbd> goes to one in copy mode, <kbd>y</kbd> copies what it printed, <kbd>r</kbd> runs it again.</li>
+          <li data-i18n="ch.p6">In the <kbd>C-b /</kbd> picker, <kbd>/</kbd> searches every day of every pane; a line found opens in the pager at that line. <code>find-text -H</code> does the same from a script.</li>
         </ul>
         <figure class="stage">
           <img src="img/keepane-fix.gif" width="880" loading="lazy" alt="A test fails; C-b y copies what it printed; send-message hands it to the agent pane beside it, which fixes the code and says it is free; the test then passes" />
@@ -284,6 +290,7 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
         </div>
         <div class="pair">
           <figure class="shot"><img src="img/popup.png" alt="A popup box over the window running a command, with the pane behind it still visible" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/environment.png" alt="The C-b e view: the variables set-environment gives every pane, then the ones keepane sets, each with what it is for" loading="lazy" /></figure>
         </div>
         <ul class="points">
           <li data-i18n="c2.p1"><kbd>C-b Space</kbd> cycles through five layouts: even columns, even rows, a main pane beside or above the rest, and a tiled grid. <kbd>C-b E</kbd> evens out the panes next to the current one.</li>
@@ -292,6 +299,7 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
           <li data-i18n="c2.p5">Zooming grows the pane itself, each of its corners heading for the window's, and unzooming shrinks it back; when the focus moves to another pane or window, a frame flies there. Programs are resized once, so nothing waits for it; <code>set -g animation off</code> turns it off. A zoomed window stays zoomed as you move between its panes, until <kbd>C-b z</kbd>.</li>
           <li data-i18n="c2.p3">In copy mode, <kbd>/</kbd> searches forward and <kbd>?</kbd> backward, <kbd>n</kbd> and <kbd>N</kbd> repeat the search, and the match is scrolled to the middle of the screen.</li>
           <li data-i18n="c2.p4"><code>display-popup</code> runs a program in a box over the window and closes the box when the program exits. It is handy for a quick <code>git log</code> without touching the layout.</li>
+          <li data-i18n="c2.p7"><code>setenv -g NAME value</code> gives a variable to every pane: new ones at their start, a shell already open at its next prompt. A program already running keeps what it had. <kbd>C-b e</kbd> shows them.</li>
         </ul>
       </section>
 

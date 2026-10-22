@@ -59,6 +59,8 @@ const ZH = {
     "copy mode 里 <kbd>/</kbd> 往前搜、<kbd>?</kbd> 往回搜，<kbd>n</kbd> <kbd>N</kbd> 重复上一次搜索，匹配的那一行会滚到屏幕中间。",
   "c2.p4":
     "<code>display-popup</code> 在窗口上开一个框运行程序，程序退出后框就关掉。临时看一眼 <code>git log</code> 时很方便，不用动布局。",
+  "c2.p7":
+    "<code>setenv -g 名字 值</code> 给每个 pane 设一个变量：新 pane 启动时就有，已经开着的 shell 在下一次提示符时拿到。已经在跑的程序不受影响。<kbd>C-b e</kbd> 查看。",
 
   "c3.title": "关掉终端，程序照常运行",
   "c3.sub": "<kbd>C-b d</kbd> 脱离，里面的程序照常跑。换个终端窗口敲 <code>keepane attach</code> 就接回来了。",
@@ -88,13 +90,17 @@ const ZH = {
   "ch.sub":
     "<kbd>C-b C-t</kbd> 把每条命令的开始时间、耗时和结果写在它那一行的末尾。pane 输出过的东西按天保存，<kbd>C-b /</kbd> 打开任意一天。",
   "ch.caption":
-    "三条命令和它们的时间，其中一条失败；历史面板和查看器里的一天；手滑关掉的 pane，<kbd>C-b u</kbd> 找回来。",
+    "三条命令和它们的时间，其中一条失败；历史面板和查看器里的一天；<kbd>C-b Y</kbd> 列出跑过的命令；<kbd>/</kbd> 搜索所有天；手滑关掉的 pane，<kbd>C-b u</kbd> 找回来。",
   "ch.p1":
     "时间画在行尾的空白里。pane 宽度不变，程序输出的内容一个字不改。手机上在视图菜单里打开“每条命令的时间”，时间单独占一栏。",
   "ch.p2":
     "从 pane 顶上滚出去的内容写进这个 pane 当天的文件，留 30 天，每条命令前面有一行它的时间。查看器里 <kbd>[</kbd> <kbd>]</kbd> 在命令之间跳，<kbd>/</kbd> 搜索。",
   "ch.p3": "关错了 pane 或窗口？它会保留 10 秒，程序还在跑，按 <kbd>C-b u</kbd> 放回原处。",
   "ch.p4": "<kbd>C-b y</kbd> 只复制上一条命令的输出：测试失败的那段，直接贴进 issue 或交给 agent。",
+  "ch.p5":
+    "<kbd>C-b Y</kbd> 列出所有 pane 跑过的命令，最新的在前。<kbd>Enter</kbd> 进入复制模式并跳到那条命令，<kbd>y</kbd> 复制它的输出，<kbd>r</kbd> 再跑一次。",
+  "ch.p6":
+    "在 <kbd>C-b /</kbd> 面板里按 <kbd>/</kbd>，搜索所有 pane 所有天的历史；选中一行，查看器就停在那一行打开。脚本里用 <code>find-text -H</code>。",
   "ch.caption2":
     "测试失败；<kbd>C-b y</kbd> 取下它的输出；一条消息交给旁边的 agent，agent 改好了；测试通过。",
 

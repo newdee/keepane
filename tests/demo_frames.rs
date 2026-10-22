@@ -104,6 +104,28 @@ fn record_demo() {
     rec.key("\x1b");
     rec.hold(2);
 
+    // A variable for every pane, the shells already open included (at
+    // their next prompt); prefix e shows them, with what keepane sets.
+    rec.key("\x02:");
+    rec.hold(1);
+    rec.type_line("setenv -g API_URL http://localhost:8080");
+    rec.hold(2);
+    rec.key("\x02e");
+    rec.wait_for("the environment", |s| s.contents().contains("keepane sets in every pane"), 10);
+    rec.hold(6);
+    rec.still("environment");
+    rec.key("q");
+    rec.hold(1);
+    rec.key("\r");
+    rec.hold(1);
+    rec.type_line("$env:API_URL");
+    rec.wait_for(
+        "the variable",
+        |s| !s.contents().contains("keepane sets in every pane") && s.contents().contains("http://localhost:8080"),
+        10,
+    );
+    rec.hold(5);
+
     // A second window, and the picker that switches between them.
     rec.key("\x02c");
     rec.hold(3);
@@ -243,6 +265,17 @@ fn record_history() {
     rec.hold(6);
     rec.still("timestamps");
 
+    // C-b Y: the commands every pane ran, newest first; y copies what one
+    // printed, r runs it again, Enter goes to it.
+    rec.key("\x02Y");
+    rec.wait_for("the command picker", |s| s.contents().contains("r run again"), 10);
+    rec.hold(4);
+    rec.key("j");
+    rec.hold(4);
+    rec.still("commands");
+    rec.key("\x1b");
+    rec.hold(2);
+
     // Enough output to scroll: what leaves the screen goes to today's file.
     rec.type_line("1..40 | ForEach-Object { \"log line $_\" }");
     rec.wait_for(
@@ -277,6 +310,19 @@ fn record_history() {
     rec.still("viewer");
     rec.key("q");
     rec.hold(3);
+
+    // / in the picker: every day of every pane, searched.
+    rec.key("\x02/");
+    rec.wait_for("the history picker again", |s| s.contents().contains("today"), 10);
+    rec.hold(2);
+    rec.key("/");
+    rec.hold(1);
+    rec.type_line("failed");
+    rec.wait_for("the hits", |s| s.contents().contains("/ look again"), 10);
+    rec.hold(6);
+    rec.still("history-search");
+    rec.key("\x1b");
+    rec.hold(2);
 
     // A pane closed by mistake: C-b u within ten seconds brings it back,
     // with what it was running.
@@ -985,6 +1031,30 @@ Remove-Item $file -ErrorAction SilentlyContinue
     rec.key("q");
     rec.hold(5);
 
+    // The sea by moonlight, a message drifting ashore; then the same in
+    // dots (`clock-mode-look`).
+    kp(&["set", "-g", "clock-mode-animation", "sea"]);
+    rec.key("\x02t");
+    rec.until("the sea", |s| s.contents().contains("\\__/"), 10);
+    rec.hold(10);
+    kp(&["send-message", "-t", "%tests", "echo 'deploy: done'"]);
+    rec.hold(10);
+    kp(&["set", "-g", "clock-mode-look", "dots"]);
+    rec.hold(14);
+    kp(&["set", "-g", "clock-mode-look", "plain"]);
+    rec.key("q");
+    rec.hold(4);
+
+    // The cat asleep; a message wakes it.
+    kp(&["set", "-g", "clock-mode-animation", "cat"]);
+    rec.key("\x02t");
+    rec.until("the cat", |s| s.contents().contains("-.-"), 10);
+    rec.hold(14);
+    kp(&["send-message", "-t", "%tests", "echo 'tests: 42 passed'"]);
+    rec.hold(16);
+    rec.key("q");
+    rec.hold(5);
+
     d.finish();
 }
 
@@ -995,8 +1065,9 @@ struct Demo {
     tmp: std::path::PathBuf,
     exe: String,
     socket: String,
-    /// Where the panes work; given back when the demo is dropped.
-    _drive: Drive,
+    /// Where the panes work, where keepane keeps its files, where its
+    /// program is; given back when the demo is dropped.
+    _drives: [Drive; 3],
 }
 
 /// A drive letter standing for the recording's project directory (`subst`,
@@ -1040,7 +1111,6 @@ impl Demo {
         let _ = std::process::Command::new(&exe).args(["-L", socket, "kill-server"]).status();
         let tmp = std::env::temp_dir().join(format!("keepane-{socket}-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).expect("temp dir");
-        let sessions = tmp.join("sessions");
         // A project to work in: a git repository (its branch is on the status
         // line) on a drive of its own.
         let project = tmp.join("project");
@@ -1048,6 +1118,43 @@ impl Demo {
         std::fs::write(project.join("README.md"), "# demo\n").expect("project file");
         let _ = std::process::Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(&project).status();
         let drive = Drive::map(&project);
+        // keepane's own files (sessions, the shells' start files) and its
+        // program on drives of their own too: prefix e shows where they are.
+        let data = Drive::map(&tmp);
+        let exe_dir = std::path::Path::new(&exe).parent().unwrap().to_path_buf();
+        let bin = Drive::map(&exe_dir);
+        // And a PATH of the system's directories and the tools the
+        // recordings run (git, node, pwsh), not this machine's whole PATH.
+        // What a recording put in front itself (the stand-in agents, under
+        // the temp directory) stays in front.
+        let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let temp = std::env::temp_dir();
+        let own = std::env::var("PATH").unwrap_or_default();
+        let mut path: Vec<String> = own
+            .split(';')
+            .filter(|p| !p.is_empty() && std::path::Path::new(p).starts_with(&temp))
+            .map(String::from)
+            .collect();
+        path.extend([
+            format!(r"{}\", bin.0),
+            format!(r"{sys}\system32"),
+            sys.clone(),
+            format!(r"{sys}\System32\Wbem"),
+            format!(r"{sys}\System32\WindowsPowerShell\v1.0"),
+            format!(r"{sys}\System32\OpenSSH"),
+        ]);
+        for tool in ["pwsh.exe", "git.exe", "node.exe"] {
+            let found = std::process::Command::new("where.exe").arg(tool).output().ok();
+            let first =
+                found.as_ref().and_then(|o| String::from_utf8_lossy(&o.stdout).lines().next().map(String::from));
+            if let Some(dir) = first.as_deref().and_then(|f| std::path::Path::new(f.trim()).parent()) {
+                let dir = dir.to_string_lossy().into_owned();
+                if !path.contains(&dir) {
+                    path.push(dir);
+                }
+            }
+        }
+        let path = path.join(";");
 
         // A short prompt, so the recording shows keepane rather than path names.
         let prompt = tmp.join("prompt.ps1");
@@ -1099,9 +1206,9 @@ impl Demo {
         // detaching comes back to it.
         let mut cmd = CommandBuilder::new("pwsh.exe");
         cmd.args(["-NoLogo", "-NoProfile", "-NoExit", "-File", &prompt.to_string_lossy()]);
-        let exe_dir = std::path::Path::new(&exe).parent().unwrap().to_string_lossy().into_owned();
-        cmd.env("PATH", format!("{exe_dir};{}", std::env::var("PATH").unwrap_or_default()));
-        cmd.env("KEEPANE_SESSIONS_DIR", sessions.to_string_lossy().to_string());
+        cmd.env("PATH", &path);
+        cmd.env("KEEPANE_SESSIONS_DIR", format!(r"{}\sessions", data.0));
+        cmd.env("KEEPANE_LOG_DIR", format!(r"{}\logs", data.0));
         cmd.env("KEEPANE_CONFIG", conf.to_string_lossy().to_string());
         cmd.env_remove("KEEPANE");
         cmd.env_remove("KEEPANE_PANE");
@@ -1133,7 +1240,7 @@ impl Demo {
             child,
             side: String::new(),
         };
-        Demo { rec, tmp, exe, socket: socket.to_string(), _drive: drive }
+        Demo { rec, tmp, exe, socket: socket.to_string(), _drives: [drive, data, bin] }
     }
 
     /// Kill the server (and with it every pane) and the scratch directory.
