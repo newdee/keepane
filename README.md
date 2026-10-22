@@ -414,6 +414,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `C-t` | show when each command ran, how long it took and how it ended, at the end of its line (`pane-timestamps`) |
 | `/` | browse what panes printed, by pane and day (`choose-history`) |
 | `y` | copy what the last command printed, without the prompt or the command, to a paste buffer and the clipboard (`copy-output`) |
+| `Y` | pick a command any pane ran, newest first: go there, copy what it printed, run it again (`choose-marks`) |
 | `F` | put a label on every path, web address and git hash on screen; type one to copy that thing, in capitals to open it (`hints`, see below) |
 | `e` | show the environment every pane gets, in colour: what `set-environment` set, and what keepane sets itself (`show-environment`; see Environment) |
 | `{` / `}` | swap pane with previous / next |
@@ -654,6 +655,13 @@ what the last one printed (the lines between it and the next prompt, at most
 paste into an issue or an agent. `keepane copy-output -p -t %3` prints it
 instead, for a script. In copy mode, `[` and `]` go from command to command.
 
+`C-b Y` (`choose-marks`) lists the commands every pane's shell ran that its
+screen still holds, newest first: how each ended (✓, ✗), when, how long,
+in which pane. Enter goes to one, in copy mode at its line; `y` copies
+what it printed, as `C-b y` does for the last one; `r` runs it again in
+its pane (only while that shell is at its prompt); `f` filters the list
+(`✗` for the failed ones).
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-fix-light.gif">
@@ -702,8 +710,15 @@ then. Each reported command gets a line of its times before it
 with their days. Enter on a day opens it in a viewer in a popup. The viewer
 starts at the end and moves like `less`: `j` `k`, `Space` `b`, `g` `G`,
 `/` `?` to search, `n` `N` to repeat, `[` `]` to jump from command to
-command, `q` to quit. `keepane view FILE` opens any file in it. `set -g
-log-history off` stops the logging.
+command, `q` to quit. `keepane view FILE` opens any file in it (`-n LINE`
+at that line, `-s TEXT` with that search set). `set -g log-history off`
+stops the logging.
+
+`/` in that list looks through every day of every pane at once (the
+newest day first, 500 lines at most): the lines that hold it are listed
+with their day and pane, and Enter opens the viewer at one, its search
+set. `keepane find-text -H pattern` does the same for a script, beside
+what the panes' screens hold: `work:0.1  2026-10-21:1234  error: …`.
 
 A pane or window closed with `kill-pane` or `kill-window` (`C-b x`,
 `C-b &`) is kept for 10 seconds with its programs still running. `C-b u`
@@ -1696,7 +1711,9 @@ Commands a script or a binding reaches for, beyond the obvious ones
 - `find-text pattern` searches what every pane has printed and says where
   each hit is and how far back: `ft:0.0  -8  REDIS-TIMEOUT-here`. `-C`
   matches case, `-t` narrows to a session or window, `-n` caps the hits per
-  pane. keepane's `find-window` searches only window names and titles.
+  pane, `-H` looks through every day of the history log too (each hit with
+  its day and line). keepane's `find-window` searches only window names and
+  titles.
 - `record [-t target] out.cast` writes everything a pane prints from now
   on as an [asciinema](https://asciinema.org) v2 file (resizes included);
   `record -t target` with no path stops. Play it back with `asciinema play`,

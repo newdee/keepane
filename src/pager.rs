@@ -47,6 +47,15 @@ impl View {
         v
     }
 
+    /// Open at line `line` (from 1) instead of the end, a third of the way
+    /// down, with `search` the last search (marked, and `n` `N` go on).
+    pub fn at(&mut self, line: usize, search: Option<&str>) {
+        self.show(line.saturating_sub(1));
+        if let Some(s) = search.filter(|s| !s.is_empty()) {
+            self.search = Some((true, s.to_string()));
+        }
+    }
+
     /// Rows of text: all but the status line.
     fn body(&self) -> usize {
         usize::from(self.rows.saturating_sub(1)).max(1)
@@ -224,8 +233,9 @@ impl View {
     }
 }
 
-/// `keepane view FILE`.
-pub fn run(path: &str) -> anyhow::Result<i32> {
+/// `keepane view [-n LINE] [-s TEXT] FILE`: at line LINE (else the end),
+/// TEXT the search.
+pub fn run(path: &str, line: Option<usize>, search: Option<&str>) -> anyhow::Result<i32> {
     use crate::console::{Console, InputEvent};
     let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
     let text = String::from_utf8_lossy(&bytes);
@@ -237,6 +247,9 @@ pub fn run(path: &str) -> anyhow::Result<i32> {
     c.enter_raw()?;
     let (cols, rows) = c.size();
     let mut view = View::new(&name, &text, cols, rows);
+    if let Some(n) = line {
+        view.at(n, search);
+    }
     c.write_str(&view.frame());
     let result = (|| -> anyhow::Result<()> {
         loop {
@@ -300,6 +313,25 @@ mod tests {
         v.resize(40, 31);
         assert_eq!(v.top, 25, "a taller view still ends at the end");
         assert_eq!(v.key(Key::ch('q')), Action::Quit);
+    }
+
+    /// Opened at a line (a hit of a search over the log): that line a third
+    /// of the way down, the search marked and going on from there.
+    #[test]
+    fn it_opens_at_a_line_with_its_search() {
+        let mut v = View::new("x.log", &text(50), 40, 11);
+        // The file's line 31 is "line 27" (a header every ten lines).
+        v.at(31, Some("line 2"));
+        assert_eq!(v.lines[v.top + 10 / 3], "line 27", "a third of the way down");
+        assert!(v.frame().contains("\x1b[1;33mline 27"), "the search marked");
+        v.key(Key::ch('n'));
+        assert_eq!(v.lines[v.top + 10 / 3], "line 28", "n goes on from there");
+        // Past the end: the end; no search: none.
+        let mut w = View::new("x.log", &text(50), 40, 11);
+        w.at(9999, None);
+        assert_eq!(w.top, w.last_top());
+        assert_eq!(w.key(Key::ch('n')), Action::Redraw);
+        assert!(w.frame().contains("no search yet"));
     }
 
     #[test]

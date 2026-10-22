@@ -444,6 +444,12 @@ impl Actor {
         }
     }
 
+    /// Its shell is at its prompt, as its hook last said, and nobody has
+    /// typed since (whatever the work mode): a command typed now runs.
+    pub fn shell_waiting(&self) -> bool {
+        self.at_prompt
+    }
+
     /// Someone is at the line: keys went in, no Enter yet, and the pane is
     /// not free.
     pub fn typing(&self) -> bool {

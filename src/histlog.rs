@@ -388,9 +388,101 @@ pub fn scan(dir: &Path) -> Vec<Kept> {
     out
 }
 
+/// A line of the history log that holds what was looked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogHit {
+    /// The pane position, as `scan` names it.
+    pub session: String,
+    pub key: String,
+    pub day: chrono::NaiveDate,
+    pub path: PathBuf,
+    /// Its line in the file, from 1.
+    pub line: usize,
+    pub text: String,
+}
+
+/// `pattern` in the history log `kept` (any case unless `case_sensitive`):
+/// the newest day first, every position's file of a day before the day
+/// before; at most `per_file` hits from a file and `max` in all. Each file
+/// is read a line at a time, so a day's 20 MB is never held whole.
+pub fn search(kept: &[Kept], pattern: &str, case_sensitive: bool, per_file: usize, max: usize) -> Vec<LogHit> {
+    use std::io::BufRead;
+    let needle = if case_sensitive { pattern.to_string() } else { pattern.to_lowercase() };
+    let mut files: Vec<(&Kept, chrono::NaiveDate, &PathBuf)> =
+        kept.iter().flat_map(|k| k.days.iter().map(move |(d, p, _)| (k, *d, p))).collect();
+    // Newest day first; within a day, the order `scan` gives.
+    files.sort_by_key(|(_, d, _)| std::cmp::Reverse(*d));
+    let mut out = Vec::new();
+    for (k, day, path) in files {
+        let Ok(f) = std::fs::File::open(path) else { continue };
+        let mut found = 0;
+        // Lines that are not UTF-8 (a program's raw bytes) are read as lossily.
+        for (i, line) in std::io::BufReader::new(f).split(b'\n').enumerate() {
+            let Ok(line) = line else { break };
+            let text = String::from_utf8_lossy(&line);
+            let text = text.trim_end_matches('\r');
+            let hit = if case_sensitive { text.contains(&needle) } else { text.to_lowercase().contains(&needle) };
+            if hit {
+                out.push(LogHit {
+                    session: k.session.clone(),
+                    key: k.key.clone(),
+                    day,
+                    path: path.clone(),
+                    line: i + 1,
+                    text: text.to_string(),
+                });
+                found += 1;
+                if out.len() >= max {
+                    return out;
+                }
+                if found >= per_file {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The history log is searched newest day first, any case unless asked,
+    /// a file at most `per_file` times, `max` in all, with each hit's line.
+    #[test]
+    fn the_log_is_searched_newest_day_first() {
+        let dir = std::env::temp_dir().join(format!("keepane-histlog-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
+        let put = |s: &str, w, p, d, text: &[u8]| {
+            let f = file_for(&dir, s, w, p, day(d));
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, text).unwrap();
+        };
+        put("work", 0, 0, 20, b"make\nerror: old one\nok\n");
+        put("work", 0, 1, 21, b"ERROR: newest\r\nfine\nerror again\nerror thrice\n");
+        put("db", 1, 0, 21, b"no match here\n\xff\xfe error in bad bytes\n");
+        let kept = scan(&dir);
+        let hits = search(&kept, "error", false, 2, 10);
+        let got: Vec<(String, String, u32, usize, String)> = hits
+            .iter()
+            .map(|h| (h.session.clone(), h.key.clone(), chrono::Datelike::day(&h.day), h.line, h.text.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("db".into(), "1.0".into(), 21, 2, "\u{fffd}\u{fffd} error in bad bytes".into()),
+                ("work".into(), "0.1".into(), 21, 1, "ERROR: newest".into()),
+                ("work".into(), "0.1".into(), 21, 3, "error again".into()),
+                ("work".into(), "0.0".into(), 20, 2, "error: old one".into()),
+            ]
+        );
+        assert_eq!(search(&kept, "error", true, 9, 10).len(), 4, "ERROR is not error");
+        assert_eq!(search(&kept, "error", false, 9, 2).len(), 2, "max in all");
+        assert!(search(&kept, "nowhere", false, 9, 10).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The writer is one for the process: these tests take turns with it.
     static SERIAL: Mutex<()> = Mutex::new(());

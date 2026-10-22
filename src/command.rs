@@ -580,7 +580,15 @@ pub enum Cmd {
     ChooseJobs,
     /// `choose-history`: what panes printed, kept a file a day (prefix `/`):
     /// a pane position, then a day, opened in `keepane view` in a popup.
-    ChooseHistory,
+    /// `-s text`: the lines of every day that hold it instead (`/` there),
+    /// each opened at its line.
+    ChooseHistory {
+        search: Option<String>,
+    },
+    /// `choose-marks`: the commands every pane's shell ran that its
+    /// screen still holds, newest first (prefix `Y`): Enter goes to one in
+    /// copy mode, `y` copies what it printed, `r` runs it again.
+    ChooseMarks,
     /// `undo-kill`: the pane or window killed last comes back where it
     /// was, programs still running, within `undo-kill-time` seconds.
     UndoKill,
@@ -919,8 +927,10 @@ pub enum Cmd {
         target: Option<Target>,
         /// `-C`: match case, which is otherwise ignored.
         case_sensitive: bool,
-        /// `-n`: how many hits to report per pane.
+        /// `-n`: how many hits to report per pane (and per day of the log).
         per_pane: usize,
+        /// `-H`: the history log too (`log-history`), every day of it.
+        history: bool,
     },
     /// `jobs`: every pane on the server as one line: where it is, whether
     /// its program is still running, for how long, when it last printed.
@@ -1583,7 +1593,14 @@ impl fmt::Display for Cmd {
             Cmd::ChooseBuffer => f.write_str("choose-buffer"),
             Cmd::ChooseClient => f.write_str("choose-client"),
             Cmd::ChooseJobs => f.write_str("choose-jobs"),
-            Cmd::ChooseHistory => f.write_str("choose-history"),
+            Cmd::ChooseMarks => f.write_str("choose-marks"),
+            Cmd::ChooseHistory { search } => {
+                f.write_str("choose-history")?;
+                if let Some(s) = search {
+                    write!(f, " -s {}", quote(s))?;
+                }
+                Ok(())
+            }
             Cmd::UndoKill => f.write_str("undo-kill"),
             Cmd::FocusPane { pane } => write!(f, "focus-pane %{pane}"),
             Cmd::DisplayMenu { title, items } => {
@@ -1932,10 +1949,13 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::FindText { pattern, target, case_sensitive, per_pane } => {
+            Cmd::FindText { pattern, target, case_sensitive, per_pane, history } => {
                 f.write_str("find-text")?;
                 if *case_sensitive {
                     f.write_str(" -C")?;
+                }
+                if *history {
+                    f.write_str(" -H")?;
                 }
                 if *per_pane != 3 {
                     write!(f, " -n {per_pane}")?;
@@ -2238,6 +2258,7 @@ pub const COMMANDS: &[&str] = &[
     "choose-buffer",
     "choose-client",
     "choose-history",
+    "choose-marks",
     "choose-jobs",
     "choose-session",
     "clock-mode",
@@ -2394,7 +2415,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("capture-pane", &["-p", "-e", "-J", "-S", "-t"]),
     ("choose-buffer", &[]),
     ("choose-client", &[]),
-    ("choose-history", &[]),
+    ("choose-history", &["-s"]),
+    ("choose-marks", &[]),
     ("choose-jobs", &[]),
     ("choose-session", &["-s", "-w", "-Z"]),
     ("clock-mode", &["-t"]),
@@ -2412,7 +2434,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("display-message", &["-p", "-t"]),
     ("display-popup", &["-C", "-E", "-w", "-h", "-x", "-y", "-d"]),
     ("display-panes", &["-d"]),
-    ("find-text", &["-t"]),
+    ("find-text", &["-C", "-H", "-n", "-t"]),
     ("find-window", &["-t"]),
     ("focus-pane", &[]),
     ("has-session", &["-t"]),
@@ -3766,9 +3788,23 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::ChooseJobs
         }
-        "choose-history" => {
+        "choose-marks" => {
             a.none_left(n)?;
-            Cmd::ChooseHistory
+            Cmd::ChooseMarks
+        }
+        "choose-history" => {
+            let mut search = None;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-s" => search = Some(a.value("-s")?.to_string()),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            if search.as_deref().is_some_and(|s| s.trim().is_empty()) {
+                return Err(format!("{n}: -s takes something to look for"));
+            }
+            Cmd::ChooseHistory { search }
         }
         "undo-kill" => {
             a.none_left(n)?;
@@ -4552,11 +4588,12 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::Record { target, path }
         }
         "find-text" => {
-            let (mut target, mut case_sensitive, mut per_pane) = (None, false, 3usize);
+            let (mut target, mut case_sensitive, mut per_pane, mut history) = (None, false, 3usize, false);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-C" => case_sensitive = true,
                     "-i" => case_sensitive = false,
+                    "-H" => history = true,
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
                     "-n" => {
                         per_pane = a.value("-n")?.parse().map_err(|_| "find-text: -n takes a number".to_string())?;
@@ -4570,7 +4607,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if pattern.trim().is_empty() {
                 return Err("find-text: pattern required".into());
             }
-            Cmd::FindText { pattern, target, case_sensitive, per_pane: per_pane.clamp(1, 100) }
+            Cmd::FindText { pattern, target, case_sensitive, per_pane: per_pane.clamp(1, 100), history }
         }
         "jobs" => {
             let (mut target, mut format) = (None, None);

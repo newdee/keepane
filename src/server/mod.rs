@@ -102,6 +102,13 @@ enum Event {
         output: String,
         code: i32,
     },
+    /// `choose-history -s`: the log has been read through; the picker of
+    /// its lines that hold what was looked for opens for `cid`.
+    HistoryHits {
+        cid: ClientId,
+        search: String,
+        hits: Vec<crate::histlog::LogHit>,
+    },
     /// A status-line `#(command)` finished.
     StatusShell {
         command: String,
@@ -424,6 +431,10 @@ enum ChooserItem {
     Job(SessionId, WindowId, PaneId),
     /// A pane position in the history picker, or one of its days.
     Log(usize, Option<usize>),
+    /// A line of the log that holds what was looked for (`choose-history -s`).
+    Hit(usize),
+    /// A command a shell ran (`choose-marks`), by its place in the list.
+    Ran(usize),
     /// A title or separator line: shown, never selected.
     Separator,
     /// A machine in the chart: this one (None), or a paired one by its
@@ -495,7 +506,28 @@ enum ChooserKind {
     /// The history log on disk (`choose-history`), read when opened; the
     /// positions in `open` show their days.
     History { kept: Vec<crate::histlog::Kept>, open: HashSet<usize> },
+    /// The lines of every day of the log that hold `search`, newest first.
+    Hits { hits: Vec<crate::histlog::LogHit>, search: String },
+    /// The commands the panes' shells ran, newest first (`choose-marks`).
+    Marks(Vec<Ran>),
 }
+
+/// A command a pane's shell ran that its screen still holds.
+#[derive(Clone, Debug)]
+struct Ran {
+    pane: PaneId,
+    /// Where it ran, `session:window.pane`.
+    at: String,
+    /// Its prompt's line (`pane::Mark::line`): how it is found again.
+    line: u64,
+    command: String,
+    start: Option<chrono::DateTime<chrono::Local>>,
+    end: chrono::DateTime<chrono::Local>,
+    exit: Option<i32>,
+}
+
+/// Most commands `choose-marks` lists.
+const MARKS_MAX: usize = 300;
 
 /// How the session tree is drawn (`choose-tree-style`): a chart of rows
 /// under a `keepane` root (sessions, then the chosen session's windows,
@@ -530,6 +562,11 @@ impl ChooserKind {
     /// Whether the list is rebuilt from the server state at every render.
     fn live(&self) -> bool {
         matches!(self, ChooserKind::Tree { .. } | ChooserKind::Buffers | ChooserKind::Clients | ChooserKind::Jobs)
+    }
+
+    /// Its lines go through a filter (`f`): the live ones, and the commands.
+    fn filtered(&self) -> bool {
+        self.live() || matches!(self, ChooserKind::Marks(_))
     }
 }
 
@@ -1477,6 +1514,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("y", "copy-output"),
         ("F", "hints"),
         ("e", "show-environment"),
+        ("Y", "choose-marks"),
     ];
     for (k, l) in lines {
         let key = Key::parse(k).expect(k);
@@ -2418,6 +2456,7 @@ impl Server {
                     }
                 }
             }
+            Event::HistoryHits { cid, search, hits } => self.history_hits(cid, search, hits),
             Event::StatusShell { command, output } => {
                 self.shell_running.remove(&command);
                 // First line only, like tmux.
@@ -4205,7 +4244,7 @@ impl Server {
                     Err(e) => Outcome::Error(format!("{e:#}")),
                 }
             }
-            Cmd::FindText { pattern, target, case_sensitive, per_pane } => {
+            Cmd::FindText { pattern, target, case_sensitive, per_pane, history } => {
                 // Which panes to look in: everything, or one session (or one
                 // window of it) when -t says so.
                 // No -t at all searches every session. A -t names one
@@ -4272,18 +4311,59 @@ impl Server {
                         hits.push((label.clone(), total.saturating_sub(abs + 1), one_line(&text, 120)));
                     }
                 }
-                if hits.is_empty() {
-                    return Outcome::Error(format!("no pane has: {}", one_line(&pattern, 60)));
+                if !history {
+                    if hits.is_empty() {
+                        return Outcome::Error(format!("no pane has: {}", one_line(&pattern, 60)));
+                    }
+                    // One column each for the pane and how far back it was, so a
+                    // list of hits reads down the page.
+                    let wide = hits.iter().map(|(l, _, _)| l.chars().count()).max().unwrap_or(0);
+                    let back_w = hits.iter().map(|(_, b, _)| b.to_string().len()).max().unwrap_or(1);
+                    let lines: Vec<String> = hits
+                        .iter()
+                        .map(|(label, back, text)| format!("{label:<wide$}  -{back:>back_w$}  {text}"))
+                        .collect();
+                    return Outcome::Text(lines.join("\n"));
                 }
-                // One column each for the pane and how far back it was, so a
-                // list of hits reads down the page.
-                let wide = hits.iter().map(|(l, _, _)| l.chars().count()).max().unwrap_or(0);
-                let back_w = hits.iter().map(|(_, b, _)| b.to_string().len()).max().unwrap_or(1);
-                let lines: Vec<String> = hits
-                    .iter()
-                    .map(|(label, back, text)| format!("{label:<wide$}  -{back:>back_w$}  {text}"))
+                let mut hits: Vec<(String, String, String)> =
+                    hits.into_iter().map(|(l, back, t)| (l, format!("-{back}"), t)).collect();
+                // -H: the log on disk too, every day of it, read on a thread
+                // of its own (a month of it can be big), the screens' hits first.
+                let Some(cid) = cid else { return Outcome::Error("find-text -H: no client".into()) };
+                let names: Option<(String, Option<String>)> = want_session.and_then(|sid| {
+                    let s = self.session(sid)?;
+                    let window = want_window.map(|w| {
+                        let pane = want_pane
+                            .and_then(|p| s.windows.get(w)?.layout.panes().iter().position(|x| *x == p))
+                            .map(|i| format!("{}", i + pane_base));
+                        format!("{}.{}", w + base, pane.unwrap_or_default())
+                    });
+                    Some((crate::histlog::safe_name(&s.name), window))
+                });
+                let kept: Vec<crate::histlog::Kept> = crate::histlog::scan(&self.history_dir())
+                    .into_iter()
+                    .filter(|k| match &names {
+                        None => true,
+                        Some((s, None)) => k.session == *s,
+                        // `1.` a window's panes, `1.2` one of them.
+                        Some((s, Some(w))) if w.ends_with('.') => k.session == *s && k.key.starts_with(w.as_str()),
+                        Some((s, Some(w))) => k.session == *s && k.key == *w,
+                    })
                     .collect();
-                Outcome::Text(lines.join("\n"))
+                let events = self.events.clone();
+                std::thread::spawn(move || {
+                    for h in crate::histlog::search(&kept, &pattern, case_sensitive, per_pane, 500) {
+                        let label = format!("{}:{}", h.session, h.key);
+                        hits.push((label, format!("{}:{}", h.day, h.line), one_line(&h.text, 120)));
+                    }
+                    let (output, code) = if hits.is_empty() {
+                        (format!("nothing printed has: {}", one_line(&pattern, 60)), 1)
+                    } else {
+                        (hit_lines(&hits), 0)
+                    };
+                    let _ = events.send(Event::ShellDone { cid: Some(cid), output, code });
+                });
+                Outcome::Pending
             }
             Cmd::Notify { title, message } => {
                 let title = match (title, cid) {
@@ -5739,7 +5819,26 @@ impl Server {
                 };
                 self.exec(cmd, Some(cid))
             }
-            Cmd::ChooseHistory => {
+            Cmd::ChooseMarks => {
+                let Some(cid) = cid else { return Outcome::Error("choose-marks: no client".into()) };
+                if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+                    return Outcome::Error("choose-marks: client not attached".into());
+                }
+                let ran = self.commands_ran();
+                if ran.is_empty() {
+                    return Outcome::Error(
+                        "no command to pick: a shell keepane gives its hook (PowerShell, bash, zsh, fish) reports them"
+                            .into(),
+                    );
+                }
+                let (items, lines) = marks_lines(&ran);
+                let c = self.clients.get_mut(&cid).unwrap();
+                c.prompt = None;
+                c.overlay = None;
+                c.chooser = Some(Chooser::new(ChooserKind::Marks(ran), items, lines, 0));
+                Outcome::Ok
+            }
+            Cmd::ChooseHistory { search } => {
                 let Some(cid) = cid else { return Outcome::Error("choose-history: no client".into()) };
                 if self.clients.get(&cid).and_then(|c| c.session).is_none() {
                     return Outcome::Error("choose-history: client not attached".into());
@@ -5748,6 +5847,17 @@ impl Server {
                 if kept.is_empty() {
                     let why = if self.opts.log_history { "" } else { " (log-history is off)" };
                     return Outcome::Error(format!("no history yet{why}"));
+                }
+                // -s: every day read through on a thread of its own (a month
+                // of it can be big); the picker of its hits opens then.
+                if let Some(search) = search {
+                    let events = self.events.clone();
+                    self.message(cid, &format!("looking for {search:?} in every day of the log…"));
+                    std::thread::spawn(move || {
+                        let hits = crate::histlog::search(&kept, &search, false, 50, HISTORY_HITS);
+                        let _ = events.send(Event::HistoryHits { cid, search, hits });
+                    });
+                    return Outcome::Ok;
                 }
                 // Open at the client's own pane, on its newest day.
                 let here = self.resolve(None, Some(cid)).ok().and_then(|(sid, widx, pid)| {
@@ -6103,18 +6213,7 @@ impl Server {
                 if text.is_empty() {
                     return Outcome::Error(format!("`{command}` printed nothing"));
                 }
-                let lines = text.lines().count();
-                self.set_buffer(None, &text, false);
-                let note = match crate::clipboard::set_text(&text) {
-                    Err(e) => format!(" (clipboard: {e})"),
-                    Ok(()) if cut => format!(" (cut at {} MB)", OUTPUT_MAX >> 20),
-                    Ok(()) => String::new(),
-                };
-                let what = format!(
-                    "copied {} `{}` printed{note}",
-                    crate::format::count(lines, "line"),
-                    truncate(&command, 40)
-                );
+                let what = self.copy_out(&command, &text, cut);
                 if let Some(cid) = cid {
                     self.message(cid, &what);
                 }
@@ -7354,7 +7453,11 @@ impl Server {
                 lines = align_columns(&rows);
                 return Some((items, lines));
             }
-            ChooserKind::Found | ChooserKind::Menu(_) | ChooserKind::History { .. } => return None,
+            // Read when it opened, but filtered (`f`) like a live one.
+            ChooserKind::Marks(ran) => return Some(marks_lines(ran)),
+            ChooserKind::Found | ChooserKind::Menu(_) | ChooserKind::History { .. } | ChooserKind::Hits { .. } => {
+                return None;
+            }
         };
         let style = match kind {
             ChooserKind::Tree { style, .. } => *style,
@@ -7728,7 +7831,32 @@ impl Server {
             }
             // `f` types a filter on the status line; the list follows it as
             // it is typed, Enter keeps it, Escape puts the old one back.
-            (KeyCode::Char('f'), false, false) if ch.kind.live() => {
+            // The commands picker: `y` copies what one printed, `r` runs it
+            // again in its pane.
+            (KeyCode::Char(key @ ('y' | 'r')), false, false) if matches!(ch.kind, ChooserKind::Marks(_)) => {
+                let (ChooserKind::Marks(ran), Some(ChooserItem::Ran(i))) = (&ch.kind, ch.items.get(ch.sel).copied())
+                else {
+                    return;
+                };
+                let Some(r) = ran.get(i).cloned() else { return };
+                c.chooser = None;
+                if key == 'y' { self.copy_ran(cid, &r) } else { self.rerun(cid, &r) }
+            }
+            // The history picker (and its hits): `/` looks through every day
+            // of the log, a picker of the lines that hold it opening then.
+            (KeyCode::Char('/'), false, false)
+                if matches!(ch.kind, ChooserKind::History { .. } | ChooserKind::Hits { .. }) =>
+            {
+                c.prompt = Some(Prompt {
+                    kind: PromptKind::Command { template: Some("choose-history -s %%".into()) },
+                    label: "(look through every day) ".into(),
+                    input: String::new(),
+                    cursor: 0,
+                    hint: None,
+                    browse: None,
+                });
+            }
+            (KeyCode::Char('f'), false, false) if ch.kind.filtered() => {
                 let prev = ch.filter.clone();
                 let cursor = prev.chars().count();
                 c.prompt = Some(Prompt {
@@ -7778,9 +7906,17 @@ impl Server {
                     }
                     _ => None,
                 };
+                let ran = match (&ch.kind, target) {
+                    (ChooserKind::Marks(ran), Some(ChooserItem::Ran(i))) => ran.get(i).cloned(),
+                    _ => None,
+                };
+                // A day of the log, or a line of it (with what found it).
                 let log = match (&ch.kind, target) {
                     (ChooserKind::History { kept, .. }, Some(ChooserItem::Log(i, Some(d)))) => {
-                        kept.get(i).and_then(|k| k.days.get(d)).map(|(_, path, _)| path.clone())
+                        kept.get(i).and_then(|k| k.days.get(d)).map(|(_, path, _)| (path.clone(), None))
+                    }
+                    (ChooserKind::Hits { hits, search }, Some(ChooserItem::Hit(i))) => {
+                        hits.get(i).map(|h| (h.path.clone(), Some((h.line, search.clone()))))
                     }
                     _ => None,
                 };
@@ -7805,9 +7941,12 @@ impl Server {
                     self.reply(cid, out);
                     return;
                 }
-                if let Some(path) = log {
-                    self.view_log(cid, &path);
-                    return;
+                match log {
+                    Some((path, None)) => return self.view_log(cid, &path),
+                    Some((path, Some((line, search)))) => {
+                        return self.view_log_at(cid, &path, Some(line), Some(&search));
+                    }
+                    None => {}
                 }
                 match target {
                     Some(ChooserItem::Tree(sid, wid)) => self.chooser_go(cid, sid, wid),
@@ -7819,9 +7958,15 @@ impl Server {
                         }
                     }
                     Some(ChooserItem::Job(sid, wid, pid)) => self.chooser_go_pane(cid, sid, wid, pid),
+                    Some(ChooserItem::Ran(_)) => {
+                        if let Some(r) = ran {
+                            self.go_to_ran(cid, &r);
+                        }
+                    }
                     Some(ChooserItem::Menu(_))
                     | Some(ChooserItem::Separator)
                     | Some(ChooserItem::Log(..))
+                    | Some(ChooserItem::Hit(_))
                     | Some(ChooserItem::Host(_))
                     | Some(ChooserItem::Remote(..)) => {}
                     Some(ChooserItem::Buffer(i)) => {
@@ -7966,8 +8111,127 @@ impl Server {
         }
     }
 
+    /// What `command` printed (`text`, `cut` short or not), to a new paste
+    /// buffer and the clipboard; what to say of it.
+    fn copy_out(&mut self, command: &str, text: &str, cut: bool) -> String {
+        let lines = text.lines().count();
+        self.set_buffer(None, text, false);
+        let note = match crate::clipboard::set_text(text) {
+            Err(e) => format!(" (clipboard: {e})"),
+            Ok(()) if cut => format!(" (cut at {} MB)", OUTPUT_MAX >> 20),
+            Ok(()) => String::new(),
+        };
+        format!("copied {} `{}` printed{note}", crate::format::count(lines, "line"), truncate(command, 40))
+    }
+
+    /// Every pane's finished commands its screen still holds (something was
+    /// typed), newest first, at most `MARKS_MAX`.
+    fn commands_ran(&mut self) -> Vec<Ran> {
+        let (base, pane_base) = (self.opts.base_index, self.opts.pane_base_index);
+        let mut panes: Vec<(PaneId, String)> = Vec::new();
+        for s in &self.sessions {
+            for (widx, w) in s.windows.iter().enumerate() {
+                for (pidx, pid) in w.layout.panes().iter().enumerate() {
+                    panes.push((*pid, format!("{}:{}.{}", s.name, widx + base, pidx + pane_base)));
+                }
+            }
+        }
+        let mut ran = Vec::new();
+        for (pane, at) in panes {
+            let Some(p) = self.find_pane_mut(pane) else { continue };
+            ran.extend(ran_in(p, &at));
+        }
+        ran.sort_by_key(|r| std::cmp::Reverse(r.end));
+        ran.truncate(MARKS_MAX);
+        ran
+    }
+
+    /// `choose-marks`, `y`: what command `r` printed, to a paste buffer and
+    /// the clipboard, as `copy-output` copies the last one's.
+    fn copy_ran(&mut self, cid: ClientId, r: &Ran) {
+        let Some(p) = self.find_pane_mut(r.pane) else { return self.message(cid, "its pane is gone") };
+        let Some(m) = p.readable_marks().into_iter().find(|m| m.line == r.line) else {
+            return self.message(cid, &format!("`{}` has left its pane's screen", truncate(&r.command, 40)));
+        };
+        let (command, text, cut) = p.output_of(&m, OUTPUT_MAX);
+        if text.is_empty() {
+            return self.message(cid, &format!("`{}` printed nothing", truncate(&command, 40)));
+        }
+        let what = self.copy_out(&command, &text, cut);
+        self.message(cid, &what);
+    }
+
+    /// `choose-marks`, Enter: to command `r`'s pane, in copy mode at its
+    /// prompt's line (`[` and `]` go on from command to command there).
+    fn go_to_ran(&mut self, cid: ClientId, r: &Ran) {
+        let Some((sid, widx)) = self.place_of(r.pane) else { return self.message(cid, "its pane is gone") };
+        let wid = self.session(sid).and_then(|s| s.windows.get(widx)).map(|w| w.id);
+        let Some(wid) = wid else { return };
+        self.chooser_go_pane(cid, sid, wid, r.pane);
+        let cols = self.find_pane_mut(r.pane).map(|p| p.cols).unwrap_or(1);
+        let Some(p) = self.find_pane_mut(r.pane) else { return };
+        let Some(abs) = p.abs_of_line(r.line) else {
+            return self.message(cid, &format!("`{}` has left its pane's scrollback", truncate(&r.command, 40)));
+        };
+        let col = p.readable_marks().into_iter().find(|m| m.line == r.line).map_or(0, |m| m.col);
+        if p.copy.is_none() {
+            enter_copy_mode(p);
+        }
+        copy_goto(p, abs);
+        if let Some(c) = p.copy.as_mut() {
+            c.cx = col.min(cols.saturating_sub(1));
+        }
+    }
+
+    /// `choose-marks`, `r`: command `r` again in its pane, typed at its
+    /// shell's prompt; not while the shell is at something else.
+    fn rerun(&mut self, cid: ClientId, r: &Ran) {
+        let Some(p) = self.find_pane_mut(r.pane) else { return self.message(cid, "its pane is gone") };
+        if !p.actor.shell_waiting() {
+            return self.message(cid, &format!("%{} is not at its prompt: not run", r.pane));
+        }
+        p.type_input(r.command.as_bytes());
+        p.type_input(b"\r");
+        self.message(cid, &format!("ran `{}` again in {}", truncate(&r.command, 40), r.at));
+    }
+
+    /// The picker of the log's lines that hold `search` (`choose-history
+    /// -s`), for a client still attached; or why there is none.
+    fn history_hits(&mut self, cid: ClientId, search: String, hits: Vec<crate::histlog::LogHit>) {
+        if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+            return;
+        }
+        if hits.is_empty() {
+            self.message(cid, &format!("no day of the log has: {}", one_line(&search, 60)));
+            return;
+        }
+        let wide = hits.iter().map(|h| h.session.chars().count() + h.key.len() + 1).max().unwrap_or(0);
+        let mut lines: Vec<String> = hits
+            .iter()
+            .map(|h| {
+                let at = format!("{}:{}", h.session, h.key);
+                format!("{} {}  {at:<wide$}  {}", h.day, h.day.format("%a"), one_line(&h.text, 200))
+            })
+            .collect();
+        let mut items: Vec<ChooserItem> = (0..hits.len()).map(ChooserItem::Hit).collect();
+        if hits.len() >= HISTORY_HITS {
+            items.push(ChooserItem::Separator);
+            lines.push(format!("(the first {HISTORY_HITS}; say more to find fewer)"));
+        }
+        let c = self.clients.get_mut(&cid).unwrap();
+        c.prompt = None;
+        c.overlay = None;
+        c.message = None;
+        c.chooser = Some(Chooser::new(ChooserKind::Hits { hits, search }, items, lines, 0));
+    }
+
     /// A day of the history log in `keepane view`, in a popup over the window.
     fn view_log(&mut self, cid: ClientId, path: &std::path::Path) {
+        self.view_log_at(cid, path, None, None);
+    }
+
+    /// `view_log`, opened at line `line` with `search` its search.
+    fn view_log_at(&mut self, cid: ClientId, path: &std::path::Path, line: Option<usize>, search: Option<&str>) {
         // Gone since the list was read (cleared out, deleted by hand): the
         // viewer would fail and its popup vanish before it could say so.
         if !path.is_file() {
@@ -7978,6 +8242,14 @@ impl Server {
             self.message(cid, "no keepane.exe to view the log with");
             return;
         };
+        let mut argv = vec![exe.to_string_lossy().into_owned(), "view".into()];
+        if let Some(n) = line {
+            argv.extend(["-n".into(), n.to_string()]);
+        }
+        if let Some(s) = search {
+            argv.extend(["-s".into(), s.to_string()]);
+        }
+        argv.push(path.to_string_lossy().into_owned());
         let cmd = Cmd::DisplayPopup {
             close: false,
             close_on_exit: true,
@@ -7986,7 +8258,7 @@ impl Server {
             x: None,
             y: None,
             cwd: None,
-            argv: vec![exe.to_string_lossy().into_owned(), "view".into(), path.to_string_lossy().into_owned()],
+            argv,
         };
         if let Outcome::Error(e) = self.exec(cmd, Some(cid)) {
             self.message(cid, &e);
@@ -8946,12 +9218,13 @@ impl Server {
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(sid) = c.session else { return };
         let (cols, rows) = (c.cols, c.rows);
-        // A picker of live things (the tree, buffers, clients) is rebuilt every
-        // render; the selection follows the item's identity, so things
-        // appearing or vanishing meanwhile do not move it. A fixed list (the
-        // find-window hits, a menu) is left alone.
+        // A picker of live things (the tree, buffers, clients), and the
+        // commands' (through its filter), is rebuilt every render; the
+        // selection follows the item's identity, so things appearing or
+        // vanishing meanwhile do not move it. A fixed list (the find-window
+        // hits, a menu) is left alone.
         let fresh = match c.chooser.as_ref() {
-            Some(ch) if ch.kind.live() => self.chooser_view(ch).map(|(i, l)| {
+            Some(ch) if ch.kind.filtered() => self.chooser_view(ch).map(|(i, l)| {
                 let active = i.iter().map(|item| self.current_in_tree(item)).collect::<Vec<_>>();
                 (i, l, active, ch.items.get(ch.sel).copied(), ch.sel)
             }),
@@ -9309,10 +9582,15 @@ impl Server {
                 ChooserKind::Tree { .. } => "x kill  D delete  f filter  v chart",
                 ChooserKind::Clients => "Enter detach  f filter",
                 ChooserKind::Buffers => "Enter paste  f filter",
-                ChooserKind::History { .. } => "Enter open  +/- fold",
+                ChooserKind::History { .. } => "Enter open  +/- fold  / every day",
+                ChooserKind::Hits { .. } => "Enter open there  / look again",
+                ChooserKind::Marks(_) => "Enter go there  y copy output  r run again  f filter (✗ failed)",
                 _ => "Enter select",
             };
             let mut status = Vec::new();
+            if let ChooserKind::Hits { search, hits } = &ch.kind {
+                status.push(format!("[{}: {}]", one_line(search, 30), crate::format::count(hits.len(), "line")));
+            }
             if !ch.tagged.is_empty() {
                 status.push(format!("[{} tagged]", ch.tagged.len()));
             }
@@ -9900,6 +10178,19 @@ fn parse_size(spec: &str, full: u16) -> Option<u16> {
 }
 
 /// One line of a buffer for a listing, clipped to `max` characters.
+/// Most hits `choose-history -s` lists.
+const HISTORY_HITS: usize = 500;
+
+/// `find-text -H`'s hits, one a line, in columns: where, how far back (or
+/// which day and line of the log), and the line, so a list reads down the page.
+fn hit_lines(hits: &[(String, String, String)]) -> String {
+    let wide = hits.iter().map(|(l, _, _)| l.chars().count()).max().unwrap_or(0);
+    let back_w = hits.iter().map(|(_, b, _)| b.chars().count()).max().unwrap_or(1);
+    let lines: Vec<String> =
+        hits.iter().map(|(label, back, text)| format!("{label:<wide$}  {back:>back_w$}  {text}")).collect();
+    lines.join("\n")
+}
+
 fn one_line(s: &str, max: usize) -> String {
     let flat: String = s.chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).collect();
     let flat = flat.trim().to_string();
@@ -9969,6 +10260,51 @@ fn human_size(bytes: u64) -> String {
         0..=1023 => format!("{bytes} B"),
         1024..=1_048_575 => format!("{} KB", bytes / 1024),
         _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+    }
+}
+
+/// Pane `p`'s (at `at`) finished commands its screen still holds; an Enter
+/// with nothing typed is no command (as `copy-output` has it).
+fn ran_in(p: &mut Pane, at: &str) -> Vec<Ran> {
+    let pane = p.id;
+    p.readable_marks()
+        .into_iter()
+        .filter_map(|m| {
+            let end = m.end.filter(|_| !m.command.trim().is_empty())?;
+            Some(Ran { pane, at: at.to_string(), line: m.line, command: m.command, start: m.start, end, exit: m.exit })
+        })
+        .collect()
+}
+
+/// `choose-marks`'s lines: how it ended (✓, ✗, `·` when the shell did not
+/// say), when, how long, where, and what was typed.
+fn marks_lines(ran: &[Ran]) -> (Vec<ChooserItem>, Vec<String>) {
+    let wide = ran.iter().map(|r| r.at.chars().count()).max().unwrap_or(0);
+    let lines = ran
+        .iter()
+        .map(|r| {
+            let how = match r.exit {
+                Some(0) => "✓",
+                Some(_) => "✗",
+                None => "·",
+            };
+            let took = r.start.map(|s| took(r.end - s)).unwrap_or_default();
+            let at = &r.at;
+            format!("{how} {} {took:>7}  {at:<wide$}  {}", r.end.format("%H:%M:%S"), one_line(&r.command, 200))
+        })
+        .collect();
+    ((0..ran.len()).map(ChooserItem::Ran).collect(), lines)
+}
+
+/// How long a command took, short: `0.4s`, `41s`, `3m05s`, `2h10m`.
+fn took(d: chrono::TimeDelta) -> String {
+    let ms = d.num_milliseconds().max(0);
+    let s = ms / 1000;
+    match s {
+        0..=9 => format!("{}.{}s", s, (ms % 1000) / 100),
+        10..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
     }
 }
 
@@ -10463,6 +10799,32 @@ mod tests {
         assert!(s.meter.is_none(), "the last reading dropped");
         assert_eq!(s.clock_step(now + Duration::from_secs(1)), None);
         assert!(s.meter.is_none(), "and none taken");
+    }
+
+    /// `choose-marks` lists what was run, and not an Enter with nothing
+    /// typed that a shell reported as a command of its own (C, then D).
+    #[test]
+    fn an_empty_enter_is_no_command_to_pick() {
+        let argv: Vec<String> = if cfg!(windows) {
+            ["cmd.exe", "/c", "exit"].map(String::from).to_vec()
+        } else {
+            ["/bin/sh", "-c", "exit"].map(String::from).to_vec()
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut p = Pane::spawn(4, &argv, None, 40, 8, 100, &[], tx).unwrap();
+        let prompt = "\x1b]133;A\x07$ \x1b]133;B\x07";
+        p.process_output(format!("{prompt}make\x1b]133;C\x07\r\nbuilt\r\n\x1b]133;D;0\x07").as_bytes());
+        p.process_output(format!("{prompt}\x1b]133;C\x07\r\n\x1b]133;D;0\x07").as_bytes());
+        p.process_output(format!("{prompt}false\x1b]133;C\x07\r\n\x1b]133;D;1\x07{prompt}").as_bytes());
+        let ran = ran_in(&mut p, "s:0.0");
+        let got: Vec<(String, Option<i32>)> = ran.iter().map(|r| (r.command.clone(), r.exit)).collect();
+        assert_eq!(got, [("make".into(), Some(0)), ("false".into(), Some(1))]);
+        assert!(ran.iter().all(|r| r.at == "s:0.0" && r.pane == 4));
+        let (_, lines) = marks_lines(&ran);
+        assert!(lines[1].starts_with("✗ ") && lines[1].ends_with("s:0.0  false"), "{lines:?}");
+        assert_eq!(took(chrono::TimeDelta::milliseconds(400)), "0.4s");
+        assert_eq!(took(chrono::TimeDelta::seconds(185)), "3m05s");
+        assert_eq!(took(chrono::TimeDelta::seconds(7800)), "2h10m");
     }
 
     /// A selection copies the characters drawn in the columns it covers:

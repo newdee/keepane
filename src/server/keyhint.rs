@@ -49,6 +49,7 @@ fn known(c: &str) -> Option<(usize, &'static str)> {
         "copy-mode" => (3, "scroll and copy"),
         "paste-buffer" => (3, "paste"),
         "copy-output" => (3, "copy last output"),
+        "choose-marks" => (3, "pick a command"),
         "hints" => (3, "pick text on screen"),
         "choose-history" => (3, "history"),
         "choose-jobs" => (3, "jobs"),
@@ -187,6 +188,7 @@ const LABEL_ORDER: &[&str] = &[
     "scroll and copy",
     "paste",
     "copy last output",
+    "pick a command",
     "pick text on screen",
     "history",
     "jobs",
@@ -253,6 +255,7 @@ mod tests {
         assert_eq!(tools.last(), Some(&s(":", "command")));
         assert!(tools.contains(&s("y", "copy last output")));
         assert!(tools.contains(&s("e", "environment")));
+        assert!(tools.contains(&s("Y", "pick a command")));
         assert!(tools.iter().all(|(k, _)| k != "?"), "`?` is the footer's");
     }
 

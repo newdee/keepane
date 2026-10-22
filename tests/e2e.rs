@@ -10296,6 +10296,153 @@ async fn zsh_and_fish_panes_get_the_hook() {
     h.cli(&["kill-server"]).await;
 }
 
+/// What scrolled into the history log is found there: `find-text -H` names
+/// its day and line beside the screens' hits; in the history picker `/`
+/// looks through every day and Enter opens the viewer at the hit.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_history_log_is_searched_every_day() {
+    let h = Harness::start("hsearch").await;
+    let marker = format!("hsearch-marker-{}", std::process::id());
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "hsearch"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    // The marker, then enough lines to push it off the screen into the log.
+    h.cli(&["send-keys", "-t", "hsearch:0", &format!("echo {marker}"), "Enter"]).await;
+    h.cli(&["send-keys", "-t", "hsearch:0", &count_to(60, "filler-"), "Enter"]).await;
+    c.wait_for("filled", |s| s.contents().contains("filler-60")).await;
+    // The log's hit says its day and line (the writer is a thread of its own).
+    let in_log =
+        |out: &str| out.lines().any(|l| l.contains(&marker) && l.split_whitespace().nth(1).is_some_and(is_day_line));
+    h.wait_for_cli("the log's hit", &["find-text", "-H", "-t", "hsearch", &marker], |_, out| in_log(out)).await;
+    let (code, out, _) = h.cli(&["find-text", "-H", "-t", "hsearch", &marker]).await;
+    assert_eq!(code, 0);
+    assert!(out.lines().any(|l| l.starts_with("hsearch:0.0") && l.contains(" -")), "the screen's hit too: {out}");
+    let (code, _, err) = h.cli(&["find-text", "-H", "-t", "hsearch", "zzz-nowhere-at-all"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("nothing printed has"), "{err}");
+    // -t narrows the log as it narrows the screens: down to the pane; not
+    // another window, not another session.
+    let (code, out, _) = h.cli(&["find-text", "-H", "-t", "hsearch:0.0", &marker]).await;
+    assert!(code == 0 && out.lines().any(|l| l.split_whitespace().nth(1).is_some_and(is_day_line)), "{out}");
+    h.cli(&["new-window", "-d", "-t", "hsearch"]).await;
+    h.cli(&["new", "-d", "-s", "hsearch-other"]).await;
+    for elsewhere in ["hsearch:1", "hsearch:1.0", "hsearch-other"] {
+        let (code, out, _) = h.cli(&["find-text", "-H", "-t", elsewhere, &marker]).await;
+        assert_eq!(code, 1, "{elsewhere}: {out}");
+    }
+    // The picker: `/`, the text, Enter; the hits; Enter: the viewer there.
+    c.prefix('/').await;
+    c.wait_for("the history picker", |s| s.contents().contains("/ every day")).await;
+    c.type_str("/").await;
+    c.wait_for("the search prompt", |s| s.contents().contains("(look through every day)")).await;
+    c.type_str(&marker).await;
+    c.enter().await;
+    c.wait_for("the hits", |s| s.contents().contains("Enter open there") && s.contents().contains(&marker)).await;
+    c.enter().await;
+    c.wait_for("the viewer at the hit", |s| {
+        let t = s.contents();
+        t.contains(".log") && t.contains("q quit") && t.contains(&marker)
+    })
+    .await;
+    c.type_str("q").await;
+    c.wait_for("the viewer gone", |s| !s.contents().contains("q quit")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// `prefix Y` lists the commands the panes' shells ran, newest first, a
+/// failed one marked: `y` copies what one printed, `r` runs it again, `f`
+/// filters, Enter goes to it in copy mode.
+#[tokio::test(flavor = "multi_thread")]
+async fn prefix_y_picks_a_command_any_pane_ran() {
+    let h = Harness::start("marks").await;
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "cm", "-x", "120", "-y", "30"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    at_hooked_prompt(&h, "cm:0.0").await;
+    let (ok, fail) =
+        if cfg!(windows) { ("Write-Output picked-ok-one", "cmd /c exit 3") } else { ("echo picked-ok-one", "false") };
+    h.cli(&["send-keys", "-t", "cm:0.0", ok, "Enter"]).await;
+    h.wait_for_cli("the first marked", &["list-marks", "-J", "-t", "cm:0.0"], |_, out| has_command(out, ok)).await;
+    // Enough after it that its line is in the scrollback.
+    let after =
+        if cfg!(windows) { "1..40 | % { \"after-$_\" }" } else { "for i in $(seq 1 40); do echo after-$i; done" };
+    h.cli(&["send-keys", "-t", "cm:0.0", after, "Enter"]).await;
+    h.wait_capture("cm:0.0", "the lines after", |s| s.contains("after-40")).await;
+    h.cli(&["send-keys", "-t", "cm:0.0", fail, "Enter"]).await;
+    h.wait_for_cli("the second marked", &["list-marks", "-J", "-t", "cm:0.0"], |_, out| has_command(out, fail)).await;
+    // An empty Enter is no command: not listed.
+    h.cli(&["send-keys", "-t", "cm:0.0", "Enter"]).await;
+    at_hooked_prompt(&h, "cm:0.0").await;
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "cm"]).await;
+    c.prefix('Y').await;
+    c.wait_for("the picker", |s| s.contents().contains("y copy output")).await;
+    let text = c.text();
+    let rows: Vec<&str> = text.lines().filter(|l| l.contains('✓') || l.contains('✗') || l.contains('·')).collect();
+    assert!(rows.first().is_some_and(|l| l.contains(fail) && l.contains('✗')), "newest first, failed marked:\n{text}");
+    assert!(rows.get(1).is_some_and(|l| l.contains("after-")), "then the loop:\n{text}");
+    assert!(rows.get(2).is_some_and(|l| l.contains("picked-ok-one") && l.contains('✓')), "then the oldest:\n{text}");
+    assert_eq!(rows.len(), 3, "the empty Enter is no command: {rows:?}");
+    // Down to the oldest, `y`: what it printed.
+    c.type_str("j").await;
+    c.type_str("j").await;
+    c.type_str("y").await;
+    h.wait_buffer("its output", |b| b.trim() == "picked-ok-one").await;
+    // `f` keeps the lines that hold what is typed (the picker covers the pane).
+    c.prefix('Y').await;
+    c.wait_for("the picker again", |s| s.contents().contains("y copy output")).await;
+    c.type_str("f").await;
+    c.type_str("picked").await;
+    c.enter().await;
+    c.wait_for("filtered", |s| s.contents().contains("[filter: picked]") && !s.contents().contains(fail)).await;
+    c.key(VK_ESCAPE, '\x1b', 0).await;
+    c.wait_for("the picker gone", |s| !s.contents().contains("y copy output")).await;
+    // `r` on the older one runs it again; Enter goes to it in copy mode.
+    c.prefix('Y').await;
+    c.wait_for("the picker once more", |s| s.contents().contains("y copy output")).await;
+    c.type_str("j").await;
+    c.type_str("j").await;
+    c.type_str("r").await;
+    // Its first run is in the scrollback by now: on the screen, it ran again.
+    h.wait_joined("cm:0.0", "it ran again", |t| t.matches("picked-ok-one").count() >= 2).await;
+    // Enter on the older one: copy mode, scrolled back to its line.
+    h.wait_for_cli("at its prompt", &["display-message", "-p", "-t", "cm:0.0", "#{pane_state}"], |_, o| {
+        o.trim() == "idle"
+    })
+    .await;
+    c.prefix('Y').await;
+    c.wait_for("the picker last", |s| s.contents().contains("y copy output")).await;
+    // Its first run, older than the one just now and off the screen.
+    let older =
+        c.text().lines().collect::<Vec<_>>().iter().rposition(|l| l.contains("picked-ok-one") && l.contains('✓'));
+    let newest = c.text().lines().position(|l| l.contains('✓') || l.contains('✗'));
+    for _ in 0..older.zip(newest).map_or(1, |(o, n)| o - n) {
+        c.type_str("j").await;
+    }
+    c.enter().await;
+    let id = pane_id(&h, "cm:0.0").await;
+    wait_format(&h, id, "#{pane_in_mode}", "1").await;
+    c.wait_for("scrolled back", |s| {
+        let top = s.rows(0, COLS).next().unwrap_or_default();
+        top.contains('[') && !top.contains("[0/")
+    })
+    .await;
+    c.type_str("q").await;
+    // `r` while the shell is at something else: not run.
+    let sleep = if cfg!(windows) { "Start-Sleep 3" } else { "sleep 3" };
+    h.cli(&["send-keys", "-t", "cm:0.0", sleep, "Enter"]).await;
+    c.prefix('Y').await;
+    c.wait_for("the picker, busy", |s| s.contents().contains("y copy output")).await;
+    c.type_str("r").await;
+    c.wait_for("refused", |s| s.contents().contains("is not at its prompt")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// `2026-10-22:17`: a day of the log and a line of it.
+fn is_day_line(w: &str) -> bool {
+    let Some((day, line)) = w.rsplit_once(':') else { return false };
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok() && line.parse::<usize>().is_ok()
+}
+
 /// The table `set-environment` left is read back when the server starts,
 /// after its config, whose own value wins; and saved again, both in it.
 #[tokio::test(flavor = "multi_thread")]

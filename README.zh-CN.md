@@ -239,6 +239,7 @@ keepane kill-server
 | `C-t` | 在每条命令那一行的末尾显示开始时间、耗时和成败（`pane-timestamps`） |
 | `/` | 按 pane 和日期翻看输出过的历史（`choose-history`） |
 | `y` | 把上一条命令的输出（不含提示符和命令本身）复制到粘贴缓冲区和剪贴板（`copy-output`） |
+| `Y` | 从所有 pane 跑过的命令里挑一条（最新的在前）：跳过去、复制它的输出、再跑一次（`choose-marks`） |
 | `F` | 给屏幕上的路径、网址和 git hash 都标上字母；按字母复制，按大写字母打开（`hints`，见下文） |
 | `e` | 用彩色显示每个 pane 拿到的环境变量：`set-environment` 设的，和 keepane 自己设的（`show-environment`，见"环境变量"） |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
@@ -340,6 +341,8 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 
 既然知道每条命令从哪开始、到哪结束，`C-b y`（`copy-output`）就把上一条命令的输出（它和下一个提示符之间的行，最多 4 MB）复制到粘贴缓冲区和剪贴板：测试失败的输出，直接贴进 issue 或者发给 agent。`keepane copy-output -p -t %3` 改成打印出来，给脚本用。copy mode 里 `[` `]` 在命令之间跳。
 
+`C-b Y`（`choose-marks`）列出所有 pane 的 shell 跑过、屏幕上还在的命令，最新的在前：结果（✓、✗）、时间、耗时、在哪个 pane。Enter 跳到那条命令（进入 copy mode，停在它那一行）；`y` 复制它的输出，和 `C-b y` 对上一条命令做的一样；`r` 在原 pane 再跑一次（只在那个 shell 停在提示符时）；`f` 过滤列表（输入 `✗` 只看失败的）。
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-fix-light.gif">
@@ -360,7 +363,7 @@ PROMPT_COMMAND='printf "\e]133;D;%s\e\\\e]133;A\e\\" "$?"'
 ```
 pane 的输出也可保存到磁盘（`log-history`，默认开）：每个 pane 位置每天一个纯文本文件，放在 `%LOCALAPPDATA%\keepane\history\<session>\<窗口>.<pane>\2026-09-25.log`，留 30 天（`log-history-days`），每个文件每天最多 20 MB。一行字从 pane 顶上滚出去的时候才写，所以进度条、正在编辑的提示符只留下最后的样子；vim 这类全屏程序什么都不留；pane 关掉时屏幕上还剩的内容，那时一起写进去。报告过的命令前面有一行它的时间（`── 14:03:22 · 41s · ✓ ──`）。
 
-`prefix /`（`choose-history`）列出有历史的 pane 位置和它们的日期。在某一天上按 Enter，就在弹出框里用查看器打开。查看器从末尾开始看，用法和 `less` 一样：`j` `k`、`Space` `b`、`g` `G`，`/` `?` 搜索，`n` `N` 找下一个，`[` `]` 在命令之间跳，`q` 退出。`keepane view 文件` 用它打开任何文件。`set -g log-history off` 就不记了。
+`prefix /`（`choose-history`）列出有历史的 pane 位置和它们的日期。在某一天上按 Enter，就在弹出框里用查看器打开。查看器从末尾开始看，用法和 `less` 一样：`j` `k`、`Space` `b`、`g` `G`，`/` `?` 搜索，`n` `N` 找下一个，`[` `]` 在命令之间跳，`q` 退出。`keepane view 文件` 用它打开任何文件（`-n 行号` 从那一行开始，`-s 文字` 预设好搜索）。在这个列表里按 `/`，就一次搜遍所有 pane 的所有日期（最新的一天在前，最多 500 行）：列出含这段文字的行和它的日期、pane，Enter 在查看器里打开，停在那一行，搜索也设好了。脚本用 `keepane find-text -H 关键词`，和屏幕上的结果一起给出：`work:0.1  2026-10-21:1234  error: …`。`set -g log-history off` 就不记了。
 
 用 `kill-pane` 或 `kill-window` 关掉的 pane 或窗口（`prefix x`、`prefix &`）会保留 10 秒，里面的程序继续跑。这期间按 `prefix u`（`undo-kill`）就放回原处。过了 10 秒就和以前一样彻底没了。秒数用 `undo-kill-time` 改；设成 0 就立刻结束，关程序是为了释放端口或文件的时候就该这样。一个 session 的最后一个 pane 不保留，因为 session 会跟着它一起结束。
 
@@ -836,7 +839,7 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 - `choose-client`：列出连着的客户端，选一个踢下线。
 - `send-keys -X <copy 命令>`：用脚本开 copy mode 干活（`search-backward`、`begin-selection`、`copy-selection` ……名字和 tmux 一样）。
 - `capture-pane -p [-e] [-J] [-S -N]`：把 pane 的内容打出来，`-e` 连颜色一起，`-J` 把被折行的长行拼回一行，`-S -N` 带上 N 行回滚（`-S -` 全部）。
-- `find-text 关键词`：在所有 pane 打印过的内容里找，告诉你在哪个 pane、往回第几行：`ft:0.0  -8  REDIS-TIMEOUT-here`。`-C` 区分大小写，`-t` 限定 session 或窗口，`-n` 限制每个 pane 最多几条。keepane 的 `find-window` 只搜窗口名和标题。
+- `find-text 关键词`：在所有 pane 打印过的内容里找，告诉你在哪个 pane、往回第几行：`ft:0.0  -8  REDIS-TIMEOUT-here`。`-C` 区分大小写，`-t` 限定 session 或窗口，`-n` 限制每个 pane 最多几条，`-H` 连历史日志的每一天也一起搜（每条带上日期和行号）。keepane 的 `find-window` 只搜窗口名和标题。
 - `jobs`：任务板。整个 server 上每个 pane 一行：程序还在跑还是已经退出（退出码多少）、跑了多久、多久没有输出、pid、命令、目录。`-t session` 只看一个 session；`-F 格式` 自己定输出（`#{pane_start_time}`、`#{pane_activity}`、`#{pane_dead_time}` 是原始时间戳）。`prefix B`（`choose-jobs`）是同一张板的可操作版：`Enter` 跳到那个 pane，`x` 杀掉，`r` 重启，开着的时候行会原地刷新。
 
   ```

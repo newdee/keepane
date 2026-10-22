@@ -146,7 +146,7 @@ tmux's table, with what keepane does today.
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 keepane adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
-(save every session / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed), `F` (hints: pick a path, address or hash on screen) and `e` (show-environment: the environment every pane gets, in colour) on top of that table. Without the prefix, `F12` turns `passthrough` on and off (tmux binds nothing in its root table but the mouse).
+(save every session / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed), `F` (hints: pick a path, address or hash on screen), `e` (show-environment: the environment every pane gets, in colour) and `Y` (choose-marks: pick a command any pane ran) on top of that table. Without the prefix, `F12` turns `passthrough` on and off (tmux binds nothing in its root table but the mouse).
 
 ## Copy mode
 

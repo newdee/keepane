@@ -31,7 +31,7 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
   show-environment   (prefix e: in colour, with what keepane sets)   refresh-client   select-layout [-n|-p|-E]
   choose-client (prefix D)   display-menu [-T title] name key command ...   (prefix > / <)
   display-popup [-E] [-C] [-w W] [-h H] [-d dir] [command...]   wait-for [-L|-U|-S] channel
-  find-text [-C] [-n hits] [-t target] pattern   (search what every pane printed)
+  find-text [-C] [-H] [-n hits] [-t target] pattern   (search what every pane printed; -H every day of the log too)
   wait-output [-t pane] [-a] [-i] [-w time] text...   (block until the pane prints a line holding a text; print it)
   jobs [-t session] [-F format]   (every pane: running or exited, up for how long, idle since when)
   choose-jobs   (prefix B: the same board as a picker; Enter goes there, x kills, r restarts)
@@ -49,8 +49,10 @@ Upgrading:  version (this keepane and the server's)   update [--check]   restart
 On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network;
   served again when the sessions are restored, until `web stop`)
   share PATH [--for 2h] [--once]   (a file or a folder by a link and a QR code; 24h unless --for)   share [-l]   share stop ID|--all
-History (what panes printed, a file a day, 30 days):  choose-history (prefix /)   view FILE
+History (what panes printed, a file a day, 30 days):  choose-history [-s text] (prefix /; -s or / there: every day's lines that hold it)
+  view [-n LINE] [-s TEXT] FILE   (the log's pager: at a line, a search set)
   list-marks [-J] [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines; -J as JSON, with each one's lines)
+  choose-marks   (prefix Y: every pane's commands, newest first; Enter goes there, y copies the output, r runs it again)
   copy-output [-p] [-t pane]   (what the last command printed, to a buffer and the clipboard; -p prints it; prefix y)
   hints   (prefix F: label paths, addresses and hashes on screen; a label copies, in capitals opens; hint-open)
   shell-history [-t pane] [-c | -m] [-n count]   (a pane's own shell history, messages marked; -c commands only, -m every message sent to it)
@@ -237,10 +239,27 @@ fn main() {
             Some(Err(anyhow::anyhow!("{}: takes no arguments", args[0])))
         }
         "show-keys" => Some(keepane::console::show_keys()),
-        "view" => match args.get(1..) {
-            Some([file]) => Some(keepane::pager::run(file)),
-            _ => Some(Err(anyhow::anyhow!("usage: keepane view FILE"))),
-        },
+        "view" => {
+            let usage = || anyhow::anyhow!("usage: keepane view [-n LINE] [-s TEXT] FILE");
+            let (mut line, mut search, mut file) = (None, None, None);
+            let mut it = args[1..].iter();
+            let parsed = loop {
+                match it.next().map(String::as_str) {
+                    None => break file.ok_or_else(usage),
+                    Some("-n") => match it.next().and_then(|n| n.parse::<usize>().ok()) {
+                        Some(n) => line = Some(n),
+                        None => break Err(usage()),
+                    },
+                    Some("-s") => match it.next() {
+                        Some(s) => search = Some(s.clone()),
+                        None => break Err(usage()),
+                    },
+                    Some(f) if file.is_none() => file = Some(f.to_string()),
+                    Some(_) => break Err(usage()),
+                }
+            };
+            Some(parsed.and_then(|f| keepane::pager::run(&f, line, search.as_deref())))
+        }
         // These talk to the server, but as a client of their own: the
         // version of this program next to the server's, and moving the
         // sessions to a server of this version.

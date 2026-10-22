@@ -90,8 +90,13 @@ in capitals, open one; `hint-open`).
 ### Seeing what happened
 
 `jobs` and `choose-jobs` (every pane: running or exited, for how long),
-`find-text` (search what every pane printed), `choose-history` and `view`
-(what panes printed, a file a day), `list-marks` (the commands a pane ran; `-J` as JSON, with the lines each takes),
+`find-text` (search what every pane printed; `-H` every day of the history
+log too, each hit with its day and line), `choose-history` and `view`
+(what panes printed, a file a day; `choose-history -s text`, `/` in it,
+the lines of every day that hold it, each opened at its line, which `view -n
+LINE -s TEXT` does), `list-marks` (the commands a pane ran; `-J` as JSON, with the lines each takes),
+`choose-marks` (the commands every pane's shell ran, newest first: Enter
+goes to one in copy mode, `y` copies what it printed, `r` runs it again),
 `shell-history` (a pane's own shell history, the messages delivered to it
 marked; `-c` the commands only, `-m` every message sent to it),
 `list-done` (when panes were done: `done-events`, told to the phone, `notify`,
@@ -342,6 +347,7 @@ text prompt stays as typed. The defaults:
 | `S` | send what is typed to every pane of the window |
 | `C-t` | each command's time at the end of its line |
 | `e` | the environment every pane gets, in colour |
+| `Y` | pick a command any pane ran: go there, copy its output, run it again |
 | `,` / `$` | rename the window / the session |
 | `:` | the command prompt (Up / Down, `C-p` / `C-n`: the last 100 lines run there; `show-prompt-history` lists them, `clear-prompt-history` forgets them) |
 | `~` | recent messages |
