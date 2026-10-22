@@ -2315,6 +2315,8 @@ async fn under_the_clock_something_moves_with_the_machine() {
         ("bonsai", &["[", "_"]),
         ("orbits", &["."]),
         ("radar", &["."]),
+        ("sea", &["~", "-", "^"]),
+        ("cat", &["(\")"]),
     ] {
         h.cli(&["set", "-g", "clock-mode-animation", kind]).await;
         c.prefix('t').await;
@@ -2333,7 +2335,23 @@ async fn under_the_clock_something_moves_with_the_machine() {
         c.type_str("q").await;
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     }
-    // At random: something moves each time (which kind: the server's unit
+    // A look, set while the clock is up: the bars (memory's at least has
+    // some height) drawn in 0s and 1s from the next frame, their figures
+    // as they were; their own characters again after.
+    h.cli(&["set", "-g", "clock-mode-animation", "bars"]).await;
+    c.prefix('t').await;
+    let eighths = |s: &str| s.chars().any(|ch| ('\u{2581}'..='\u{2588}').contains(&ch));
+    c.wait_for("bars in blocks", |s| s.contents().contains("███") && eighths(&last_rows(s))).await;
+    h.cli(&["set", "-g", "clock-mode-look", "binary"]).await;
+    c.wait_for("bars in binary", |s| {
+        let low = last_rows(s);
+        low.contains("MEM ") && low.contains("OUT ") && !eighths(&low)
+    })
+    .await;
+    h.cli(&["set", "-g", "clock-mode-look", "plain"]).await;
+    c.wait_for("bars in blocks again", |s| eighths(&last_rows(s))).await;
+    c.type_str("q").await;
+    c.wait_for("clock gone", |s| !s.contents().contains("███")).await; // At random: something moves each time (which kind: the server's unit
     // test `each_clock_takes_its_kind`).
     h.cli(&["set", "-g", "clock-mode-animation", "random"]).await;
     for turn in 0..3 {
@@ -2383,7 +2401,7 @@ async fn under_the_clock_something_moves_with_the_machine() {
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     }
     let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "fireworks"]).await;
-    assert!(code != 0 && err.contains("one of aquarium, bars, bonsai, cycle, donut, fire, hourglass, life, matrix, off, orbits, pulse, radar, random, sharks"), "{err}");
+    assert!(code != 0 && err.contains("one of aquarium, bars, bonsai, cat, cycle, donut, fire, hourglass, life, matrix, off, orbits, pulse, radar, random, sea, sharks"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

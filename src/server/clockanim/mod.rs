@@ -4,10 +4,14 @@
 //! Conway's game of life (`life`), a spinning torus (`donut`), rain and
 //! lightning (`weather`), a shark hunting fish (`sharks`), sand running
 //! down (`hourglass`), a tree growing (`bonsai`), planets round a sun
-//! (`orbits`) or a radar's sweep (`radar`), each moved by what the machine
-//! is doing (its cores, memory, disks, network, the CPU's temperature and
-//! power, context switches, interrupts, swap, processes) and by what
-//! keepane does (what the window's panes print, the messages it delivers).
+//! (`orbits`), a radar's sweep (`radar`), a moonlit sea (`sea`) or a cat
+//! asleep (`cat`), each moved by what the machine is doing (its cores,
+//! memory, disks, network, the CPU's temperature and power, context
+//! switches, interrupts, swap, processes) and by what keepane does (what
+//! the window's panes print, the messages it delivers).
+//!
+//! `clock-mode-look` draws any of them in a set of characters instead of
+//! its own (`look`): each cell the one with as much ink as it had.
 //!
 //! It is drawn in the 16 colours only, so a theme's `pane-colours` colour
 //! it (the terminal's own when the theme sets none); a tail fades into the
@@ -15,19 +19,22 @@
 //!
 //! An `Anim` moves only by `step`, by the time and the input it is given:
 //! the same steps give the same frames. The time of day comes in the input
-//! (`hourglass` and `bonsai` go by it); nothing reads the clock.
+//! (`hourglass`, `bonsai` and `sea` go by it); nothing reads the clock.
 
 mod aquarium;
 mod bars;
 mod bonsai;
+mod cat;
 mod donut;
 mod fire;
 mod hourglass;
 mod life;
+mod look;
 mod matrix;
 mod orbits;
 mod pulse;
 mod radar;
+mod sea;
 mod sharks;
 mod starfield;
 mod weather;
@@ -37,6 +44,8 @@ use super::render::{Cell, Grid, Style};
 use crate::format::human_count;
 use crate::sysinfo::Load;
 use bars::Bar;
+pub use look::Look;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
@@ -59,10 +68,12 @@ pub enum Kind {
     Bonsai,
     Orbits,
     Radar,
+    Sea,
+    Cat,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 14] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Pulse,
         Kind::Matrix,
         Kind::Bars,
@@ -77,6 +88,8 @@ impl Kind {
         Kind::Bonsai,
         Kind::Orbits,
         Kind::Radar,
+        Kind::Sea,
+        Kind::Cat,
     ];
 
     /// Its name, as `clock-mode-animation` takes it.
@@ -96,6 +109,8 @@ impl Kind {
             Kind::Bonsai => "bonsai",
             Kind::Orbits => "orbits",
             Kind::Radar => "radar",
+            Kind::Sea => "sea",
+            Kind::Cat => "cat",
         }
     }
 
@@ -132,9 +147,9 @@ impl Kind {
     pub fn frame(self) -> Duration {
         Duration::from_millis(match self {
             Kind::Pulse | Kind::Donut | Kind::Radar => 50,
-            Kind::Matrix | Kind::Weather => 80,
+            Kind::Matrix | Kind::Weather | Kind::Sea => 80,
             Kind::Bars | Kind::Fire | Kind::Starfield | Kind::Life | Kind::Sharks | Kind::Orbits => 66,
-            Kind::Aquarium | Kind::Hourglass | Kind::Bonsai => 100,
+            Kind::Aquarium | Kind::Hourglass | Kind::Bonsai | Kind::Cat => 100,
         })
     }
 }
@@ -161,11 +176,12 @@ pub fn day_seconds(t: &impl chrono::Timelike) -> f64 {
 }
 
 /// The theme's colours: its 16 (none: the terminal's own) and the panes'
-/// background.
+/// background; and the characters to draw in (`clock-mode-look`).
 #[derive(Clone, Debug, Default)]
 pub struct Palette {
     pub colours: Vec<Color>,
     pub bg: Color,
+    pub look: Look,
 }
 
 impl Palette {
@@ -352,6 +368,10 @@ pub struct Anim {
     tree: bonsai::Tree,
     sky: orbits::Sky,
     scope: radar::Scope,
+    night: sea::Night,
+    nap: cat::Nap,
+    /// Where the last frame drew text a look leaves as it is.
+    kept: RefCell<Vec<(u16, u16, u16)>>,
 }
 
 /// How fast a message's drop falls, rows a second, and how many are kept.
@@ -393,6 +413,9 @@ impl Anim {
             tree: Default::default(),
             sky: Default::default(),
             scope: Default::default(),
+            night: Default::default(),
+            nap: Default::default(),
+            kept: RefCell::default(),
         }
     }
 
@@ -450,15 +473,18 @@ impl Anim {
             Kind::Bonsai => self.step_bonsai(dt),
             Kind::Orbits => self.step_orbits(dt),
             Kind::Radar => self.step_radar(dt),
+            Kind::Sea => self.step_sea(dt),
+            Kind::Cat => self.step_cat(dt),
         }
     }
 
-    /// Draw it in `band`, when the band is big enough; nothing outside it
-    /// is touched.
+    /// Draw it in `band`, when the band is big enough, in the palette's
+    /// look; nothing outside it is touched.
     pub fn draw(&self, g: &mut Grid, band: Rect, pal: &Palette) {
         if band.w < MIN_W || band.h < MIN_H {
             return;
         }
+        self.kept.borrow_mut().clear();
         match self.kind {
             Kind::Pulse => self.draw_pulse(g, band, pal),
             Kind::Matrix => self.draw_matrix(g, band, pal),
@@ -474,7 +500,10 @@ impl Anim {
             Kind::Bonsai => self.draw_bonsai(g, band, pal),
             Kind::Orbits => self.draw_orbits(g, band, pal),
             Kind::Radar => self.draw_radar(g, band, pal),
+            Kind::Sea => self.draw_sea(g, band, pal),
+            Kind::Cat => self.draw_cat(g, band, pal),
         }
+        self.dress(g, band, pal);
     }
 }
 

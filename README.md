@@ -345,7 +345,7 @@ pwsh -File installer/build-msi.ps1        # target\keepane-<version>-windows-x86
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-demo-light.gif">
     <img src="docs/img/keepane-demo.gif" width="880"
-         alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, the window picker, detaching and attaching again">
+         alt="Splitting a shell into panes, typing one line into all of them with set sync, moving with h/j/k/l, zooming, the pane menu, a variable for every pane shown with C-b e, the window picker, detaching and attaching again">
   </picture>
 </p>
 
@@ -527,6 +527,17 @@ moves with the machine and with keepane (`clock-mode-animation`):
   pane, lit as the sweep passes, bigger the more the pane prints; contacts
   with the network, clutter by the middle with the interrupts; each message
   an `✉` coming in from the rim.
+- `sea`: a moonlit sea. The moon crosses the sky with the hours (rising on
+  the left at 18:00, highest at midnight, setting at 06:00; pale by day);
+  stars by night, more with memory, twinkling with the context switches;
+  waves choppier and quicker the busier the cores; the moon's path on them
+  glittering with the network; a boat for each pane, faster the more it
+  prints; each message an `✉` drifting ashore.
+- `cat`: a cat asleep, breathing quicker the busier the cores, a `z`
+  rising with each breath; its tail swinging with the network, an ear
+  flicking with the disks; a ball of yarn rolling past, faster the more the
+  window's panes print; each message an `✉` falling beside it, which wakes
+  it for three seconds.
 
 The lines over it end with keepane's own: its sessions and panes, and the
 messages it has delivered since it started.
@@ -535,7 +546,7 @@ In `pulse`, `matrix`, `starfield`, `life` and `donut`, and in the shark's
 eyes, the hourglass's glass and the bonsai's leaves, the colour goes from
 green through yellow to red with the CPU's temperature, or with the cores'
 load when there is no temperature; the bars are green at the bottom, yellow
-higher up and red at the top. `random` (the default) picks one of the 14
+higher up and red at the top. `random` (the default) picks one of the 16
 each time the clock is put on a pane, never the one it had before; `cycle`
 takes them in turn; a name sets that one; `off`, or `animation off`, leaves
 the clock still. Under a clock, `/` turns to the next kind and `?` to the
@@ -555,11 +566,18 @@ machines; macOS: none). The CPU's power is its own meter (RAPL): Windows reads
 it for anyone, where the CPU has one; Linux lets only root read it on most
 systems (`/sys/class/powercap`), so there it shows only when readable.
 
+`clock-mode-look` draws any of them in a set of characters instead of its
+own: `dots` (`·` `•` `●`), `blocks` (`░` `▒` `▓` `█`) or `binary` (`1`
+`0`). Each cell takes the character with as much ink as it had: how much
+of the cell its own character covered, and how bright it was. The colours
+stay, and so do the figures, the names and each message's `✉`. `plain`,
+the default, keeps its own characters.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-clock-light.gif">
     <img src="docs/img/keepane-clock.gif" width="880"
-         alt="The clock over a pane running a build, three times: a monitor whose heartbeat speeds up and slows down with the CPU, falling characters, and bars for each core, memory, the disks, the network and the pane's output">
+         alt="The clock over a pane running a build, five times: a monitor whose heartbeat speeds up and slows down with the CPU, falling characters, bars for each core, memory, the disks, the network and the pane's output, a moonlit sea drawn then in dots, and a cat asleep that a message wakes">
   </picture>
 </p>
 
@@ -622,7 +640,7 @@ set -g hint-open "run-shell 'idea --line {line} {file}'"
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-history-light.gif">
     <img src="docs/img/keepane-history.gif" width="880"
-         alt="Command times at the end of each command's line, one failing; the history picker listing pane positions and days; a day opened in the pager; a pane closed by mistake coming back with C-b u">
+         alt="Command times at the end of each command's line, one failing; C-b Y listing the commands the panes ran; the history picker listing pane positions and days; a day opened in the pager; / searching every day; a pane closed by mistake coming back with C-b u">
   </picture>
 </p>
 
@@ -1448,7 +1466,8 @@ set -g log-history-days 30        # for how long; 0 keeps everything (log-histor
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
 set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
-set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, sharks, hourglass, bonsai, orbits, radar, random (the default), cycle or off
+set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, aquarium, starfield, life, donut, weather, sharks, hourglass, bonsai, orbits, radar, sea, cat, random (the default), cycle or off
+set -g clock-mode-look dots       # drawn in dots, blocks or binary; plain (the default) is its own characters
 set -g clock-mode-zones "Asia/Shanghai,America/Los_Angeles"  # other places' time under the clock's date (IANA names, or a city alone: tokyo)
 set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
 set -g git-command C:\Tools\git\cmd\git.exe  # the git to run for the panes' repositories (default: the one found)

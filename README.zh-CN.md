@@ -184,7 +184,7 @@ pwsh -File installer/build-msi.ps1        # 产物在 target\keepane-<版本>-wi
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-demo-light.gif">
     <img src="docs/img/keepane-demo.gif" width="880"
-         alt="把一个 shell 切成几块、用 set sync 一次输入到所有 pane、用 h/j/k/l 移动、全屏、pane 菜单、窗口选择器、脱离后再接回来">
+         alt="把一个 shell 切成几块、用 set sync 一次输入到所有 pane、用 h/j/k/l 移动、全屏、pane 菜单、给所有 pane 设变量并用 C-b e 查看、窗口选择器、脱离后再接回来">
   </picture>
 </p>
 
@@ -287,16 +287,20 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 - `bonsai`：盆景。树在一天里长大（午夜后是小树苗，早上长出大半，晚上长全）；窗口里每个 pane 一根主枝（最多 6 根），叶子一直轻轻晃动（上下文切换越多晃得越快），pane 输出越多那根枝的叶子抖得越厉害；内存占用越高叶子越多，网络流量越大叶子被风吹得越斜；不时有叶子飘落，磁盘越忙落叶越多；每送达 1 条消息，有 1 个 `✉` 从叶子上飘落。
 - `orbits`：行星。每个 CPU 核心一颗行星（超过 8 个核心时分组合并），核心越忙转得越快；内存占用越高太阳越大，CPU 很热时太阳变红，中断越多太阳耀斑越多；网络流量越大小行星带越密；每送达 1 条消息，飞过 1 颗以 `✉` 为头的彗星，绕过太阳。
 - `radar`：雷达。CPU 越忙扫描线转得越快；窗口里每个 pane 一个光点，扫描线扫过时亮起，pane 输出越多光点越大；网络流量越大目标越多，中断越多中心的杂波越多；每送达 1 条消息，有 1 个 `✉` 从边缘向中心飞来。
+- `sea`：月光下的海。月亮随时间划过天空（18:00 从左边升起，午夜最高，06:00 在右边落下；白天颜色变淡）；夜里有星星，内存占用越高星星越多，上下文切换越多闪得越快；CPU 越忙浪越大、越快；网络流量越大，水面上的月光越闪；窗口里每个 pane 一条船，pane 输出越多船开得越快；每送达 1 条消息，有 1 个 `✉` 漂向岸边。
+- `cat`：睡着的猫。CPU 越忙呼吸越快，每呼吸一次飘起 1 个 `z`；网络流量越大尾巴摆得越多，磁盘越忙耳朵抖得越多；一个毛线球滚过，窗口里的 pane 输出越多滚得越快；每送达 1 条消息，有 1 个 `✉` 落在猫旁边，猫醒来 3 秒。
 
 时钟下方信息行的最后一行是 keepane 自己的情况：会话数、pane 数，以及启动以来送达的消息数。
 
-`pulse`、`matrix`、`starfield`、`life`、`donut` 的颜色，以及鲨鱼的眼睛、沙漏的玻璃和盆景的叶子，随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 14 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有中断和功耗数字，上下文切换和线程数只算你能查看的进程，不是整个系统的；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
+`pulse`、`matrix`、`starfield`、`life`、`donut` 的颜色，以及鲨鱼的眼睛、沙漏的玻璃和盆景的叶子，随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 16 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有中断和功耗数字，上下文切换和线程数只算你能查看的进程，不是整个系统的；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
+
+`clock-mode-look` 让任何一种动画改用一套字符来画：`dots`（`·` `•` `●`）、`blocks`（`░` `▒` `▓` `█`）或 `binary`（`1` `0`）。每个格子换成墨量最接近的字符；墨量看原来的字符占了格子多少、颜色有多亮。颜色不变，数字、名字和消息的 `✉` 也不变。`plain`（默认）用动画自己的字符。
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-clock-light.gif">
     <img src="docs/img/keepane-clock.gif" width="880"
-         alt="一个正在编译的 pane 上打开三次时钟：心跳随 CPU 加快、放慢的监护仪，字符雨，以及每个核心、内存、磁盘、网络和 pane 输出的柱状图">
+         alt="一个正在编译的 pane 上打开五次时钟：心跳随 CPU 加快、放慢的监护仪，字符雨，每个核心、内存、磁盘、网络和 pane 输出的柱状图，月光下的海（随后改用 dots 字符），以及被消息叫醒的睡猫">
   </picture>
 </p>
 
@@ -326,7 +330,7 @@ set -g hint-open "run-shell 'idea --line {line} {file}'"
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-history-light.gif">
     <img src="docs/img/keepane-history.gif" width="880"
-         alt="每条命令行尾显示时间，其中一条失败；历史面板按 pane 位置和日期列出；在查看器里打开某一天；手滑关掉的 pane 按 C-b u 找回">
+         alt="每条命令行尾显示时间，其中一条失败；C-b Y 列出各 pane 跑过的命令；历史面板按 pane 位置和日期列出；在查看器里打开某一天；按 / 搜索所有天；手滑关掉的 pane 按 C-b u 找回">
   </picture>
 </p>
 
@@ -711,7 +715,8 @@ set -g log-history-days 30        # 留几天；0 永久保留（log-history-dir
 set -g undo-kill-time 10          # 关掉的 pane / 窗口保留几秒可以找回（prefix u）；0 不保留
 set -g keep-zoom off              # 切到别的 pane 就取消最大化，和 tmux 一样（on：最大化跟着走）
 set -g animation off              # 不要焦点框飞过去的动画（animation-time 160：毫秒数，0 到 10000）
-set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、fire、aquarium、starfield、life、donut、weather、sharks、hourglass、bonsai、orbits、radar、random（默认）、cycle 或 off
+set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、fire、aquarium、starfield、life、donut、weather、sharks、hourglass、bonsai、orbits、radar、sea、cat、random（默认）、cycle 或 off
+set -g clock-mode-look dots       # 用 dots、blocks 或 binary 字符画；plain（默认）用动画自己的字符
 set -g clock-mode-zones "Asia/Shanghai,America/Los_Angeles"  # 时钟日期下方显示其他地方的时间（IANA 名称，也可以只写城市：tokyo）
 
 bind | split-window -h

@@ -9436,7 +9436,11 @@ impl Server {
             let w = &self.sessions[spos].windows[self.sessions[spos].cur];
             let colour = self.opts.clock_mode_colour.unwrap_or(self.opts.pane_border_active_fg);
             let ink = clock_ink(&self.opts);
-            let palette = clockanim::Palette { colours: self.opts.pane_colours.clone(), bg: self.opts.window_bg };
+            let palette = clockanim::Palette {
+                colours: self.opts.pane_colours.clone(),
+                bg: self.opts.window_bg,
+                look: clockanim::Look::named(&self.opts.clock_mode_look),
+            };
             for (id, rect) in w.rects.iter().filter(|(id, _)| w.pane(*id).is_some_and(|p| p.clock)) {
                 let Some(p) = w.pane(*id) else { continue };
                 // As worked out before the frame (`clock_step`), unless the
@@ -10723,14 +10727,14 @@ mod tests {
         assert_eq!(opts.clock_mode_animation, "random");
         let all = clockanim::Kind::ALL;
         let (mut last, mut seen) = (None, std::collections::HashSet::new());
-        for turn in 1..=60u32 {
+        for turn in 1..=200u32 {
             clock_on(&mut p, 0x5eed);
             assert_eq!(p.clock_turns, turn);
             let k = clock_kind(&opts, &p).expect("random draws one");
             assert_ne!(Some(k), last, "turn {turn}: the same kind again");
             (last, _) = (Some(k), seen.insert(k));
         }
-        assert_eq!(seen.len(), all.len(), "every kind in 60 turns: {seen:?}");
+        assert_eq!(seen.len(), all.len(), "every kind in 200 turns: {seen:?}");
         // Another seed (another start of the server): another order, for the
         // same pane from the same start.
         let fresh = || Pane::spawn(3, &argv, None, 40, 6, 100, &[], std::sync::mpsc::channel().0).unwrap();
@@ -10766,11 +10770,12 @@ mod tests {
     fn a_key_turns_the_clocks_kind() {
         use clockanim::Kind;
         assert_eq!(Kind::turned(Some(Kind::Pulse), true), Kind::Matrix);
-        assert_eq!(Kind::turned(Some(Kind::Pulse), false), Kind::Radar);
+        assert_eq!(Kind::turned(Some(Kind::Pulse), false), Kind::Cat);
         assert_eq!(Kind::turned(Some(Kind::Weather), true), Kind::Sharks);
-        assert_eq!(Kind::turned(Some(Kind::Radar), true), Kind::Pulse);
+        assert_eq!(Kind::turned(Some(Kind::Radar), true), Kind::Sea);
+        assert_eq!(Kind::turned(Some(Kind::Cat), true), Kind::Pulse);
         assert_eq!(Kind::turned(None, true), Kind::Pulse);
-        assert_eq!(Kind::turned(None, false), Kind::Radar);
+        assert_eq!(Kind::turned(None, false), Kind::Cat);
         for k in Kind::ALL {
             assert_eq!(Kind::turned(Some(Kind::turned(Some(k), true)), false), k);
         }

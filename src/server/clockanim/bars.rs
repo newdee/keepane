@@ -200,6 +200,7 @@ impl Anim {
             }
             let lx = x + (w - label.width() as u16) / 2;
             g.put_str(lx, band.y + rows, label, Style::default(), w);
+            self.keep(lx, band.y + rows, label.width());
             x += w + 2;
         }
     }

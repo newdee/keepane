@@ -108,6 +108,7 @@ impl Anim {
             for (i, c) in bearing.chars().enumerate() {
                 put(g, band, i as i64, 0, c.encode_utf8(&mut [0; 4]), pal.shade(GREEN, 0.3));
             }
+            self.keep(band.x, band.y, bearing.chars().count());
         }
     }
 }

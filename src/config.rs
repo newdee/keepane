@@ -72,11 +72,16 @@ pub struct Options {
     pub clock_mode_zones: Vec<chrono_tz::Tz>,
     /// What moves under the clock (`clock-mode-animation`): `pulse`,
     /// `matrix`, `bars`, `fire`, `aquarium`, `starfield`, `life`, `donut`,
-    /// `weather`, `sharks`, `hourglass`, `bonsai`, `orbits`, `radar`;
+    /// `weather`, `sharks`, `hourglass`, `bonsai`, `orbits`, `radar`, `sea`,
+    /// `cat`;
     /// `random` (the default: one of them at random each time a
     /// clock is put on a pane, never the one before), `cycle` (the next of
     /// them each time) or `off`; `animation off` stops it too.
     pub clock_mode_animation: String,
+    /// `clock-mode-look`: the characters it is drawn in: `plain` (its
+    /// own, the default), `dots`, `blocks` or `binary` (each cell the one
+    /// of the set with as much ink as the cell had).
+    pub clock_mode_look: String,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
     pub status_left: String,
@@ -205,6 +210,7 @@ pub const CLOCK_ANIMATIONS: &[&str] = &[
     "aquarium",
     "bars",
     "bonsai",
+    "cat",
     "cycle",
     "donut",
     "fire",
@@ -216,10 +222,14 @@ pub const CLOCK_ANIMATIONS: &[&str] = &[
     "pulse",
     "radar",
     "random",
+    "sea",
     "sharks",
     "starfield",
     "weather",
 ];
+
+/// What `clock-mode-look` can be.
+pub const CLOCK_LOOKS: &[&str] = &["binary", "blocks", "dots", "plain"];
 
 /// What a pane can be done with (`done-events`).
 pub const DONE_EVENTS: &[&str] = &["command", "agent", "task", "exit"];
@@ -400,6 +410,7 @@ pub const SHOWABLE: &[&str] = &[
     "clock-mode-info",
     "clock-mode-zones",
     "clock-mode-animation",
+    "clock-mode-look",
     "base-index",
     "remain-on-exit",
     "save-history",
@@ -501,6 +512,7 @@ impl Default for Options {
             clock_mode_info: true,
             clock_mode_zones: Vec::new(),
             clock_mode_animation: "random".into(),
+            clock_mode_look: "plain".into(),
             pane_border_fg: Color::Rgb(0x66, 0x66, 0x64),
             // The session name on a cinnabar block, the one block on the bar;
             // after it, while `passthrough` gives the pane every key, a word
@@ -667,6 +679,7 @@ pub const KNOWN: &[&str] = &[
     "clock-mode-animation",
     "clock-mode-colour",
     "clock-mode-info",
+    "clock-mode-look",
     "clock-mode-style",
     "clock-mode-zones",
     "default-command",
@@ -855,6 +868,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "choose-tree-style" => &["chart", "list", "tree"],
         "clock-mode-style" => &["12", "24"],
         "clock-mode-animation" => CLOCK_ANIMATIONS,
+        "clock-mode-look" => CLOCK_LOOKS,
         "done-events" => &["all", "none", "command agent"],
         _ => &[],
     }
@@ -951,6 +965,7 @@ impl Options {
             "clock-mode-info" => self.clock_mode_info = parse_bool(value)?,
             "clock-mode-zones" => self.clock_mode_zones = parse_zones(value)?,
             "clock-mode-animation" => self.clock_mode_animation = one_of(name, value, CLOCK_ANIMATIONS)?,
+            "clock-mode-look" => self.clock_mode_look = one_of(name, value, CLOCK_LOOKS)?,
             "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
                 if let (Some(c), _) = parse_style(value)? {
@@ -1256,6 +1271,7 @@ impl Options {
             "clock-mode-info" => onoff(self.clock_mode_info),
             "clock-mode-zones" => self.clock_mode_zones.iter().map(|z| z.name()).collect::<Vec<_>>().join(","),
             "clock-mode-animation" => self.clock_mode_animation.clone(),
+            "clock-mode-look" => self.clock_mode_look.clone(),
             "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
         })
@@ -1578,10 +1594,26 @@ mod tests {
         }
         assert_eq!(CLOCK_ANIMATIONS.len(), kinds.len() + 3);
         let e = o.set("clock-mode-animation", "fireworks").unwrap_err();
-        assert!(e.contains("one of aquarium, bars, bonsai, cycle, donut, fire, hourglass, life, matrix, off"), "{e}");
+        assert!(
+            e.contains("one of aquarium, bars, bonsai, cat, cycle, donut, fire, hourglass, life, matrix, off"),
+            "{e}"
+        );
         assert_eq!(o.clock_mode_animation, "random", "a refused value leaves the old one");
         assert_eq!(option_values("clock-mode-animation"), CLOCK_ANIMATIONS);
         assert_eq!(resolve_name("clock-mode-a").as_deref(), Ok("clock-mode-animation"));
+        // The characters it is drawn in: its own by default, or a set.
+        assert_eq!(o.get("clock-mode-look").as_deref(), Some("plain"));
+        for look in crate::server::clockanim::Look::ALL.map(|l| l.name()) {
+            assert!(CLOCK_LOOKS.contains(&look), "{look}");
+            o.set("clock-mode-look", look).unwrap();
+            assert_eq!(o.get("clock-mode-look").as_deref(), Some(look));
+        }
+        assert_eq!(CLOCK_LOOKS.len(), crate::server::clockanim::Look::ALL.len());
+        o.set("clock-mode-look", "dots").unwrap();
+        let e = o.set("clock-mode-look", "neon").unwrap_err();
+        assert!(e.contains("one of binary, blocks, dots, plain"), "{e}");
+        assert_eq!(o.clock_mode_look, "dots", "a refused value leaves the old one");
+        assert_eq!(resolve_name("clock-mode-l").as_deref(), Ok("clock-mode-look"));
     }
 
     #[test]

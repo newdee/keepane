@@ -460,15 +460,21 @@ falling now and then, more with the disks. `orbits` is a planet for each
 core, faster the busier it is, round a sun bigger with memory, red when hot,
 flaring with the interrupts, an asteroid belt with the network. `radar` is a
 sweep faster with the cores, a blip for each pane bigger the more it prints,
-contacts with the network, clutter with the interrupts. In each of these 11
-a message delivered shows as an `✉` (rising, a comet, on a glider, in the
-torus's hole, falling, in a ripple the shark races to, through the glass's
-neck, from a leaf, a comet round the sun, in from the radar's rim). In
+contacts with the network, clutter with the interrupts. `sea` is a moonlit
+sea: the moon crossing the sky with the hours, stars by night with memory,
+waves with the cores, the moon's path glittering with the network, a boat
+for each pane faster the more it prints. `cat` is a cat asleep, breathing
+with the cores, a `z` with each breath, its tail with the network, an ear
+with the disks, a ball of yarn rolling faster the more the panes print. In
+each of these 13 a message delivered shows as an `✉` (rising, a comet, on
+a glider, in the torus's hole, falling, in a ripple the shark races to,
+through the glass's neck, from a leaf, a comet round the sun, in from the
+radar's rim, drifting ashore, falling beside the cat, which wakes). In
 `pulse`, `matrix`, `starfield`, `life` and `donut`, and in the shark's eyes,
 the hourglass's glass and the bonsai's leaves, the colour goes from green
 through yellow to red with the CPU's temperature, or with the cores' load
 when there is no temperature; the bars are green at the bottom, yellow
-higher up and red at the top. `random` (the default) picks one of the 14
+higher up and red at the top. `random` (the default) picks one of the 16
 each time the clock is put on a pane, never
 the one it had before; `cycle` takes them in turn; a name sets that one;
 `off`, or `animation off`, leaves the clock still. Under a clock, `/` turns
@@ -476,6 +482,12 @@ to the next kind and `?` to the one before, its name shown for a second;
 that holds until the clock goes, the option is not changed (`/` starts one
 under `clock-mode-animation off`, none under `animation off`). The clock
 stays until `q` (tmux's goes at any key); the prefix still works under it.
+
+`clock-mode-look` draws any of them in a set of characters instead of its
+own: `dots`, `blocks` or `binary`, each cell the character with as much
+ink as it had (how much of the cell its own character covered, how bright
+it was). The colours stay, and so do the figures, the names and each
+message's `✉`. `plain`, the default, keeps its own characters.
 
 It is drawn in the 16 colours a theme sets with `pane-colours` (the
 terminal's own colours when the theme sets none), so each theme colours it.

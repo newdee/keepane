@@ -617,7 +617,7 @@ fn the_colours_are_the_themes() {
     assert!(none.shade(GREEN, 0.7).dim && !none.shade(GREEN, 0.2).dim);
     let mut colours = vec![Color::Idx(0); 16];
     colours[2] = Color::Rgb(0x9e, 0xce, 0x6a);
-    let night = Palette { colours, bg: Color::Rgb(0x1a, 0x1b, 0x26) };
+    let night = Palette { colours, bg: Color::Rgb(0x1a, 0x1b, 0x26), ..Palette::default() };
     assert_eq!(night.shade(GREEN, 0.0).fg, Color::Idx(GREEN), "unfaded: the theme colours it");
     assert_eq!(night.shade(GREEN, 0.5).fg, Color::Rgb(0x5c, 0x75, 0x48), "half way to the background");
     assert_eq!(night.shade(GREEN, 1.0).fg, Color::Rgb(0x1a, 0x1b, 0x26));
@@ -1270,7 +1270,7 @@ fn every_kind_moves_on_an_idle_machine() {
     let days: Vec<f64> = (0..48).map(|i| f64::from(i) * 1_800.0).chain([3_599.0, 86_399.0]).collect();
     let bands: Vec<(u16, u16)> = [40u16, 80].into_iter().flat_map(|w| (3u16..=9).map(move |h| (w, h))).collect();
     let mut checked = 0;
-    for kind in [Kind::Sharks, Kind::Hourglass, Kind::Bonsai, Kind::Orbits, Kind::Radar] {
+    for kind in [Kind::Sharks, Kind::Hourglass, Kind::Bonsai, Kind::Orbits, Kind::Radar, Kind::Sea, Kind::Cat] {
         for &day in &days {
             let dt = kind.frame().as_secs_f64();
             let mut a = Anim::new(kind, 7);
@@ -1292,5 +1292,231 @@ fn every_kind_moves_on_an_idle_machine() {
             }
         }
     }
-    assert_eq!(checked, 5 * 50 * 14);
+    assert_eq!(checked, 7 * 50 * 14);
+}
+
+/// The moon: rising on the left at 18:00, highest at midnight, setting on
+/// the right at 06:00; by day on the same way, pale; no time given, as at
+/// midnight.
+#[test]
+fn the_moon_crosses_the_sky_with_the_hours() {
+    use super::sea::moon;
+    assert_eq!(moon(64_800.0), (0.0, true));
+    assert_eq!(moon(0.0), (0.5, true));
+    assert_eq!(moon(21_600.0), (0.0, false));
+    assert_eq!(moon(43_200.0), (0.5, false));
+    assert_eq!(moon(f64::NAN), (0.5, true));
+    let pal = Palette::default();
+    let at = |day: f64| run_by(Kind::Sea, 10, 0.08, move |i| Input { day: day + i as f64 * 0.08, ..Input::default() });
+    let moon_cell = |a: &Anim| {
+        let g = drawn(a, full(), &pal);
+        let m = marked(&g, &["●"]);
+        assert_eq!(m.len(), 1, "{}", text(&g));
+        (m[0], g.get(m[0].0, m[0].1).style)
+    };
+    // 64 x 14: 4 rows of sky.
+    let ((x, y), style) = moon_cell(&at(0.0));
+    assert!((31..=32).contains(&x) && y == 0 && style.bold, "{x} {y}");
+    let ((x, y), _) = moon_cell(&at(64_800.0));
+    assert_eq!((x, y), (0, 3), "on the horizon, on the left");
+    let ((x, y), style) = moon_cell(&at(43_200.0));
+    assert!((31..=32).contains(&x) && y == 0 && !style.bold && style.dim, "pale by day");
+}
+
+/// The sea: stars by night, more with memory, none by day; choppier with
+/// the cores; the moon's path glittering more with the network; a boat a
+/// pane, each faster the more its pane prints; a message an envelope
+/// drifting ashore along the nearest row.
+#[test]
+fn the_sea_follows_the_machine() {
+    let pal = Palette::default();
+    let sea = |load: Load, day: f64| {
+        run_by(Kind::Sea, 40, 0.08, move |i| Input {
+            load: load.clone(),
+            outs: vec![0],
+            day: day + i as f64 * 0.08,
+            ..Input::default()
+        })
+    };
+    let stars = |a: &Anim| {
+        let g = drawn(a, full(), &pal);
+        (0..4)
+            .flat_map(|y| (0..64).map(move |x| (x, y)))
+            .filter(|&(x, y)| ["*", "+", "."].contains(&g.get(x, y).text()))
+            .count()
+    };
+    let full_mem = Load { memory: Some(0.9), ..Load::default() };
+    let little = Load { memory: Some(0.1), ..Load::default() };
+    assert!(
+        stars(&sea(full_mem.clone(), 0.0)) > 2 * stars(&sea(little, 0.0)).max(1),
+        "{}",
+        stars(&sea(full_mem.clone(), 0.0))
+    );
+    assert_eq!(stars(&sea(full_mem, 43_200.0)), 0, "no stars by day");
+    // The stars twinkle more with the context switches: frames whose
+    // stars changed.
+    let twinkles = |switches: f64| {
+        let mut a = Anim::new(Kind::Sea, 7);
+        let (mut n, mut last) = (0, String::new());
+        for i in 0..100 {
+            let load = Load { switches: Some(switches), memory: Some(0.9), ..Load::default() };
+            a.step(0.08, Input { load, day: i as f64 * 0.08, ..Input::default() });
+            let g = drawn(&a, full(), &pal);
+            let sky: String = (0..4)
+                .flat_map(|y| (0..64).map(move |x| (x, y)))
+                .map(|(x, y)| g.get(x, y).text().to_string())
+                .collect();
+            n += usize::from(sky != last);
+            last = sky;
+        }
+        n
+    };
+    assert!(twinkles(1e6) > twinkles(1e3) + 20, "{} {}", twinkles(1e3), twinkles(1e6));
+    let crests =
+        |cpu: f32| cells(&drawn(&sea(Load { cpu, ..Load::default() }, 0.0), full(), &pal), |c| c.text() == "^");
+    assert!(crests(1.0) > 2 * crests(0.0).max(1), "{} {}", crests(0.0), crests(1.0));
+    // Over 400 frames, so the glitter's own pace does not count.
+    let glints = |net: f64| {
+        let mut a = Anim::new(Kind::Sea, 7);
+        let mut n = 0;
+        for i in 0..400 {
+            let load = Load { net: Some((net, 0.0)), ..Load::default() };
+            a.step(0.08, Input { load, outs: vec![0], day: i as f64 * 0.08, ..Input::default() });
+            n += cells(&drawn(&a, full(), &pal), |c| c.text() == "─" || c.text() == "═");
+        }
+        n as f64
+    };
+    assert!(glints(1e9) > 1.5 * glints(0.0), "{} {}", glints(0.0), glints(1e9));
+    // Three panes, three boats; the busy pane's boat sails faster.
+    let a = run_by(Kind::Sea, 40, 0.08, |i| Input { outs: vec![0, i as u64 * 400_000, 0], ..Input::default() });
+    assert_eq!(a.night.sailed.len(), 3);
+    assert!(a.night.sailed[1] > 5.0 * a.night.sailed[0], "{:?}", a.night.sailed);
+    let g = drawn(&a, full(), &pal);
+    let t = text(&g);
+    assert_eq!(t.matches("\\__/").count(), 3, "{t}");
+    // A message: an envelope on the nearest row, 6 columns a second
+    // from the right edge.
+    let a = run_by(Kind::Sea, 20, 0.1, |i| Input { messages: u64::from(i >= 10), ..Input::default() });
+    let e = envelopes(&drawn(&a, full(), &pal));
+    assert_eq!(e.len(), 1);
+    assert_eq!(e[0].1, 13, "the nearest row");
+    assert!((57..=58).contains(&e[0].0), "{:?}", e[0]);
+}
+
+/// The cat: breathing quicker the busier the cores, a z rising with each
+/// breath; a message wakes it (its eyes open, no z) and falls beside it,
+/// for three seconds; its ear flicks only with the disks; its yarn rolls
+/// faster the more the panes print.
+#[test]
+fn the_cat_sleeps_with_the_machine() {
+    let pal = Palette::default();
+    let breaths = |cpu: f32| run(Kind::Cat, &Load { cpu, ..Load::default() }, 100, 0.1).nap.breaths;
+    assert!(
+        (breaths(0.0) - 3.0).abs() < 0.01 && (breaths(1.0) - 12.0).abs() < 0.01,
+        "{} {}",
+        breaths(0.0),
+        breaths(1.0)
+    );
+    let asleep = run_with_messages(Kind::Cat, &Load::default(), 60, 0.1, &[]);
+    let t = text(&drawn(&asleep, full(), &pal));
+    assert!(t.contains("( -.- )") && (t.contains('z') || t.contains('Z')) && !t.contains('✉'), "{t}");
+    let told = run_with_messages(Kind::Cat, &Load::default(), 60, 0.1, &[50]);
+    let g = drawn(&told, full(), &pal);
+    let t = text(&g);
+    assert!(t.contains("( o.o )") && !t.contains('z') && !t.contains('Z') && t.contains('✉'), "{t}");
+    assert!(marked(&g, &["o"]).iter().all(|&(x, y)| g.get(x, y).style.bold));
+    let later = run_with_messages(Kind::Cat, &Load::default(), 90, 0.1, &[50]);
+    let t = text(&drawn(&later, full(), &pal));
+    assert!(t.contains("( -.- )") && !t.contains('✉'), "asleep again after 3 s: {t}");
+    // The ear: never flicked without the disks, now and then with them.
+    let flicks = |disk: Option<(f64, f64)>| {
+        let mut a = Anim::new(Kind::Cat, 7);
+        let mut n = 0;
+        for i in 0..200 {
+            a.step(0.1, Input { load: Load { disk, ..Load::default() }, day: i as f64, ..Input::default() });
+            n += usize::from(text(&drawn(&a, full(), &pal)).contains("/\\_/|"));
+        }
+        n
+    };
+    assert_eq!(flicks(None), 0);
+    assert!(flicks(Some((1e9, 0.0))) > 20, "{}", flicks(Some((1e9, 0.0))));
+    // The tail: up now and then, more often with the network.
+    let swings = |net: f64| {
+        let mut a = Anim::new(Kind::Cat, 7);
+        let (mut n, mut was) = (0, false);
+        for _ in 0..300 {
+            a.step(0.1, Input { load: Load { net: Some((net, 0.0)), ..Load::default() }, ..Input::default() });
+            let up = text(&drawn(&a, full(), &pal)).contains("___)/");
+            n += usize::from(up && !was);
+            was = up;
+        }
+        n
+    };
+    assert!(swings(1e9) > 3 * swings(0.0).max(1), "{} {}", swings(0.0), swings(1e9));
+    let rolled =
+        |out: u64| run_by(Kind::Cat, 50, 0.1, |i| Input { outs: vec![i as u64 * out], ..Input::default() }).nap.rolled;
+    assert!(rolled(1_000_000) > 3.0 * rolled(0), "{} {}", rolled(0), rolled(1_000_000));
+}
+
+/// A look draws each cell in its set by the ink it had, in its own
+/// colours; text and envelopes stay as they were; `plain` changes nothing.
+#[test]
+fn a_look_redraws_the_cells_and_keeps_the_text() {
+    assert_eq!(Look::named("blocks"), Look::Blocks);
+    assert_eq!(Look::named("neon"), Look::Plain);
+    assert_eq!((Look::Blocks.glyph(0.0), Look::Blocks.glyph(1.0)), (Some("░"), Some("█")));
+    assert_eq!(
+        (Look::Dots.glyph(0.2), Look::Dots.glyph(0.5), Look::Dots.glyph(0.9)),
+        (Some("·"), Some("•"), Some("●"))
+    );
+    assert_eq!(Look::Plain.glyph(0.5), None);
+    // Bold, plain and dim: the most ink to the least.
+    let ink_of = |text: &str, style: Style| look::ink(&Cell::new(text, false, style), Color::Default);
+    let plain = Style::colors(Color::Idx(GREEN), Color::Default);
+    assert!(ink_of("#", Style { bold: true, ..plain }) > ink_of("#", plain));
+    assert!(ink_of("#", plain) > ink_of("#", Style { dim: true, ..plain }));
+    assert!(ink_of("#", plain) > ink_of("x", plain) && ink_of("x", plain) > ink_of(".", plain));
+    // A colour faded into an RGB background: less ink the more faded.
+    let night = Palette {
+        colours: vec![Color::Rgb(0xe0, 0xe0, 0xe0); 16],
+        bg: Color::Rgb(0x10, 0x10, 0x10),
+        ..Palette::default()
+    };
+    let faded = |f: f32| look::ink(&Cell::new("#", false, night.shade(WHITE, f)), night.bg);
+    assert!(faded(0.2) > faded(0.6) && faded(0.6) > faded(0.9), "{} {} {}", faded(0.2), faded(0.6), faded(0.9));
+    for kind in Kind::ALL {
+        let a = run_with_messages(kind, &busy(), 60, 0.05, &[55]);
+        let own = drawn(&a, band(), &Palette::default());
+        assert_eq!(drawn(&a, band(), &Palette { look: Look::Plain, ..Palette::default() }), own, "{kind:?}");
+        for look in [Look::Dots, Look::Blocks, Look::Binary] {
+            let pal = Palette { look, ..Palette::default() };
+            let g = drawn(&a, band(), &pal);
+            let kept = a.kept.borrow().clone();
+            let (mut redrawn, b) = (0, band());
+            for y in b.y..b.y + b.h {
+                for x in b.x..b.x + b.w {
+                    let (was, now) = (own.get(x, y), g.get(x, y));
+                    assert_eq!(was.style, now.style, "{kind:?} {look:?} ({x}, {y})");
+                    let text = kept.iter().any(|&(kx, ky, kw)| ky == y && (kx..kx + kw).contains(&x));
+                    if was.text() == " " || was.text() == ENVELOPE || was.wide || was.cont || text {
+                        assert_eq!(was, now, "{kind:?} {look:?} ({x}, {y}) kept");
+                    } else {
+                        assert!(look.set().contains(&now.text()), "{kind:?} {look:?} ({x}, {y}) {:?}", now.text());
+                        redrawn += 1;
+                    }
+                }
+            }
+            assert!(redrawn > 10, "{kind:?} {look:?}: {redrawn}");
+        }
+    }
+    // The figures read as they were.
+    let blocks = Palette { look: Look::Blocks, ..Palette::default() };
+    let t = text(&drawn(&run(Kind::Bars, &busy(), 60, 0.05), band(), &blocks));
+    assert!(t.contains("CPU 63%") && t.contains("MEM 41%"), "{t}");
+    let t = text(&drawn(&run(Kind::Pulse, &busy(), 60, 0.05), full(), &blocks));
+    assert!(t.contains("SYS 48k/s") && t.contains("CPU 63% 67W"), "{t}");
+    let t = text(&drawn(&run(Kind::Hourglass, &busy(), 60, 0.05), full(), &blocks));
+    assert!(t.contains("60s") && t.contains("24h"), "{t}");
+    let t = text(&drawn(&run(Kind::Radar, &busy(), 60, 0.05), full(), &blocks));
+    assert!(t.lines().next().is_some_and(|l| l.contains('°')), "{t}");
 }

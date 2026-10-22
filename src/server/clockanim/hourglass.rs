@@ -59,6 +59,11 @@ impl Anim {
             for (i, c) in label.chars().enumerate() {
                 put(g, band, cx - 1 + i as i64, top - 1, c.encode_utf8(&mut [0; 4]), pal.shade(WHITE, 0.5));
             }
+            if let (Ok(x), Ok(y)) =
+                (u16::try_from(i64::from(band.x) + cx - 1), u16::try_from(i64::from(band.y) + top - 1))
+            {
+                self.keep(x, y, label.len());
+            }
         }
     }
 

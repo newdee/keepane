@@ -152,6 +152,7 @@ impl Anim {
             self.draw_trace(g, rect, *which, *range, *colour, pal);
             if labels {
                 let x = band.x + trace_w + 1;
+                self.keep(x, rect.y, usize::from(label_w));
                 let mut style = pal.shade(*colour, 0.0);
                 if i == 0 && beating {
                     // The heart, red and bright on the beat.
