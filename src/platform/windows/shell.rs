@@ -67,12 +67,21 @@ pub fn shared_history() -> Option<PathBuf> {
 /// (`OSC 7777;keepane-prompt`): what a pane in `shell` work mode waits for
 /// before the next message goes in, and which a remote shell never sends.
 /// `$global:?` is read first, before anything else can change it.
+///
+/// And at each prompt, `set-environment`'s changes the shell has not had
+/// (`KEEPANE_ENV_FILE`.ps1, read again only when it changed), so the
+/// commands run from then on have them. The script is read as text and run
+/// as a script block: a script file would be refused under an execution
+/// policy that allows none (Windows PowerShell's default).
 pub const POWERSHELL_PROMPT_HOOK: &str = "if ($env:KEEPANE_SHELL_HISTORY -and (Get-Command Set-PSReadLineOption -ErrorAction Ignore)) { \
      Set-PSReadLineOption -HistorySavePath $env:KEEPANE_SHELL_HISTORY }; \
      $global:__keepane_prompt = $function:prompt; \
      $global:__keepane_hid = (Get-History -Count 1).Id; \
      function global:prompt { \
      $__ok = $global:?; \
+     if ($env:KEEPANE_ENV_FILE) { $__e = $env:KEEPANE_ENV_FILE + '.ps1'; $__t = [IO.File]::GetLastWriteTimeUtc($__e).Ticks; \
+     if ($__t -ne $global:__keepane_env_t) { $global:__keepane_env_t = $__t; \
+     if ([IO.File]::Exists($__e)) { . ([ScriptBlock]::Create([IO.File]::ReadAllText($__e))) } } }; \
      $__h = Get-History -Count 1; $__c = ''; \
      if ($__h -and $__h.Id -ne $global:__keepane_hid) { $global:__keepane_hid = $__h.Id; \
      $__c = [char]27 + ']7777;keepane-cmd;' + ([DateTimeOffset]$__h.StartExecutionTime).ToUnixTimeMilliseconds() + ';' \

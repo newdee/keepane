@@ -128,7 +128,9 @@ Sessions save themselves to the data directory. `resume`, `list-saved`,
 `set-option` (`set`), `set-window-option` (`setw`), `show-options`
 (`show`), `show-window-options`, `bind-key` (`bind`), `unbind-key`
 (`unbind`), `list-keys`, `source-file`, `set-hook`, `show-hooks`,
-`set-environment`, `show-environment`, `run-shell`, `if-shell`,
+`set-environment` (every pane: a new one at its start, a shell already
+open at its next prompt; kept across restarts), `show-environment`
+(attached: in colour, with what keepane sets), `run-shell`, `if-shell`,
 `wait-for`, `wait-output` (block until a pane prints one of some texts,
 and print that line; `-a` counts what it already holds, `-i` any case,
 `-w` a time limit), `command-prompt`, `confirm-before`, `display-message`,
@@ -339,6 +341,7 @@ text prompt stays as typed. The defaults:
 | `B` | every pane at a glance (jobs) |
 | `S` | send what is typed to every pane of the window |
 | `C-t` | each command's time at the end of its line |
+| `e` | the environment every pane gets, in colour |
 | `,` / `$` | rename the window / the session |
 | `:` | the command prompt (Up / Down, `C-p` / `C-n`: the last 100 lines run there; `show-prompt-history` lists them, `clear-prompt-history` forgets them) |
 | `~` | recent messages |
@@ -535,7 +538,10 @@ cost with `+` after it left out a model the list does not have.
   log, `prices.json` (the agents' price list, as last fetched), `web.key` (the phone's code kept by `keepane web --keep-key`), and
   `link/`*socket*`/`: a server's key pair (`key`, readable by its user alone)
   and the machines it lets in (`authorized`: a public key, an address, and
-  `shell` and `screen` for what they may do, one machine a line).
+  `shell` and `screen` for what they may do, one machine a line). Beside
+  the saved sessions, `environment/`*socket*`.json` keeps
+  `set-environment`'s table, and `.ps1` and `.sh` beside it its changes
+  for the shells' prompt hook.
 
 `$XDG_RUNTIME_DIR/keepane-`*uid*`/`*socket-name* (or under `/tmp`)
 : A server's socket; only its user can open the directory.

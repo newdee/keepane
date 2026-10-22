@@ -414,6 +414,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `/` | browse what panes printed, by pane and day (`choose-history`) |
 | `y` | copy what the last command printed, without the prompt or the command, to a paste buffer and the clipboard (`copy-output`) |
 | `F` | put a label on every path, web address and git hash on screen; type one to copy that thing, in capitals to open it (`hints`, see below) |
+| `e` | show the environment every pane gets, in colour: what `set-environment` set, and what keepane sets itself (`show-environment`; see Environment) |
 | `{` / `}` | swap pane with previous / next |
 | `q` | show the pane numbers (with the name and work mode, `%name · ai`, under them); press one to go there at once (past 9, a second digit straight after goes on from there: `1` `2` is pane 12) |
 | `Space` / `M-1`…`M-5` / `E` | cycle the layout / pick one (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled) / even out the panes next to this one |
@@ -1461,6 +1462,30 @@ Options unknown to keepane but common in `.tmux.conf` (`escape-time`,
 `default-terminal` (`xterm-256color`
 unless set) is the `TERM` panes get on Linux and macOS; on Windows ConPTY
 sets up the terminal and the option does nothing.
+
+### Environment
+
+`set-environment NAME value` adds a variable to the environment every pane
+gets, or changes it; `set-environment -u NAME` takes it out. A pane started
+afterwards has it from the start. A shell already open takes the change at
+its next prompt (PowerShell, bash and zsh, through keepane's prompt hook),
+so whatever it runs from then on has it. A program already running keeps
+the environment it started with: no program can change another's, so
+restart it (`respawn-pane -k`) to give it the new one. A variable the
+shell itself set since it started (or since the last change to that
+name) is not set over. The table is saved with the sessions and is there
+again after the server restarts; `~/.keepane.conf` is read first, and
+wins for the names it sets.
+
+```tmux
+set-environment GOPROXY https://goproxy.cn    # in every pane, from its next prompt
+set-environment -u GOPROXY                    # and gone again
+```
+
+`prefix e` shows it in colour: the variables `set-environment` set, then
+what keepane sets in every pane itself (`KEEPANE`, the pane's own
+`KEEPANE_PANE`, `PATH` with keepane's folder in it, ...). A script gets
+the plain `NAME=value` lines from `keepane show-environment`.
 
 ### Themes
 

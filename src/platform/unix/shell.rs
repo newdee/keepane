@@ -48,6 +48,8 @@ if [ -n "$KEEPANE_SHELL_HISTORY" ]; then HISTFILE="$KEEPANE_SHELL_HISTORY"; hist
 __keepane_status() { __keepane_ok=$?; }
 __keepane_prompt() {
   history -a
+  # set-environment's changes this shell has not had yet.
+  if [ -n "$KEEPANE_ENV_FILE" ] && [ -r "$KEEPANE_ENV_FILE.sh" ]; then . "$KEEPANE_ENV_FILE.sh"; fi
   case "$PS1" in
     *']133;B'*) ;;
     *) PS1="\[$(printf '\033]133;A\007')\]$PS1\[$(printf '\033]133;B\007')\]" ;;
@@ -72,6 +74,8 @@ fi
 setopt INC_APPEND_HISTORY
 __keepane_precmd() {
   local ok=$?
+  # set-environment's changes this shell has not had yet.
+  if [ -n "$KEEPANE_ENV_FILE" ] && [ -r "$KEEPANE_ENV_FILE.sh" ]; then . "$KEEPANE_ENV_FILE.sh"; fi
   case "$PS1" in
     *$'\e]133;B'*) ;;
     *) PS1="%{"$'\e]133;A\a'"%}$PS1%{"$'\e]133;B\a'"%}" ;;

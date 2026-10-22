@@ -71,7 +71,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | send-prefix | yes | |
 | server-access | no | single user by design; the pipe is owner-only |
 | set-buffer / show-buffer | yes | `-a`, `-b` |
-| set-environment / show-environment | yes | `-r` to remove |
+| set-environment / show-environment | yes | `-r` / `-u` to remove; one table for the server, kept across restarts. Unlike tmux, a shell already at its prompt (PowerShell, bash, zsh) takes a change at its next prompt; attached, `show-environment` lists what keepane sets in every pane too |
 | set-hook / show-hooks | part | nine hooks |
 | set-option / show-options | part | the options keepane implements, colours and styles included, each printed in a form `set` reads back; unknown ones accepted and ignored |
 | set-window-option / show-window-options | part | folded into `set-option`; `synchronize-panes` is per window and takes `-t` |
@@ -146,7 +146,7 @@ tmux's table, with what keepane does today.
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 keepane adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
-(save every session / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed) and `F` (hints: pick a path, address or hash on screen) on top of that table. Without the prefix, `F12` turns `passthrough` on and off (tmux binds nothing in its root table but the mouse).
+(save every session / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed), `F` (hints: pick a path, address or hash on screen) and `e` (show-environment: the environment every pane gets, in colour) on top of that table. Without the prefix, `F12` turns `passthrough` on and off (tmux binds nothing in its root table but the mouse).
 
 ## Copy mode
 

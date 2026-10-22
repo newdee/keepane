@@ -2830,6 +2830,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 }
             }
             let name = a.next().ok_or("set-environment: name required")?.to_string();
+            // What no environment can hold as a name.
+            if name.is_empty() || name.contains(['=', '\0']) {
+                return Err(format!("set-environment: bad name: {name:?}"));
+            }
             let rest = a.rest();
             let value = if rest.is_empty() { None } else { Some(rest.join(" ")) };
             Cmd::SetEnvironment { name, value, remove }
@@ -5219,6 +5223,10 @@ mod tests {
         assert!(parse_line("wait-for").is_err());
         assert!(parse_line("wait-for -L -U x").unwrap_err().contains("exclusive"));
         assert!(parse_line("wait-for a b").is_err());
+
+        assert!(parse_line("set-environment A=B c").unwrap_err().contains("bad name"));
+        assert!(parse_line("set-environment '' c").unwrap_err().contains("bad name"));
+        assert_eq!(p("setenv -u X"), Cmd::SetEnvironment { name: "X".into(), value: None, remove: true });
 
         let w = p("wait-output -t dev -i -w 2m Listening 'ready in'");
         assert_eq!(

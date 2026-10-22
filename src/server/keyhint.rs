@@ -52,6 +52,7 @@ fn known(c: &str) -> Option<(usize, &'static str)> {
         "hints" => (3, "pick text on screen"),
         "choose-history" => (3, "history"),
         "choose-jobs" => (3, "jobs"),
+        "show-environment -g" => (3, "environment"),
         "command-prompt" => (3, "command"),
         // (`?`, every key, is the panel's own footer.)
         _ => return None,
@@ -189,6 +190,7 @@ const LABEL_ORDER: &[&str] = &[
     "pick text on screen",
     "history",
     "jobs",
+    "environment",
     "command",
 ];
 
@@ -250,6 +252,7 @@ mod tests {
         assert_eq!(tools.first(), Some(&s("v", "dashboard")));
         assert_eq!(tools.last(), Some(&s(":", "command")));
         assert!(tools.contains(&s("y", "copy last output")));
+        assert!(tools.contains(&s("e", "environment")));
         assert!(tools.iter().all(|(k, _)| k != "?"), "`?` is the footer's");
     }
 

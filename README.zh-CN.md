@@ -240,6 +240,7 @@ keepane kill-server
 | `/` | 按 pane 和日期翻看输出过的历史（`choose-history`） |
 | `y` | 把上一条命令的输出（不含提示符和命令本身）复制到粘贴缓冲区和剪贴板（`copy-output`） |
 | `F` | 给屏幕上的路径、网址和 git hash 都标上字母；按字母复制，按大写字母打开（`hints`，见下文） |
+| `e` | 用彩色显示每个 pane 拿到的环境变量：`set-environment` 设的，和 keepane 自己设的（`show-environment`，见"环境变量"） |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
 | `q` | 每块显示自己的编号（下面显示名字和工作模式，如 `%名字 · ai`），按数字立刻跳过去（超过 9 个时，紧接着再按一位就接着跳：`1` `2` 是第 12 块） |
 | `Space` / `M-1`…`M-5` / `E` | 轮换布局 / 直接选一种（左右平分、上下平分、主窗在上、主窗在左、平铺）/ 把旁边这一排 pane 拉成等宽等高 |
@@ -751,6 +752,17 @@ keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时
 默认外观用的是 24 位真彩色。在不支持真彩色的终端上（macOS 自带的 Terminal，除非它声明了 `COLORTERM=truecolor`），keepane 会自动换成 256 色里最接近的颜色，keepane 自己的界面和 pane 里程序的输出都一样。
 
 `.tmux.conf` 里常见但 keepane 用不上的选项（`escape-time`、`focus-events` 这些）如果还是被设置了（比如用 `source-file` 读了一份 tmux 配置），会被接受然后忽略；`import-config` 不会导入它们。`default-terminal`（不设就是 `xterm-256color`）是 Linux 和 macOS 上 pane 拿到的 `TERM`；Windows 上终端由 ConPTY 安排，这个选项不起作用。
+
+### 环境变量
+
+`set-environment 名字 值` 给每个 pane 拿到的环境变量加一个或改一个，`set-environment -u 名字` 去掉它。之后新开的 pane 一启动就有。已经开着的 shell 在下一次显示提示符时拿到这个变化（PowerShell、bash、zsh，通过 keepane 的提示符钩子），之后它运行的程序都有。已经在跑的程序还是启动时的环境：一个程序改不了另一个程序的环境，要新值就重启它（`respawn-pane -k`）。shell 自己在启动后（或这个名字上次变化后）设的值不会被覆盖。这张表和会话存在一起，服务器重启后还在；`~/.keepane.conf` 先读，它设的名字以它为准。
+
+```tmux
+set-environment GOPROXY https://goproxy.cn    # 每个 pane 从下一次提示符起都有
+set-environment -u GOPROXY                    # 再去掉
+```
+
+`prefix e` 用彩色显示：先是 `set-environment` 设的变量，再是 keepane 自己在每个 pane 里设的（`KEEPANE`、这个 pane 自己的 `KEEPANE_PANE`、带 keepane 目录的 `PATH` 等）。脚本用 `keepane show-environment` 拿到普通的 `名字=值` 行。
 
 所有窗口和 pane 命令都支持 tmux 风格的 `-t`：`session`、`session:window`、`:window`、`session:window.pane`，窗口那一段可以是编号、名字、`+`、`-` 或 `!`。`%N` 是按编号指定 pane（`list-panes` 里显示的那个），别的 pane 增减时它指的还是同一个；`list-panes -F` 按格式串逐个 pane 输出。
 

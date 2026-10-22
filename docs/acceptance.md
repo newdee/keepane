@@ -4758,3 +4758,34 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 9 | 静态一致性 | 读整份 diff；README 中英、help、手册、官网、MCP 描述共 8 条说法逐条对到代码和测试，0 处不符；3 个服务器退出的地方都在所有会话结束后，所以 `answer_waits_on_exit` 不用再管 `wait-output`；新字段都有人读 | 干净（3/3），验收通过 |
 
 - 遗留：客户端断开后它的等待被删掉（`output_waits_client_gone`），这一点从外面看不出来，没有测试。
+
+## 154. `set-environment` 给所有 pane；`prefix e` 彩色显示
+
+用户要求：给所有 pane 加、改环境变量；对设置之后启动的程序生效，不影响已经在跑的程序；查看界面要彩色；`C-b e` 打开。
+
+- 事实：一个进程启动后，别的进程改不了它的环境（Windows、Linux、macOS 都是）。所以"已经开着的 shell"只能由 shell 自己在提示符时更新，之后它启动的程序继承新值；已经在跑的程序不变。
+- 做了什么：
+  - 新模块 `server/envvars.rs`。每次 `set-environment` / `-u` 都是一次带编号的变化。服务器在数据目录（sessions 目录）的 `environment/` 下，为每个 socket 写 `.ps1` 和 `.sh` 两个脚本，每个名字只留最后一次变化，每条都带"编号大于 shell 已有的才做"的判断。
+  - pane 启动时拿到 `KEEPANE_ENV_FILE`（脚本位置）和 `KEEPANE_ENV_SEQ`（它已有的最后编号）。编号从服务器启动时的毫秒数开始。
+  - 提示符钩子：PowerShell 只在文件修改时间变了才读，读成文本再当 script block 执行，因为 Windows PowerShell 默认的执行策略不许运行脚本文件；bash 和 zsh 每次提示符都 `.` 一次。shell 自己设过的值不会被更早的变化覆盖。
+  - 表保存在 `environment/<socket>.json`。启动时先读配置，再读回这个文件，配置里设过的名字以配置为准；读回之前不写这个文件。同时删掉旧服务器留下的脚本（第 4 轮发现）。
+  - Windows 上变量名不分大小写（`same_name`）。名字为空，或含 `=`、NUL，报 `bad name`。
+  - `show-environment`：已 attach 的客户端看到彩色 overlay，分两段：`set-environment` 设的变量，和 keepane 在每个 pane 里设的变量（`KEEPANE`、这个 pane 的 `KEEPANE_PANE`、`PATH`、`TERM`、两个 `KEEPANE_ENV_*`）。被 set-environment 覆盖的会注明。脚本照旧拿到 `NAME=value` 行。overlay 加了"带颜色的行"（`styles`），搜索仍按纯文本。
+  - `prefix e` 绑定 `show-environment`（tmux 没有绑这个键），prefix 面板的 Tools 组加 "environment"。
+- 会不会引入新 bug：
+  - 原来的 `set-environment` / `show-environment` 行为：新 pane 拿到表、`-r` 删除、脚本拿到 `NAME=value`，原 e2e 照常通过。新增的变化有两个：Windows 上名字不分大小写，以及不能用的名字会被拒绝。
+  - 提示符钩子：PowerShell 多一次取文件时间，bash/zsh 多一次 `[ -r ]`，没有设置时什么都不做。原来的钩子测试（标记、历史、shell 模式）全量通过。
+  - overlay：其余 overlay 没有颜色（`styles` 为空），画法不变，render 原测试照常通过。
+- 测试：单元 5 个（`server::envvars`：脚本的引号和编号、真实 shell 只做没做过的变化、保存与读回、overlay、名字大小写）＋ render 1 个；e2e 3 个（已开着的 shell 在下一个提示符拿到、它启动的子程序也有、`-u`、新 pane 不重做旧变化；重启后读回、配置优先；`prefix e`）。官网测试数 629 → 638。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路 + 全量 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 489 + 10 + 138；变异 20 个存活 1 个：`-u` 带值时（`set-environment -u X v`）删掉判断测不出。另外读代码时看到两处：env overlay 的 `top: 0`（和其他 overlay 不一致，也没有测试），"启动时读回保存的表"只有单元测试直接调函数 | **有问题**：单元测试加 `-u X ignored`；`top: 0` 去掉；Harness 加 `start_with(config)`，e2e 加重启读回、配置优先（不计数） |
+| 2 | Linux + 全量 + 可复现性 | Windows 489 + 10 + 139；Linux fmt 0、clippy 0、477 + 139；3 个环境 e2e 和 5 个单元测试连跑 5 次 5/5；WSL 里没有 zsh，zsh 的钩子没实测 | 干净（1/3；第 4 轮有问题，重新计） |
+| 3 | 边界与退化输入 | 临时 e2e（已删），Windows 和 Linux 各跑一次：一个带单引号、双引号、`$HOME`、反引号和中文的值，在 PowerShell 和 bash 里原样得到；一次设 200 个变量，下一个提示符全部拿到；运行中改 `sessions-dir` 后再设，旧 pane 照样拿到（两处都写）；有 200 条变化时一个提示符往返 Windows 110-120 ms（含 CLI 开销）、Linux 3-13 ms | 干净（2/3；同上） |
+| 4 | 静态一致性 + 不变量 | 读整份 diff，文档 9 条说法对到代码；发现不变量依赖时钟："旧服务器留下的脚本编号都比新 pane 小"只在时钟没有往回调时成立，时钟回调后新 pane 第一个提示符会做旧变化 | **有问题**：启动读回表时删掉这个 socket 的旧脚本，单元测试加"读回后旧脚本不在"（不计数） |
+| 5 | 机制通路 + 全量 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 489 + 10 + 139；变异 21/21（加了"旧脚本不删"） | 干净（1/3） |
+| 6 | Linux + 可复现性 | Linux fmt 0、clippy 0、477 + 139；3 个环境 e2e 和 5 个单元测试连跑 5 次 5/5 | 干净（2/3） |
+| 7 | 多客户端状态 | 临时 e2e（已删）：两个客户端各开 `prefix e`，各自看到自己 pane 的 `KEEPANE_PANE`（%2、%5）；b 关掉后改表，a 开着的 overlay 不变，a 重新打开看到新值 | 干净（3/3），验收通过 |
+
+- 遗留：zsh 的钩子和 bash 的写法一样，但这台机器的 WSL 没装 zsh，没有实测。WSL 和 fish 的 pane 还拿不到变化（下一项做）。

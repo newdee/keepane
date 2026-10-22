@@ -7,6 +7,7 @@ mod clock;
 pub(crate) mod clockanim;
 mod digits;
 mod done;
+mod envvars;
 mod gitstate;
 mod hints;
 pub mod import;
@@ -285,6 +286,9 @@ fn history_type(kind: &PromptKind) -> Option<&'static str> {
 /// window scrolls.
 struct Overlay {
     lines: Vec<String>,
+    /// The lines in colour, when they have any (`show-environment`): the
+    /// same text as `lines`, which searches read.
+    styles: Vec<Vec<crate::format::Segment>>,
     /// Kept within the lines when moved and when drawn, so `usize::MAX`
     /// (where it opens) is the end.
     top: usize,
@@ -296,7 +300,7 @@ struct Overlay {
 
 impl Overlay {
     fn new(lines: Vec<String>) -> Self {
-        Overlay { lines, top: usize::MAX, search: None, hit: None }
+        Overlay { lines, styles: Vec::new(), top: usize::MAX, search: None, hit: None }
     }
 
     /// Move by `delta` lines, `body` rows showing.
@@ -1122,6 +1126,8 @@ pub struct Server {
     last_history_save: Option<Instant>,
     /// Extra environment for new panes (`set-environment`).
     env: Vec<(String, String)>,
+    /// How its changes reach the shells already running (`envvars`).
+    env_state: envvars::EnvState,
     /// `wait-for` channels, by name.
     waits: HashMap<String, WaitChannel>,
     events: mpsc::UnboundedSender<Event>,
@@ -1470,6 +1476,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("C-t", "set-option -g pane-timestamps"),
         ("y", "copy-output"),
         ("F", "hints"),
+        ("e", "show-environment"),
     ];
     for (k, l) in lines {
         let key = Key::parse(k).expect(k);
@@ -1550,6 +1557,7 @@ impl Server {
             marked: None,
             last_history_save: None,
             env: Vec::new(),
+            env_state: envvars::EnvState::default(),
             waits: HashMap::new(),
             events,
             last_saved: HashMap::new(),
@@ -1957,6 +1965,8 @@ impl Server {
             log::info!("{note}");
             self.note_message(&note);
         }
+        // The environment as set-environment last left it, before any pane.
+        self.load_environment();
         if (self.opts.restore_on_start || self.force_restore) && self.sessions.is_empty() {
             let (created, problems) = self.restore_all(None);
             log::info!("restore-on-start: {} session(s)", created.len());
@@ -3108,6 +3118,14 @@ impl Server {
     }
 
     fn pane_env(&self, pane_id: PaneId) -> Vec<(String, String)> {
+        let mut env = self.keepane_env(pane_id);
+        // `set-environment` entries last, so they can override even PATH.
+        env.extend(self.env.iter().cloned());
+        env
+    }
+
+    /// What keepane itself sets in pane `pane_id`, before `set-environment`'s.
+    fn keepane_env(&self, pane_id: PaneId) -> Vec<(String, String)> {
         let mut env = vec![
             ("KEEPANE".into(), self.socket.clone()),
             ("KEEPANE_PANE".into(), pane_id.to_string()),
@@ -3118,8 +3136,7 @@ impl Server {
         if crate::platform::shell::SETS_TERM {
             env.push(("TERM".into(), self.opts.default_terminal.clone()));
         }
-        // `set-environment` entries last, so they can override even PATH.
-        env.extend(self.env.iter().cloned());
+        env.extend(self.env_hook_vars());
         env
     }
 
@@ -3870,25 +3887,25 @@ impl Server {
                 Outcome::Text(out.join("\n"))
             }
             Cmd::SetEnvironment { name, value, remove } => {
-                self.env.retain(|(k, _)| *k != name);
-                match (remove, value) {
-                    (true, _) | (_, None) => {}
-                    (false, Some(v)) => self.env.push((name, v)),
-                }
+                self.set_environment(name, if remove { None } else { value });
                 Outcome::Ok
             }
             Cmd::ShowEnvironment { name } => {
-                let lines: Vec<String> = match &name {
-                    Some(n) => match self.env.iter().find(|(k, _)| k == n) {
-                        Some((k, v)) => vec![format!("{k}={v}")],
-                        None => return Outcome::Error(format!("unknown variable: {n}")),
-                    },
-                    None => self.env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
-                };
-                if lines.is_empty() {
-                    return Outcome::Text("no variables set".into());
+                // An attached client sees it all, coloured; a script, the lines.
+                let at = cid
+                    .and_then(|c| self.clients.get(&c))
+                    .and_then(|c| c.session)
+                    .and_then(|sid| self.session(sid).and_then(|s| s.window()).map(|w| w.active));
+                match (name, at) {
+                    (None, Some(pid)) => {
+                        let (lines, styles) = self.environment_overlay(pid);
+                        if let Some(c) = cid.and_then(|c| self.clients.get_mut(&c)) {
+                            c.overlay = Some(Overlay { styles, ..Overlay::new(lines) });
+                        }
+                        Outcome::Ok
+                    }
+                    (name, _) => self.show_environment(name.as_deref()),
                 }
-                Outcome::Text(lines.join("\n"))
             }
             Cmd::RespawnPane { target, kill, argv, window } => {
                 let (sid, widx, pid) = match self.resolve(target.as_ref(), cid) {
@@ -9351,7 +9368,7 @@ impl Server {
         // under the status line's prompt or message, so that its own search
         // prompt and "no match" show when there is no status line.
         if let Some(o) = &c.overlay {
-            render::draw_overlay(&mut grid, area, &o.lines, o.top, o.hit);
+            render::draw_overlay(&mut grid, area, &o.lines, &o.styles, o.top, o.hit);
             cursor = None;
         }
         if let Some((prompt, message)) = &notice

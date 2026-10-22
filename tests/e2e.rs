@@ -153,6 +153,11 @@ fn keep_history_out() {
 
 impl Harness {
     async fn start(name: &str) -> Harness {
+        Harness::start_with(name, "").await
+    }
+
+    /// `start`, the server reading `config` as its config file at start.
+    async fn start_with(name: &str, config_text: &str) -> Harness {
         // No toasts from tests: a toast registers the running binary as the
         // keepane:// handler on the developer's machine.
         unsafe { std::env::set_var("KEEPANE_NO_TOAST", "1") };
@@ -178,9 +183,13 @@ impl Harness {
         let _ = std::fs::remove_dir_all(keepane::link::dir(&socket));
         // An empty config, not the machine's `~/.keepane.conf`: a theme there
         // changes the status line these tests read.
-        let config = std::env::temp_dir().join(format!("keepane-test-empty-{}.conf", std::process::id()));
-        if !config.exists() {
-            std::fs::write(&config, "").unwrap();
+        let config = if config_text.is_empty() {
+            std::env::temp_dir().join(format!("keepane-test-empty-{}.conf", std::process::id()))
+        } else {
+            std::env::temp_dir().join(format!("keepane-test-{name}-{}.conf", std::process::id()))
+        };
+        if !config_text.is_empty() || !config.exists() {
+            std::fs::write(&config, config_text).unwrap();
         }
         let options = keepane::server::RunOptions { force_restore: false, config: Some(config) };
         let server = tokio::spawn(async move {
@@ -10134,6 +10143,107 @@ fn shared_history_file() -> Option<std::path::PathBuf> {
     } else {
         std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".bash_history"))
     }
+}
+
+/// `set-environment` reaches the shells already running: a shell at its
+/// prompt takes a change at its next one, so what it runs then (a program
+/// it starts too) has it, and `-u` unsets it there. A change made before a
+/// pane started is not made again in it, so its own setting since stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn set_environment_reaches_the_shells_already_running() {
+    let h = Harness::start("envlive").await;
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "env", "-x", "120", "-y", "30"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    at_hooked_prompt(&h, "env:0.0").await;
+    let show = |tag: &str| {
+        if cfg!(windows) {
+            format!("Write-Output \"[{tag}:$env:KP_LIVE]\"")
+        } else {
+            format!("echo \"[{tag}:$KP_LIVE]\"")
+        }
+    };
+    h.cli(&["set-environment", "KP_LIVE", "first value"]).await;
+    // The prompt it is at was drawn before the change; the next one takes it.
+    h.cli(&["send-keys", "-t", "env:0.0", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "env:0.0", &show("1"), "Enter"]).await;
+    h.wait_joined("env:0.0", "the value", |t| t.contains("[1:first value]")).await;
+    // A program it starts from then on has it.
+    let child = if cfg!(windows) {
+        "pwsh -NoProfile -Command 'Write-Output \"[child:$env:KP_LIVE]\"'"
+    } else {
+        "sh -c 'echo \"[child:$KP_LIVE]\"'"
+    };
+    h.cli(&["send-keys", "-t", "env:0.0", child, "Enter"]).await;
+    h.wait_joined("env:0.0", "the child's", |t| t.contains("[child:first value]")).await;
+    // Changed, then unset.
+    h.cli(&["set-environment", "KP_LIVE", "second"]).await;
+    h.cli(&["send-keys", "-t", "env:0.0", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "env:0.0", &show("2"), "Enter"]).await;
+    h.wait_joined("env:0.0", "the new value", |t| t.contains("[2:second]")).await;
+    h.cli(&["set-environment", "-u", "KP_LIVE"]).await;
+    h.cli(&["send-keys", "-t", "env:0.0", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "env:0.0", &show("3"), "Enter"]).await;
+    h.wait_joined("env:0.0", "it unset", |t| t.contains("[3:]")).await;
+
+    // A pane started after a change has it from the start, and does not
+    // take it again over what it set itself since.
+    h.cli(&["set-environment", "KP_LIVE", "at-start"]).await;
+    let (code, _, err) = h.cli(&[&["new-window", "-d", "-t", "env"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    at_hooked_prompt(&h, "env:1.0").await;
+    h.cli(&["send-keys", "-t", "env:1.0", &show("4"), "Enter"]).await;
+    h.wait_joined("env:1.0", "the value it started with", |t| t.contains("[4:at-start]")).await;
+    let own = if cfg!(windows) { "$env:KP_LIVE = 'mine'" } else { "export KP_LIVE=mine" };
+    h.cli(&["send-keys", "-t", "env:1.0", own, "Enter"]).await;
+    h.cli(&["send-keys", "-t", "env:1.0", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "env:1.0", &show("5"), "Enter"]).await;
+    h.wait_joined("env:1.0", "its own value kept", |t| t.contains("[5:mine]")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// The table `set-environment` left is read back when the server starts,
+/// after its config, whose own value wins; and saved again, both in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn set_environment_outlives_the_server() {
+    let dir = std::env::temp_dir().join(format!("keepane-test-envsaved-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let saved = dir.join("environment").join(format!("test-envsaved-{}.json", std::process::id()));
+    std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
+    std::fs::write(&saved, r#"{"vars":[["KP_SAVED","from before"],["KP_BOTH","saved"]]}"#).unwrap();
+    let config = format!("set -g sessions-dir '{}'\nset-environment KP_BOTH config\n", dir.display());
+    let h = Harness::start_with("envsaved", &config).await;
+    let (_, out, _) = h.cli(&["show-environment"]).await;
+    assert_eq!(out.trim().lines().collect::<Vec<_>>(), ["KP_BOTH=config", "KP_SAVED=from before"]);
+    let again = std::fs::read_to_string(&saved).unwrap();
+    assert!(again.contains(r#"["KP_BOTH","config"]"#) && again.contains(r#"["KP_SAVED","from before"]"#), "{again}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `prefix e` shows the environment: the table and what keepane sets,
+/// with this pane's own id; any key puts it away.
+#[tokio::test(flavor = "multi_thread")]
+async fn prefix_e_shows_the_environment() {
+    let h = Harness::start("envshow").await;
+    h.cli(&["set-environment", "KP_SHOWN", "yes"]).await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "e"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let id = pane_id(&h, "e:0.0").await;
+    c.prefix('e').await;
+    c.wait_for("the overlay", |s| {
+        let t = s.contents();
+        t.contains("KP_SHOWN=yes")
+            && t.contains("keepane sets in every pane")
+            && t.contains(&format!("KEEPANE_PANE={id}"))
+    })
+    .await;
+    c.type_str("x").await;
+    c.wait_for("the overlay gone", |s| !s.contents().contains("keepane sets in every pane")).await;
+    // A script still gets the lines.
+    let (_, out, _) = h.cli(&["show-environment"]).await;
+    assert_eq!(out.trim(), "KP_SHOWN=yes");
+    h.cli(&["kill-server"]).await;
 }
 
 /// Wait until `HOOKED_SHELL` in `target` is at its prompt, as keepane's
