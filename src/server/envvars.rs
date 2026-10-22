@@ -44,6 +44,24 @@ pub(super) fn same_name(a: &str, b: &str) -> bool {
     if cfg!(windows) { a.eq_ignore_ascii_case(b) } else { a == b }
 }
 
+/// `WSLENV` for a pane: what it held, then each of `names` not in it yet,
+/// so that a `wsl.exe` the pane runs passes them into WSL: keepane's own
+/// (its paths translated, `/p`) and `set-environment`'s. `PATH` is WSL's to
+/// make; `WSLENV` itself, and a name `WSLENV` cannot hold, stay out.
+#[cfg(windows)]
+pub(super) fn wslenv(base: &str, names: &[String]) -> String {
+    let mut out: Vec<String> = base.split(':').filter(|s| !s.is_empty()).map(String::from).collect();
+    for n in names {
+        let listed = out.iter().any(|e| e.split('/').next().is_some_and(|k| k.eq_ignore_ascii_case(n)));
+        if listed || n.eq_ignore_ascii_case("PATH") || n.eq_ignore_ascii_case("WSLENV") || n.contains([':', '/']) {
+            continue;
+        }
+        let path = matches!(n.as_str(), "KEEPANE_ENV_FILE" | "KEEPANE_WSL_START");
+        out.push(if path { format!("{n}/p") } else { n.clone() });
+    }
+    out.join(":")
+}
+
 /// `stem` and an extension after it (a socket name may have dots of its own).
 fn with_ext(stem: &Path, ext: &str) -> PathBuf {
     let mut s = OsString::from(stem.as_os_str());
@@ -97,9 +115,7 @@ fn sh_script(changes: &[(String, u64, Option<String>)], seq: u64) -> String {
          case $__keepane_s in ''|*[!0-9]*) __keepane_s=0 ;; esac\n",
     );
     for (name, n, value) in changes {
-        let valid = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if !valid {
+        if !sh_name(name) {
             out.push_str(&format!("# {}: not a name a shell can export\n", name.replace('\n', " ")));
             continue;
         }
@@ -112,6 +128,34 @@ fn sh_script(changes: &[(String, u64, Option<String>)], seq: u64) -> String {
     out.push_str(&format!("if [ \"$__keepane_s\" -lt {seq} ]; then export KEEPANE_ENV_SEQ={seq}; fi\n"));
     out.push_str("unset __keepane_s\n");
     out
+}
+
+/// fish's script: the same, in fish.
+fn fish_script(changes: &[(String, u64, Option<String>)], seq: u64) -> String {
+    let mut out = String::from(
+        "# keepane: set-environment's changes, read by the prompt hook. Do not edit.\n\
+         set -l __keepane_s 0\n\
+         string match -qr '^[0-9]+$' -- \"$KEEPANE_ENV_SEQ\"; and set __keepane_s $KEEPANE_ENV_SEQ\n",
+    );
+    for (name, n, value) in changes {
+        if !sh_name(name) {
+            out.push_str(&format!("# {}: not a name a shell can export\n", name.replace('\n', " ")));
+            continue;
+        }
+        let what = match value {
+            Some(v) => format!("set -gx {name} {}", super::actor::fish_quote(v)),
+            None => format!("set -e -g {name}"),
+        };
+        out.push_str(&format!("if test $__keepane_s -lt {n}; {what}; end\n"));
+    }
+    out.push_str(&format!("if test $__keepane_s -lt {seq}; set -gx KEEPANE_ENV_SEQ {seq}; end\n"));
+    out
+}
+
+/// A name a POSIX shell (and fish) can export.
+fn sh_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Write `text` to `path` whole: through a file beside it, renamed over
@@ -167,12 +211,13 @@ impl Server {
 
     fn write_env_scripts(&self) {
         let st = &self.env_state;
-        let (ps, sh) = (ps_script(&st.changes, st.seq), sh_script(&st.changes, st.seq));
+        let (ps, sh, fish) =
+            (ps_script(&st.changes, st.seq), sh_script(&st.changes, st.seq), fish_script(&st.changes, st.seq));
         for stem in st.stems.borrow().iter() {
             if let Some(dir) = stem.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            for (ext, text) in [(".ps1", &ps), (".sh", &sh)] {
+            for (ext, text) in [(".ps1", &ps), (".sh", &sh), (".fish", &fish)] {
                 if let Err(e) = write_whole(&with_ext(stem, ext), text) {
                     log::warn!("set-environment: {}: {e}", with_ext(stem, ext).display());
                 }
@@ -199,7 +244,7 @@ impl Server {
     /// changes are older than any pane to come, but only while the clock
     /// never went back.
     pub(super) fn load_environment(&mut self) {
-        for ext in [".ps1", ".sh"] {
+        for ext in [".ps1", ".sh", ".fish"] {
             let _ = std::fs::remove_file(with_ext(&self.env_stem(), ext));
         }
         let path = with_ext(&self.env_stem(), ".json");
@@ -306,6 +351,11 @@ mod tests {
         );
         assert!(ps.contains("${env:weird name} = 'v'"), "{ps}");
         assert!(ps.contains("{ $env:KEEPANE_ENV_SEQ = '9' }\n"), "{ps}");
+        let fish = fish_script(&c, 9);
+        assert!(fish.contains(r"if test $__keepane_s -lt 5; set -gx FOO 'it\'s $HOME `x`'; end"), "{fish}");
+        assert!(fish.contains("if test $__keepane_s -lt 7; set -e -g GONE; end\n"), "{fish}");
+        assert!(fish.contains("# weird name: not a name a shell can export\n"), "{fish}");
+        assert!(fish.contains("set -gx KEEPANE_ENV_SEQ 9; end\n"), "{fish}");
         // PowerShell's other single quotes are doubled too; braces in a name escaped.
         let ps = ps_script(&changes(&[("A}B", 1, Some("x\u{2019}y"))]), 1);
         assert!(ps.contains("${env:A`}B} = 'x\u{2019}\u{2019}y'"), "{ps}");
@@ -335,9 +385,26 @@ mod tests {
             );
             super::super::run_shell_blocking(&run, &[], None)
         };
-        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(code, 0, "{out}");
         assert_eq!(out.trim(), "[][a b'c][][7]");
+        // fish, where there is one.
+        #[cfg(unix)]
+        if crate::platform::shell::which("fish").is_some() {
+            let script = dir.join("env.fish");
+            std::fs::write(&script, fish_script(&c, 7)).unwrap();
+            let run = format!(
+                "set -gx KEEPANE_ENV_SEQ 5; set -gx KP_GONE here; source '{}'; printf '[%s][%s][%s][%s]' \"$KP_OLD\" \"$KP_NEW\" \"$KP_GONE\" \"$KEEPANE_ENV_SEQ\"",
+                script.display()
+            );
+            let out = std::process::Command::new("fish").args(["--no-config", "-c", &run]).output().unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "[][a b'c][][7]",
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn server(name: &str, dir: &Path) -> Server {
@@ -429,6 +496,31 @@ mod tests {
         assert_eq!(editor[1].style.fg, Color::Idx(6));
         assert!(styles2[at("set-environment")][0].style.bold);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a pane passes into WSL: what `WSLENV` held first, keepane's
+    /// paths translated, no `PATH`, nothing twice, nothing it cannot hold.
+    #[cfg(windows)]
+    #[test]
+    fn wslenv_passes_keepanes_and_the_tables_names() {
+        let n = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let names = n(&[
+            "KEEPANE",
+            "KEEPANE_PANE",
+            "PATH",
+            "KEEPANE_ENV_FILE",
+            "KEEPANE_ENV_SEQ",
+            "KEEPANE_WSL_START",
+            "GOPROXY",
+        ]);
+        assert_eq!(
+            wslenv("", &names),
+            "KEEPANE:KEEPANE_PANE:KEEPANE_ENV_FILE/p:KEEPANE_ENV_SEQ:KEEPANE_WSL_START/p:GOPROXY"
+        );
+        assert_eq!(
+            wslenv("USERPROFILE/p:goproxy/u", &n(&["GOPROXY", "A:B", "C/D", "WSLENV", "X"])),
+            "USERPROFILE/p:goproxy/u:X"
+        );
     }
 
     #[test]

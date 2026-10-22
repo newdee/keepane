@@ -493,6 +493,10 @@ impl vt100::Callbacks for Callbacks {
                 self.prompted = Some(super::actor::Syntax::Posix);
                 None
             }
+            [b"7777", b"keepane-prompt", b"fish"] if shell => {
+                self.prompted = Some(super::actor::Syntax::Fish);
+                None
+            }
             [b"7777", b"keepane-cmd", start, end, ok] if shell => {
                 if let (Some(start), Some(end)) = (local_ms(start), local_ms(end)) {
                     self.marks.push(MarkEvent::Ran { start, end, ok: *ok != b"0" });
@@ -3009,8 +3013,11 @@ mod tests {
         p.process_output(b"PS> \x1b]7777;keepane-prompt\x1b\\");
         assert!(std::mem::take(&mut p.prompted));
         assert_eq!(p.syntax, Syntax::PowerShell, "the shell at the prompt now");
+        p.process_output(b"> \x1b]7777;keepane-prompt;fish\x07");
+        assert!(std::mem::take(&mut p.prompted));
+        assert_eq!(p.syntax, Syntax::Fish);
         // Something else after the word is not keepane's marker.
-        p.process_output(b"\x1b]7777;keepane-prompt;fish\x07");
+        p.process_output(b"\x1b]7777;keepane-prompt;nu\x07");
         assert!(!p.prompted);
     }
 

@@ -22,6 +22,7 @@ pub mod resurrect;
 pub mod server;
 pub mod setup;
 pub mod share;
+pub mod shellhook;
 pub mod sysinfo;
 pub mod takeover;
 pub mod truecolor;

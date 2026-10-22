@@ -119,7 +119,8 @@ Delivered to a shell, a short header (the id and the sender: its name,
 else its pane, else `user`) goes before the command in a form that runs
 nothing and stays in the history: a comment in PowerShell
 (`<# keepane #12 from %lead #> cargo test`), the argument of `:` in bash
-and zsh (`: 'keepane #12 from %lead'; cargo test`); `trace-message 12`
+and zsh (`: 'keepane #12 from %lead'; cargo test`), of `true` in fish;
+`trace-message 12`
 shows the rest. Several lines are joined into one command
 that runs them together, with one result (in bash and zsh, the last
 line's). Delivered to an agent, it is the header, the text and the end
@@ -672,9 +673,15 @@ A shell started with a script or command of its own (`pwsh -File`,
 itself: `Invoke-Expression (keepane __shell-hook | Out-String)` in
 PowerShell, `eval "$(keepane __shell-hook)"` in bash.
 
-Other shells report their commands with the sequences Windows Terminal and
-VS Code read too (OSC 133). For bash under WSL, or over SSH on another
-machine:
+fish gets the hook too (fish 4 marks its commands itself; keepane adds the
+rest), and so does a pane started as `wsl.exe` (`default-shell wsl`, or
+`wsl.exe -d Ubuntu` with no command of its own): keepane starts the WSL
+user's own shell, bash, zsh or fish, reading the same start files a login
+shell would, then the hook. Such a pane keeps the distribution's history,
+and `set-environment`'s variables reach it as they reach a PowerShell
+(through `WSLENV`). Other shells report their commands with the sequences
+Windows Terminal and VS Code read too (OSC 133). For bash over SSH on
+another machine, or a WSL shell started from inside a PowerShell pane:
 
 ```bash
 PS0='\e]133;C\e\\'
@@ -882,19 +889,15 @@ stay. Every tab opened from it joins the same session, as `tmux new -A -s
 main` would.
 
 A pane's directory follows its shell's `cd`, with nothing to set up:
-PowerShell (pwsh or Windows PowerShell), bash and zsh are started with a
-prompt hook that reports the directory after every prompt (an invisible
-OSC 9;9 or OSC 7; your own prompt, oh-my-posh and the like included, is
-left as it is), and for `cmd.exe`, `sh` and other programs keepane reads
-the process's own directory. A
-shell that announces its directory itself (OSC 9;9, quoted or not, or OSC 7
-from bash/zsh under WSL) is believed first, and `keepane set-cwd` (no argument:
-the directory you run it from) sets it by hand:
-
-```bash
-# WSL bash: /mnt/<drive>/... paths map back to Windows drives
-PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
-```
+PowerShell (pwsh or Windows PowerShell), bash, zsh, fish and a `wsl.exe`
+pane's shell are started with a prompt hook that reports the directory
+after every prompt (an invisible OSC 9;9 or OSC 7; your own prompt,
+oh-my-posh and the like included, is left as it is), and for `cmd.exe`,
+`sh` and other programs keepane reads the process's own directory. A
+shell that announces its directory itself (OSC 9;9, quoted or not, or OSC 7;
+from WSL, `/mnt/<drive>/...` maps back to a Windows drive) is believed
+first, and `keepane set-cwd` (no argument: the directory you run it from)
+sets it by hand.
 
 `list-panes` shows the recorded directory, and `#{pane_current_path}` puts
 it on the status line.
@@ -1468,8 +1471,9 @@ sets up the terminal and the option does nothing.
 `set-environment NAME value` adds a variable to the environment every pane
 gets, or changes it; `set-environment -u NAME` takes it out. A pane started
 afterwards has it from the start. A shell already open takes the change at
-its next prompt (PowerShell, bash and zsh, through keepane's prompt hook),
-so whatever it runs from then on has it. A program already running keeps
+its next prompt (PowerShell, bash, zsh, fish and a `wsl.exe` pane's shell,
+through keepane's prompt hook), so whatever it runs from then on has it.
+A program already running keeps
 the environment it started with: no program can change another's, so
 restart it (`respawn-pane -k`) to give it the new one. A variable the
 shell itself set since it started (or since the last change to that
@@ -1813,8 +1817,8 @@ Compared with tmux, these differ for now:
   twice sends it to the program in the box.
 
 Pane messages: `shell` work mode needs keepane's prompt hook (PowerShell,
-bash, zsh), so cmd, sh, fish and the shells under WSL do not take messages
-on their own yet (they can `read-message`); a pane started before keepane
+bash, zsh, fish, and those in a `wsl.exe` pane), so cmd and sh do not take
+messages on their own yet (they can `read-message`); a pane started before keepane
 0.15 has the older hook and must be restarted for it. The phone page shows each
 pane's inbox; the dashboard's tasks and events are not on it yet.
 

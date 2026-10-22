@@ -39,9 +39,51 @@ pub fn named(s: &str) -> Vec<String> {
 }
 
 /// Whether a pane running the program `stem` is a shell keepane hands
-/// commands to (its hook says when it is at a prompt).
+/// commands to (its hook says when it is at a prompt): PowerShell, and
+/// WSL's bash, zsh or fish.
 pub fn takes_commands(stem: &str) -> bool {
-    matches!(stem, "pwsh" | "powershell")
+    matches!(stem, "pwsh" | "powershell" | "wsl")
+}
+
+/// Whether a shell `argv` starts keeps a history file of its own (its hook
+/// reads `KEEPANE_SHELL_HISTORY`): a PowerShell that gets the hook. A WSL
+/// shell keeps the distribution's own.
+pub fn keeps_history(argv: &[String]) -> bool {
+    stem_of(argv).is_some_and(|s| matches!(s.as_str(), "pwsh" | "powershell")) && with_shell_integration(argv) != argv
+}
+
+/// Where WSL's `sh` finds keepane's start script (`shellhook`): a Windows
+/// path, which WSL translates (`WSLENV`, `/p`).
+pub const WSL_START_VAR: &str = "KEEPANE_WSL_START";
+
+/// The start script WSL's `sh` runs, as a Windows path.
+pub fn wsl_start() -> Option<PathBuf> {
+    crate::shellhook::start_files().as_ref().map(|d| d.join("wslstart.sh"))
+}
+
+fn stem_of(argv: &[String]) -> Option<String> {
+    let first = argv.first()?;
+    std::path::Path::new(first).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase())
+}
+
+/// What `wsl.exe` is given after its options to start the user's shell
+/// with keepane's hook: `sh` runs the start script, whose path WSL has
+/// translated into `KEEPANE_WSL_START`.
+const WSL_HOOKED: [&str; 4] = ["-e", "sh", "-c", "exec sh \"$KEEPANE_WSL_START\""];
+
+/// `wsl.exe` with only options that choose where and as whom (`-d`, `-u`,
+/// `--cd`, `~`): the user's shell, which keepane can give its hook. Any
+/// command (`-e`, `--`, a word of its own) runs as given.
+fn wsl_interactive(argv: &[String]) -> bool {
+    let mut i = 1;
+    while i < argv.len() {
+        match argv[i].to_ascii_lowercase().as_str() {
+            "-d" | "--distribution" | "-u" | "--user" | "--cd" if i + 1 < argv.len() => i += 2,
+            "~" => i += 1,
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// PSReadLine's default history file, shared by every PowerShell of the user:
@@ -92,12 +134,21 @@ pub const POWERSHELL_PROMPT_HOOK: &str = "if ($env:KEEPANE_SHELL_HISTORY -and (G
 
 /// `argv` with keepane's shell integration added where it applies: an
 /// interactive PowerShell (pwsh or Windows PowerShell) gets the prompt hook
-/// through `-NoExit -Command`. A PowerShell running a command or file of
-/// its own, and every other program, is left exactly as given.
+/// through `-NoExit -Command`; `wsl.exe` with no command of its own starts
+/// the user's shell through keepane's start script (bash, zsh and fish get
+/// the hook). A PowerShell running a command or file of its own, a `wsl.exe`
+/// running a command, and every other program are left exactly as given.
 pub fn with_shell_integration(argv: &[String]) -> Vec<String> {
-    let Some(first) = argv.first() else { return Vec::new() };
-    let stem = std::path::Path::new(first).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase());
-    if !matches!(stem.as_deref(), Some("pwsh" | "powershell")) {
+    let Some(stem) = stem_of(argv) else { return Vec::new() };
+    if stem == "wsl" {
+        if !wsl_interactive(argv) || wsl_start().is_none() {
+            return argv.to_vec();
+        }
+        let mut run = argv.to_vec();
+        run.extend(WSL_HOOKED.iter().map(|s| s.to_string()));
+        return run;
+    }
+    if !matches!(stem.as_str(), "pwsh" | "powershell") {
         return argv.to_vec();
     }
     // PowerShell takes any unambiguous prefix of a parameter name.
@@ -184,9 +235,25 @@ mod tests {
         // -ExecutionPolicy is not -EncodedCommand; -NoLogo is not -NoExit.
         assert_eq!(with_shell_integration(&s(&["pwsh", "-ExecutionPolicy", "Bypass", "-NoLogo"])).len(), 7);
         // Everything else is untouched.
-        for argv in [s(&["cmd.exe", "/q"]), s(&["wsl.exe"]), s(&["C:\\tools\\pwshell.exe"]), Vec::new()] {
+        for argv in [s(&["cmd.exe", "/q"]), s(&["C:\\tools\\pwshell.exe"]), Vec::new()] {
             assert_eq!(with_shell_integration(&argv), argv);
         }
+        // wsl.exe: its options kept, the start script after them; one with a
+        // command of its own as given.
+        let hooked = |a: &[&str]| [s(a), s(&WSL_HOOKED)].concat();
+        for argv in [&["wsl.exe"][..], &["WSL"], &["wsl", "-d", "Ubuntu", "--cd", "~", "-u", "me"], &["wsl", "~"]] {
+            assert_eq!(with_shell_integration(&s(argv)), hooked(argv), "{argv:?}");
+        }
+        for argv in
+            [&["wsl", "-e", "top"][..], &["wsl", "--", "ls"], &["wsl", "ls"], &["wsl", "-d"], &["wsl", "--exec", "x"]]
+        {
+            assert_eq!(with_shell_integration(&s(argv)), s(argv), "{argv:?}");
+        }
+        assert!(takes_commands("wsl"));
+        // Only PowerShell keeps a history file of keepane's.
+        assert!(
+            keeps_history(&s(&["pwsh"])) && !keeps_history(&s(&["wsl"])) && !keeps_history(&s(&["pwsh", "-c", "1"]))
+        );
         // The hook is one PowerShell statement list with balanced braces,
         // single quotes only where it must quote, and an OSC 9;9 in it.
         let h = POWERSHELL_PROMPT_HOOK;

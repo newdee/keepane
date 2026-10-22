@@ -215,6 +215,9 @@ impl Message {
             (WorkMode::Shell, Syntax::Posix) => {
                 format!(": {}; {}", posix_quote(&header), posix_one_command(&self.text))
             }
+            (WorkMode::Shell, Syntax::Fish) => {
+                format!("true {}; {}", fish_quote(&header), fish_one_command(&self.text))
+            }
             (WorkMode::Ai | WorkMode::Normal, _) => format!("{header}\n{}\n{}", self.text, self.end_line(style)),
         }
     }
@@ -296,17 +299,35 @@ impl EnvelopeStyle {
 
 /// The command language of the shell at a pane's prompt, as its keepane
 /// hook said (`OSC 7777;keepane-prompt`, and `;sh` from the bash and zsh
-/// hooks): what a shell message is typed in.
+/// hooks, `;fish` from fish's): what a shell message is typed in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Syntax {
     #[default]
     PowerShell,
     Posix,
+    Fish,
 }
 
 /// `s` in POSIX single quotes (a `'` inside becomes `'\''`).
 fn posix_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// `s` in fish's single quotes, where `\` and `'` are escaped.
+pub(super) fn fish_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\\', r"\\").replace('\'', r"\'"))
+}
+
+/// A fish command of several lines as one line: the lines, quoted, given to
+/// `eval` as one script (fish has no `:`; `true` is the no-op before it).
+/// One line is left as it is.
+pub fn fish_one_command(text: &str) -> String {
+    let text = text.trim_end_matches(['\r', '\n']);
+    if !text.contains('\n') {
+        return text.to_string();
+    }
+    let quoted: Vec<String> = text.split('\n').map(|l| fish_quote(l.trim_end_matches('\r'))).collect();
+    format!("eval (printf '%s\\n' {} | string collect)", quoted.join(" "))
 }
 
 /// A bash or zsh command of several lines as one line: the lines, quoted,
@@ -873,6 +894,24 @@ mod tests {
         assert!(w.ends_with(r#"; eval "$(printf '%s\n' 'a' 'b')""#), "{w}");
         assert!(!w.contains('\n'), "one line");
         assert_eq!(posix_quote("it's"), r"'it'\''s'");
+    }
+
+    /// fish: `true` before the header (fish has no `:`), its own quoting
+    /// (`\` and `'` escaped), several lines through `eval`.
+    #[test]
+    fn a_fish_command_goes_in_as_one() {
+        assert_eq!(fish_quote(r"it's a\b"), r"'it\'s a\\b'");
+        assert_eq!(fish_one_command("ls -l\n"), "ls -l");
+        assert_eq!(
+            fish_one_command("set a 'x'\necho $a"),
+            r"eval (printf '%s\n' 'set a \'x\'' 'echo $a' | string collect)"
+        );
+        let mut m = msg(3, WorkMode::Shell);
+        m.text = "echo hi".into();
+        assert_eq!(
+            m.wrapped(Syntax::Fish, EnvelopeStyle::Fields),
+            format!("true '{}'; echo hi", m.shell_header(EnvelopeStyle::Fields))
+        );
     }
 
     #[test]

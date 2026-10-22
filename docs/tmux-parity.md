@@ -71,7 +71,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | send-prefix | yes | |
 | server-access | no | single user by design; the pipe is owner-only |
 | set-buffer / show-buffer | yes | `-a`, `-b` |
-| set-environment / show-environment | yes | `-r` / `-u` to remove; one table for the server, kept across restarts. Unlike tmux, a shell already at its prompt (PowerShell, bash, zsh) takes a change at its next prompt; attached, `show-environment` lists what keepane sets in every pane too |
+| set-environment / show-environment | yes | `-r` / `-u` to remove; one table for the server, kept across restarts. Unlike tmux, a shell already at its prompt (PowerShell, bash, zsh, fish, and a `wsl.exe` pane's) takes a change at its next prompt; attached, `show-environment` lists what keepane sets in every pane too |
 | set-hook / show-hooks | part | nine hooks |
 | set-option / show-options | part | the options keepane implements, colours and styles included, each printed in a form `set` reads back; unknown ones accepted and ignored |
 | set-window-option / show-window-options | part | folded into `set-option`; `synchronize-panes` is per window and takes `-t` |

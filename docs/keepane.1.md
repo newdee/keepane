@@ -540,8 +540,9 @@ cost with `+` after it left out a model the list does not have.
   and the machines it lets in (`authorized`: a public key, an address, and
   `shell` and `screen` for what they may do, one machine a line). Beside
   the saved sessions, `environment/`*socket*`.json` keeps
-  `set-environment`'s table, and `.ps1` and `.sh` beside it its changes
-  for the shells' prompt hook.
+  `set-environment`'s table, and `.ps1`, `.sh` and `.fish` beside it its
+  changes for the shells' prompt hook. `shell/` holds the start files that
+  give bash, zsh, fish and a `wsl.exe` pane's shell keepane's hook.
 
 `$XDG_RUNTIME_DIR/keepane-`*uid*`/`*socket-name* (or under `/tmp`)
 : A server's socket; only its user can open the directory.

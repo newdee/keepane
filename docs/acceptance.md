@@ -4789,3 +4789,33 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 7 | 多客户端状态 | 临时 e2e（已删）：两个客户端各开 `prefix e`，各自看到自己 pane 的 `KEEPANE_PANE`（%2、%5）；b 关掉后改表，a 开着的 overlay 不变，a 重新打开看到新值 | 干净（3/3），验收通过 |
 
 - 遗留：zsh 的钩子和 bash 的写法一样，但这台机器的 WSL 没装 zsh，没有实测。WSL 和 fish 的 pane 还拿不到变化（下一项做）。
+## 155. WSL 和 fish 的 pane 也有提示符钩子
+
+用户要求：照建议做（第 3 项）；途中同意在 WSL（Ubuntu-26.04）里装 fish 4.2.1 和 zsh 5.9，用来实测。
+
+- 做了什么：
+  - 共用的钩子挪到新模块 `src/shellhook.rs`（原来在 `platform/unix/shell.rs`，只在 Linux/macOS 编译），Windows 也要用它给 WSL 写启动文件。写文件时去掉 `\r`（`lf`）：Windows 检出用 CRLF（`core.autocrlf=true`），原始字符串里会带 `\r`，WSL 的 shell 会把它当成字的一部分。
+  - `wsl.exe` pane：只带 `-d`、`-u`、`--cd`、`~` 这些选项时，在后面加 `-e sh -c 'exec sh "$KEEPANE_WSL_START"'`；带了命令的照原样。`wslstart.sh` 用 `getent` 找出用户的登录 shell，然后 exec：bash 用 `wslbashrc`（先按登录 shell 的顺序读 `/etc/profile` 和 `~/.profile`，和单独运行 `wsl.exe` 一样，再加钩子）；zsh 用 keepane 的 `ZDOTDIR`；fish 用 `--init-command`；其他 shell 不加钩子。
+  - 实测发现的事实：用 `sh -l` 启动会让 dash 读用户的 `~/.profile`，而用户的 swiftly `env.sh` 用了 bash 语法，dash 读到报 "Bad substitution"，整段退出。所以 sh 只负责找 shell，启动文件由各个 shell 自己读。
+  - 环境变量：Windows 上每个 pane 的 `WSLENV` 加上 keepane 的变量（`KEEPANE_ENV_FILE`、`KEEPANE_WSL_START` 用 `/p` 转换路径）和 `set-environment` 设的名字。`PATH`、`WSLENV` 本身，以及含 `:` 或 `/` 的名字不加。WSL pane 用发行版自己的历史，keepane 不给它建历史文件（`keeps_history`）。
+  - fish：`keepane.fish` 在用户自己的配置之后加载。实测 fish 4.2 自己会输出 OSC 133 的 A、C、D，但不输出 B 和 OSC 7；钩子补上 B、OSC 7、`keepane-prompt;fish` 和环境变量的变化，fish 3 再加 A、C、D。`set-environment` 多写一个 `.fish` 脚本。消息用 fish 的语法投递：`true '头'; 命令`（fish 没有 `:`），多行用 `eval (printf … | string collect)`，引号按 fish 的规则转义（`\` 和 `'`）。
+  - `takes_commands` 加上 `wsl`（Windows）和 `fish`（Linux/macOS），MCP 开这类 pane 时默认用 `shell` 模式。
+- 会不会引入新 bug：
+  - PowerShell pane：钩子和历史文件不变（`keeps_history` 对 pwsh 的判断和原来的 `!= argv` 结果相同，单元测试覆盖）。
+  - bash/zsh pane：钩子文本只是换了位置，原来的历史、标记、shell 模式测试全量通过。
+  - 带命令的 `wsl.exe`（`wsl -e top`、`wsl ls`）照原样，单元测试覆盖。
+  - 每个 Windows pane 多了 `WSLENV`、`KEEPANE_WSL_START`，只对 `wsl.exe` 有意义。
+- 测试：单元 4 个（`shellhook` 启动文件和 `lf`、Windows 的 `wsl.exe` 参数、`wslenv`、fish 的投递格式）＋ 原测试扩展（fish 的环境脚本用真实 fish 跑、`;fish` 标记）；e2e 2 个：`a_wsl_pane_gets_the_hook`（Windows，没有 WSL 发行版时跳过）、`zsh_and_fish_panes_get_the_hook`（Linux/macOS，没装的 shell 跳过）。命令标记用 `list-marks -J` 的 `command` 字段逐字对比，确认提示符结束的位置是对的。官网测试数 638 → 642。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量 + 可测性 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 492 + 10 + 140；读代码发现两处测不到：去 `\r` 在本机的 LF 检出下无从验证；命令标记只检查"含 echo"，提示符结束的标记缺了也会通过 | **有问题**：去 `\r` 拆成 `lf()` 单测；两个 e2e 改成 `-J` 的 `command` 逐字对比（不计数） |
+| 2 | 机制通路 + 全量 | 变异 Windows 14/14、Linux 7/7（Linux 脚本第一次用 `\|` 分隔，切错了两条，换 `^` 后重跑）；Windows 全量通过；Linux 全量 3 次里 `a_right_click_pastes_the_clipboard` 失败 3 次，之后 `wait_output_holds_a_client_until_a_pane_prints` 失败 1 次 | **有问题**（都是测试本身）：① 剪贴板全机共用，并行测试复制的 `row-50..63` 先被粘贴；重试用 Escape 清行，只对 cmd 有效，sh 把 Escape 当字符留在行里，以后每次都对不上（装了 zsh/fish 后多跑一个测试，时序变了，从偶发变成必现）→ 加 `Conn::clear_line`（cmd 用 Escape，sh 用 Ctrl-U），三处同类用法一起改；sh 的 Ctrl-U 回显会多擦提示符，检查改成只看粘贴的文字。② 等待者和 `kill-pane`/`exit`/输出走两条连接，服务器不保证先后 → 发出等待后先确认 300 ms 没有答复。改完 Linux e2e 连跑 5 次 5/5（不计数） |
+| 3 | 全量 + 可复现性 | Windows 全量连跑 2 次 492 + 10 + 140；Linux fmt 0、clippy 0、479 + 140；相关 e2e 连跑 5 次 5/5 | 干净（1/3；第 5 轮有问题，重新计） |
+| 4 | 边界与退化输入 | WSL 里冒充 6 种登录 shell 运行 `wslstart.sh`：zsh、bash 有 `;sh` 标记，fish 有 `;fish`，sh、空、不存在的路径退回 `/bin/sh` 且不加钩子；临时 e2e（已删）：sessions 目录带空格和中文（`kp odd 中文 …`），`wsl.exe ~` 的 pane 拿到正确转换的 `/mnt/c/...` 路径、从家目录启动、拿到变化 | 干净（2/3；同上） |
+| 5 | 静态一致性 | 读整份 diff：Windows `takes_commands`、`with_shell_integration` 的注释还写着只有 bash 和 zsh；README 中英文的投递格式没写 fish（`true` 而不是 `:`） | **有问题**：注释和两份 README 改对（不计数） |
+| 6 | 机制通路 + 全量 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 492 + 10 + 140；变异 Windows 14/14、Linux 7/7 | 干净（1/3） |
+| 7 | Linux + 可复现性 | Linux fmt 0、clippy 0、479 + 140；相关 e2e 连跑 5 次 5/5；Linux e2e 全量连跑 3 次 140/140 | 干净（2/3） |
+| 8 | 多 pane 并发 | 临时 e2e（已删）：一个窗口里两个 `wsl.exe` pane 和一个 PowerShell pane；改一次 `set-environment`，三条消息同时发出，都运行；下一条消息三个都拿到 `everyone`；三个 pane 各有 2 条命令标记 | 干净（3/3），验收通过 |
+
+- 遗留：fish 3（Ubuntu 22.04 带的版本）要钩子补 A、C、D 的那条路，没有实测。WSL 里登录 shell 是 zsh 或 fish 时，只用 `wslstart.sh` 单独实测过（第 4 轮），没有在 WSL pane 里端到端测，因为要改用户的默认 shell。

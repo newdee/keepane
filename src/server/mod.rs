@@ -3121,6 +3121,15 @@ impl Server {
         let mut env = self.keepane_env(pane_id);
         // `set-environment` entries last, so they can override even PATH.
         env.extend(self.env.iter().cloned());
+        // And into WSL too, for a `wsl.exe` the pane runs.
+        #[cfg(windows)]
+        {
+            let base = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("WSLENV")).map(|(_, v)| v.clone());
+            let base = base.or_else(|| std::env::var("WSLENV").ok()).unwrap_or_default();
+            let names: Vec<String> = env.iter().map(|(k, _)| k.clone()).collect();
+            env.retain(|(k, _)| !k.eq_ignore_ascii_case("WSLENV"));
+            env.push(("WSLENV".into(), envvars::wslenv(&base, &names)));
+        }
         env
     }
 
@@ -3137,6 +3146,10 @@ impl Server {
             env.push(("TERM".into(), self.opts.default_terminal.clone()));
         }
         env.extend(self.env_hook_vars());
+        #[cfg(windows)]
+        if let Some(start) = crate::platform::shell::wsl_start() {
+            env.push((crate::platform::shell::WSL_START_VAR.into(), start.to_string_lossy().into_owned()));
+        }
         env
     }
 
@@ -3209,8 +3222,9 @@ impl Server {
         let argv = if argv.is_empty() { resolve_shell(&self.opts) } else { argv.to_vec() };
         let mut env = self.pane_env(id);
         // Only an interactive shell that gets keepane's hook (PowerShell,
-        // bash, zsh) has a history file of its own.
-        let hooked = crate::config::with_shell_integration(&argv) != argv;
+        // bash, zsh; not WSL's, which keeps the distribution's) has a
+        // history file of its own.
+        let hooked = crate::platform::shell::keeps_history(&argv);
         let name = match hist {
             _ if !hooked => None,
             ShellHistory::Shared => None,

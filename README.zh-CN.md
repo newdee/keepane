@@ -71,7 +71,7 @@ pane 当前的状态用一个词表示（`#{pane_state}`，dashboard 和手机�
 
 每个字段是 `名字=值`，用空格隔开；值里不会有空格，程序按空格切开就能读回。`set -g message-envelope json` 改成把同样的字段写成一行 JSON（`{"keepane":1,"id":12,…}`，0.17 之前的写法，shell 命令前也是）；事件日志一直用 JSON。
 
-投给 shell 时，命令前放一个短信封头（编号和发件方：有名字用名字，否则用 pane，否则是 `user`），写成不执行任何东西、又会留在历史里的形式：PowerShell 里是注释（`<# keepane #12 from %lead #> cargo test`），bash 和 zsh 里是 `:` 的参数（`: 'keepane #12 from %lead'; cargo test`）；其余字段用 `trace-message 12` 查看。多行内容会合为一条命令执行，对应一个结果（bash 和 zsh 里取最后一行的结果）。投给 agent 时，内容由信封头、正文和结束行 `[keepane end=12]` 组成，先粘贴进去；回车等粘贴稳定后单独发出（最早在粘贴后 300 ms，并且 150 ms 内没有新输出，最晚 2 秒）。这是因为 agent 的输入框可能吞掉紧跟在粘贴后面的回车（Codex 会这样）。回车后 2.5 秒内没有任何输出，就再发一次；仍然没有，就在 `show-messages` 里提示。这期间有人在 pane 里打字，回车就留给这个人。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
+投给 shell 时，命令前放一个短信封头（编号和发件方：有名字用名字，否则用 pane，否则是 `user`），写成不执行任何东西、又会留在历史里的形式：PowerShell 里是注释（`<# keepane #12 from %lead #> cargo test`），bash 和 zsh 里是 `:` 的参数（`: 'keepane #12 from %lead'; cargo test`），fish 里是 `true` 的参数；其余字段用 `trace-message 12` 查看。多行内容会合为一条命令执行，对应一个结果（bash 和 zsh 里取最后一行的结果）。投给 agent 时，内容由信封头、正文和结束行 `[keepane end=12]` 组成，先粘贴进去；回车等粘贴稳定后单独发出（最早在粘贴后 300 ms，并且 150 ms 内没有新输出，最晚 2 秒）。这是因为 agent 的输入框可能吞掉紧跟在粘贴后面的回车（Codex 会这样）。回车后 2.5 秒内没有任何输出，就再发一次；仍然没有，就在 `show-messages` 里提示。这期间有人在 pane 里打字，回车就留给这个人。`task` 将派发、执行和回复关联起来；`hop` 记录消息转发次数，超过 `message-hop-limit`（默认 8）便拒收，避免 agent 循环回信。
 
 发送方能选的字段按名字给：`--to`（目标 pane，简写 `-t`）、`--re 12`（回复第 12 条消息，不写 `--to` 就发给它的发送方；`-r` 回复本 pane 正在处理的那条）、`--task 12`（接着第 12 号任务）。其余由 keepane 填：谁发的（`from`、`name`、`mode`）、编号、hop 和 `via`。发送方改不了它们，所以信封头可信，hop 上限也照样管用：
 
@@ -352,7 +352,7 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 
 带脚本或命令启动的 shell（`pwsh -File`、`bash -c`）keepane 不去动它，也就没有 hook；可以在那个脚本里自己装上：PowerShell 里写 `Invoke-Expression (keepane __shell-hook | Out-String)`，bash 里写 `eval "$(keepane __shell-hook)"`。
 
-别的 shell 用 Windows Terminal 和 VS Code 也认的那套序列（OSC 133）报告命令。WSL 里的 bash，或者 SSH 到别的机器上的 bash：
+fish 也有 hook（fish 4 自己标记命令，keepane 补上其余部分）。以 `wsl.exe` 启动的 pane 也有（`default-shell wsl`，或者不带命令的 `wsl.exe -d Ubuntu`）：keepane 启动 WSL 用户自己的 shell（bash、zsh 或 fish），先按登录 shell 的方式读启动文件，再装上 hook。这种 pane 用发行版自己的历史；`set-environment` 的变量通过 `WSLENV` 传进去，和 PowerShell 一样能拿到。别的 shell 用 Windows Terminal 和 VS Code 也认的那套序列（OSC 133）报告命令。SSH 到别的机器上的 bash，或者在 PowerShell pane 里自己启动的 WSL shell：
 
 ```bash
 PS0='\e]133;C\e\\'
@@ -449,13 +449,7 @@ keepane windows-terminal remove
 
 ### pane 记住自己在哪个目录
 
-pane 的目录跟着 shell 的 `cd` 走，不用你配置：启动 PowerShell（pwsh 或 Windows PowerShell）、bash、zsh 时 keepane 挂一个 prompt 钩子，每次提示符后面追加一段不可见的 OSC 9;9 或 OSC 7 上报目录（你自己的 prompt、oh-my-posh 之类照旧）；`cmd.exe`、`sh` 和其他程序则直接读进程自己的工作目录。shell 自己上报的目录（OSC 9;9，带不带引号都行；WSL 里 bash/zsh 的 OSC 7）优先采信，`keepane set-cwd`（不带参数就是你运行它时所在的目录）可以手动指定，也可以 `keepane set-cwd -t work:0.1 D:\proj` 给别的 pane 指定。
-
-WSL 里的 bash 用 OSC 7 上报，`/mnt/c/...` 这样的路径会自动映射回 `C:\...`：
-
-```bash
-PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
-```
+pane 的目录跟着 shell 的 `cd` 走，不用你配置：启动 PowerShell（pwsh 或 Windows PowerShell）、bash、zsh、fish 和 `wsl.exe` pane 里的 shell 时 keepane 挂一个 prompt 钩子，每次提示符后面追加一段不可见的 OSC 9;9 或 OSC 7 上报目录（你自己的 prompt、oh-my-posh 之类照旧）；`cmd.exe`、`sh` 和其他程序则直接读进程自己的工作目录。shell 自己上报的目录（OSC 9;9，带不带引号都行；OSC 7，从 WSL 来的 `/mnt/<盘符>/...` 会映射回 Windows 的盘）优先采信，`keepane set-cwd`（不带参数就是你运行它时所在的目录）可以手动指定，也可以 `keepane set-cwd -t work:0.1 D:\proj` 给别的 pane 指定。
 
 `list-panes` 能看到每个 pane 记的目录，状态栏里用 `#{pane_current_path}` 显示。
 
@@ -755,7 +749,7 @@ keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时
 
 ### 环境变量
 
-`set-environment 名字 值` 给每个 pane 拿到的环境变量加一个或改一个，`set-environment -u 名字` 去掉它。之后新开的 pane 一启动就有。已经开着的 shell 在下一次显示提示符时拿到这个变化（PowerShell、bash、zsh，通过 keepane 的提示符钩子），之后它运行的程序都有。已经在跑的程序还是启动时的环境：一个程序改不了另一个程序的环境，要新值就重启它（`respawn-pane -k`）。shell 自己在启动后（或这个名字上次变化后）设的值不会被覆盖。这张表和会话存在一起，服务器重启后还在；`~/.keepane.conf` 先读，它设的名字以它为准。
+`set-environment 名字 值` 给每个 pane 拿到的环境变量加一个或改一个，`set-environment -u 名字` 去掉它。之后新开的 pane 一启动就有。已经开着的 shell 在下一次显示提示符时拿到这个变化（PowerShell、bash、zsh、fish 和 `wsl.exe` pane 里的 shell，通过 keepane 的提示符钩子），之后它运行的程序都有。已经在跑的程序还是启动时的环境：一个程序改不了另一个程序的环境，要新值就重启它（`respawn-pane -k`）。shell 自己在启动后（或这个名字上次变化后）设的值不会被覆盖。这张表和会话存在一起，服务器重启后还在；`~/.keepane.conf` 先读，它设的名字以它为准。
 
 ```tmux
 set-environment GOPROXY https://goproxy.cn    # 每个 pane 从下一次提示符起都有
@@ -891,7 +885,7 @@ Linux 和 macOS 上暂时没有 `keepane update`（只提示怎么升级，用 H
 - hook 仅支持前文列出的事件；`choose-tree` 按子串过滤，不支持 tmux 格式串过滤。
 - `display-popup` 中，前缀键仍归 keepane 处理；连按两次可将前缀键发送给弹窗中的程序。
 
-pane 消息：`shell` 工作模式依赖 keepane 的提示符钩子（PowerShell、bash、zsh），所以 cmd、sh、fish 和 WSL 里的 shell 暂时不会自己接收消息（可以用 `read-message` 取）；keepane 0.15 之前启动的 pane 用的是旧钩子，要重开才行。手机页面能看每个 pane 的收件箱，dashboard 里的任务和事件还没有上手机页面。
+pane 消息：`shell` 工作模式依赖 keepane 的提示符钩子（PowerShell、bash、zsh、fish，以及 `wsl.exe` pane 里的这些 shell），所以 cmd、sh 暂时不会自己接收消息（可以用 `read-message` 取）；keepane 0.15 之前启动的 pane 用的是旧钩子，要重开才行。手机页面能看每个 pane 的收件箱，dashboard 里的任务和事件还没有上手机页面。
 
 命令和按键逐条对照见 `docs/tmux-parity.md`。
 

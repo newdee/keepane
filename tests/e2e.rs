@@ -478,6 +478,16 @@ impl Conn {
     }
 
     /// Prefix (C-b) followed by a key.
+    /// Clear what is typed at `PROMPT_SHELL`'s prompt: Escape for cmd, the
+    /// terminal's line kill (Ctrl-U) for sh, which takes an Escape as text.
+    async fn clear_line(&mut self) {
+        if cfg!(windows) {
+            self.key(VK_ESCAPE, '\x1b', 0).await;
+        } else {
+            self.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await;
+        }
+    }
+
     async fn prefix(&mut self, ch: char) {
         self.key(b'B' as u16, '\x02', LEFT_CTRL_PRESSED).await;
         let (vk, ctrl) = match ch {
@@ -4278,6 +4288,7 @@ async fn wait_output_holds_a_client_until_a_pane_prints() {
     // -i: any case.
     let mut w = h.connect().await;
     w.command(&["wait-output", "-i", "-t", "w:0", "shout"], false).await;
+    assert!(tokio::time::timeout(Duration::from_millis(300), w.next()).await.is_err(), "answered at once");
     let shout = if cfg!(windows) { "echo SH^OUT" } else { "echo SH''OUT" };
     h.cli(&["send-keys", "-t", "w:0", shout, "Enter"]).await;
     match w.next().await {
@@ -4290,6 +4301,8 @@ async fn wait_output_holds_a_client_until_a_pane_prints() {
     h.wait_capture("w:1", "prompt", |s| s.contains("keepane>")).await;
     let mut w = h.connect().await;
     w.command(&["wait-output", "-t", "w:1", "never-printed"], false).await;
+    // Waiting (its connection is not the one that ends the pane).
+    assert!(tokio::time::timeout(Duration::from_millis(300), w.next()).await.is_err(), "answered at once");
     h.cli(&["send-keys", "-t", "w:1", "exit", "Enter"]).await;
     match w.next().await {
         ServerMsg::Error(e) => assert!(e.contains("exited with 0; 'never-printed' not seen"), "{e}"),
@@ -4299,6 +4312,7 @@ async fn wait_output_holds_a_client_until_a_pane_prints() {
     h.cli(&["new-window", "-d", "-t", "w"]).await;
     let mut w = h.connect().await;
     w.command(&["wait-output", "-t", "w:1", "never-printed"], false).await;
+    assert!(tokio::time::timeout(Duration::from_millis(300), w.next()).await.is_err(), "answered at once");
     h.cli(&["kill-pane", "-t", "w:1"]).await;
     match tokio::time::timeout(Duration::from_secs(5), w.next()).await {
         Ok(ServerMsg::Error(e)) => assert!(e.contains("is gone"), "{e}"),
@@ -7426,11 +7440,7 @@ async fn the_copy_mode_vi_table_binds_keys_in_copy_mode() {
     // Outside copy mode, i is just typed.
     c.type_str("i").await;
     c.wait_for("i typed into the shell", |s| s.contents().contains("keepane>i")).await;
-    if cfg!(windows) {
-        c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its line
-    } else {
-        c.key(b'U' as u16, '\x15', LEFT_CTRL_PRESSED).await; // the terminal's line kill
-    }
+    c.clear_line().await;
     c.wait_for("the line cleared", |s| !s.contents().contains("keepane>i")).await;
     // A second prompt line, so the copy-mode cursor has a row above it
     // whatever row the shell's first prompt was on.
@@ -7629,14 +7639,15 @@ async fn a_right_click_pastes_the_clipboard() {
             // Right button down and up (bit 2 of the buttons mask).
             c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: 5, buttons: 2, ctrl: 0, flags: 0 })).await;
             c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: 5, buttons: 0, ctrl: 0, flags: 0 })).await;
-            let want = format!("keepane>{text}");
+            // The text itself: after sh's line kill the terminal's echo may
+            // have rubbed out some of the prompt too, though not the line.
             let seen =
-                tokio::time::timeout(Duration::from_secs(2), c.wait_for("the paste", |s| s.contents().contains(&want)));
+                tokio::time::timeout(Duration::from_secs(2), c.wait_for("the paste", |s| s.contents().contains(text)));
             if seen.await.is_ok() {
                 return;
             }
             eprintln!("attempt {attempt}: the clipboard held something else; clearing the line");
-            c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its input line on Escape
+            c.clear_line().await;
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         panic!("a right click never pasted {text:?}:\n{}", c.text());
@@ -7651,7 +7662,7 @@ async fn a_right_click_pastes_the_clipboard() {
     c.wait_for("copy mode", |s| s.rows(0, COLS).next().unwrap().contains("[3/")).await;
     right_click_pastes(&mut c, "echo second-paste").await;
     assert!(!c.row(0).contains("[3/"), "copy mode ended: {:?}", c.row(0));
-    c.key(VK_ESCAPE, '\x1b', 0).await; // cmd clears its input line on Escape
+    c.clear_line().await;
     // On the status line a right click is not a paste.
     set_clipboard("echo not-this-one").await;
     c.send(ClientMsg::Mouse(MouseRecord { x: 10, y: ROWS as i16 - 1, buttons: 2, ctrl: 0, flags: 0 })).await;
@@ -10124,6 +10135,15 @@ async fn a_pane_made_for_an_agent_is_the_one_it_asked_for_whatever_hooks_do() {
     h.cli(&["kill-server"]).await;
 }
 
+/// Whether `list-marks -J` output has a command that is `command` exactly
+/// (the prompt not in it).
+fn has_command(json: &str, command: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .is_some_and(|marks| marks.iter().any(|m| m["command"].as_str() == Some(command)))
+}
+
 /// The last line of a pane's text that is not blank.
 fn last_line(screen: &str) -> String {
     screen.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().trim_end().to_string()
@@ -10198,6 +10218,81 @@ async fn set_environment_reaches_the_shells_already_running() {
     h.cli(&["send-keys", "-t", "env:1.0", "Enter"]).await;
     h.cli(&["send-keys", "-t", "env:1.0", &show("5"), "Enter"]).await;
     h.wait_joined("env:1.0", "its own value kept", |t| t.contains("[5:mine]")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// A WSL pane runs the user's own shell with keepane's hook: it says when
+/// it is at its prompt, knows its pane (`KEEPANE_PANE` inside WSL), has
+/// `set-environment`'s table from the start and takes a change at its next
+/// prompt, marks its commands, and runs a message in `shell` mode.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wsl_pane_gets_the_hook() {
+    // A machine with no WSL distribution (CI's) has nothing to try.
+    let usable = std::process::Command::new("wsl.exe").args(["-e", "true"]).output().is_ok_and(|o| o.status.success());
+    if !usable {
+        eprintln!("no WSL distribution here: skipped");
+        return;
+    }
+    let h = Harness::start("wslhook").await;
+    h.cli(&["set-environment", "KP_AT_START", "from the start"]).await;
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "w", "-x", "120", "-y", "30", "wsl.exe"]).await;
+    assert_eq!(code, 0, "{err}");
+    at_hooked_prompt(&h, "w:0.0").await;
+    let id = pane_id(&h, "w:0.0").await;
+    h.cli(&["send-keys", "-t", "w:0.0", "echo \"[p:$KEEPANE_PANE][s:$KP_AT_START]\"", "Enter"]).await;
+    h.wait_joined("w:0.0", "its pane and the table", |t| t.contains(&format!("[p:{id}][s:from the start]"))).await;
+    h.cli(&["set-environment", "KP_WSL", "into wsl"]).await;
+    h.cli(&["send-keys", "-t", "w:0.0", "Enter"]).await;
+    h.cli(&["send-keys", "-t", "w:0.0", "echo \"[e:$KP_WSL]\"", "Enter"]).await;
+    h.wait_joined("w:0.0", "the change", |t| t.contains("[e:into wsl]")).await;
+    h.wait_for_cli("its commands marked", &["list-marks", "-J", "-t", "w:0.0"], |_, out| {
+        has_command(out, "echo \"[e:$KP_WSL]\"")
+    })
+    .await;
+    let (code, _, err) = h.cli(&["send-message", "--to", &format!("%{id}"), "echo from-a-''message"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_joined("w:0.0", "the message run", |t| t.lines().any(|l| l.trim() == "from-a-message")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// zsh and fish panes (where they are installed) get keepane's hook as
+/// bash does: they say when they are at their prompt, take a
+/// `set-environment` change at the next one, have their commands marked
+/// (fish 4 marks them itself), and run a message in `shell` mode, in their
+/// own syntax.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn zsh_and_fish_panes_get_the_hook() {
+    let shells: Vec<&str> = ["zsh", "fish"].into_iter().filter(|s| keepane::config::which(s).is_some()).collect();
+    if shells.is_empty() {
+        eprintln!("neither zsh nor fish here: skipped");
+        return;
+    }
+    let h = Harness::start("zshfish").await;
+    for (i, shell) in shells.iter().enumerate() {
+        let target = format!("s{i}:0.0");
+        let (code, _, err) = h.cli(&["new", "-d", "-s", &format!("s{i}"), "-x", "120", "-y", "30", shell]).await;
+        assert_eq!(code, 0, "{shell}: {err}");
+        at_hooked_prompt(&h, &target).await;
+        let id = pane_id(&h, &target).await;
+        h.cli(&["set-environment", "KP_HOOKED", &format!("for {shell}")]).await;
+        h.cli(&["send-keys", "-t", &target, "Enter"]).await;
+        h.cli(&["send-keys", "-t", &target, "echo \"[e:$KP_HOOKED]\"", "Enter"]).await;
+        h.wait_joined(&target, &format!("{shell}: the change"), |t| t.contains(&format!("[e:for {shell}]"))).await;
+        // Marked, the command alone (where the prompt ends is known).
+        h.wait_for_cli(&format!("{shell}: marked"), &["list-marks", "-J", "-t", &target], |_, out| {
+            has_command(out, "echo \"[e:$KP_HOOKED]\"")
+        })
+        .await;
+        let (code, _, err) = h.cli(&["send-message", "--to", &format!("%{id}"), "echo from-a-'message'"]).await;
+        assert_eq!(code, 0, "{shell}: {err}");
+        h.wait_joined(&target, &format!("{shell}: the message run"), |t| {
+            t.lines().any(|l| l.trim() == "from-a-message")
+        })
+        .await;
+        eprintln!("{shell}: hooked");
+    }
     h.cli(&["kill-server"]).await;
 }
 
