@@ -210,6 +210,12 @@ pub enum Cmd {
         /// `-J`: as JSON, every figure as a number.
         json: bool,
     },
+    /// `trace-pane [-J] [-t pane]`: what the pane's agent did, step by step:
+    /// its latest turns, each model call and tool in them, from when to when.
+    TracePane {
+        target: Option<Target>,
+        json: bool,
+    },
     /// `copy-output [-p] [-t pane]`: what the pane's last command printed,
     /// to a paste buffer and the clipboard; `-p` prints it instead.
     CopyOutput {
@@ -1059,6 +1065,13 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)
             }
             Cmd::ListAgents { json } => f.write_str(if *json { "list-agents -J" } else { "list-agents" }),
+            Cmd::TracePane { target, json } => {
+                f.write_str("trace-pane")?;
+                if *json {
+                    f.write_str(" -J")?;
+                }
+                fmt_target(f, target)
+            }
             Cmd::StatusLine { target, json } => {
                 f.write_str("status-line")?;
                 if *json {
@@ -2310,6 +2323,7 @@ pub const COMMANDS: &[&str] = &[
     "list-keys",
     "list-marks",
     "list-agents",
+    "trace-pane",
     "status-line",
     "copy-output",
     "hints",
@@ -2453,6 +2467,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-keys", &[]),
     ("list-marks", &["-J", "-t"]),
     ("list-agents", &["-J"]),
+    ("trace-pane", &["-J", "-t"]),
     ("status-line", &["-J", "-t"]),
     ("copy-output", &["-p", "-t"]),
     ("hints", &[]),
@@ -2909,6 +2924,18 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::StatusLine { target, json }
+        }
+        "trace-pane" => {
+            let (mut target, mut json) = (None, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-J" => json = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::TracePane { target, json }
         }
         "list-agents" => {
             let mut json = false;
@@ -4724,7 +4751,14 @@ mod tests {
         assert_eq!(p("status-line"), Cmd::StatusLine { target: None, json: false });
         assert!(parse_line("list-agents -x").is_err() && parse_line("list-agents x").is_err());
         let all = ["trace-message 5 -w 3 -J", "show-task 12 -J", "show-task 12", "list-marks -J -t %3", "list-marks"];
-        for s in all.into_iter().chain(["list-agents -J", "list-agents", "status-line -J -t work", "status-line"]) {
+        for s in all.into_iter().chain([
+            "list-agents -J",
+            "list-agents",
+            "trace-pane -J -t %3",
+            "trace-pane",
+            "status-line -J -t work",
+            "status-line",
+        ]) {
             assert_eq!(p(&p(s).to_string()), p(s), "{s}");
         }
         assert!(parse_line("show-task 12 -x").unwrap_err().contains("unknown flag"));

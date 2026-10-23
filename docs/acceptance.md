@@ -5020,3 +5020,42 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 机制存活 | 6 个变异全部抓到（恐龙速度不随 CPU、不跳、企鹅不滑、网格不随 CPU、烟花不随输出、消息不放烟花） | 干净（1/3） |
 | 2 | 全量 + 跨平台 | Windows 500 + 11 + 144；Linux fmt 0、clippy 0、485 + 142 | 干净（2/3） |
 | 3 | 可复现 | 时钟 e2e 连跑 3 次 3/3（26.7、26.7、26.6 秒）；逐帧确定性测试通过 | 干净（3/3），验收通过 |
+## 164. Trace：pane 里 agent 的每一步，dashboard 里的瀑布图
+
+- 需求：用户希望追踪 pane 里的 agent，实时看到它在做什么，在 `Ctrl+b v` 里有单独一栏，用瀑布图展示（参考 kobra.systems 的 trace-waterfall），不同任务类型用不同颜色。选定方案：dashboard 右侧新增 Trace 标签页；默认展开最新一轮，之前的折叠；先做终端版。
+- 改法：
+  - `server/trace.rs`：把 transcript 的每一行变成步骤（span）。
+    - 每一轮从提问到最后一次回复；每次模型调用从上一步到回复写下；每个工具从调用到收到结果，标出是否失败。
+    - 工具按名字分类：读、改、运行、子 agent、其他。
+    - 支持 Claude Code、Codex、pi 三种格式。
+    - Claude 子 agent 的步骤，按 tool_result 里的 `agentId:` 挂到启动它的那次调用下面；找不到时，挂到它开始时正在运行的那个 agent 调用下面。
+    - 一轮还在进行、又没有工具在跑时，补一个 thinking 步骤，从上一步到现在。
+    - 每个 transcript 最多保留 3000 步，超出时整轮丢掉最旧的。
+  - `agents.rs`：Tail 读 usage 的同时喂给 Steps；watcher 每 2 秒合并成 `Stats.trace`，保留最近 20 轮。
+  - 新命令 `trace-pane [-J] [-t pane]`：输出树状文本或 JSON。
+  - dashboard：新增 Trace 标签页。
+    - 第一行是统计数字，第二行是颜色说明。
+    - 按类型着色：模型品红 █、读青 ▓、改黄 ▓、运行蓝 ▓、子 agent 绿 ▒、其他白；失败红色并标 ✗；进行中加粗，末尾 ▶。
+    - 文件路径保留末尾部分，glob 模式保持原样。
+    - `e` 展开或折叠全部轮次；一轮结束后显示等你等了多久。
+    - 标签太多放不下时，非当前的标签缩成 3 个字母。
+- 会不会引入新 bug：
+  - 读 usage 的逻辑没变（全量测试通过）。
+  - 内存有上限：每个 transcript 3000 步，每个 pane 20 轮。
+  - 新增的一份解析在 watcher 线程上运行，和原来读 transcript 是同一次读取。
+  - 改动 dashboard 原有测试 1 处：窄窗口下标签名显示为缩写。
+- 发现并修掉的问题：
+  - 回复写完后的同一条回复的后续行会新开一个空轮次。用真实 transcript 发现，修正了 model() 里的处理顺序。
+  - `took` 丢掉了秒数（3m12s 显示成 3m）。
+  - Codex 的模型调用应从用户消息开始计时，而不是从 task_started。
+  - glob 模式被当成路径截断。
+- 测试：
+  - trace 单元测试 8 个：Claude 的一轮、进行中和中断、多余的行不新开轮次、Codex、pi、合并与子 agent、长 transcript 截断、工具分类和参数摘要。
+  - dashboard 测试 `the_trace_is_a_waterfall_of_the_turns`：检查列位置、颜色、折叠、窄窗口和无 agent 的情况。
+  - e2e `a_panes_agent_is_read_from_its_transcript` 扩展：通过真实 server 运行 `trace-pane -J` 和树状输出，以及 agent 退出后的情况。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制存活 | 5 个变异全部抓到（忽略失败、模型调用从回复时刻开始、子 agent 不挂接、没有 thinking、颜色不分类型） | 干净（1/3） |
+| 2 | 全量 + 跨平台 | Windows 509 + 11 + 144；Linux fmt 0、clippy 0、494 + 142 | 干净（2/3） |
+| 3 | 真实数据 + 可复现 | 本机全部 Claude transcript：50 个文件、31042 步，0 处违反不变量（每步都有父步骤、结束不早于开始、没有空轮次），release 版 4.5 秒；agent e2e 连跑 3 次 3/3（12.2 秒） | 干净（3/3），验收通过 |

@@ -29,6 +29,7 @@ mod public_ip;
 pub mod render;
 mod share_host;
 mod shellhist;
+pub mod trace;
 mod web_fit;
 mod web_host;
 
@@ -6217,6 +6218,7 @@ impl Server {
                 }
             }
             Cmd::ListAgents { json } => self.list_agents(json),
+            Cmd::TracePane { target, json } => self.trace_pane(target.as_ref(), cid, json),
             Cmd::StatusLine { target, json } => match self.resolve_session(target.as_ref(), cid) {
                 Ok(sid) => self.status_line_out(sid, json),
                 Err(e) => Outcome::Error(e),

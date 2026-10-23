@@ -112,6 +112,24 @@ set -g pane-border-status top
 set -g pane-border-format " #{pane_index} #{?agent,#{agent_model} #{agent_cost} ctx #{agent_context},#{pane_current_command}} "
 ```
 
+### agent 正在一步步做什么
+
+同样这些 transcript 也记下了 agent 每一步做了什么、什么时候做的：每一轮（从你的提问到它最后一次回复），以及这一轮里每次调用模型、每次运行工具的起止时间，和有没有失败。dashboard 右边切到 Trace 标签页（按 `]`），会把所选 pane 的 agent 画成瀑布图，每 2 秒刷新：
+
+```
+claude  claude-opus-5-5  $2.50  41k tokens  model calls 3  tools 4  ✗ 1 failed
+▸ add the share command                                            5.0s
+▾ fix the test running                                            1m40s
+  model 1.2k tokens                10s  █████
+  Read …\src\share.rs              10s       █████
+  Bash ✗ cargo test                30s            ███████████████
+  Task find it                     10s                           █████
+    Glob **/*.rs                   1.0s                           █
+  model thinking                   40s                                ████▶
+```
+
+每种步骤一种颜色：模型品红，读取和搜索青色，改文件黄色，运行命令蓝色，子 agent 绿色，其他工具不着色，失败的红色并标 `✗`；还在进行的加粗，末尾有 `▶`。Claude 子 agent 的步骤排在启动它的那次调用下面。默认展开最新的一轮，之前的每轮只显示一行（按 `e` 全部展开）；一轮结束后，显示 agent 已经等你多久了。transcript 是一件事做完才写一行，所以模型调用要等回复写下来才显示；一轮还在进行、又没有工具在跑时，就是模型从上一步起一直在工作（`thinking`）。`keepane trace-pane -t <pane>` 把同样的内容打印成树，`-J` 输出 JSON（每一步的类型、名字、参数摘要、起止毫秒数、父步骤）。
+
 只读 keepane pane 里的 agent。但如果别处（另一个终端、编辑器）的 agent 同时在同一个目录里工作，它的记录写在同一个文件夹，会被算进这个 pane。
 
 消息及 pane 状态变化会写入事件日志：`%LOCALAPPDATA%\keepane\events\<socket>\2026-09-26.jsonl`，保留 30 天（`event-log`、`event-log-days`、`event-log-max`）。`list-tasks`、`show-task`、`trace-message`、`list-events` 读的就是它。服务端停止时，未投递的消息会被丢弃，并留下日志记录。pane 名字和工作模式随 session 保存。设计细节见 [docs/design/mailbox.md](docs/design/mailbox.md)。

@@ -27,6 +27,7 @@ pub const QUERIES: &[&str] = &[
     "list-tasks",
     "capture-pane",
     "trace-message",
+    "trace-pane",
     "show-task",
     "web-status",
 ];
@@ -387,10 +388,12 @@ pub enum Tab {
     Screen,
     Scrollback,
     Events,
+    /// The pane's agent, step by step: a waterfall of its turns.
+    Trace,
     Detail,
 }
 
-const TABS: [Tab; 4] = [Tab::Screen, Tab::Scrollback, Tab::Events, Tab::Detail];
+const TABS: [Tab; 5] = [Tab::Screen, Tab::Scrollback, Tab::Events, Tab::Trace, Tab::Detail];
 
 impl Tab {
     fn word(self) -> &'static str {
@@ -398,13 +401,14 @@ impl Tab {
             Tab::Screen => "Screen",
             Tab::Scrollback => "Scrollback",
             Tab::Events => "Events",
+            Tab::Trace => "Trace",
             Tab::Detail => "Detail",
         }
     }
 
     /// Read from the bottom up (a screen, a log) rather than from the top.
     fn read_up(self) -> bool {
-        self != Tab::Detail
+        !matches!(self, Tab::Detail | Tab::Trace)
     }
 }
 
@@ -480,6 +484,8 @@ pub struct Board {
     pub now: i64,
     /// How many are connected to the phones' page, while it is served.
     pub web: Option<usize>,
+    /// The Trace tab shows every turn open, not only the latest (`e`).
+    pub trace_all: bool,
 }
 
 /// Visible width of text that may hold SGR sequences.
@@ -678,6 +684,7 @@ impl Board {
             height,
             now: 0,
             web: None,
+            trace_all: false,
         }
     }
 
@@ -762,6 +769,7 @@ impl Board {
         Some(match self.tab {
             Tab::Screen => owned(&["capture-pane", "-p", "-e", "-t", &id]),
             Tab::Scrollback => owned(&["capture-pane", "-p", "-e", "-S", "-2000", "-t", &id]),
+            Tab::Trace => owned(&["trace-pane", "-J", "-t", &id]),
             _ => owned(&["list-events", "-t", &id, "-n", "300"]),
         })
     }
@@ -810,7 +818,9 @@ impl Board {
         // Up is away from the bottom for what is read from the bottom, and
         // back towards the top for what is read from the top.
         let by = if self.tab.read_up() { up } else { -up };
-        self.scroll = (self.scroll as isize + by).clamp(0, self.main.len() as isize) as usize;
+        // The trace comes as one line and is drawn as many.
+        let most = if self.tab == Tab::Trace { 10_000 } else { self.main.len() };
+        self.scroll = (self.scroll as isize + by).clamp(0, most as isize) as usize;
     }
 
     fn page(&self) -> isize {
@@ -1074,6 +1084,7 @@ impl Board {
             KeyCode::Home | KeyCode::Char('g') => self.scroll_by(self.main.len() as isize),
             KeyCode::End | KeyCode::Char('G') => self.scroll_by(-(self.main.len() as isize)),
             KeyCode::Enter => self.focus_on(self.left),
+            KeyCode::Char('e') if self.tab == Tab::Trace => self.trace_all = !self.trace_all,
             _ => {}
         }
         Action::Redraw
@@ -1398,11 +1409,19 @@ impl Board {
 
     fn main_box(&self, r: Rect) -> Vec<String> {
         let focused = self.focus == Panel::Main;
-        let tabs = TABS
-            .iter()
-            .map(|t| if *t == self.tab { format!("\x1b[1;32m{}\x1b[0m", t.word()) } else { t.word().to_string() })
-            .collect::<Vec<_>>()
-            .join("│");
+        // The tabs by name; where that leaves the title too little room,
+        // the others by their first three letters.
+        let tabs_of = |short: bool| {
+            TABS.iter()
+                .map(|t| match (*t == self.tab, short) {
+                    (true, _) => format!("\x1b[1;32m{}\x1b[0m", t.word()),
+                    (false, true) => t.word().chars().take(3).collect(),
+                    (false, false) => t.word().to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("│")
+        };
+        let tabs = if width_of(&tabs_of(false)) + 36 > r.w { tabs_of(true) } else { tabs_of(false) };
         let (title, mut head) = match self.chosen_row() {
             Some(p) => {
                 let name = if p.name.is_empty() { String::new() } else { format!(" {}", p.name) };
@@ -1462,6 +1481,7 @@ impl Board {
         let body: Vec<String> = match (&self.dialog, self.tab) {
             (Some(Dialog::Help), _) => help_lines(),
             (_, Tab::Events) => self.main.iter().map(|l| event_line(l)).collect(),
+            (_, Tab::Trace) => trace_view(&self.main.concat(), r.inner_w(), self.trace_all),
             // Read in full, laid out: a message's life, a task's steps.
             (_, Tab::Detail) => self.detail_view(r.inner_w()),
             _ => self.main.clone(),
@@ -1517,6 +1537,7 @@ impl Board {
                 "j/k pick (shown right)  g/G first/last  Enter scroll it  d delete  K/J move  t to top  u undo delete"
             }
             Panel::Tasks => "j/k pick (shown right)  g/G first/last  Enter scroll it",
+            Panel::Main if self.tab == Tab::Trace => "j/k scroll  g/G top/bottom  e every turn  [/] tab  h back",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
         let all = "Tab/1230 panel  / filter  ? keys  q quit";
@@ -1924,6 +1945,195 @@ fn help_lines() -> Vec<String> {
     .collect()
 }
 
+/// A step of the trace, as `trace-pane -J` gives it.
+struct Step {
+    id: String,
+    parent: Option<String>,
+    kind: String,
+    name: String,
+    detail: String,
+    start: i64,
+    end: Option<i64>,
+    failed: bool,
+    tokens: u64,
+}
+
+impl Step {
+    fn parse(v: &serde_json::Value) -> Step {
+        let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        Step {
+            id: s("id"),
+            parent: v["parent"].as_str().map(str::to_string),
+            kind: s("kind"),
+            name: s("name"),
+            detail: s("detail"),
+            start: v["start"].as_i64().unwrap_or(0),
+            end: v["end"].as_i64(),
+            failed: v["failed"].as_bool() == Some(true),
+            tokens: v["tokens"].as_u64().unwrap_or(0),
+        }
+    }
+}
+
+/// A step's colour and the character its bar is drawn in, by its kind:
+/// the model magenta, reading cyan, changing files yellow, running a
+/// command blue, another agent green, any other tool plain; a step that
+/// failed red. The characters differ too, for a terminal of one colour.
+fn step_look(kind: &str, failed: bool) -> (&'static str, &'static str) {
+    let (sgr, ch) = match kind {
+        "model" => ("35", "█"),
+        "read" => ("36", "▓"),
+        "edit" => ("33", "▓"),
+        "run" => ("34", "▓"),
+        "agent" => ("32", "▒"),
+        _ => ("37", "▓"),
+    };
+    (if failed { "31" } else { sgr }, ch)
+}
+
+/// The Trace tab: the pane's agent's latest turns as a waterfall, from
+/// `trace-pane -J`. A line of figures (calls of the model, tools, those
+/// that failed, cost), the colours' key; then each turn, the latest open
+/// (every one with `all`), its steps a row each: what it was, how long,
+/// and a bar where it ran in the turn's time; a subagent's steps under its
+/// call; a step not over drawn bold with `▶`. Under the last turn, when it
+/// is over, how long the agent has waited for you.
+pub fn trace_view(json: &str, width: usize, all: bool) -> Vec<String> {
+    use crate::server::trace::took;
+    let dim = |s: &str| paint("2", s);
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![dim("reading the trace…")] };
+    if v["agent"].is_null() {
+        return vec![dim("No agent in this pane. Claude Code, Codex and pi show here what they do, step by step.")];
+    }
+    let now = v["now"].as_i64().unwrap_or(0);
+    let steps: Vec<Step> = v["spans"].as_array().map(|a| a.iter().map(Step::parse).collect()).unwrap_or_default();
+    let calls = steps.iter().filter(|s| s.kind == "model").count();
+    let tools = steps.iter().filter(|s| !matches!(s.kind.as_str(), "model" | "turn")).count();
+    let failed = steps.iter().filter(|s| s.failed).count();
+    let cost = v["cost"].as_f64().map(crate::format::human_dollars).unwrap_or_default();
+    let mut out = vec![format!(
+        "{}  {}  {}  {} {}  {} {calls}  {} {tools}{}",
+        paint("1", v["agent"].as_str().unwrap_or_default()),
+        paint("35", v["model"].as_str().unwrap_or_default()),
+        paint("1", &cost),
+        crate::format::human_count(v["tokens"].as_u64().unwrap_or(0)),
+        dim("tokens"),
+        dim("model calls"),
+        dim("tools"),
+        if failed > 0 { format!("  {}", paint("31", &format!("✗ {failed} failed"))) } else { String::new() },
+    )];
+    let key: Vec<String> = ["model", "read", "edit", "run", "agent", "tool"]
+        .iter()
+        .map(|k| {
+            let (sgr, ch) = step_look(k, false);
+            format!("{} {k}", paint(sgr, ch))
+        })
+        .chain([format!("{} waiting", dim("░")), format!("{} failed", paint("31", "✗"))])
+        .collect();
+    out.push(key.join("  "));
+    let turns: Vec<&Step> = steps.iter().filter(|s| s.kind == "turn").collect();
+    if turns.is_empty() {
+        out.push(dim("No turn yet."));
+        return out;
+    }
+    let label_w = (width * 2 / 5).clamp(16, 44);
+    let dur_w = 7;
+    let bar_w = width.saturating_sub(label_w + dur_w + 2);
+    for (i, turn) in turns.iter().enumerate() {
+        let open = all || i + 1 == turns.len();
+        let total = (turn.end.unwrap_or(now) - turn.start).max(1);
+        let state = match (turn.end, turn.detail.as_str()) {
+            (None, _) => format!(" {}", paint("1;32", "running")),
+            (_, "interrupted") => format!(" {}", paint("33", "interrupted")),
+            _ => String::new(),
+        };
+        let name = if turn.name.is_empty() { "(a turn)" } else { turn.name.as_str() };
+        let head = format!("{} {}{state}", if open { "▾" } else { "▸" }, paint("1", name));
+        out.push(format!("{} {}", fit(&head, width.saturating_sub(dur_w + 1)), fit_right(&took(total), dur_w)));
+        if !open {
+            continue;
+        }
+        if bar_w >= 10 {
+            let (mid, end) = (took(total / 2), took(total));
+            let mut ruler = format!("0{}", " ".repeat(bar_w));
+            ruler.replace_range(bar_w / 2..bar_w / 2 + mid.len(), &mid);
+            let at = bar_w.saturating_sub(end.len());
+            ruler.replace_range(at..at + end.len(), &end);
+            ruler.truncate(bar_w);
+            out.push(format!("{}{}", " ".repeat(label_w + dur_w + 3), dim(&ruler)));
+        }
+        let mut rows = Vec::new();
+        trace_rows(&steps, &turn.id, 1, (turn.start, total), now, (label_w, dur_w, bar_w), &mut rows);
+        out.extend(rows);
+    }
+    if let Some(end) = turns.last().and_then(|t| t.end) {
+        out.push(format!("{} {}", dim("░"), dim(&format!("waiting for you · {}", took(now - end)))));
+    }
+    out
+}
+
+/// A path as much of its end as fits in `width` columns: `…\src\main.rs`.
+fn path_tail(path: &str, width: usize) -> String {
+    if width_of(path) <= width {
+        return path.to_string();
+    }
+    let parts: Vec<&str> = path.split(['/', '\\']).collect();
+    let sep = if path.contains('\\') { "\\" } else { "/" };
+    let mut tail = parts.last().copied().unwrap_or_default().to_string();
+    for p in parts.iter().rev().skip(1) {
+        let longer = format!("{p}{sep}{tail}");
+        if width_of(&longer) + 2 > width {
+            break;
+        }
+        tail = longer;
+    }
+    format!("…{sep}{tail}")
+}
+
+/// The rows of the steps under `parent`, `depth` deep, each the next ones
+/// under it after it; bars across `bar_w` columns for the turn's
+/// `(start, length)`.
+fn trace_rows(
+    steps: &[Step],
+    parent: &str,
+    depth: usize,
+    (t0, total): (i64, i64),
+    now: i64,
+    (label_w, dur_w, bar_w): (usize, usize, usize),
+    out: &mut Vec<String>,
+) {
+    use crate::server::trace::took;
+    for s in steps.iter().filter(|s| s.parent.as_deref() == Some(parent)) {
+        let (sgr, ch) = step_look(&s.kind, s.failed);
+        let end = s.end.unwrap_or(now);
+        let what = match s.kind.as_str() {
+            "model" if s.end.is_none() => "thinking".to_string(),
+            "model" if s.tokens > 0 => format!("{} tokens", crate::format::human_count(s.tokens)),
+            "model" => String::new(),
+            // A file: its end, which says which.
+            "read" | "edit" if !s.detail.contains([' ', '*', '?']) && s.detail.contains(['/', '\\']) => {
+                path_tail(&s.detail, label_w.saturating_sub(2 * depth + s.name.len() + 2))
+            }
+            _ => s.detail.clone(),
+        };
+        let name = if s.kind == "model" { "model" } else { s.name.as_str() };
+        let mark = if s.failed { format!(" {}", paint("31", "✗")) } else { String::new() };
+        let label = format!("{}{}{mark} {}", "  ".repeat(depth), paint(sgr, name), paint("2", &what));
+        let mut row = format!("{} {}", fit(&label, label_w), fit_right(&took(end - s.start), dur_w));
+        if bar_w >= 10 {
+            let at = |t: i64| ((t - t0).clamp(0, total) as f64 / total as f64 * bar_w as f64) as usize;
+            let from = at(s.start).min(bar_w - 1);
+            let to = at(end).max(from + 1).min(bar_w);
+            let running = s.end.is_none();
+            let bar = ch.repeat(to - from);
+            let tip = if running && to < bar_w { paint(&format!("1;{sgr}"), "▶") } else { String::new() };
+            let drawn = if running { paint(&format!("1;{sgr}"), &bar) } else { paint(sgr, &bar) };
+            row.push_str(&format!("  {}{drawn}{tip}", " ".repeat(from)));
+        }
+        out.push(row);
+        trace_rows(steps, &s.id, depth + 1, (t0, total), now, (label_w, dur_w, bar_w), out);
+    }
+}
 /// An event log line, short: time, what, the gist.
 pub fn event_line(json: &str) -> String {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return json.to_string() };
@@ -2600,7 +2810,7 @@ mod tests {
             "[2] Inbox %lead",
             "[3] Tasks",
             "[0] %1 lead · ai · busy",
-            "Screen│Scrollback",
+            "Screen│Scr│Eve│Tra│Det",
             "pid 4242 · up 16m · quiet 1m",
             "tester",
         ] {
@@ -2942,5 +3152,111 @@ mod tests {
         assert!(strip(&event_line(done)).ends_with("failed    #14 failed"));
         assert!(event_line(done).contains("\x1b[31m"), "a failure in red");
         assert_eq!(event_line("not json"), "not json");
+    }
+
+    /// The Trace tab: what it asks for; the figures and the colours' key;
+    /// the latest turn open (an older one a line, `e` opens every one), its
+    /// steps a row each in their kind's colour, each bar where the step ran
+    /// in the turn's time; a subagent's steps under its call; a failed step
+    /// red with `✗`; one running bold with `▶`; a file by its end; after a
+    /// turn over, how long the agent has waited. No agent: said so.
+    #[test]
+    fn the_trace_is_a_waterfall_of_the_turns() {
+        let mut b = board();
+        b.tab = Tab::Trace;
+        assert_eq!(b.main_query().unwrap(), owned(&["trace-pane", "-J", "-t", "%1"]));
+        let span = |id: &str,
+                    parent: Option<&str>,
+                    kind: &str,
+                    name: &str,
+                    detail: &str,
+                    s: i64,
+                    e: Option<i64>,
+                    failed: bool| {
+            serde_json::json!({"id": id, "parent": parent, "kind": kind, "name": name, "detail": detail,
+                "start": s, "end": e, "failed": failed, "tokens": if kind == "model" { 1200 } else { 0 }})
+        };
+        let doc = |spans: Vec<serde_json::Value>, now: i64| {
+            serde_json::json!({"agent": "claude", "model": "opus", "cost": 2.5, "tokens": 41_000, "now": now, "spans": spans})
+                .to_string()
+        };
+        let spans = vec![
+            span("t1", None, "turn", "first", "", 0, Some(5_000), false),
+            span("m0", Some("t1"), "model", "opus", "", 0, Some(5_000), false),
+            span("t2", None, "turn", "fix the test", "", 10_000, None, false),
+            span("m1", Some("t2"), "model", "opus", "", 10_000, Some(20_000), false),
+            span(
+                "r1",
+                Some("t2"),
+                "read",
+                "Read",
+                r"C:\Users\me\src\keepane\src\server\dashboard_parts\view.rs",
+                20_000,
+                Some(30_000),
+                false,
+            ),
+            span("x1", Some("t2"), "run", "Bash", "cargo test", 30_000, Some(60_000), true),
+            span("a1", Some("t2"), "agent", "Task", "find it", 60_000, Some(70_000), false),
+            span("g1", Some("a1"), "read", "Glob", "**/*.rs", 62_000, Some(63_000), false),
+            span("th", Some("t2"), "model", "", "", 70_000, None, false),
+        ];
+        let raw = trace_view(&doc(spans.clone(), 110_000), 100, false);
+        let text: Vec<String> = raw.iter().map(|l| strip(l)).collect();
+        assert!(
+            text[0].starts_with("claude  opus  $2.50  41k tokens  model calls 3  tools 4  ✗ 1 failed"),
+            "{text:#?}"
+        );
+        assert!(raw[1].contains("\x1b[35m█\x1b[0m model") && raw[1].contains("\x1b[36m▓\x1b[0m read"), "{:?}", raw[1]);
+        assert!(text[2].starts_with("▸ first") && text[2].trim_end().ends_with("5.0s"), "{text:#?}");
+        assert!(text[3].starts_with("▾ fix the test running") && text[3].trim_end().ends_with("1m40s"), "{text:#?}");
+        assert!(!text.iter().any(|l| l.contains("model 1.2k tokens") && l.contains("5.0s")), "the older turn closed");
+        // Bars: 100 columns, a label of 40, 7 for the time, 51 for the bar
+        // from column 50, over the turn's 100 s.
+        let bar = |row: &str| {
+            let s = &row[row.char_indices().nth(50).unwrap().0..];
+            let from = s.chars().position(|c| c != ' ').unwrap();
+            (from, s.chars().filter(|c| "█▓▒▶".contains(*c)).count())
+        };
+        let row =
+            |what: &str| text.iter().find(|l| l.contains(what)).unwrap_or_else(|| panic!("{what}: {text:#?}")).clone();
+        assert_eq!(bar(&row("model 1.2k tokens")), (0, 5), "0-10 s of 100: 5 of 51 columns");
+        assert_eq!(bar(&row("cargo test")), (10, 15), "20-50 s");
+        assert!(
+            row("Read").contains(r"Read …\") && row("Read").contains(r"\dashboard_parts\view.rs"),
+            "{}",
+            row("Read")
+        );
+        assert!(row("Glob").starts_with("    Glob **/*.rs"), "under its call, a pattern whole: {}", row("Glob"));
+        let failed = raw.iter().find(|l| l.contains("cargo test")).unwrap();
+        assert!(failed.contains("\x1b[31mBash\x1b[0m") && failed.contains("\x1b[31m✗"), "{failed:?}");
+        let thinking = raw.iter().find(|l| strip(l).contains("thinking")).unwrap();
+        // Running: bold; it runs to now, the turn's end, so no room for its tip.
+        assert!(thinking.contains("\x1b[1;35m") && !strip(thinking).contains('▶'), "{thinking:?}");
+        assert!(!text.iter().any(|l| l.contains("waiting for you")), "a turn runs");
+        // Every turn open.
+        let all: Vec<String> = trace_view(&doc(spans.clone(), 110_000), 100, true).iter().map(|l| strip(l)).collect();
+        assert!(all.iter().any(|l| l.starts_with("▾ first")) && all.len() > text.len() + 1, "{all:#?}");
+        // The last turn over: how long it has waited.
+        let mut over = spans.clone();
+        over[2]["end"] = serde_json::json!(80_000);
+        over.retain(|s| s["id"] != "th");
+        let text: Vec<String> = trace_view(&doc(over, 200_000), 100, false).iter().map(|l| strip(l)).collect();
+        assert_eq!(text.last().unwrap(), "░ waiting for you · 2m00s");
+        // No agent; no answer yet.
+        let none = serde_json::json!({"pane": "%1", "agent": null, "now": 0, "spans": []}).to_string();
+        assert!(strip(&trace_view(&none, 80, false)[0]).starts_with("No agent in this pane"));
+        assert!(strip(&trace_view("", 80, false)[0]).starts_with("reading the trace"));
+        // Narrow: no bars, the rows still.
+        let narrow: Vec<String> = trace_view(&doc(spans, 110_000), 30, false).iter().map(|l| strip(l)).collect();
+        assert!(
+            narrow[2..].iter().all(|l| !l.contains('█')) && narrow.iter().any(|l| l.contains("Bash")),
+            "{narrow:#?}"
+        );
+        // `e` opens every turn, and closes them again.
+        b.focus = Panel::Main;
+        b.key(Key::plain(KeyCode::Char('e')));
+        assert!(b.trace_all);
+        b.key(Key::plain(KeyCode::Char('e')));
+        assert!(!b.trace_all);
     }
 }

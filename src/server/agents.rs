@@ -22,6 +22,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How often the panes' agents are looked at.
 const EVERY: Duration = Duration::from_secs(2);
+/// The turns of each agent its trace keeps.
+const TRACE_TURNS: usize = 20;
 
 /// The agents keepane reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -374,6 +376,8 @@ pub struct Tail {
     partial: Vec<u8>,
     seen: HashSet<String>,
     pub usage: Usage,
+    /// Its steps, for the trace.
+    pub steps: super::trace::Steps,
 }
 
 impl Tail {
@@ -386,6 +390,7 @@ impl Tail {
             partial: Vec::new(),
             seen: HashSet::new(),
             usage: Usage::default(),
+            steps: Default::default(),
         }
     }
 
@@ -415,6 +420,7 @@ impl Tail {
         while let Some(i) = self.partial[start..].iter().position(|b| *b == b'\n') {
             if let Ok(s) = std::str::from_utf8(&self.partial[start..start + i]) {
                 feed(self.kind, s.trim_end(), &mut self.usage, &mut self.seen);
+                self.steps.feed(self.kind, s.trim_end());
             }
             start += i + 1;
         }
@@ -547,6 +553,8 @@ pub struct Stats {
     pub mem: u64,
     /// Transcripts read (its own and its helpers').
     pub files: usize,
+    /// What it did, step by step: its latest turns (`trace-pane`).
+    pub trace: Arc<Vec<super::trace::Span>>,
 }
 
 impl Stats {
@@ -678,7 +686,21 @@ impl Watcher {
             let window = usage.window.or_else(|| price.and_then(|p| p.window));
             let context_pct = window.filter(|w| *w > 0).map(|w| (usage.context.min(w) * 100 / w) as u32);
             let (cost, cost_partial) = usage.priced(prices);
+            let own: Vec<&super::trace::Steps> =
+                t.tails.iter().filter(|tail| !tail.helper).map(|tail| &tail.steps).collect();
+            let helpers: Vec<(String, &super::trace::Steps)> = t
+                .tails
+                .iter()
+                .filter(|tail| tail.helper)
+                .map(|tail| {
+                    let stem = tail.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    (stem.strip_prefix("agent-").unwrap_or(&stem).to_string(), &tail.steps)
+                })
+                .collect();
+            let trace =
+                Arc::new(super::trace::merge(&own, &helpers, TRACE_TURNS, chrono::Utc::now().timestamp_millis()));
             let stats = Stats {
+                trace,
                 kind: t.kind,
                 pid: t.agent,
                 cost,
@@ -893,6 +915,42 @@ impl Server {
         super::Outcome::Text(lines.join("\n"))
     }
 
+    /// `trace-pane [-J] [-t pane]`: what the pane's agent did, step by step:
+    /// as JSON (each step with its parent, kind, times in milliseconds,
+    /// and the time now), or a tree, a line a step.
+    pub(super) fn trace_pane(
+        &self,
+        target: Option<&crate::command::Target>,
+        cid: Option<super::ClientId>,
+        json: bool,
+    ) -> super::Outcome {
+        let (_, _, pid) = match self.resolve(target, cid) {
+            Ok(r) => r,
+            Err(e) => return super::Outcome::Error(e),
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let Some(a) = self.agents.stats.get(&pid) else {
+            if json {
+                let v = serde_json::json!({ "pane": format!("%{pid}"), "agent": null, "now": now, "spans": [] });
+                return super::Outcome::Text(v.to_string());
+            }
+            return super::Outcome::Error(format!("%{pid} runs no agent keepane reads (Claude Code, Codex, pi)"));
+        };
+        if json {
+            let v = serde_json::json!({
+                "pane": format!("%{pid}"),
+                "agent": a.kind.word(),
+                "model": a.usage.model,
+                "cost": a.cost.map(|c| (c * 1e6).round() / 1e6),
+                "tokens": a.usage.tokens.total(),
+                "now": now,
+                "spans": a.trace.iter().map(super::trace::Span::json).collect::<Vec<_>>(),
+            });
+            return super::Outcome::Text(v.to_string());
+        }
+        let lines = super::trace::tree(&a.trace, now);
+        if lines.is_empty() { super::Outcome::Ok } else { super::Outcome::Text(lines.join("\n")) }
+    }
     pub(super) fn agents_seen(&mut self, stats: HashMap<PaneId, Stats>) {
         self.agents.asking = false;
         if !self.opts.agent_cost {

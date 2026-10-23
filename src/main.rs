@@ -65,6 +65,7 @@ Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   list-tasks [-t session]   show-task id [-J]   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
   create-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
   list-agents [-J]   (the panes' Claude Code, Codex and pi: model, cost, tokens, context, CPU, memory; agent-cost)
+  trace-pane [-J] [-t pane]   (what the pane's agent did, step by step; the dashboard's Trace tab)
   status-line [-J] [-t session]   (the status line as drawn, for a script; -J its parts and colours, as the phone page draws it)
   dashboard (prefix v: panes, inboxes, tasks and the chosen pane's screen; act on them; ? keys)   setup [claude|codex|gemini|cursor|opencode] [--install]
 Panes on other machines (both run `keepane web`; docs/design/link.md):

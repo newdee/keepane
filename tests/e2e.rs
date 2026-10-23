@@ -10783,11 +10783,75 @@ async fn a_panes_agent_is_read_from_its_transcript() {
     )
     .await;
 
+    // Step by step (`trace-pane`): a turn, the model's call up to its tool,
+    // the command that failed, and the model at work since its answer.
+    let at = |s: u32| format!("2026-10-23T10:00:{s:02}.000Z");
+    let steps = [
+        serde_json::json!({"type": "user", "timestamp": at(0), "message": {"role": "user", "content": "run the tests"}}),
+        serde_json::json!({"type": "assistant", "timestamp": at(3), "message": {"id": "m3", "model": "claude-opus-5-5",
+            "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}],
+            "usage": {"output_tokens": 50}}}),
+        serde_json::json!({"type": "user", "timestamp": at(9), "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "1 failed"}]}}),
+    ];
+    let text: String = steps.iter().map(|s| format!("{s}\n")).collect();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let trace = loop {
+        let (code, out, err) = h.cli(&["trace-pane", "-J", "-t", "ag"]).await;
+        assert_eq!(code, 0, "{err}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        if v["spans"].as_array().is_some_and(|s| s.iter().any(|x| x["failed"] == true)) {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "the steps: {out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!((trace["agent"].as_str(), trace["model"].as_str()), (Some("claude"), Some("claude-opus-5-5")));
+    let ms = |s: u32| chrono::DateTime::parse_from_rfc3339(&at(s)).unwrap().timestamp_millis();
+    type Row<'a> = (&'a str, &'a str, &'a str, i64, Option<i64>, bool);
+    let spans: Vec<Row> = trace["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["kind"].as_str().unwrap(),
+                s["name"].as_str().unwrap(),
+                s["detail"].as_str().unwrap(),
+                s["start"].as_i64().unwrap(),
+                s["end"].as_i64(),
+                s["failed"] == true,
+            )
+        })
+        .collect();
+    assert_eq!(
+        spans,
+        [
+            ("turn", "run the tests", "", ms(0), None, false),
+            ("model", "claude-opus-5-5", "", ms(0), Some(ms(3)), false),
+            ("run", "Bash", "cargo test", ms(3), Some(ms(9)), true),
+            ("model", "", "", ms(9), None, false),
+        ]
+    );
+    let (_, tree, _) = h.cli(&["trace-pane", "-t", "ag"]).await;
+    let tree: Vec<&str> = tree.lines().collect();
+    assert!(tree[0].starts_with("turn run the tests ") && tree[0].ends_with(" running"), "{tree:?}");
+    assert_eq!(&tree[1..3], ["  model claude-opus-5-5 3.0s", "  run Bash cargo test 6.0s failed"]);
+
     // The agent gone: no agent.
     let shell: Vec<String> = PROMPT_SHELL.split(' ').map(String::from).collect();
     let (code, _, err) = h.cli(&args(&["respawn-pane", "-k", "-t", "ag"], &shell)).await;
     assert_eq!(code, 0, "{err}");
     h.wait_for_cli("no agent", &["list-agents", "-J"], |_, out| out.trim() == "[]").await;
+    let (_, out, _) = h.cli(&["trace-pane", "-J", "-t", "ag"]).await;
+    assert!(serde_json::from_str::<serde_json::Value>(&out).unwrap()["agent"].is_null(), "{out}");
+    let (code, _, err) = h.cli(&["trace-pane", "-t", "ag"]).await;
+    assert!(code != 0 && err.contains("runs no agent keepane reads"), "{err}");
     unsafe {
         std::env::remove_var("CLAUDE_CONFIG_DIR");
         std::env::remove_var("KEEPANE_PRICE_LIST");

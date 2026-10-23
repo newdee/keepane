@@ -167,7 +167,8 @@ messages waiting blue, a context red as it fills); in a narrow window the
 least needed columns give way first; `[2]` the chosen pane's inbox; `[3]` the tasks. On the right,
 `[0]` the chosen pane: its address, directory, pid, how long it has run, what
 it says it is doing, and then its screen live (with its colours), its
-scrollback, its events, or the message or task under the cursor: moving onto
+scrollback, its events, its agent's trace (below), or the message or task
+under the cursor: moving onto
 one in `[2]` or `[3]` shows it at once, laid out (its stage on its colour, who
 sent it to whom, when each step came, then its text and what it printed; a
 task, its messages joined down the left). Tab, `1 2 3 0` and `h`/`l` move
@@ -230,6 +231,39 @@ number, `null` when not known); and the format variables `agent` `agent_model` `
 set -g pane-border-status top
 set -g pane-border-format " #{pane_index} #{?agent,#{agent_model} #{agent_cost} ctx #{agent_context},#{pane_current_command}} "
 ```
+
+### What an agent is doing, step by step
+
+The same transcripts say what the agent did and when: each turn (your
+prompt to its last reply), and in it each call of the model and each tool
+it ran, from when to when, and whether it failed. The dashboard's Trace tab
+(`]` to it on the right) draws the chosen pane's agent as a waterfall,
+live (read every two seconds):
+
+```
+claude  claude-opus-5-5  $2.50  41k tokens  model calls 3  tools 4  ✗ 1 failed
+▸ add the share command                                            5.0s
+▾ fix the test running                                            1m40s
+                                         0              50s          1m40s
+  model 1.2k tokens                10s  █████
+  Read …\src\share.rs              10s       █████
+  Bash ✗ cargo test                30s            ███████████████
+  Task find it                     10s                           █████
+    Glob **/*.rs                   1.0s                           █
+  model thinking                   40s                                ████▶
+```
+
+Each kind has its colour: the model magenta, reading and searching cyan,
+changing files yellow, running a command blue, another agent green, any
+other tool plain, a step that failed red with `✗`; a step still running is
+bold and ends in `▶`. A Claude subagent's steps sit under the call that
+started it. The latest turn is open, the earlier ones a line each (`e` opens
+every one); after a turn, how long the agent has waited for you. A line is
+written when what it tells is over, so a model call shows once its reply is
+in: while a turn runs and no tool does, the model is at work since the last
+step (`thinking`). `keepane trace-pane -t <pane>` prints the same as a tree,
+`-J` as JSON (each step's kind, name, what it was given, start and end in
+milliseconds, parent).
 
 Only agents in keepane's panes are read. An agent elsewhere (another
 terminal, an editor) working in the same directory at the same time writes
