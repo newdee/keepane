@@ -82,6 +82,8 @@ pub struct Options {
     /// own, the default), `dots`, `blocks` or `binary` (each cell the one
     /// of the set with as much ink as the cell had).
     pub clock_mode_look: String,
+    /// `pane-border-lines`: what the lines between panes are drawn with.
+    pub pane_border_lines: String,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
     pub status_left: String,
@@ -230,6 +232,9 @@ pub const CLOCK_ANIMATIONS: &[&str] = &[
 
 /// What `clock-mode-look` can be.
 pub const CLOCK_LOOKS: &[&str] = &["binary", "blocks", "dots", "plain"];
+
+/// What `pane-border-lines` can be (tmux's, less `number`).
+pub const PANE_BORDER_LINES: &[&str] = &["double", "heavy", "simple", "single"];
 
 /// What a pane can be done with (`done-events`).
 pub const DONE_EVENTS: &[&str] = &["command", "agent", "task", "exit"];
@@ -403,6 +408,7 @@ pub const SHOWABLE: &[&str] = &[
     "window-status-current-format",
     "pane-border-style",
     "pane-active-border-style",
+    "pane-border-lines",
     "display-panes-colour",
     "display-panes-active-colour",
     "clock-mode-style",
@@ -513,6 +519,7 @@ impl Default for Options {
             clock_mode_zones: Vec::new(),
             clock_mode_animation: "random".into(),
             clock_mode_look: "plain".into(),
+            pane_border_lines: "heavy".into(),
             pane_border_fg: Color::Rgb(0x66, 0x66, 0x64),
             // The session name on a cinnabar block, the one block on the bar;
             // after it, while `passthrough` gives the pane every key, a word
@@ -719,6 +726,7 @@ pub const KNOWN: &[&str] = &[
     "pane-active-border-style",
     "pane-base-index",
     "pane-border-format",
+    "pane-border-lines",
     "pane-border-status",
     "pane-border-style",
     "pane-colours",
@@ -869,6 +877,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "clock-mode-style" => &["12", "24"],
         "clock-mode-animation" => CLOCK_ANIMATIONS,
         "clock-mode-look" => CLOCK_LOOKS,
+        "pane-border-lines" => PANE_BORDER_LINES,
         "done-events" => &["all", "none", "command agent"],
         _ => &[],
     }
@@ -966,6 +975,7 @@ impl Options {
             "clock-mode-zones" => self.clock_mode_zones = parse_zones(value)?,
             "clock-mode-animation" => self.clock_mode_animation = one_of(name, value, CLOCK_ANIMATIONS)?,
             "clock-mode-look" => self.clock_mode_look = one_of(name, value, CLOCK_LOOKS)?,
+            "pane-border-lines" => self.pane_border_lines = one_of(name, value, PANE_BORDER_LINES)?,
             "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
                 if let (Some(c), _) = parse_style(value)? {
@@ -1272,6 +1282,7 @@ impl Options {
             "clock-mode-zones" => self.clock_mode_zones.iter().map(|z| z.name()).collect::<Vec<_>>().join(","),
             "clock-mode-animation" => self.clock_mode_animation.clone(),
             "clock-mode-look" => self.clock_mode_look.clone(),
+            "pane-border-lines" => self.pane_border_lines.clone(),
             "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
         })
@@ -1614,6 +1625,16 @@ mod tests {
         assert!(e.contains("one of binary, blocks, dots, plain"), "{e}");
         assert_eq!(o.clock_mode_look, "dots", "a refused value leaves the old one");
         assert_eq!(resolve_name("clock-mode-l").as_deref(), Ok("clock-mode-look"));
+        // The lines between panes: heavy by default, tmux's names.
+        assert_eq!(o.get("pane-border-lines").as_deref(), Some("heavy"));
+        for lines in PANE_BORDER_LINES {
+            o.set("pane-border-lines", lines).unwrap();
+            assert_eq!(o.get("pane-border-lines").as_deref(), Some(*lines));
+        }
+        let e = o.set("pane-border-lines", "number").unwrap_err();
+        assert!(e.contains("one of double, heavy, simple, single"), "{e}");
+        assert_eq!(o.pane_border_lines, "single", "a refused value leaves the old one");
+        assert_eq!(option_values("pane-border-lines"), PANE_BORDER_LINES);
     }
 
     #[test]

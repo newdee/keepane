@@ -716,6 +716,7 @@ set -g log-history on             # 输出存盘，每个 pane 每天一个文�
 set -g log-history-days 30        # 留几天；0 永久保留（log-history-dir 改存放位置）
 set -g undo-kill-time 10          # 关掉的 pane / 窗口保留几秒可以找回（prefix u）；0 不保留
 set -g keep-zoom off              # 切到别的 pane 就取消最大化，和 tmux 一样（on：最大化跟着走）
+set -g pane-border-lines single   # pane 之间的分隔线：heavy（默认，粗线）、single、double 或 simple（ASCII）
 set -g animation off              # 不要焦点框飞过去的动画（animation-time 160：毫秒数，0 到 10000）
 set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、fire、aquarium、starfield、life、donut、weather、sharks、hourglass、bonsai、orbits、radar、sea、cat、random（默认）、cycle 或 off
 set -g clock-mode-look dots       # 用 dots、blocks 或 binary 字符画；plain（默认）用动画自己的字符

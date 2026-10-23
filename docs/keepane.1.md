@@ -382,8 +382,10 @@ to source. Four are built in: `set -g theme paper` switches to the light
 one, `paper-dark` back; `tokyo-night` (the default up to 0.37, the panes
 in the terminal's own colours) and its light `tokyo-day`. All but
 `tokyo-night` draw the panes with `window-style` and `pane-colours`,
-whatever the terminal's colours. `show-options -g` lists every option and
-its value.
+whatever the terminal's colours. The lines between panes are heavy
+(`┃` `━`); `set -g pane-border-lines single` draws tmux's thin ones,
+`double` or `simple` (ASCII) the others. `show-options -g` lists every
+option and its value.
 
 Once a day the server asks GitHub for the latest release's version (one
 request with `curl`, nothing about you in it); a newer one shows on the

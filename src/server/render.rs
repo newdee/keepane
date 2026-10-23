@@ -351,6 +351,55 @@ pub struct Frame<'a> {
     pub status_top: bool,
     pub border_fg: Color,
     pub active_border_fg: Color,
+    pub lines: BorderLines,
+}
+
+/// What the lines between panes are drawn with (`pane-border-lines`, as
+/// tmux's): thin, double, heavy (keepane's default), or ASCII.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BorderLines {
+    Single,
+    Double,
+    #[default]
+    Heavy,
+    Simple,
+}
+
+impl BorderLines {
+    /// By its option value; an unknown one is the default.
+    pub fn named(name: &str) -> BorderLines {
+        match name {
+            "single" => BorderLines::Single,
+            "double" => BorderLines::Double,
+            "simple" => BorderLines::Simple,
+            _ => BorderLines::Heavy,
+        }
+    }
+
+    /// The piece for a border cell joined to the border cells left, right,
+    /// up and down of it.
+    pub fn piece(self, l: bool, r: bool, u: bool, d: bool) -> &'static str {
+        // ┼ ┴ ┬ ┤ ├ ┐ ┌ ┘ └ │ ─
+        let set: [&str; 11] = match self {
+            BorderLines::Single => ["┼", "┴", "┬", "┤", "├", "┐", "┌", "┘", "└", "│", "─"],
+            BorderLines::Double => ["╬", "╩", "╦", "╣", "╠", "╗", "╔", "╝", "╚", "║", "═"],
+            BorderLines::Heavy => ["╋", "┻", "┳", "┫", "┣", "┓", "┏", "┛", "┗", "┃", "━"],
+            BorderLines::Simple => ["+", "+", "+", "+", "+", "+", "+", "+", "+", "|", "-"],
+        };
+        set[match (l, r, u, d) {
+            (true, true, true, true) => 0,
+            (true, true, true, false) => 1,
+            (true, true, false, true) => 2,
+            (true, false, true, true) => 3,
+            (false, true, true, true) => 4,
+            (true, false, false, true) => 5,
+            (false, true, false, true) => 6,
+            (true, false, true, false) => 7,
+            (false, true, true, false) => 8,
+            (_, _, true, _) | (_, _, _, true) => 9,
+            _ => 10,
+        }]
+    }
 }
 
 /// Result of `compose`: the grid, the cursor position (None = hidden) and
@@ -383,19 +432,7 @@ pub fn compose(f: &Frame) -> Composed {
             let r = x + 1 < f.cols && is_border(x + 1, y);
             let u = y > 0 && is_border(x, y - 1);
             let d = y + 1 < f.rows && is_border(x, y + 1);
-            let ch = match (l, r, u, d) {
-                (true, true, true, true) => "┼",
-                (true, true, true, false) => "┴",
-                (true, true, false, true) => "┬",
-                (true, false, true, true) => "┤",
-                (false, true, true, true) => "├",
-                (true, false, false, true) => "┐",
-                (false, true, false, true) => "┌",
-                (true, false, true, false) => "┘",
-                (false, true, true, false) => "└",
-                (_, _, true, _) | (_, _, _, true) => "│",
-                _ => "─",
-            };
+            let ch = f.lines.piece(l, r, u, d);
             let near_active = active.is_some_and(|a| x + 1 >= a.x && x <= a.x + a.w && y + 1 >= a.y && y <= a.y + a.h);
             let fg = if near_active { f.active_border_fg } else { f.border_fg };
             g.set(x, y, Cell::new(ch, false, Style::colors(fg, Color::Default)));
@@ -1934,6 +1971,57 @@ fn draw_hint_bar(g: &mut Grid, r: Rect, hint: &str) {
 mod tests {
     use super::*;
 
+    /// Four panes around a cross, in each `pane-border-lines`: every join
+    /// drawn with that set's piece, an unknown name the default (heavy).
+    #[test]
+    fn the_lines_between_panes_are_drawn_in_the_set_asked() {
+        let screen = vt100::Parser::new(5, 4, 0);
+        let view = |x, y| PaneView {
+            rect: Rect { x, y, w: 4, h: 2 },
+            screen: screen.screen(),
+            active: false,
+            copy: None,
+            border_text: None,
+        };
+        let draw = |lines| {
+            let f = Frame {
+                cols: 9,
+                rows: 5,
+                panes: vec![view(0, 0), view(5, 0), view(0, 3), view(5, 3)],
+                status: None,
+                status_top: false,
+                border_fg: Color::Default,
+                active_border_fg: Color::Default,
+                lines,
+            };
+            let g = compose(&f).0;
+            [(4, 0), (4, 2), (0, 2), (8, 2), (4, 4)].map(|(x, y)| g.get(x, y).text().to_string())
+        };
+        assert_eq!(draw(BorderLines::Single), ["│", "┼", "─", "─", "│"]);
+        assert_eq!(draw(BorderLines::Heavy), ["┃", "╋", "━", "━", "┃"]);
+        assert_eq!(draw(BorderLines::Double), ["║", "╬", "═", "═", "║"]);
+        assert_eq!(draw(BorderLines::Simple), ["|", "+", "-", "-", "|"]);
+        for name in crate::config::PANE_BORDER_LINES {
+            assert_eq!(BorderLines::named(name) == BorderLines::Heavy, *name == "heavy", "{name}");
+        }
+        assert_eq!(BorderLines::named("number"), BorderLines::Heavy);
+        // Every join of the heavy set.
+        let h = BorderLines::Heavy;
+        let joins = [
+            (h.piece(false, true, false, true), "┏"),
+            (h.piece(true, false, false, true), "┓"),
+            (h.piece(false, true, true, false), "┗"),
+            (h.piece(true, false, true, false), "┛"),
+            (h.piece(true, true, false, true), "┳"),
+            (h.piece(true, true, true, false), "┻"),
+            (h.piece(false, true, true, true), "┣"),
+            (h.piece(true, false, true, true), "┫"),
+        ];
+        for (got, want) in joins {
+            assert_eq!(got, want);
+        }
+    }
+
     #[test]
     fn a_pane_number_is_drawn_in_its_colour() {
         // `█` shows its foreground: a black foreground made the digits
@@ -2429,6 +2517,7 @@ mod tests {
             status_top: false,
             border_fg: Color::Idx(8),
             active_border_fg: Color::Idx(2),
+            lines: BorderLines::Single,
         };
         let (g, cursor, hits) = compose(&f);
         assert_eq!(g.get(0, 0).text(), "L");
@@ -2480,6 +2569,7 @@ mod tests {
                 status_top: false,
                 border_fg: Color::Idx(8),
                 active_border_fg: Color::Idx(2),
+                lines: BorderLines::Single,
             };
             let (g, _, hits) = compose(&f);
             let row: String = (0..cols).map(|x| g.get(x, 1).text()).collect();
@@ -2550,6 +2640,7 @@ mod tests {
             status_top: false,
             border_fg: Color::Default,
             active_border_fg: Color::Default,
+            lines: BorderLines::Single,
         };
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
@@ -2736,6 +2827,7 @@ mod tests {
                 status_top: false,
                 border_fg: Color::Default,
                 active_border_fg: Color::Default,
+                lines: BorderLines::Single,
             };
             let (g, cursor, _) = compose(&f);
             assert_eq!((g.cols, g.rows), (cols, rows));
@@ -2788,6 +2880,7 @@ mod tests {
             status_top: false,
             border_fg: Color::Default,
             active_border_fg: Color::Default,
+            lines: BorderLines::Single,
         };
         let (g, _, _) = compose(&f);
         assert_eq!(g.get(3, 2).text(), "├");
@@ -2823,6 +2916,7 @@ mod tests {
             status_top: true,
             border_fg: Color::Default,
             active_border_fg: Color::Default,
+            lines: BorderLines::Single,
         };
         let (g, _, _) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 0).text()).collect();
@@ -2848,6 +2942,7 @@ mod tests {
             status_top: false,
             border_fg: Color::Default,
             active_border_fg: Color::Default,
+            lines: BorderLines::Single,
         };
         // Top: row 0 is the label, the pane starts on row 1.
         let (g, _, _) = compose(&frame(Rect { x: 0, y: 1, w: 6, h: 2 }, Some((label(" 0: long label"), true))));
@@ -3006,6 +3101,7 @@ mod tests {
             status_top: false,
             border_fg: Color::Default,
             active_border_fg: Color::Default,
+            lines: BorderLines::Single,
         };
         let (g, cursor, _) = compose(&f);
         assert!(cursor.is_none());

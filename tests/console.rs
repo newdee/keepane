@@ -189,7 +189,7 @@ fn real_client_in_conpty() {
 
     // Prefix + % splits; a vertical border shows up in the middle.
     t.send("\x02%");
-    t.wait_for("split", |s| (0..23).all(|y| s.cell(y, 40).is_some_and(|c| c.contents() == "│")));
+    t.wait_for("split", |s| (0..23).all(|y| s.cell(y, 40).is_some_and(|c| c.contents() == "┃")));
 
     // Resize the console: the status line follows the new height and the
     // pane shells are told the new size.

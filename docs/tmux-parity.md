@@ -213,7 +213,9 @@ The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `display-time`, `repeat-time`, `remain-on-exit`, `monitor-activity`,
 `monitor-bell`, `monitor-silence`, `visual-bell`, `visual-activity`,
 `pane-border-status`, `pane-border-format`, `window-size` (`latest`,
-`smallest`, `largest`, `manual`: which attached client sizes the session).
+`smallest`, `largest`, `manual`: which attached client sizes the session),
+`pane-border-lines` (`single`, `double`, `heavy`, `simple`; not `number`;
+keepane's default is `heavy`, tmux's `single`).
 
 ## Formats
 

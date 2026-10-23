@@ -9267,6 +9267,7 @@ impl Server {
         let pane_base_index = self.opts.pane_base_index;
         let (status_top, border_fg, active_fg, opts_status) =
             (self.opts.status_top, self.opts.pane_border_fg, self.opts.pane_border_active_fg, self.opts.status);
+        let lines = render::BorderLines::named(&self.opts.pane_border_lines);
         let (message, prompt) = {
             let c = self.clients.get(&cid).unwrap();
             (
@@ -9382,6 +9383,7 @@ impl Server {
                 status_top,
                 border_fg,
                 active_border_fg: active_fg,
+                lines,
             };
             let (g, c, h) = render::compose(&frame);
             (g, c, h, None)
@@ -9394,6 +9396,7 @@ impl Server {
                 status_top,
                 border_fg,
                 active_border_fg: active_fg,
+                lines,
             };
             let (own_grid, _, hits) = render::compose(&own);
             let whole = Frame {
@@ -9404,6 +9407,7 @@ impl Server {
                 status_top,
                 border_fg,
                 active_border_fg: active_fg,
+                lines,
             };
             let (g, c, _) = render::compose(&whole);
             (g, c, hits, Some(own_grid))

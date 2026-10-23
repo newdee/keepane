@@ -4972,3 +4972,23 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 机制存活 | fmt 0；clippy 0；单元 7/7；e2e 通过（14.3 秒）；变异 3/3 抓到（15.5、6.4、3.7 秒失败） | 干净（1/3） |
 | 2 | 全量 | Windows 502 + 11 + 144；文档新增行都不超过 76 列 | 干净（2/3） |
 | 3 | 跨平台 + 可复现 | Linux fmt 0、clippy 0、487 + 142；Scoop e2e 连跑 3 次 3/3（14.26、14.29、14.25 秒） | 干净（3/3），验收通过 |
+## 162. 分隔线默认粗线：`pane-border-lines`
+
+- 需求：用户希望 pane 之间的分隔线粗一些、好看一些。选定的做法是加上 tmux 的 `pane-border-lines` 选项，并把默认值设为 `heavy`。
+- 改法：
+  - `render::BorderLines` 有 single、double、heavy、simple 四套字符，一张表覆盖 11 种连接，替换原来写死的细线。
+  - 新选项 `pane-border-lines`：默认 `heavy`，可取 double、heavy、simple、single。tmux 的 `number` 不支持，设置时会报错并列出可选值。
+  - `themes/plain.conf`（tmux 外观）设为 `single`。
+  - 弹窗、菜单的边框不变。
+- 会不会引入新 bug：
+  - 只改 pane 之间的分隔线。
+  - e2e 的 harness 加载 plain.conf，所以那里仍是细线，原有断言不变；console 测试用默认设置，改成断言粗线。
+  - 第一次全量测试时我把 e2e 也改成了断言粗线，因为忘了 harness 用的是 plain，3 个测试失败。按"发现问题这一轮不计数"处理，已恢复。
+- 测试：单元 `the_lines_between_panes_are_drawn_in_the_set_asked`（四个 pane 围成十字，检查四套字符的每个交点，以及 heavy 的 8 种接头）；config 测试覆盖默认值、可取值、拒绝 number、补全列表；变异"忽略选项"被单元测试和 e2e split 都抓到。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制存活 | 单元通过；变异"忽略选项"：单元 FAILED，e2e split 1 个 FAILED | 干净（1/3） |
+| 2 | 全量 | Windows e2e 141/144：harness 用 plain.conf，测试断言写错了 | 发现问题，不计数；恢复 e2e 断言 |
+| 2 | 全量 | Windows 503 + 11 + 144 | 干净（2/3） |
+| 3 | 跨平台 + 实际命令 | Linux fmt 0、clippy 0、488 + 142；临时 server：`show-options` 显示 heavy，`set ... number` 报错并列出 4 个可选值，缩写 `pane-border-l` 生效，Tab 补全给出 4 个值 | 干净（3/3），验收通过 |
