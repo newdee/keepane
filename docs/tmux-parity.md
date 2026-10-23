@@ -215,7 +215,7 @@ The ones with tmux meaning: `prefix`, `default-shell`, `default-command`,
 `pane-border-status`, `pane-border-format`, `window-size` (`latest`,
 `smallest`, `largest`, `manual`: which attached client sizes the session),
 `pane-border-lines` (`single`, `double`, `heavy`, `simple`; not `number`;
-keepane's default is `heavy`, tmux's `single`).
+keepane's default is `heavy`, tmux's `single`). keepane's own `pane-frames` (off by default) puts each pane in a rounded frame of its own, as Zellij does.
 
 ## Formats
 

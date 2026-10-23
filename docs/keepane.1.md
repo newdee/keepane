@@ -388,8 +388,13 @@ in the terminal's own colours) and its light `tokyo-day`. All but
 `tokyo-night` draw the panes with `window-style` and `pane-colours`,
 whatever the terminal's colours. The lines between panes are heavy
 (`┃` `━`); `set -g pane-border-lines single` draws tmux's thin ones,
-`double` or `simple` (ASCII) the others. `show-options -g` lists every
-option and its value.
+`double` or `simple` (ASCII) the others. `set -g pane-frames on` puts
+each pane in a rounded frame of its own instead (`╭` `╮` `╰` `╯`), the
+active one's in the active border colour, the pane's `pane-border-format`
+text on its top (or its bottom with `pane-border-status bottom`); the
+frame takes a column and a row on each side, so `resize-pane -x`/`-y`
+size the pane with its frame. `show-options -g` lists every option and
+its value.
 
 Once a day the server asks GitHub for the latest release's version (one
 request with `curl`, nothing about you in it); a newer one shows on the

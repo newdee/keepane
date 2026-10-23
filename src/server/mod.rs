@@ -962,18 +962,26 @@ impl Window {
     /// and left for the border text.
     /// The panes' rectangles as they are without the zoom, border rows
     /// taken off as `relayout` does, for drawing what a zoom grows over.
-    fn unzoomed_rects(&self, area: Rect, border: Option<bool>) -> Vec<(PaneId, Rect)> {
+    fn unzoomed_rects(&self, area: Rect, chrome: Chrome) -> Vec<(PaneId, Rect)> {
         let mut rects = Vec::new();
         self.layout.clone().layout(area, &mut rects);
-        if let Some(top) = border {
-            for (_, r) in &mut rects {
-                if r.h >= 2 {
-                    if top {
-                        r.y += 1;
+        match chrome {
+            Chrome::Status(top) => {
+                for (_, r) in &mut rects {
+                    if r.h >= 2 {
+                        if top {
+                            r.y += 1;
+                        }
+                        r.h -= 1;
                     }
-                    r.h -= 1;
                 }
             }
+            Chrome::Frames => {
+                for (_, r) in &mut rects {
+                    *r = framed(*r, area);
+                }
+            }
+            Chrome::Lines => {}
         }
         rects
     }
@@ -987,7 +995,7 @@ impl Window {
         }
     }
 
-    fn relayout(&mut self, area: Rect, border: Option<bool>) {
+    fn relayout(&mut self, area: Rect, chrome: Chrome) {
         self.rects.clear();
         if self.zoomed && self.pane(self.active).is_some() {
             self.rects.push((self.active, area));
@@ -1001,16 +1009,25 @@ impl Window {
         // as in tmux; only a pane at the window's edge, with no line there,
         // gives up a row for it. (Every pane giving one up put two border
         // rows between panes, the upper one drawn as a row of ┬.)
-        if let Some(top) = border {
-            for (_, r) in &mut self.rects {
-                let at_edge = if top { r.y == area.y } else { r.y + r.h == area.y + area.h };
-                if at_edge && r.h >= 2 {
-                    if top {
-                        r.y += 1;
+        match chrome {
+            Chrome::Status(top) => {
+                for (_, r) in &mut self.rects {
+                    let at_edge = if top { r.y == area.y } else { r.y + r.h == area.y + area.h };
+                    if at_edge && r.h >= 2 {
+                        if top {
+                            r.y += 1;
+                        }
+                        r.h -= 1;
                     }
-                    r.h -= 1;
                 }
             }
+            // Each pane inside a frame of its own.
+            Chrome::Frames => {
+                for (_, r) in &mut self.rects {
+                    *r = framed(*r, area);
+                }
+            }
+            Chrome::Lines => {}
         }
         for (id, r) in self.rects.clone() {
             if let Some(p) = self.pane_mut(id) {
@@ -1018,6 +1035,44 @@ impl Window {
             }
         }
     }
+}
+
+/// What a window's panes give up around them: nothing but the lines that
+/// part them (`Lines`), a row for `pane-border-status` text above
+/// (`Status(true)`) or below them, or a frame each (`pane-frames`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Chrome {
+    Lines,
+    Status(bool),
+    Frames,
+}
+
+impl Chrome {
+    /// The least a pane's layout cell needs across (`horizontal`) or down
+    /// to be split in two: a column or row of content each, the line that
+    /// parts them, and what each gives up (a border-status row; a frame).
+    fn least_to_split(self, horizontal: bool) -> u16 {
+        match (self, horizontal) {
+            (Chrome::Frames, _) => 6,
+            (Chrome::Status(_), false) => 5,
+            _ => 3,
+        }
+    }
+}
+
+/// A pane inside its frame (`pane-frames`): its cell is its rectangle and
+/// the line before it (left, above) where one parts it from the one
+/// before, so the cells tile the window (and the two halves of a split,
+/// the first a column wider, come out the same); the pane is the cell less
+/// a column or row on each side, which its frame takes. One too small for
+/// a frame keeps its rectangle.
+fn framed(r: Rect, area: Rect) -> Rect {
+    let (left, up) = (u16::from(r.x > area.x), u16::from(r.y > area.y));
+    let (w, h) = (r.w + left, r.h + up);
+    if w < 3 || h < 3 {
+        return r;
+    }
+    Rect { x: r.x - left + 1, y: r.y - up + 1, w: w - 2, h: h - 2 }
 }
 
 struct Session {
@@ -1939,7 +1994,7 @@ impl Server {
             let s = self.session(sid).ok_or("no such session")?;
             self.window_area(s.cols, s.rows)
         };
-        let border = self.border_rows();
+        let border = self.chrome();
         let mut panes = Vec::new();
         for saved in sw.layout.panes() {
             let argv: Vec<String> = saved.argv.clone();
@@ -3040,9 +3095,20 @@ impl Server {
         }
     }
 
+    /// What the panes give up around them: a frame each with `pane-frames`
+    /// (its text, when `pane-border-status` asks for one, on the frame),
+    /// else a row for that text, else nothing.
+    fn chrome(&self) -> Chrome {
+        match (self.opts.pane_frames, self.border_rows()) {
+            (true, _) => Chrome::Frames,
+            (false, Some(top)) => Chrome::Status(top),
+            (false, None) => Chrome::Lines,
+        }
+    }
+
     fn resize_session(&mut self, sid: SessionId, cols: u16, rows: u16) {
         let area = self.window_area(cols.max(1), rows.max(1));
-        let border = self.border_rows();
+        let border = self.chrome();
         if let Some(s) = self.session_mut(sid) {
             s.cols = cols.max(1);
             s.rows = rows.max(1);
@@ -3226,7 +3292,7 @@ impl Server {
     ) -> Result<PaneId, String> {
         let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).ok_or("no such session")?;
         let area = self.window_area(scols, srows);
-        let border = self.border_rows();
+        let border = self.chrome();
         // Unzoom first so the layout rectangles are real.
         let w = &mut self.session_mut(sid).unwrap().windows[widx];
         if w.zoomed {
@@ -3235,8 +3301,8 @@ impl Server {
         }
         let rect = if full { area } else { w.layout_rect(pid).ok_or("pane has no layout")? };
         // Each half needs a row of content, plus its border-status row.
-        let min_rows = if border.is_some() { 5 } else { 3 };
-        if (horizontal && rect.w < 3) || (!horizontal && rect.h < min_rows) {
+        let least = border.least_to_split(horizontal);
+        if (horizontal && rect.w < least) || (!horizontal && rect.h < least) {
             return Err("pane too small to split".into());
         }
         let (nw, nh) = if horizontal { ((rect.w - 1) / 2, rect.h) } else { (rect.w, (rect.h - 1) / 2) };
@@ -3727,7 +3793,7 @@ impl Server {
             last_output: Instant::now(),
             anim: None,
         };
-        w.relayout(area, self.border_rows());
+        w.relayout(area, self.chrome());
         let s = self.session_mut(sid).unwrap();
         s.windows.push(w);
         let idx = s.windows.len() - 1;
@@ -4771,7 +4837,7 @@ impl Server {
                 let area = self.window_area(scols, srows);
                 let pane_base = self.opts.pane_base_index;
                 let keep_zoom = self.opts.keep_zoom;
-                let border = self.border_rows();
+                let border = self.chrome();
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
                 let order = w.layout.panes();
                 let cur = order.iter().position(|p| *p == w.active).unwrap_or(0);
@@ -4843,7 +4909,7 @@ impl Server {
                     w.layout.resize(pid, d, amount.max(1));
                 }
                 // -x / -y: grow or shrink until the pane has that size.
-                let border = self.border_rows();
+                let border = self.chrome();
                 for (spec, horizontal) in [(width, true), (height, false)] {
                     let Some(spec) = spec else { continue };
                     let full = if horizontal { area.w } else { area.h };
@@ -5134,15 +5200,15 @@ impl Server {
                 // a refused split leaves everything where it was.
                 let (dcols, drows) = self.session(dsid).map(|s| (s.cols, s.rows)).unwrap();
                 let area = self.window_area(dcols, drows);
-                let border = self.border_rows();
+                let border = self.chrome();
                 let dw = &mut self.session_mut(dsid).unwrap().windows[dwidx];
                 if dw.zoomed {
                     dw.zoomed = false;
                     dw.relayout(area, border);
                 }
                 let Some(rect) = dw.layout_rect(dpid) else { return Outcome::Error("pane has no layout".into()) };
-                let min_rows = if border.is_some() { 5 } else { 3 };
-                if (horizontal && rect.w < 3) || (!horizontal && rect.h < min_rows) {
+                let least = border.least_to_split(horizontal);
+                if (horizontal && rect.w < least) || (!horizontal && rect.h < least) {
                     return Outcome::Error("pane too small to split".into());
                 }
                 let Some(pane) = self.take_pane(ssid, swidx, spid) else {
@@ -8354,7 +8420,7 @@ impl Server {
         self.chooser_go(cid, sid, Some(wid));
         let keep_zoom = self.opts.keep_zoom;
         let area = self.session(sid).map(|s| self.window_area(s.cols, s.rows)).unwrap_or_default();
-        let border = self.border_rows();
+        let border = self.chrome();
         if let Some(s) = self.session_mut(sid)
             && let Some(w) = s.windows.iter_mut().find(|w| w.id == wid)
             && w.active != pid
@@ -8701,6 +8767,7 @@ impl Server {
         let (x, y) = (x.saturating_add(view_x), y.saturating_add(view_y));
 
         let mouse_opt = self.opts.mouse;
+        let frames = self.opts.pane_frames;
         let area = match self.session(sid) {
             Some(s) => self.window_area(s.cols, s.rows),
             None => return,
@@ -8713,7 +8780,7 @@ impl Server {
             if pressed & BTN_LEFT != 0
                 && mouse_opt
                 && area.contains(x, y)
-                && let Some((pane, horizontal)) = border_owner(&w.rects, x, y)
+                && let Some((pane, horizontal)) = border_owner(&w.rects, x, y, frames, area)
             {
                 self.clients.get_mut(&cid).unwrap().drag =
                     Some(Drag { pane, horizontal, last: if horizontal { x as i32 } else { y as i32 } });
@@ -8981,11 +9048,7 @@ impl Server {
             return None;
         }
         let area = self.window_area(s.cols, s.rows);
-        Some(ZoomFrame {
-            pane,
-            rect: render::frame_at(from, to, t),
-            layout: w.unzoomed_rects(area, self.border_rows()),
-        })
+        Some(ZoomFrame { pane, rect: render::frame_at(from, to, t), layout: w.unzoomed_rects(area, self.chrome()) })
     }
 
     /// Whether a window on some client's screen has its focus frame
@@ -9270,6 +9333,7 @@ impl Server {
         let (status_top, border_fg, active_fg, opts_status) =
             (self.opts.status_top, self.opts.pane_border_fg, self.opts.pane_border_active_fg, self.opts.status);
         let lines = render::BorderLines::named(&self.opts.pane_border_lines);
+        let frames = self.opts.pane_frames;
         let (message, prompt) = {
             let c = self.clients.get(&cid).unwrap();
             (
@@ -9310,7 +9374,9 @@ impl Server {
         self.refresh_status_shells();
         // `pane-border-status`: the text for each pane's border row, expanded
         // before the window is borrowed for drawing.
-        let border_top = self.border_rows();
+        // With frames, a pane's text goes on its frame's top unless asked
+        // for at the bottom.
+        let border_top = self.border_rows().or(self.opts.pane_frames.then_some(true));
         let mut border_texts: HashMap<PaneId, Vec<crate::format::Segment>> = HashMap::new();
         if border_top.is_some() {
             let widx = self.sessions[spos].cur;
@@ -9386,6 +9452,7 @@ impl Server {
                 border_fg,
                 active_border_fg: active_fg,
                 lines,
+                frames,
             };
             let (g, c, h) = render::compose(&frame);
             (g, c, h, None)
@@ -9399,6 +9466,7 @@ impl Server {
                 border_fg,
                 active_border_fg: active_fg,
                 lines,
+                frames,
             };
             let (own_grid, _, hits) = render::compose(&own);
             let whole = Frame {
@@ -9410,6 +9478,7 @@ impl Server {
                 border_fg,
                 active_border_fg: active_fg,
                 lines,
+                frames,
             };
             let (g, c, _) = render::compose(&whole);
             (g, c, hits, Some(own_grid))
@@ -10037,8 +10106,22 @@ fn char_index(s: &str, chars: usize) -> usize {
 }
 
 /// Which pane's trailing edge a border cell belongs to, and whether that
-/// edge is vertical (horizontal drag).
-fn border_owner(rects: &[(PaneId, Rect)], x: u16, y: u16) -> Option<(PaneId, bool)> {
+/// edge is vertical (horizontal drag). With `frames`, the edge between two
+/// panes is two columns (rows): the trailing frame of the one before and
+/// the leading frame of the one after, either of which drags it; the
+/// window's outer edge, all frame, drags nothing.
+fn border_owner(rects: &[(PaneId, Rect)], x: u16, y: u16, frames: bool, area: Rect) -> Option<(PaneId, bool)> {
+    let (mut x, mut y) = (x, y);
+    if frames {
+        if x == area.x || y == area.y || x + 1 >= area.x + area.w || y + 1 >= area.y + area.h {
+            return None;
+        }
+        if rects.iter().any(|(_, r)| r.x == x + 1 && y >= r.y && y < r.y + r.h) {
+            x -= 1;
+        } else if rects.iter().any(|(_, r)| r.y == y + 1 && x >= r.x && x < r.x + r.w) {
+            y -= 1;
+        }
+    }
     for (id, r) in rects {
         if r.x + r.w == x && y >= r.y && y < r.y + r.h {
             return Some((*id, true));
@@ -11364,5 +11447,50 @@ mod tests {
         assert_eq!(expand_home("~\\x"), format!("{home}\\x"));
         assert_eq!(expand_home("~user/x"), "~user/x");
         assert_eq!(expand_home("C:\\x"), "C:\\x");
+    }
+
+    /// `pane-frames`: each pane's cell (its rectangle and the line after
+    /// it) less a frame on every side, the cells tiling the window; a pane
+    /// too small for a frame keeps its rectangle. A split needs room for
+    /// two frames. The edge between two framed panes drags from either
+    /// frame; the window's outer frame drags nothing; without frames, as
+    /// before.
+    #[test]
+    fn panes_in_frames_tile_the_window() {
+        let area = Rect { x: 0, y: 0, w: 30, h: 10 };
+        let (left, top, bottom) =
+            (Rect { x: 0, y: 0, w: 14, h: 10 }, Rect { x: 15, y: 0, w: 15, h: 4 }, Rect { x: 15, y: 5, w: 15, h: 5 });
+        assert_eq!(framed(left, area), Rect { x: 1, y: 1, w: 12, h: 8 });
+        assert_eq!(framed(top, area), Rect { x: 15, y: 1, w: 14, h: 2 });
+        assert_eq!(framed(bottom, area), Rect { x: 15, y: 5, w: 14, h: 4 });
+        let tiny = Rect { x: 0, y: 0, w: 1, h: 10 };
+        assert_eq!(framed(tiny, Rect { w: 1, ..area }), tiny);
+        // Every cell of the window is a pane's or its frame's, once.
+        let cells = |r: Rect| (r.x - 1..r.x + r.w + 1).flat_map(move |x| (r.y - 1..r.y + r.h + 1).map(move |y| (x, y)));
+        let mut seen = std::collections::HashMap::new();
+        for r in [left, top, bottom].map(|r| framed(r, area)) {
+            for c in cells(r) {
+                *seen.entry(c).or_insert(0) += 1;
+            }
+        }
+        assert_eq!(seen.len(), 300);
+        assert!(seen.values().all(|n| *n == 1));
+        assert_eq!((Chrome::Frames.least_to_split(true), Chrome::Frames.least_to_split(false)), (6, 6));
+        assert_eq!((Chrome::Status(true).least_to_split(false), Chrome::Lines.least_to_split(false)), (5, 3));
+        let rects: Vec<(PaneId, Rect)> =
+            vec![(1, framed(left, area)), (2, framed(top, area)), (3, framed(bottom, area))];
+        let own = |x, y| border_owner(&rects, x, y, true, area);
+        assert_eq!(own(13, 3), Some((1, true)), "the left pane's trailing frame");
+        assert_eq!(own(14, 1), Some((1, true)), "the right pane's leading frame: the same edge");
+        assert_eq!(own(20, 3), Some((2, false)), "the upper pane's trailing frame");
+        assert_eq!(own(20, 4), Some((2, false)), "the lower pane's leading frame");
+        for (x, y) in [(0, 3), (29, 3), (5, 0), (5, 9), (20, 0), (20, 9)] {
+            assert_eq!(own(x, y), None, "the window's outer frame at ({x}, {y})");
+        }
+        // Without frames: the line between, as before.
+        let lines: Vec<(PaneId, Rect)> = vec![(1, left), (2, top), (3, bottom)];
+        assert_eq!(border_owner(&lines, 14, 3, false, area), Some((1, true)));
+        assert_eq!(border_owner(&lines, 20, 4, false, area), Some((2, false)));
+        assert_eq!(border_owner(&lines, 15, 3, false, area), None, "inside the right pane");
     }
 }

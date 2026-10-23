@@ -352,6 +352,35 @@ pub struct Frame<'a> {
     pub border_fg: Color,
     pub active_border_fg: Color,
     pub lines: BorderLines,
+    /// `pane-frames`: each pane in a rounded frame of its own, in the cells
+    /// around it, instead of the lines between panes.
+    pub frames: bool,
+}
+
+/// A pane's frame (`pane-frames`): the cells around `r`, its corners
+/// rounded, in `fg`; what falls outside `win` is left out.
+fn draw_pane_frame(g: &mut Grid, win: Rect, r: Rect, fg: Color) {
+    let style = Style::colors(fg, Color::Default);
+    let (x0, y0, x1, y1) = (i32::from(r.x) - 1, i32::from(r.y) - 1, i32::from(r.x + r.w), i32::from(r.y + r.h));
+    let mut put = |x: i32, y: i32, ch: &str| {
+        if let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y))
+            && win.contains(x, y)
+        {
+            g.set(x, y, Cell::new(ch, false, style));
+        }
+    };
+    for x in x0 + 1..x1 {
+        put(x, y0, "─");
+        put(x, y1, "─");
+    }
+    for y in y0 + 1..y1 {
+        put(x0, y, "│");
+        put(x1, y, "│");
+    }
+    put(x0, y0, "╭");
+    put(x1, y0, "╮");
+    put(x0, y1, "╰");
+    put(x1, y1, "╯");
 }
 
 /// What the lines between panes are drawn with (`pane-border-lines`, as
@@ -425,7 +454,7 @@ pub fn compose(f: &Frame) -> Composed {
     let active = f.panes.iter().find(|p| p.active).map(|p| p.rect);
     for y in win.y..win.y + win.h {
         for x in win.x..win.x + win.w {
-            if !is_border(x, y) {
+            if f.frames || !is_border(x, y) {
                 continue;
             }
             let l = x > 0 && is_border(x - 1, y);
@@ -439,14 +468,22 @@ pub fn compose(f: &Frame) -> Composed {
         }
     }
 
+    if f.frames {
+        for p in &f.panes {
+            draw_pane_frame(&mut g, win, p.rect, if p.active { f.active_border_fg } else { f.border_fg });
+        }
+    }
     for p in &f.panes {
-        // The pane's border text, on the border row the layout reserved.
+        // The pane's border text, on the border row the layout reserved, or
+        // on its frame's top (bottom), a column in from the corner.
         if let Some((segs, top)) = &p.border_text {
             let y = if *top { p.rect.y.checked_sub(1) } else { Some(p.rect.y + p.rect.h) };
+            let (x, w) = if f.frames { (p.rect.x + 1, p.rect.w.saturating_sub(2)) } else { (p.rect.x, p.rect.w) };
             if let Some(y) = y
-                && win.contains(p.rect.x, y)
+                && w > 0
+                && win.contains(x, y)
             {
-                g.put_segments(p.rect.x, y, segs, p.rect.w);
+                g.put_segments(x, y, segs, w);
             }
         }
         g.blit_screen(p.rect, p.screen);
@@ -1993,6 +2030,7 @@ mod tests {
                 border_fg: Color::Default,
                 active_border_fg: Color::Default,
                 lines,
+                frames: false,
             };
             let g = compose(&f).0;
             [(4, 0), (4, 2), (0, 2), (8, 2), (4, 4)].map(|(x, y)| g.get(x, y).text().to_string())
@@ -2020,6 +2058,62 @@ mod tests {
         for (got, want) in joins {
             assert_eq!(got, want);
         }
+    }
+
+    /// `pane-frames`: each pane in a frame of its own in the cells around
+    /// it, corners rounded, the active one's in the active colour, its text
+    /// on the top a column in from the corner; no lines between panes.
+    #[test]
+    fn each_pane_in_a_frame_of_its_own() {
+        // As `framed` lays out a window of 30x10 (a pane on the left, two
+        // on the right): each cell, the line before it included, less a
+        // column or row on each side.
+        let screen = vt100::Parser::new(8, 13, 0);
+        let title = |s: &str| (vec![crate::format::Segment { text: s.into(), style: Style::default() }], true);
+        let view = |x, y, w, h, active, text: Option<&str>| PaneView {
+            rect: Rect { x, y, w, h },
+            screen: screen.screen(),
+            active,
+            copy: None,
+            border_text: text.map(title),
+        };
+        let f = Frame {
+            cols: 30,
+            rows: 10,
+            panes: vec![
+                view(1, 1, 12, 8, false, Some(" build ")),
+                view(15, 1, 14, 2, true, Some(" claude ")),
+                view(15, 5, 14, 4, false, None),
+            ],
+            status: None,
+            status_top: false,
+            border_fg: Color::Idx(8),
+            active_border_fg: Color::Idx(2),
+            lines: BorderLines::Heavy,
+            frames: true,
+        };
+        let g = compose(&f).0;
+        let rows: Vec<String> = (0..10).map(|y| (0..30).map(|x| g.get(x, y).text().to_string()).collect()).collect();
+        assert_eq!(
+            rows,
+            [
+                "╭─ build ────╮╭─ claude ─────╮",
+                "│            ││              │",
+                "│            ││              │",
+                "│            │╰──────────────╯",
+                "│            │╭──────────────╮",
+                "│            ││              │",
+                "│            ││              │",
+                "│            ││              │",
+                "│            ││              │",
+                "╰────────────╯╰──────────────╯",
+            ]
+        );
+        assert!(!rows.concat().contains(['┃', '━', '╋']), "no lines between panes: {rows:#?}");
+        // The active pane's frame in the active colour, the others in theirs.
+        assert_eq!(g.get(14, 0).style.fg, Color::Idx(2));
+        assert_eq!(g.get(0, 0).style.fg, Color::Idx(8));
+        assert_eq!(g.get(14, 4).style.fg, Color::Idx(8));
     }
 
     #[test]
@@ -2518,6 +2612,7 @@ mod tests {
             border_fg: Color::Idx(8),
             active_border_fg: Color::Idx(2),
             lines: BorderLines::Single,
+            frames: false,
         };
         let (g, cursor, hits) = compose(&f);
         assert_eq!(g.get(0, 0).text(), "L");
@@ -2570,6 +2665,7 @@ mod tests {
                 border_fg: Color::Idx(8),
                 active_border_fg: Color::Idx(2),
                 lines: BorderLines::Single,
+                frames: false,
             };
             let (g, _, hits) = compose(&f);
             let row: String = (0..cols).map(|x| g.get(x, 1).text()).collect();
@@ -2641,6 +2737,7 @@ mod tests {
             border_fg: Color::Default,
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
+            frames: false,
         };
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
@@ -2828,6 +2925,7 @@ mod tests {
                 border_fg: Color::Default,
                 active_border_fg: Color::Default,
                 lines: BorderLines::Single,
+                frames: false,
             };
             let (g, cursor, _) = compose(&f);
             assert_eq!((g.cols, g.rows), (cols, rows));
@@ -2881,6 +2979,7 @@ mod tests {
             border_fg: Color::Default,
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
+            frames: false,
         };
         let (g, _, _) = compose(&f);
         assert_eq!(g.get(3, 2).text(), "├");
@@ -2917,6 +3016,7 @@ mod tests {
             border_fg: Color::Default,
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
+            frames: false,
         };
         let (g, _, _) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 0).text()).collect();
@@ -2943,6 +3043,7 @@ mod tests {
             border_fg: Color::Default,
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
+            frames: false,
         };
         // Top: row 0 is the label, the pane starts on row 1.
         let (g, _, _) = compose(&frame(Rect { x: 0, y: 1, w: 6, h: 2 }, Some((label(" 0: long label"), true))));
@@ -3102,6 +3203,7 @@ mod tests {
             border_fg: Color::Default,
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
+            frames: false,
         };
         let (g, cursor, _) = compose(&f);
         assert!(cursor.is_none());

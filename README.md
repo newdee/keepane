@@ -1501,6 +1501,7 @@ set -g log-history-days 30        # for how long; 0 keeps everything (log-histor
 set -g undo-kill-time 10          # seconds a killed pane or window can come back (prefix u); 0 for none
 set -g keep-zoom off              # moving to another pane unzooms, as in tmux (on: the zoom moves with you)
 set -g pane-border-lines single   # the lines between panes: heavy (the default), single, double or simple (ASCII)
+set -g pane-frames on             # each pane in a rounded frame of its own, its pane-border-format text on top (off by default: the frame takes a column and a row on each side)
 set -g animation off              # no frame flying to where the keys go (animation-time 160: its milliseconds, 0-10000)
 set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, starfield, sharks, bonsai, sea, cat, dino, penguins, synthwave, fireworks, random (the default), cycle or off
 set -g clock-mode-look dots       # drawn in dots, blocks or binary; plain (the default) is its own characters

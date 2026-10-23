@@ -10937,6 +10937,53 @@ fn a_logon_command_of_a_gone_keepane_is_taken_over_by_the_installed_one() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// `pane-frames on`: each pane in a rounded frame of its own, its program a
+/// column and a row smaller on each side for it (the line that parted two
+/// panes now one pane's frame); the panes' own text on each frame's top;
+/// a zoomed pane framed too; off again, the lines and sizes as they were.
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_in_frames_of_their_own() {
+    let h = Harness::start("frames").await;
+    let mut c = h.connect().await;
+    c.attach(&["new-session", "-s", "fr"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    h.cli(&["split-window", "-h", "-t", "fr"]).await;
+    c.wait_for("split", |s| s.cell(0, COLS / 2).is_some_and(|c| c.contents() == "│")).await;
+    let sizes = || h.cli(&["list-panes", "-t", "fr", "-F", "#{pane_width}x#{pane_height}"]);
+    let (_, lines, _) = sizes().await;
+    assert_eq!(lines.trim(), "40x23\n39x23");
+    h.cli(&["set", "-g", "pane-border-format", " #{pane_index} "]).await;
+    h.cli(&["set", "-g", "pane-frames", "on"]).await;
+    c.wait_for("frames", |s| {
+        s.cell(0, 0).is_some_and(|c| c.contents() == "╭")
+            && s.cell(ROWS - 2, 39).is_some_and(|c| c.contents() == "╯")
+            && s.cell(0, 40).is_some_and(|c| c.contents() == "╭")
+            && s.cell(ROWS - 2, COLS - 1).is_some_and(|c| c.contents() == "╯")
+    })
+    .await;
+    let (_, framed, _) = sizes().await;
+    assert_eq!(framed.trim(), "38x21\n38x21", "40-2 and 39+1-2 across, 23-2 down: the halves the same");
+    let top = c.row(0);
+    assert!(top.starts_with("╭─ 0 ─") && top.contains("╮╭─ 1 ─"), "{top:?}");
+    // Zoomed: one frame round the window.
+    c.prefix('z').await;
+    c.wait_for("zoomed in its frame", |s| {
+        s.cell(0, 0).is_some_and(|c| c.contents() == "╭") && s.cell(0, COLS - 1).is_some_and(|c| c.contents() == "╮")
+    })
+    .await;
+    let (_, zoomed, _) = h.cli(&["display-message", "-p", "-t", "fr", "#{pane_width}x#{pane_height}"]).await;
+    assert_eq!(zoomed.trim(), "78x21");
+    c.prefix('z').await;
+    // A bare `set` flips it back off: the line between, the sizes before.
+    h.cli(&["set", "-g", "pane-frames"]).await;
+    c.wait_for("lines again", |s| {
+        s.cell(0, COLS / 2).is_some_and(|c| c.contents() == "│") && !s.contents().contains('╭')
+    })
+    .await;
+    let (_, back, _) = sizes().await;
+    assert_eq!(back.trim(), "40x23\n39x23");
+}
+
 /// `keepane update` from Scoop (Windows). Scoop skips an update while any
 /// program of keepane's runs from its folder ("Running process detected,
 /// skip updating."), and the server always does. The copy `update` hands

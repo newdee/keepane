@@ -83,6 +83,9 @@ pub struct Options {
     pub clock_mode_look: String,
     /// `pane-border-lines`: what the lines between panes are drawn with.
     pub pane_border_lines: String,
+    /// `pane-frames`: each pane in a frame of its own, rounded at its
+    /// corners, its `pane-border-format` text on the frame's top.
+    pub pane_frames: bool,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
     pub status_left: String,
@@ -409,6 +412,7 @@ pub const SHOWABLE: &[&str] = &[
     "pane-border-style",
     "pane-active-border-style",
     "pane-border-lines",
+    "pane-frames",
     "display-panes-colour",
     "display-panes-active-colour",
     "clock-mode-style",
@@ -520,6 +524,7 @@ impl Default for Options {
             clock_mode_animation: "random".into(),
             clock_mode_look: "plain".into(),
             pane_border_lines: "heavy".into(),
+            pane_frames: false,
             pane_border_fg: Color::Rgb(0x66, 0x66, 0x64),
             // The session name on a cinnabar block, the one block on the bar;
             // after it, while `passthrough` gives the pane every key, a word
@@ -730,6 +735,7 @@ pub const KNOWN: &[&str] = &[
     "pane-border-status",
     "pane-border-style",
     "pane-colours",
+    "pane-frames",
     "pane-timestamps",
     "plugin-path",
     "prefix",
@@ -796,6 +802,7 @@ const BOOLEAN: &[&str] = &[
     "log-history",
     "notify",
     "monitor-activity",
+    "pane-frames",
     "pane-timestamps",
     "monitor-bell",
     "mouse",
@@ -979,6 +986,7 @@ impl Options {
             "clock-mode-animation" => self.clock_mode_animation = one_of(name, value, CLOCK_ANIMATIONS)?,
             "clock-mode-look" => self.clock_mode_look = one_of(name, value, CLOCK_LOOKS)?,
             "pane-border-lines" => self.pane_border_lines = one_of(name, value, PANE_BORDER_LINES)?,
+            "pane-frames" => self.pane_frames = parse_bool(value)?,
             "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
                 if let (Some(c), _) = parse_style(value)? {
@@ -1286,6 +1294,7 @@ impl Options {
             "clock-mode-animation" => self.clock_mode_animation.clone(),
             "clock-mode-look" => self.clock_mode_look.clone(),
             "pane-border-lines" => self.pane_border_lines.clone(),
+            "pane-frames" => onoff(self.pane_frames),
             "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
         })
@@ -1644,6 +1653,11 @@ mod tests {
         assert!(e.contains("one of double, heavy, simple, single"), "{e}");
         assert_eq!(o.pane_border_lines, "single", "a refused value leaves the old one");
         assert_eq!(option_values("pane-border-lines"), PANE_BORDER_LINES);
+        // Frames: off by default; on, off, and a bare `set` flips it.
+        assert_eq!(o.get("pane-frames").as_deref(), Some("off"));
+        o.set("pane-frames", "on").unwrap();
+        assert!(o.pane_frames);
+        assert!(BOOLEAN.contains(&"pane-frames") && KNOWN.contains(&"pane-frames"));
     }
 
     #[test]
