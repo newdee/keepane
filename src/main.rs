@@ -196,6 +196,17 @@ fn main() {
     }
     // Up from wmux (keepane's old name): its data directory moves here the
     // first time, unless a wmux server still uses it (`migrate` then).
+    // `update`'s copy outside Scoop's folder, finishing it (Windows only):
+    // the registrations are not its to take over.
+    #[cfg(windows)]
+    if args[0] == "__update-scoop" {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
+        let code = rt.block_on(keepane::update::finish_scoop(&socket, &args[1..])).unwrap_or_else(|e| {
+            eprintln!("keepane: {e:#}");
+            1
+        });
+        std::process::exit(code);
+    }
     if args[0] != "__server" && args[0] != "migrate" {
         keepane::legacy::move_data_dir_at_start();
     }

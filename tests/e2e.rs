@@ -10876,6 +10876,139 @@ fn a_logon_command_of_a_gone_keepane_is_taken_over_by_the_installed_one() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// `keepane update` from Scoop (Windows). Scoop skips an update while any
+/// program of keepane's runs from its folder ("Running process detected,
+/// skip updating."), and the server always does. The copy `update` hands
+/// the rest to (`__update-scoop`, run from outside that folder) saves the
+/// sessions, stops the server, runs Scoop (here a stand-in that looks and
+/// installs as Scoop does) once nothing runs from there, and starts the
+/// server again from the new folder with the sessions and their panes.
+/// With another keepane still running from there Scoop is not run, and the
+/// server comes back from the old program.
+#[cfg(windows)]
+#[test]
+fn a_scoop_update_runs_once_keepane_has_stepped_aside() {
+    let pid = std::process::id();
+    let (sock, other) = (format!("e2e-scoop-{pid}"), format!("e2e-scoop-other-{pid}"));
+    let root = std::env::temp_dir().join(format!("keepane-e2e-scoop-{pid}"));
+    let _ = std::fs::remove_dir_all(&root);
+    let app = root.join(r"scoop\apps\keepane");
+    let old = app.join(r"0.0.1\keepane.exe");
+    let new = app.join(r"9.9.9\keepane.exe");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(root.join("helper")).unwrap();
+    copy_keepane(&old);
+    let helper = root.join(r"helper\keepane.exe");
+    copy_keepane(&helper);
+    let sessions = root.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    // Scoop's own test (scoop-update.ps1, test_running_process), then the
+    // version's folder.
+    let stand_in = root.join("scoop-update.cmd");
+    std::fs::write(
+        &stand_in,
+        format!(
+            "@powershell -NoProfile -NonInteractive -Command \"if (Get-Process | Where-Object {{ $_.Path -like '{app}\\*' }}) \
+             {{ 'Running process detected, skip updating.'; exit 0 }}; New-Item -ItemType Directory -Force '{app}\\9.9.9' | Out-Null; \
+             Copy-Item '{old}' '{app}\\9.9.9\\keepane.exe'; 'installed 9.9.9'\"\r\n",
+            app = app.display(),
+            old = old.display()
+        ),
+    )
+    .unwrap();
+    let run = |exe: &std::path::Path, sock: &str, args: &[&str]| {
+        let o = std::process::Command::new(exe)
+            .arg("-L")
+            .arg(sock)
+            .args(args)
+            .env("KEEPANE_SESSIONS_DIR", &sessions)
+            .env("KEEPANE_LOG_DIR", &sessions)
+            .env("KEEPANE_NO_UPDATE_CHECK", "1")
+            .env("KEEPANE_SCOOP_UPDATE", &stand_in)
+            .env_remove("KEEPANE")
+            .env_remove("KEEPANE_PANE")
+            .output()
+            .unwrap();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    struct Stop<'a>(Vec<(std::path::PathBuf, String)>, &'a std::path::Path);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            for (exe, sock) in &self.0 {
+                let _ = std::process::Command::new(exe)
+                    .args(["-L", sock, "kill-server"])
+                    .env("KEEPANE_SESSIONS_DIR", self.1)
+                    .env("KEEPANE_LOG_DIR", self.1)
+                    .output();
+            }
+        }
+    }
+    let _stop = Stop(vec![(helper.clone(), sock.clone()), (helper.clone(), other.clone())], &sessions);
+    // The programs running from the Scoop folder, by path.
+    let running = || {
+        let o = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!(
+                "Get-Process keepane | Where-Object {{ $_.Path -like '{}\\*' }} | ForEach-Object Path",
+                app.display()
+            ))
+            .output()
+            .unwrap();
+        let mut v: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_lowercase()).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let lower = |p: &std::path::Path| p.display().to_string().to_lowercase();
+
+    // A session of two panes, its server the old program.
+    assert_eq!(run(&old, &sock, &["new", "-d", "-s", "up"]).0, Some(0));
+    assert_eq!(run(&old, &sock, &["split-window", "-d", "-t", "up"]).0, Some(0));
+    assert_eq!(running(), vec![lower(&old)]);
+
+    let (code, out, err) = run(&helper, &sock, &["__update-scoop", "9.9.9", "0", &old.display().to_string()]);
+    let log = std::fs::read_to_string(sessions.join("update.log")).unwrap_or_default();
+    assert_eq!(code, Some(0), "{out}{err}\n{log}");
+    for want in [
+        "server: 1 session(s) saved, stopped",
+        "scoop: installed 9.9.9",
+        "installed keepane 9.9.9",
+        "server: 1 of 1 session(s) restored by",
+    ] {
+        assert!(log.contains(want), "{want}:\n{log}");
+    }
+    assert!(!log.contains("Running process detected"), "{log}");
+    assert_eq!(running(), vec![lower(&new)], "the server is the new program");
+    let (_, panes, _) = run(&new, &sock, &["list-panes", "-t", "up"]);
+    assert_eq!(panes.lines().count(), 2, "{panes}");
+
+    // Another keepane running from the folder (a server of another
+    // socket): Scoop is not run, and the server comes back as it was.
+    assert_eq!(run(&new, &other, &["new", "-d", "-s", "keep"]).0, Some(0));
+    let (code, out, err) = run(&helper, &sock, &["__update-scoop", "9.9.10", "0", &new.display().to_string()]);
+    let log = std::fs::read_to_string(sessions.join("update.log")).unwrap_or_default();
+    assert_eq!(code, Some(1), "{out}{err}\n{log}");
+    for want in [
+        "server: 1 session(s) saved, stopped",
+        "still running from Scoop's folder: process ",
+        "Scoop would skip the update while these run",
+        &format!("not updated: keepane {} stays", env!("CARGO_PKG_VERSION")),
+        &format!("server: 1 of 1 session(s) restored by {}", new.display()),
+    ] {
+        assert!(log.contains(want), "{want}:\n{log}");
+    }
+    assert!(!log.contains("scoop:"), "Scoop was not run:\n{log}");
+    assert!(!app.join("9.9.10").exists());
+    let (_, panes, _) = run(&new, &sock, &["list-panes", "-t", "up"]);
+    assert_eq!(panes.lines().count(), 2, "{panes}");
+    drop(_stop);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `keepane startup` on macOS (a launchd agent) and Linux (a systemd user
 /// unit), in a home of the test's own: `on` registers the name on the PATH
 /// (Homebrew's `bin/keepane` link), not the versioned Cellar file it was

@@ -312,6 +312,14 @@ scoop config no_junction true
 scoop reset keepane
 ```
 
+Scoop updates an app only while none of its programs runs ("Running
+process detected, skip updating."), and keepane's server always does: a
+bare `scoop update keepane` changes nothing. `keepane update` steps aside
+for it: a copy of keepane outside Scoop's folder saves the sessions, stops
+the server (the programs in the panes start again, as with
+`restart-server`), runs Scoop, and starts the server again with the
+sessions; it writes what it did to `update.log` beside `server.log`.
+
 Over SSH, the per-machine MSI's permission prompt appears on a desktop where
 nobody can answer it; `keepane update` says so and stops. Use the per-user
 MSI, the zip or Scoop there.

@@ -227,7 +227,7 @@ pub fn usage_of(pid: u32) -> Option<(u64, u64, u64)> {
 }
 
 /// Every process as (pid, parent pid, exe name), from one snapshot.
-fn processes() -> Vec<(u32, u32, String)> {
+pub(super) fn processes() -> Vec<(u32, u32, String)> {
     let mut out = Vec::new();
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE {

@@ -110,13 +110,17 @@ pub fn leave_job_denied(e: &anyhow::Error) -> bool {
 /// handles. `breakaway` also takes it out of the job the caller is in (a
 /// pane's kill-on-close job), which only a job allowing it permits.
 pub fn spawn_self(args: &[&str], breakaway: bool) -> Result<()> {
+    spawn_detached(&std::env::current_exe().context("current_exe")?, args, breakaway)
+}
+
+/// As `spawn_self`, for the program `exe` (a copy of this one: `update`).
+pub fn spawn_detached(exe: &std::path::Path, args: &[&str], breakaway: bool) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
         CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
         DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
     };
-    let exe = std::env::current_exe().context("current_exe")?;
     let quote = |s: &str| -> String {
         if s.is_empty() || s.contains([' ', '\t', '"']) {
             format!("\"{}\"", s.replace('"', "\\\""))

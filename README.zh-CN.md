@@ -158,6 +158,8 @@ scoop config no_junction true
 scoop reset keepane
 ```
 
+Scoop 只在一个应用的程序都没在运行时才更新它（否则提示"Running process detected, skip updating."），而 keepane 的 server 一直在运行，所以直接 `scoop update keepane` 什么也不会变。`keepane update` 会为它让路：一个放在 Scoop 目录外的 keepane 副本保存会话、停掉 server（pane 里的程序会重新启动，和 `restart-server` 一样），运行 Scoop，再带着这些会话启动 server；做了什么写在 `server.log` 旁边的 `update.log` 里。
+
 通过 SSH 时，按机器安装的 MSI 需要在桌面上确认权限，没人能点；`keepane update` 遇到这种情况会直接说明，请改用按用户安装的 MSI、zip 或 Scoop。
 
 WinGet 的清单（装 MSI）在 `packaging/winget/`，`winget validate` 通过；合进 winget-pkgs 之后 `winget install newdee.keepane` 就行，在那之前可以在克隆里 `winget install --manifest packaging/winget/manifests/n/newdee/keepane/<版本>`。细节见 `packaging/README.md`。

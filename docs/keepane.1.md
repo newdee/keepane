@@ -145,7 +145,10 @@ and print that line; `-a` counts what it already holds, `-i` any case,
 ### The program itself
 
 `version` (this keepane's and the server's), `update` (a newer keepane, the
-way this one was installed), `restart-server` (sessions move to a server of
+way this one was installed; from Scoop, which skips an app while any of its
+programs runs, a copy outside Scoop's folder saves the sessions, stops the
+server, runs Scoop and starts the server again with them, and says what it
+did in `update.log`), `restart-server` (sessions move to a server of
 this version), `import-config` (bring what keepane can use from a tmux
 config), `completion` (a Tab completer for PowerShell, bash, zsh or fish), `man`
 (this page),

@@ -4940,4 +4940,35 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 |---|---|---|---|
 | 1 | 机制存活 | fmt 0；clippy 0；单测通过；UTF-8 标志变异被抓到 | 干净（1/3） |
 | 2 | 全量 | Windows e2e 143/143（39.0 秒） | 干净（2/3） |
-| 3 | 换环境 | CI 新镜像（ACP 1252）上 Windows、Linux、macOS | 见下 |
+| 3 | 换环境 | CI 新镜像（ACP 1252）：e200770 上 Windows、Linux、macOS 三个 job 和网页 job 全部通过，随后发布 0.45.1 | 干净（3/3），验收通过 |
+## 161. `keepane update` 在 Scoop 下真正能更新
+
+- 现象：用户机器停在 0.38.2，但 PowerShell 历史里 `scoop update keepane` 运行过很多次（0.39 到 0.45 都没装上）。
+- 原因（读 Scoop 源码确认）：`scoop-update.ps1` 先调用 `test_running_process`。只要 `apps\keepane\` 下有任何进程在运行，Scoop 就打印 "Running process detected, skip updating." 并返回，什么都不改。keepane 的 server 一直从那个目录运行。`keepane update`（Scoop 分支）本身也从那个目录运行，再去调 `scoop update keepane`，所以它永远不会成功。另外，Scoop 卸载旧版时会删除并重建 `shims\keepane.exe`，而 shim 正在运行时删不掉。
+- 定性：
+  - 结构缺陷：原设计假设"安装新版时旧 server 可以继续运行"。MSI 下成立，Scoop 下不成立。
+  - 个性：只有 Scoop 这一种安装方式。MSI 由 msiexec 处理占用中的文件（返回 3010），Homebrew 和 cargo 只给出提示。
+- 改法：`update` 把后续工作交给一个放在 `%TEMP%\keepane-update-<pid>` 的副本（`__update-scoop`），然后退出。副本依次做这些事：
+  1. 等 `update` 进程退出。
+  2. 保存所有会话，用普通 `kill-server` 停掉 server。不用 `-r`，因为 `-r` 会让已连接的终端留下来等待重连，它们仍在 Scoop 目录里运行。
+  3. 等 Scoop 目录下和 shim 的进程都退出，最多 10 秒。
+  4. 运行 `scoop update keepane`。
+  5. 用新程序（`current` 或版本目录，和原来启动 server 的方式一致）启动 server，恢复原来在运行的会话，并恢复手机页面。
+  6. 如果 Scoop 没装上，就用旧程序恢复。
+  7. 把经过写进 `update.log`，并发一条通知。
+- 会不会引入新 bug：
+  - MSI、按用户 MSI、其他安装方式的分支没变。
+  - `spawn_self` 改成调用新的 `spawn_detached`，行为不变（全量测试通过）。
+  - 新增状态：临时副本目录，下次 `update` 时清理。
+  - 代价：更新时 pane 里的程序会重新启动，和 `restart-server` 一样（以前也要手动 `restart-server` 才能用上新版）。
+  - 从 ssh 里运行时，重启后的 server 跟以前从 ssh 启动的一样，在 ssh 那个会话里运行。
+- 测试：
+  - 单元 `scoops_folder_and_the_new_program_are_told_by_the_path`：Scoop 目录的识别、`current` 和版本目录、`is_under` 忽略大小写、名字只是开头相同的兄弟目录不算在内。
+  - e2e `a_scoop_update_runs_once_keepane_has_stepped_aside`：假 Scoop 目录，加一个照 Scoop 原样检查进程再安装的替身命令。会话有 2 个 pane，server 由旧程序运行。更新后 server 改由 `9.9.9\keepane.exe` 运行，仍是 2 个 pane，日志里没有 "Running process detected"。另一个 socket 的 server 从同一目录运行时，不运行 Scoop，退出码 1，server 用原程序恢复，会话仍是 2 个 pane。
+  - 3 个变异全部抓到：不停 server、看不见阻挡进程、用旧程序重启。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制存活 | fmt 0；clippy 0；单元 7/7；e2e 通过（14.3 秒）；变异 3/3 抓到（15.5、6.4、3.7 秒失败） | 干净（1/3） |
+| 2 | 全量 | Windows 502 + 11 + 144；文档新增行都不超过 76 列 | 干净（2/3） |
+| 3 | 跨平台 + 可复现 | Linux fmt 0、clippy 0、487 + 142；Scoop e2e 连跑 3 次 3/3（14.26、14.29、14.25 秒） | 干净（3/3），验收通过 |

@@ -183,19 +183,7 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     }
     let exe = std::env::current_exe()?;
     match kind_of(&exe) {
-        Kind::Scoop => {
-            println!("updating with scoop");
-            // scoop is a .cmd/.ps1 shim, which Command::new would not find
-            // (it looks for scoop.exe): let cmd resolve it.
-            let ok = Command::new("cmd.exe")
-                .args(["/d", "/c", "scoop", "update", "keepane"])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !ok {
-                bail!("`scoop update keepane` failed");
-            }
-        }
+        Kind::Scoop => return hand_to_scoop(socket, &exe, &r.version),
         Kind::Msi if machine_msi_blocked(over_ssh(), elevated()) => {
             println!(
                 "over SSH nobody is at the desktop to answer Windows' permission prompt for this MSI (it installs for every user):"
@@ -220,6 +208,293 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
         );
     }
     Ok(0)
+}
+
+/// The folder Scoop keeps keepane in (`…\scoop\apps\keepane`), from the
+/// program's path: `<it>\<version, or current>\keepane.exe`.
+pub fn scoop_app_dir(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?.parent()?;
+    dir.parent()?.file_name()?.eq_ignore_ascii_case("apps").then(|| dir.to_path_buf())
+}
+
+/// The program to run once Scoop has installed `version` in `app_dir`: by
+/// `current` when `old` was run by it (Scoop's junction), else in the
+/// version's own folder (`no_junction`), as the registrations had it.
+pub fn scoop_exe(app_dir: &Path, old: &Path, version: &str) -> PathBuf {
+    let by_current = old.parent().and_then(Path::file_name).is_some_and(|n| n.eq_ignore_ascii_case("current"));
+    app_dir.join(if by_current { "current" } else { version }).join("keepane.exe")
+}
+
+/// Whether `path` is in `dir`, as Scoop asks it (`-like "$dir\*"`): by
+/// the letters, case aside.
+pub fn is_under(path: &Path, dir: &Path) -> bool {
+    let dir = dir.to_string_lossy().trim_end_matches('\\').to_lowercase() + "\\";
+    path.to_string_lossy().to_lowercase().starts_with(&dir)
+}
+
+/// Where the Scoop update a copy of keepane finishes says what it did.
+/// (Beside the sessions when `KEEPANE_SESSIONS_DIR` moves them: tests do.)
+pub fn update_log() -> PathBuf {
+    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(d).join("update.log");
+    }
+    crate::logger::log_dir().join("update.log")
+}
+
+/// Scoop updates an app only while none of its programs runs (it says
+/// "Running process detected, skip updating." and changes nothing), and the
+/// server, every attached terminal and this very command run from its
+/// folder. So a copy of this program, outside that folder, does the rest
+/// once this one has exited (`finish_scoop`).
+fn hand_to_scoop(socket: &str, exe: &Path, version: &str) -> Result<i32> {
+    use crate::platform::process::{leave_job_denied, spawn_detached};
+    scoop_app_dir(exe).with_context(|| format!("{} is not in a Scoop app folder", exe.display()))?;
+    // The copies earlier updates ran from (each one's own folder, which it
+    // could not remove while it ran).
+    if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with("keepane-update-") {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("keepane-update-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let copy = dir.join("keepane.exe");
+    std::fs::copy(exe, &copy).context("copying keepane out of Scoop's folder")?;
+    let pid = std::process::id().to_string();
+    let old = exe.to_string_lossy();
+    let args = ["-L", socket, "__update-scoop", version, &pid, &old];
+    match spawn_detached(&copy, &args, true) {
+        Err(e) if leave_job_denied(&e) => spawn_detached(&copy, &args, false),
+        r => r,
+    }?;
+    println!(
+        "Scoop updates keepane only while no keepane runs, so keepane steps aside: the sessions are saved \
+         and the server stops (attached terminals are detached; the programs in the panes start again, \
+         as with `keepane restart-server`), Scoop installs keepane {version}, and the server starts again \
+         with the sessions."
+    );
+    println!("In a minute or so: `keepane attach`. What happened: {}", update_log().display());
+    Ok(0)
+}
+
+/// `keepane __update-scoop VERSION PID PROGRAM`: the rest of `update` for
+/// a Scoop install (`hand_to_scoop`), run by a copy of keepane outside
+/// Scoop's folder once `update` (process PID, the program PROGRAM) is gone.
+/// The sessions are saved and the server stopped, Scoop is run once nothing
+/// of keepane's runs from its folder any more, and the server starts again
+/// with the sessions that were running: from the new program, or from the
+/// old one when Scoop did not install it. What it did goes to `update_log`.
+pub async fn finish_scoop(socket: &str, args: &[String]) -> Result<i32> {
+    let [version, pid, old] = args else { bail!("__update-scoop: VERSION PID PROGRAM") };
+    // The pane `update` was typed in is gone with the old server.
+    unsafe {
+        std::env::remove_var("KEEPANE");
+        std::env::remove_var("KEEPANE_PANE");
+    }
+    let old = PathBuf::from(old);
+    let app_dir = scoop_app_dir(&old).with_context(|| format!("{} is not in a Scoop app folder", old.display()))?;
+    let mut log = Log::new(update_log());
+    let this = env!("CARGO_PKG_VERSION");
+    log.line(format!("keepane {this} -> {version} with Scoop"));
+    if let Ok(pid) = pid.parse() {
+        wait_for_exit(pid, std::time::Duration::from_secs(30));
+    }
+    let pipe = crate::ipc::pipe_name(socket);
+    let (code, saved) = stop_server(socket, &pipe).await;
+    let Some(sessions) = saved else {
+        log.line(code);
+        log.line("not updated: the server is left running".into());
+        return Ok(1);
+    };
+    if !code.is_empty() {
+        log.line(code);
+    }
+    // What still runs from Scoop's folder (another server, a terminal
+    // still closing): Scoop would only skip the update.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut blockers = scoop_blockers(&app_dir);
+    while !blockers.is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        blockers = scoop_blockers(&app_dir);
+    }
+    let installed = if blockers.is_empty() {
+        let command = crate::legacy::var("KEEPANE_SCOOP_UPDATE").unwrap_or_else(|| "scoop update keepane".into());
+        // scoop is a .cmd/.ps1 shim, which Command::new would not find
+        // (it looks for scoop.exe): let cmd resolve it.
+        let out = quiet(Command::new("cmd.exe").args(["/d", "/c", &command])).output();
+        match out {
+            Ok(o) => {
+                let said = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+                for l in said.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+                    log.line(format!("scoop: {l}"));
+                }
+            }
+            Err(e) => log.line(format!("scoop could not be run: {e}")),
+        }
+        app_dir.join(version).join("keepane.exe").is_file()
+    } else {
+        for (pid, path) in &blockers {
+            log.line(format!("still running from Scoop's folder: process {pid}, {}", path.display()));
+        }
+        log.line("Scoop would skip the update while these run".into());
+        false
+    };
+    let exe = if installed {
+        log.line(format!("installed keepane {version}"));
+        Some(scoop_exe(&app_dir, &old, version))
+    } else {
+        log.line(format!("not updated: keepane {this} stays"));
+        [old.clone(), app_dir.join(this).join("keepane.exe")].into_iter().find(|p| p.is_file())
+    };
+    match exe {
+        Some(exe) if !sessions.is_empty() => {
+            let mut restored = Vec::new();
+            for s in &sessions {
+                match run_keepane(&exe, socket, &["restore-session", s]) {
+                    Ok(_) => restored.push(s.as_str()),
+                    Err(e) => log.line(format!("{s}: not restored: {e}")),
+                }
+            }
+            log.line(format!(
+                "server: {} of {} session(s) restored by {}{}",
+                restored.len(),
+                sessions.len(),
+                exe.display(),
+                if restored.is_empty() { String::new() } else { format!(": {}", restored.join(", ")) }
+            ));
+            // The phones' page, served again as it was.
+            let _ = run_keepane(&exe, socket, &["web-resume"]);
+            log.line("`keepane attach` to go back".into());
+        }
+        Some(_) => {}
+        None => log.line("no keepane program left to start the server with".into()),
+    }
+    let title = if installed { format!("keepane {version} installed") } else { "keepane was not updated".into() };
+    crate::notify::notify(&title, &format!("what happened: {}", log.path.display()));
+    Ok(if installed { 0 } else { 1 })
+}
+
+/// Save every session and stop the server on `pipe`. Returns what to say
+/// (empty when there was nothing to stop), and the sessions that were
+/// running, or none when the server is left running.
+async fn stop_server(socket: &str, pipe: &str) -> (String, Option<Vec<String>>) {
+    use crate::client::{query, server_running};
+    if !server_running(pipe) {
+        return (String::new(), Some(Vec::new()));
+    }
+    let Ok((_, list, _)) = query(socket, &["list-sessions"]).await else {
+        return ("the server did not answer".into(), None);
+    };
+    let sessions: Vec<String> =
+        list.lines().filter_map(|l| l.split_once(':').map(|(n, _)| n.to_string())).filter(|n| !n.is_empty()).collect();
+    match query(socket, &["save-session", "-a"]).await {
+        Ok((0, _, _)) => {}
+        Ok((_, _, err)) if !sessions.is_empty() => {
+            return (format!("saving the sessions failed: {}", err.trim()), None);
+        }
+        Err(e) if !sessions.is_empty() => return (format!("saving the sessions failed: {e:#}"), None),
+        _ => {}
+    }
+    // Plain kill-server: its terminals detach and exit, where `-r` would
+    // keep them running (waiting to attach again) from Scoop's folder.
+    match query(socket, &["kill-server"]).await {
+        Ok((0, _, _)) => {}
+        Ok((_, _, err)) => return (format!("the server would not stop: {}", err.trim()), None),
+        Err(e) => return (format!("the server would not stop: {e:#}"), None),
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while server_running(pipe) {
+        if std::time::Instant::now() > deadline {
+            return ("the server did not exit".into(), None);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    (format!("server: {} session(s) saved, stopped", sessions.len()), Some(sessions))
+}
+
+/// What `finish_scoop` did, line by line into the log as it goes (a copy
+/// that dies halfway has still said how far it got).
+struct Log {
+    path: PathBuf,
+}
+
+impl Log {
+    fn new(path: PathBuf) -> Log {
+        let _ = std::fs::write(&path, format!("{}\n", chrono::Local::now().to_rfc3339()));
+        Log { path }
+    }
+
+    fn line(&mut self, text: String) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&self.path) {
+            let _ = writeln!(f, "{text}");
+        }
+    }
+}
+
+/// A command with no window of its own and nothing to read.
+fn quiet(c: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    c.creation_flags(0x0800_0000).stdin(std::process::Stdio::null()) // CREATE_NO_WINDOW
+}
+
+/// `exe -L socket args…`, to completion: what it printed, or why not.
+fn run_keepane(exe: &Path, socket: &str, args: &[&str]) -> Result<String> {
+    let o = quiet(Command::new(exe).arg("-L").arg(socket).args(args)).output()?;
+    if !o.status.success() {
+        bail!("{}", String::from_utf8_lossy(&o.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// Wait (at most `limit`) for process `pid` to exit.
+fn wait_for_exit(pid: u32, limit: std::time::Duration) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    let h = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if h.is_null() {
+        return; // gone already
+    }
+    unsafe {
+        WaitForSingleObject(h, limit.as_millis() as u32);
+        CloseHandle(h);
+    }
+}
+
+/// The keepane programs Scoop would find running and skip the update for:
+/// those in its folder for keepane, and its shim (which it removes and
+/// makes again). Not this one.
+fn scoop_blockers(app_dir: &Path) -> Vec<(u32, PathBuf)> {
+    let shim = app_dir.parent().and_then(Path::parent).map(|root| root.join("shims").join("keepane.exe"));
+    let me = std::process::id();
+    super::sysinfo::processes()
+        .into_iter()
+        .filter(|(pid, _, name)| *pid != me && name.eq_ignore_ascii_case("keepane.exe"))
+        .filter_map(|(pid, _, _)| Some((pid, image_path(pid)?)))
+        .filter(|(_, p)| {
+            is_under(p, app_dir)
+                || shim.as_deref().is_some_and(|s| p.to_string_lossy().eq_ignore_ascii_case(&s.to_string_lossy()))
+        })
+        .collect()
+}
+
+/// The full path of process `pid`'s program.
+fn image_path(pid: u32) -> Option<PathBuf> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return None;
+    }
+    let mut buf = vec![0u16; 1024];
+    let mut len = buf.len() as u32;
+    let ok = unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    unsafe { CloseHandle(h) };
+    (ok != 0).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
 }
 
 #[cfg(test)]
@@ -256,6 +531,30 @@ mod tests {
         }
         let dev = Path::new(r"D:\src\keepane\target\release\keepane.exe");
         assert_eq!(kind_of(dev), Kind::Other(dev.to_path_buf()));
+    }
+
+    /// Scoop's folder for keepane, from the program's path either way Scoop
+    /// runs it, and the program to start after an update: the same way.
+    #[test]
+    fn scoops_folder_and_the_new_program_are_told_by_the_path() {
+        let app = Path::new(r"C:\Users\x\scoop\apps\keepane");
+        let by_version = app.join(r"0.38.2\keepane.exe");
+        let by_current = Path::new(r"C:\Users\x\scoop\apps\keepane\Current\keepane.exe");
+        assert_eq!(scoop_app_dir(&by_version).as_deref(), Some(app));
+        assert_eq!(
+            scoop_app_dir(Path::new(r"D:\s\Apps\keepane\1.0.0\keepane.exe")).unwrap(),
+            Path::new(r"D:\s\Apps\keepane")
+        );
+        assert_eq!(scoop_app_dir(Path::new(r"D:\src\keepane\target\release\keepane.exe")), None);
+        assert_eq!(scoop_app_dir(Path::new(r"keepane.exe")), None);
+        assert_eq!(scoop_exe(app, &by_version, "0.45.1"), app.join(r"0.45.1\keepane.exe"));
+        assert_eq!(scoop_exe(app, by_current, "0.45.1"), app.join(r"current\keepane.exe"));
+        // Scoop's -like "$dir\*": case aside, and a sibling folder whose name
+        // only starts the same is not in it.
+        assert!(is_under(Path::new(r"C:\USERS\X\SCOOP\APPS\KEEPANE\0.38.2\keepane.exe"), app));
+        assert!(is_under(&by_version, Path::new(r"C:\Users\x\scoop\apps\keepane\")));
+        assert!(!is_under(Path::new(r"C:\Users\x\scoop\apps\keepane2\0.1.0\keepane.exe"), app));
+        assert!(!is_under(Path::new(r"C:\Users\x\scoop\shims\keepane.exe"), app));
     }
 
     #[test]
