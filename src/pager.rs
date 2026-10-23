@@ -200,7 +200,9 @@ impl View {
             }
             s.push_str("\r\n");
         }
-        s.push_str("\x1b[2K\x1b[7m");
+        // The quiet bar, as keepane's own hint rows are (white on black, which
+        // the theme makes its own), not reversed: no glare under the text.
+        s.push_str("\x1b[2K\x1b[0;37;40m");
         let status = match (&self.typing, &self.note) {
             (Some((forward, text)), _) => format!("{}{text}", if *forward { '/' } else { '?' }),
             (None, Some(note)) => format!(" {note}"),

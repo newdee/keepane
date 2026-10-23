@@ -1796,7 +1796,7 @@ async fn choose_tree_as_a_chart() {
     let find = |s: &str| rows.iter().position(|r| r.contains(s));
     // The root in a box on top, about the middle of 80 columns.
     let root = rows[1].find("keepane").unwrap_or(0);
-    assert!(rows[0].contains('┌') && rows[1].contains("│ keepane │"), "{text}");
+    assert!(rows[0].contains('╭') && rows[1].contains("│ keepane │"), "{text}");
     assert!((30..=42).contains(&root), "{text}");
     // Then the sessions, the windows of s, the panes of s:0, row under row.
     let (sessions, windows, panes) = (find("1  s").unwrap(), find("2  0:").unwrap(), find("3  0:").unwrap());
@@ -4377,10 +4377,12 @@ async fn display_menu_runs_an_entry_by_key_and_by_enter() {
 
     // prefix > is the pane menu; `h` splits the window horizontally.
     c.prefix('>').await;
-    c.wait_for("menu", |s| s.contents().contains("(h) Split horizontally")).await;
+    c.wait_for("menu", |s| s.contents().contains("Split horizontally")).await;
     let text = c.text();
-    assert!(text.contains("pane 0"), "the title is shown: {text}");
-    assert!(text.contains("(x) Kill"), "{text}");
+    assert!(text.contains("╭─ pane 0 ─"), "the title on the box: {text}");
+    assert!(text.contains(" Split horizontally") && text.contains(" Kill "), "{text}");
+    let row = text.lines().find(|l| l.contains("Split horizontally")).unwrap();
+    assert!(row.trim_end().ends_with("h  │"), "the key at the right: {row:?}");
     c.type_str("h").await;
     c.wait_for("two panes", |s| s.contents().matches("keepane>").count() >= 2).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "m:0"]).await;
@@ -4389,7 +4391,7 @@ async fn display_menu_runs_an_entry_by_key_and_by_enter() {
     // G lands on the last entry that can be picked (the separators are
     // skipped), and Enter runs it: kill-pane leaves one pane.
     c.prefix('>').await;
-    c.wait_for("menu again", |s| s.contents().contains("(h) Split horizontally")).await;
+    c.wait_for("menu again", |s| s.contents().contains("Split horizontally")).await;
     c.key(b'G' as u16, 'G', SHIFT_PRESSED).await;
     c.enter().await;
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -4404,11 +4406,23 @@ async fn display_menu_runs_an_entry_by_key_and_by_enter() {
 
     // Escape closes a menu without running anything.
     c.prefix('>').await;
-    c.wait_for("menu", |s| s.contents().contains("(h) Split horizontally")).await;
+    c.wait_for("menu", |s| s.contents().contains("Split horizontally")).await;
     c.key(0x1B, '\x1b', 0).await;
     c.wait_for("menu gone", |s| !s.contents().contains("Split horizontally")).await;
     let (_, out, _) = h.cli(&["list-panes", "-t", "m:0"]).await;
     assert_eq!(out.lines().count(), 1, "{out}");
+
+    // A click on an item in the box picks it; Enter runs it.
+    c.prefix('>').await;
+    c.wait_for("menu", |s| s.contents().contains("Split vertically")).await;
+    let text = c.text();
+    let (y, row) = text.lines().enumerate().find(|(_, l)| l.contains("Split vertically")).unwrap();
+    let x = row.chars().take_while(|c| *c != 'S').count() as i16;
+    c.send(ClientMsg::Mouse(MouseRecord { x, y: y as i16, buttons: 1, ctrl: 0, flags: 0 })).await;
+    c.send(ClientMsg::Mouse(MouseRecord { x, y: y as i16, buttons: 0, ctrl: 0, flags: 0 })).await;
+    c.wait_for("the clicked item picked", |s| s.rows(0, COLS).any(|l| l.contains("▌ Split vertically"))).await;
+    c.enter().await;
+    c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
     h.cli(&["kill-server"]).await;
 }
 
@@ -4423,7 +4437,7 @@ async fn display_popup_takes_the_keys_and_closes_with_its_command() {
     c.type_str(&format!("display-popup -E {}", shell_line("pip"))).await;
     c.enter().await;
     c.wait_for("popup", |s| s.contents().contains("pip>")).await;
-    assert!(c.text().contains('┌'), "the popup has a border: {}", c.text());
+    assert!(c.text().contains('╭'), "the popup has a border: {}", c.text());
 
     // Keys go to the popup's program, not to the pane behind it.
     c.type_str("echo inside-popup").await;
@@ -4557,10 +4571,10 @@ async fn menus_and_popups_survive_degenerate_sizes() {
     c.prefix(':').await;
     c.type_str("display-menu \"\"").await;
     c.enter().await;
-    c.wait_for("separator-only menu", |s| s.contents().contains("j/k move")).await;
+    c.wait_for("separator-only menu", |s| s.contents().contains("Enter · q")).await;
     c.enter().await;
     c.key(0x1B, '\x1b', 0).await;
-    c.wait_for("menu gone", |s| !s.contents().contains("j/k move")).await;
+    c.wait_for("menu gone", |s| !s.contents().contains("Enter · q")).await;
 
     // A terminal with no room for a popup says so instead of drawing a
     // broken box.
@@ -8052,7 +8066,7 @@ async fn the_smaller_tmux_gaps_are_closed() {
     c.type_str(&format!("display-popup -x 0 -y 0 -w 20 -h 5 -E {}", shell_line("pip"))).await;
     c.enter().await;
     c.wait_for("popup", |s| s.contents().contains("pip>")).await;
-    assert!(c.row(0).starts_with('┌'), "top-left corner at 0,0: {:?}", c.row(0));
+    assert!(c.row(0).starts_with('╭'), "top-left corner at 0,0: {:?}", c.row(0));
     assert_eq!(c.row(0).chars().filter(|ch| *ch == '─').count(), 18, "20 wide: {:?}", c.row(0));
     c.type_str("exit").await;
     c.enter().await;
@@ -8064,8 +8078,8 @@ async fn the_smaller_tmux_gaps_are_closed() {
     // Bottom-right of the window area: the row above the status line ends
     // with the box's bottom-right corner.
     let last = c.row(ROWS - 2);
-    assert!(last.trim_end().ends_with('┘'), "bottom-right corner against the edge: {last:?}");
-    assert!(c.row(ROWS - 6).trim_end().ends_with('┐'), "5 tall: {:?}", c.row(ROWS - 6));
+    assert!(last.trim_end().ends_with('╯'), "bottom-right corner against the edge: {last:?}");
+    assert!(c.row(ROWS - 6).trim_end().ends_with('╮'), "5 tall: {:?}", c.row(ROWS - 6));
     h.cli(&["kill-server"]).await;
 }
 

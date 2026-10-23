@@ -1897,16 +1897,16 @@ fn boxed(title: &str, right: &str, lines: Vec<String>, r: Rect, focused: bool) -
         None => text,
     };
     let top = if with_right {
-        format!("{border}┌{text}{fill}\x1b[0m {right} {border}┐\x1b[0m")
+        format!("{border}╭{text}{fill}\x1b[0m {right} {border}╮\x1b[0m")
     } else {
-        format!("{border}┌{text}{fill}┐\x1b[0m")
+        format!("{border}╭{text}{fill}╮\x1b[0m")
     };
     let mut out = vec![fit(&top, w)];
     for i in 0..r.inner_h() {
         let l = lines.get(i).map(String::as_str).unwrap_or("");
         out.push(format!("{border}│\x1b[0m{}{border}│\x1b[0m", fit(l, inner)));
     }
-    out.push(format!("{border}└{}┘\x1b[0m", "─".repeat(inner)));
+    out.push(format!("{border}╰{}╯\x1b[0m", "─".repeat(inner)));
     out
 }
 

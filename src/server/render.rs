@@ -835,20 +835,8 @@ pub fn draw_key_hint(
     let border = Style::colors(Color::Idx(3), Color::Default);
     let plain = Style::default();
     g.fill(rect, plain);
-    let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w - 1, rect.y + rect.h - 1);
-    let line = |s: &str| Cell::new(s, false, border);
-    for x in x0 + 1..x1 {
-        g.set(x, y0, line("─"));
-        g.set(x, y1, line("─"));
-    }
-    for y in y0 + 1..y1 {
-        g.set(x0, y, line("│"));
-        g.set(x1, y, line("│"));
-    }
-    g.set(x0, y0, line("┌"));
-    g.set(x1, y0, line("┐"));
-    g.set(x0, y1, line("└"));
-    g.set(x1, y1, line("┘"));
+    let (x0, y0, y1) = (rect.x, rect.y, rect.y + rect.h - 1);
+    draw_frame(g, rect, border);
     g.put_str(x0 + 2, y0, &format!(" {title} "), Style { bold: true, ..border }, bw.saturating_sub(4));
     if !footer.is_empty() {
         g.put_str(x0 + 2, y1, &format!(" {footer} "), border, bw.saturating_sub(4));
@@ -900,22 +888,10 @@ pub fn draw_popup(
     let style = Style::colors(border, Color::Default);
     let plain = Style::default();
     g.fill(rect, plain);
-    let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w - 1, rect.y + rect.h - 1);
-    let line = |s: &str| Cell::new(s, false, style);
-    for x in x0 + 1..x1 {
-        g.set(x, y0, line("─"));
-        g.set(x, y1, line("─"));
-    }
-    for y in y0 + 1..y1 {
-        g.set(x0, y, line("│"));
-        g.set(x1, y, line("│"));
-    }
-    g.set(x0, y0, line("┌"));
-    g.set(x1, y0, line("┐"));
-    g.set(x0, y1, line("└"));
-    g.set(x1, y1, line("┘"));
+    let (x0, y0, y1) = (rect.x, rect.y, rect.y + rect.h - 1);
+    draw_frame(g, rect, style);
     if let Some(h) = hint {
-        g.put_str(x0 + 1, y1, &format!(" {h} "), style, rect.w.saturating_sub(2));
+        g.put_str(x0 + 2, y1, &format!(" {h} "), style, rect.w.saturating_sub(4));
     }
     let inner = Rect { x: x0 + 1, y: y0 + 1, w: rect.w - 2, h: rect.h - 2 };
     g.blit_screen(inner, screen);
@@ -1331,11 +1307,14 @@ pub fn draw_notice(
     prompt: Option<&(String, String, usize)>,
     message: Option<&str>,
 ) -> Option<(u16, u16)> {
-    let style = Style::colors(Color::Idx(0), Color::Idx(3));
+    // On the quiet bar: a prompt's label bold yellow, what is typed and a
+    // message bright.
+    let style = Style::colors(Color::Idx(15), Color::Idx(0));
+    let label_style = SELECTED;
     let cols = g.cols;
     if let Some((label, input, ci)) = prompt {
         g.fill(Rect { x: 0, y, w: cols, h: 1 }, style);
-        let used = g.put_str(0, y, label, style, cols);
+        let used = g.put_str(0, y, label, label_style, cols);
         let before: String = input.chars().take(*ci).collect();
         let bw = before.width() as u16;
         g.put_str(used, y, input, style, cols.saturating_sub(used));
@@ -1348,6 +1327,121 @@ pub fn draw_notice(
     None
 }
 
+/// A menu's line, as the picker holds it: `(k) Name` an item (its name, its
+/// key), a line of `-` a rule, anything else a label nobody picks.
+enum MenuLine<'a> {
+    Item(&'a str, &'a str),
+    Rule,
+    Label(&'a str),
+}
+
+fn menu_line(line: &str) -> MenuLine<'_> {
+    if !line.is_empty() && line.chars().all(|c| c == '-') {
+        return MenuLine::Rule;
+    }
+    if let Some(rest) = line.strip_prefix('(')
+        && let Some(n) = rest.find(") ").filter(|&n| (1..=6).contains(&n))
+    {
+        return MenuLine::Item(&rest[n + 2..], &rest[..n]);
+    }
+    MenuLine::Label(line)
+}
+
+/// Whether `area` has room for a menu's box; else the menu is drawn as a
+/// list (`draw_chooser`), and its rows are the list's.
+pub fn menu_fits(area: Rect) -> bool {
+    area.w >= 12 && area.h >= 3
+}
+
+/// What a menu says at the bottom of its box.
+const MENU_FOOT: &str = "Enter · q";
+
+/// Where a menu goes in `area`: its box, as wide as its widest item (a
+/// marker, the name, a gap, the key) and its title, as tall as its items
+/// (as many as fit), in the middle; and the rows inside it that hold the
+/// items. `lines` are the picker's, its title first when `titled`.
+pub fn menu_box(area: Rect, lines: &[String], titled: bool) -> (Rect, Rect) {
+    let items = &lines[usize::from(titled).min(lines.len())..];
+    let (mut name_w, mut key_w) = (0usize, 0usize);
+    for l in items {
+        match menu_line(l) {
+            MenuLine::Item(n, k) => {
+                name_w = name_w.max(n.width());
+                key_w = key_w.max(k.width());
+            }
+            MenuLine::Label(s) => name_w = name_w.max(s.width()),
+            MenuLine::Rule => {}
+        }
+    }
+    let title_w = if titled { lines[0].width() + 4 } else { 0 };
+    let inner = (2 + name_w + if key_w > 0 { 3 + key_w } else { 0 } + 2).max(title_w).max(MENU_FOOT.width() + 6);
+    let w = (inner as u16 + 2).min(area.w);
+    let body_h = (items.len() as u16).min(area.h.saturating_sub(2));
+    let h = body_h + 2;
+    let (x, y) = (area.x + (area.w - w) / 2, area.y + area.h.saturating_sub(h) / 2);
+    (Rect { x, y, w, h }, Rect { x: x + 1, y: y + 1, w: w.saturating_sub(2), h: body_h })
+}
+
+/// `display-menu`: a box in the middle, rounded, its title on the top
+/// edge; each item its name and, at the right, its key; rules across, joined
+/// to the edges; the picked item on the quiet bar, marked at the left,
+/// its name bright. As many items as fit, from `top`.
+pub fn draw_menu(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize, titled: bool) {
+    // No room for a box: the list, as much of it as fits.
+    if !menu_fits(area) {
+        draw_chooser(g, area, lines, sel, top, "Enter select", "");
+        return;
+    }
+    let (outer, body) = menu_box(area, lines, titled);
+    let border = Style::colors(Color::Idx(3), Color::Default);
+    g.fill(outer, Style::default());
+    draw_frame(g, outer, border);
+    if titled {
+        g.put_str(
+            outer.x + 2,
+            outer.y,
+            &format!(" {} ", lines[0]),
+            Style { bold: true, ..border },
+            outer.w.saturating_sub(4),
+        );
+    }
+    let foot = format!(" {MENU_FOOT} ");
+    let fw = foot.width() as u16;
+    if outer.w >= fw + 4 {
+        let y1 = outer.y + outer.h - 1;
+        g.put_str(outer.x + outer.w - fw - 2, y1, &foot, Style::colors(Color::Idx(8), Color::Default), fw);
+    }
+    let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) };
+    let bright = Style { bold: true, ..Style::colors(Color::Idx(15), Color::Idx(0)) };
+    let first = usize::from(titled).max(top);
+    for (row, i) in (first..lines.len()).take(usize::from(body.h)).enumerate() {
+        let y = body.y + row as u16;
+        match menu_line(&lines[i]) {
+            MenuLine::Rule => {
+                for x in body.x..body.x + body.w {
+                    g.set(x, y, Cell::new("─", false, border));
+                }
+                g.set(outer.x, y, Cell::new("├", false, border));
+                g.set(outer.x + outer.w - 1, y, Cell::new("┤", false, border));
+            }
+            MenuLine::Label(s) => {
+                g.put_str(body.x + 2, y, s, Style::colors(Color::Idx(8), Color::Default), body.w.saturating_sub(3));
+            }
+            MenuLine::Item(name, k) => {
+                let picked = i == sel;
+                if picked {
+                    g.fill(Rect { x: body.x, y, w: body.w, h: 1 }, Style::colors(Color::Default, Color::Idx(0)));
+                    g.set(body.x, y, Cell::new("▌", false, SELECTED));
+                }
+                let kw = k.width() as u16;
+                let room = body.w.saturating_sub(kw + 5);
+                g.put_str(body.x + 2, y, name, if picked { bright } else { Style::default() }, room);
+                let kx = body.x + body.w.saturating_sub(kw + 2);
+                g.put_str(kx, y, k, if picked { SELECTED } else { key }, kw);
+            }
+        }
+    }
+}
 pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize, actions: &str, status: &str) {
     draw_chooser_tinted(g, area, lines, &[], sel, top, actions, status);
 }
@@ -1370,7 +1464,7 @@ pub fn draw_chooser_tinted(
         return;
     }
     let style = Style::colors(Color::Default, Color::Default);
-    let hi = Style::colors(Color::Idx(0), Color::Idx(3));
+    let hi = SELECTED;
     let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) };
     let rule = Style::colors(Color::Idx(8), Color::Default);
     g.fill(area, style);
@@ -1641,11 +1735,11 @@ fn chart_lines(n: &ChartNode, w: usize, level: ChartLevel, root: bool, up: bool,
         cs.into_iter().collect()
     };
     let mid = |text: &str| if w >= 4 { format!("│ {} │", fit(text, w - 4)) } else { fit(text, w) };
-    let mut out = vec![edge("┌", "┐", &chart_label(n, w), up.then_some('┴')), mid(&n.title)];
+    let mut out = vec![edge("╭", "╮", &chart_label(n, w), up.then_some('┴')), mid(&n.title)];
     if !root {
         out.push(mid(&n.info));
     }
-    out.push(edge("└", "┘", "", down.then_some('┬')));
+    out.push(edge("╰", "╯", "", down.then_some('┬')));
     out
 }
 
@@ -1972,6 +2066,11 @@ fn draw_chooser_footer(g: &mut Grid, area: Rect, count: usize, sel: usize, moves
     }
 }
 
+/// A picked line in a list: on the quiet bar (`HINT_BAR`'s ground), its
+/// text bold yellow, as the keys there are: it stands out without a bar of
+/// colour across the screen.
+pub const SELECTED: Style = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Idx(0)) };
+
 /// A hint row's own colours: white on black, which the theme's 16 make its
 /// quiet bar (the light paper's darker edge, the dark paper's lighter one),
 /// and which read on any terminal's own.
@@ -2058,6 +2157,62 @@ mod tests {
         for (got, want) in joins {
             assert_eq!(got, want);
         }
+    }
+
+    /// A menu: a rounded box in the middle, as wide as its items, its
+    /// title on the top edge, `Enter · q` on the bottom; each item's name
+    /// and its key at the right; rules joined to the edges; the picked item
+    /// on the quiet bar, marked; a label faint. Where its rows are is what
+    /// a click goes by.
+    #[test]
+    fn a_menu_is_a_box_in_the_middle() {
+        let rows = |g: &Grid, w: u16, h: u16| -> Vec<String> {
+            (0..h).map(|y| (0..w).map(|x| g.get(x, y).text()).collect::<String>().trim_end().to_string()).collect()
+        };
+        let lines: Vec<String> = [
+            "pane 2",
+            "(h) Split horizontally",
+            "(v) Split vertically",
+            "--------",
+            "(z) Zoom",
+            "(x) Kill",
+            "not a pick",
+        ]
+        .map(String::from)
+        .to_vec();
+        let area = Rect { x: 0, y: 0, w: 50, h: 12 };
+        let mut g = Grid::new(50, 12);
+        draw_menu(&mut g, area, &lines, 2, 0, true);
+        let r = rows(&g, 50, 12);
+        assert_eq!(
+            r[2..10],
+            [
+                "           ╭─ pane 2 ─────────────────╮",
+                "           │  Split horizontally   h  │",
+                "           │▌ Split vertically     v  │",
+                "           ├──────────────────────────┤",
+                "           │  Zoom                 z  │",
+                "           │  Kill                 x  │",
+                "           │  not a pick              │",
+                "           ╰────────────── Enter · q ─╯",
+            ],
+            "{r:#?}"
+        );
+        assert_eq!(g.get(14, 4).style.bg, Color::Idx(0), "the picked item on the quiet bar");
+        assert_eq!(g.get(35, 4).style, SELECTED, "its key bold yellow");
+        assert_eq!(g.get(14, 8).style.fg, Color::Idx(8), "a label faint");
+        let (outer, body) = menu_box(area, &lines, true);
+        assert_eq!((outer, body), (Rect { x: 11, y: 2, w: 28, h: 8 }, Rect { x: 12, y: 3, w: 26, h: 6 }));
+        // Taller than the window: as many as fit, from the top given.
+        let small = Rect { x: 0, y: 0, w: 50, h: 5 };
+        let mut g = Grid::new(50, 5);
+        draw_menu(&mut g, small, &lines, 4, 3, true);
+        let r = rows(&g, 50, 5);
+        assert!(r[1].contains("────") && r[2].contains("Zoom") && r[3].contains("Kill"), "{r:#?}");
+        // No room for a box: the list, clipped.
+        let mut g = Grid::new(8, 2);
+        draw_menu(&mut g, Rect { x: 0, y: 0, w: 8, h: 2 }, &lines, 1, 0, true);
+        assert_eq!(rows(&g, 8, 2)[0], "pane 2");
     }
 
     /// `pane-frames`: each pane in a frame of its own in the cells around
@@ -2365,15 +2520,19 @@ mod tests {
         assert_eq!(row(&g, 0).trim_end(), "item0");
         assert_eq!(row(&g, 1).trim_end(), "item1");
         assert_eq!(row(&g, 2).trim_end(), "item2");
-        assert_eq!(g.get(0, 1).style.bg, Color::Idx(3), "selected line highlighted");
-        assert_eq!(g.get(39, 1).style.bg, Color::Idx(3), "highlight spans the row");
+        assert_eq!(
+            (g.get(0, 1).style.fg, g.get(0, 1).style.bg),
+            (Color::Idx(3), Color::Idx(0)),
+            "selected line on the quiet bar"
+        );
+        assert_eq!(g.get(39, 1).style.bg, Color::Idx(0), "highlight spans the row");
         assert_eq!(g.get(0, 0).style.bg, Color::Default);
         assert!(row(&g, 3).starts_with("[2/6] j/k move"), "{}", row(&g, 3));
         // Scrolled: top=3 shows items 3..5, selection 5 on the last body row.
         draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &lines, 5, 3, "Enter select", "");
         assert_eq!(row(&g, 0).trim_end(), "item3");
         assert_eq!(row(&g, 2).trim_end(), "item5");
-        assert_eq!(g.get(0, 2).style.bg, Color::Idx(3));
+        assert_eq!(g.get(0, 2).style, SELECTED);
         assert!(row(&g, 3).starts_with("[6/6]"));
         // Empty list and degenerate areas never panic.
         draw_chooser(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &[], 0, 0, "Enter select", "");
@@ -2460,11 +2619,11 @@ mod tests {
         draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 80, h: 10 }, "C-b", &groups, "? every key");
         let r = rows(&g, 80, 10);
         assert_eq!(r[0], "the pane", "above the box, the pane as it was");
-        assert!(r[5].trim_start().starts_with("┌─ C-b ─"), "{r:?}");
+        assert!(r[5].trim_start().starts_with("╭─ C-b ─"), "{r:?}");
         assert!(r[6].contains("│ Panes") && r[6].contains("Windows"), "{r:?}");
         assert!(r[7].contains("%     split side by side") && r[7].contains("c  new window"), "{r:?}");
         assert!(r[8].contains("hjkl  go to a pane"), "{r:?}");
-        assert!(r[9].trim_start().starts_with("└─ ? every key ─"), "{r:?}");
+        assert!(r[9].trim_start().starts_with("╰─ ? every key ─"), "{r:?}");
         let left = r[6].find('│').unwrap();
         assert_eq!(left, 80 - r[6].trim_start().chars().count() - left, "centred");
         assert_eq!(g.get(left as u16 + 2, 7).style.fg, Color::Idx(3), "the keys stand out");
@@ -2483,7 +2642,7 @@ mod tests {
         let mut g = Grid::new(80, 4);
         draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 80, h: 4 }, "C-b", &groups, "? every key");
         let r = rows(&g, 80, 4);
-        assert!(r[0].contains("┌") && r[3].contains("└") && r[2].contains("split side by side"), "{r:?}");
+        assert!(r[0].contains("╭") && r[3].contains("╰") && r[2].contains("split side by side"), "{r:?}");
         let mut g = Grid::new(8, 6);
         draw_key_hint(&mut g, Rect { x: 0, y: 0, w: 8, h: 6 }, "C-b", &groups, "? every key");
         assert!(rows(&g, 8, 6).iter().all(|l| l.is_empty()));
@@ -3297,13 +3456,13 @@ mod tests {
         // The root, centred, in a box.
         let r0 = row("keepane");
         let root = t[r0].find("keepane").unwrap();
-        assert!((34..=40).contains(&root) && t[r0 - 1].contains('┌') && t[r0 + 1].contains('┬'), "{all}");
+        assert!((34..=40).contains(&root) && t[r0 - 1].contains('╭') && t[r0 + 1].contains('┬'), "{all}");
         // The sessions, dev's windows, edit's panes (not logs', not ops').
         let (s, w, p) = (row("1  dev"), row("2  0:edit*"), row("4  1:pwsh*"));
         assert!(s < w && w < p, "{all}");
         assert!(t[s].contains("7  ops") && t[w].contains("5  1:logs") && t[p].contains("3  0:pwsh"), "{all}");
         assert!(!all.contains("deploy") && !all.contains("6  0:pwsh"), "{all}");
-        assert!(t[s - 1].matches("┌ session ").count() == 2 && t[p - 1].matches("┌ pane ").count() == 2, "{all}");
+        assert!(t[s - 1].matches("╭ session ").count() == 2 && t[p - 1].matches("╭ pane ").count() == 2, "{all}");
         assert!(t[s + 1].contains("2 windows · attached") && t[p + 1].contains("shell · %builder"), "{all}");
         // Joins: the bar under the root spans both sessions, and every join
         // lands on a box.
@@ -3326,15 +3485,15 @@ mod tests {
         // name), its info faint, the joins faint; the selected box all yellow.
         let at = |y: usize, s: &str| t[y][..t[y].find(s).unwrap()].width() as u16;
         let fg = |x: u16, y: usize| g.get(x, y as u16).style.fg;
-        assert_eq!(fg(at(s - 1, "┌ session "), s - 1), Color::Idx(4), "a session's border blue");
+        assert_eq!(fg(at(s - 1, "╭ session "), s - 1), Color::Idx(4), "a session's border blue");
         assert_eq!(fg(at(s, "1  dev") - 2, s), Color::Idx(4), "and its side");
-        assert_eq!(fg(at(w - 1, "┌ window "), w - 1), Color::Idx(5), "a window's purple");
-        assert_eq!(fg(at(p - 1, "┌ pane "), p - 1), Color::Idx(2), "a pane's green");
-        assert_eq!(fg(at(r0 - 1, "┌"), r0 - 1), Color::Idx(6), "the root's cyan");
+        assert_eq!(fg(at(w - 1, "╭ window "), w - 1), Color::Idx(5), "a window's purple");
+        assert_eq!(fg(at(p - 1, "╭ pane "), p - 1), Color::Idx(2), "a pane's green");
+        assert_eq!(fg(at(r0 - 1, "╭"), r0 - 1), Color::Idx(6), "the root's cyan");
         assert_eq!(fg(at(s + 1, "2 windows"), s + 1), Color::Idx(8), "the info faint");
         assert_eq!(fg(col(bar, '┌') as u16, bar), Color::Idx(8), "the joins faint");
-        let sel_box = t[p - 1].rfind("┌ pane ").map(|b| t[p - 1][..b].width() as u16).unwrap();
-        assert!(t[p - 1][..].matches("┌ pane ").count() == 2, "{all}");
+        let sel_box = t[p - 1].rfind("╭ pane ").map(|b| t[p - 1][..b].width() as u16).unwrap();
+        assert!(t[p - 1][..].matches("╭ pane ").count() == 2, "{all}");
         assert_eq!(fg(sel_box, p - 1), Color::Idx(3), "the selected box's border yellow");
         // The footer says where the cursor is and how to move.
         assert!(t[23].starts_with("[5/10] hjkl move  Enter go"), "{:?}", t[23]);
@@ -3384,7 +3543,7 @@ mod tests {
         assert_eq!(g.get(0, 2).style.fg, Color::Idx(3), "a session's key yellow");
         let dev = g.get(4, 2).style;
         assert!(dev.fg == Color::Idx(4) && dev.bold, "the session blue: {dev:?}");
-        assert_eq!((g.get(0, 3).style.fg, g.get(0, 3).style.bg), (Color::Idx(0), Color::Idx(3)), "selected");
+        assert_eq!((g.get(0, 3).style.fg, g.get(0, 3).style.bg), (Color::Idx(3), Color::Idx(0)), "selected");
         assert_eq!(g.get(0, 4).style.fg, Color::Default, "not a key: too long");
     }
 
@@ -3519,7 +3678,7 @@ mod tests {
         ] {
             assert!(all.contains(name), "{name}: {all}");
         }
-        assert_eq!(all.matches("┌ pane ").count(), 4, "{all}");
+        assert_eq!(all.matches("╭ pane ").count(), 4, "{all}");
         joins_land(&t).map_err(|e| format!("{e}\n{all}")).unwrap();
         // ops over its one window, over its one pane: one column.
         let col = |s: &str| {
@@ -3556,14 +3715,14 @@ mod tests {
         let t = chart_text(&g);
         let all = t.join("\n");
         eprintln!("{all}");
-        assert_eq!(all.matches("┌ pane").count(), 4, "still boxes: {all}");
+        assert_eq!(all.matches("╭ pane").count(), 4, "still boxes: {all}");
         assert!(t.iter().any(|r| r.contains("3  0:") && r.contains('…')), "{all}");
         // Narrower: one line each, still joined; the brackets in the kind's
         // colour, the name in the text's.
         let (t, g) = draw(56, 24, 4);
         let all = t.join("\n");
         eprintln!("{all}");
-        assert!(!all.contains("┌ pane") && all.contains("[4  1:pwsh*]") && all.contains("[9  0:ping*]"), "{all}");
+        assert!(!all.contains("╭ pane") && all.contains("[4  1:pwsh*]") && all.contains("[9  0:ping*]"), "{all}");
         assert!(all.contains('┴') || all.contains('┬') || all.contains('┌'), "joined: {all}");
         let at = |t: &[String], s: &str| {
             let y = t.iter().position(|r| r.contains(s)).unwrap();
@@ -3644,7 +3803,7 @@ mod tests {
         let all = t.join("\n");
         eprintln!("{all}");
         let hosts = t.iter().position(|r| r.contains("1  DFINE")).expect("the machines");
-        assert_eq!(t[hosts - 1].matches("┌ host ").count(), 2, "{all}");
+        assert_eq!(t[hosts - 1].matches("╭ host ").count(), 2, "{all}");
         assert!(t[hosts].contains("5  100.64.0.3:7681"), "{all}");
         assert!(
             all.contains("6  work") && !all.contains("2  dev"),
@@ -3680,7 +3839,7 @@ mod tests {
         assert!(first.abs_diff(58 - last) <= 1, "{first} blank above, {} below: {}", 58 - last, deep.join("\n"));
         let root = |t: &[String]| t.iter().position(|r| r.contains("keepane")).unwrap();
         assert_eq!(root(&deep), root(&short), "{}\n----\n{}", deep.join("\n"), short.join("\n"));
-        assert!(!short.join("\n").contains("┌ session"), "the bare machine's branch stops at it");
+        assert!(!short.join("\n").contains("╭ session"), "the bare machine's branch stops at it");
         // Too tall for the screen: from the top, as before.
         let mut g = Grid::new(80, 16);
         draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 16 }, &nodes, 4, false, "", "");
@@ -3729,7 +3888,7 @@ mod tests {
             assert!(t[pane_row].contains("4  1:pwsh*"), "h {h}: {}", t.join("\n"));
             assert_eq!(
                 t.iter().filter(|r| r.contains('┌') && !r.contains("┌ ") && r.contains('┐')).count(),
-                1 + joins.min(1) * 3,
+                joins.min(1) * 3,
                 "h {h}: {}",
                 t.join("\n")
             );

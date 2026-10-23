@@ -8696,11 +8696,21 @@ impl Server {
             if m.flags & MOUSE_WHEELED != 0 {
                 ch.typed = None;
                 ch.step(if (m.buttons >> 16) as i16 > 0 { -1 } else { 1 });
-            } else if buttons & 1 != 0 && prev & 1 == 0 && y >= area.y && y + 1 < area.y + area.h {
-                ch.typed = None;
-                let i = ch.top + (y - area.y) as usize;
-                if i < ch.items.len() {
-                    ch.sel = i;
+            } else if buttons & 1 != 0 && prev & 1 == 0 {
+                // A menu's items are in its box; a list's on the window's rows.
+                let (rows, first) = match &ch.kind {
+                    ChooserKind::Menu(entries) if render::menu_fits(area) => {
+                        let titled = ch.items.len() > entries.len();
+                        (render::menu_box(area, &ch.lines, titled).1, usize::from(titled).max(ch.top))
+                    }
+                    _ => (Rect { h: area.h.saturating_sub(1), ..area }, ch.top),
+                };
+                if rows.contains(x, y) {
+                    ch.typed = None;
+                    let i = first + (y - rows.y) as usize;
+                    if i < ch.items.len() {
+                        ch.sel = i;
+                    }
                 }
             }
             return;
@@ -9667,7 +9677,14 @@ impl Server {
         let c = self.clients.get_mut(&cid).unwrap();
         c.window_hits = window_hits;
         if let Some(ch) = c.chooser.as_mut() {
-            let body_h = area.h.saturating_sub(1) as usize;
+            // A menu shows as many items as its box holds; a list, the
+            // window's rows less its key line.
+            let body_h = match &ch.kind {
+                ChooserKind::Menu(entries) if render::menu_fits(area) => {
+                    usize::from(render::menu_box(area, &ch.lines, ch.items.len() > entries.len()).1.h)
+                }
+                _ => area.h.saturating_sub(1) as usize,
+            };
             if ch.sel < ch.top {
                 ch.top = ch.sel;
             } else if body_h > 0 && ch.sel >= ch.top + body_h {
@@ -9726,6 +9743,8 @@ impl Server {
                     })
                     .collect();
                 render::draw_chart(&mut grid, area, &nodes, ch.sel, ch.all, actions, &status.join(" "));
+            } else if let ChooserKind::Menu(entries) = &ch.kind {
+                render::draw_menu(&mut grid, area, &ch.lines, ch.sel, ch.top, ch.items.len() > entries.len());
             } else if matches!(ch.kind, ChooserKind::Tree { style: TreeStyle::Tree, .. }) {
                 let depths: Vec<usize> = ch.items.iter().map(|i| i.depth().unwrap_or(0)).collect();
                 let rows: Vec<(String, String, usize)> = render::tree_leads(&depths)
