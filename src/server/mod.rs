@@ -1825,10 +1825,18 @@ impl Server {
         self.last_history_save = Some(Instant::now());
     }
 
+    /// Whether a shutdown was announced in the last `ENDING_HOLDS`: what
+    /// changes now (panes whose shells it kills) is its doing, so nothing is
+    /// saved again or forgotten.
+    fn ending_holds(&self) -> bool {
+        self.ending.is_some_and(|t| t.elapsed() < ENDING_HOLDS)
+    }
+
     /// Autosave every session whose structure changed since its last save
-    /// (called from the tick; cheap: the tree is tiny).
+    /// (called from the tick; cheap: the tree is tiny); not while a shutdown
+    /// is under way.
     fn autosave_changed(&mut self) {
-        if !self.opts.autosave {
+        if !self.opts.autosave || self.ending_holds() {
             return;
         }
         let dir = self.sessions_dir();
@@ -2463,9 +2471,18 @@ impl Server {
                 let line = output.lines().next().unwrap_or("").trim_end().to_string();
                 self.shell_cache.results.insert(command, line);
             }
+            Event::EndSession(done) if self.ending_holds() => {
+                // Windows says it more than once (the question, the end, the
+                // console's event). The first save stands: by now the shutdown
+                // may be killing the panes' shells, and a save would keep the
+                // windows without them.
+                log::info!("session ending again: the first save stands");
+                let _ = done.send(());
+            }
             Event::EndSession(done) => {
                 log::info!("session ending: saving every session");
-                // The shells dying now are the shutdown's doing: keep their saves.
+                // The shells dying now are the shutdown's doing: nothing they
+                // take away is saved (nding_holds).
                 self.ending = Some(Instant::now());
                 self.forget_after.clear();
                 self.save_everything();
@@ -8092,7 +8109,7 @@ impl Server {
     /// unless a shutdown was announced in the last `ENDING_HOLDS`, a session of that name runs
     /// again, or autosave is off (a save made by hand is kept).
     fn forget_due(&mut self) {
-        if self.ending.is_some_and(|t| t.elapsed() < ENDING_HOLDS) {
+        if self.ending_holds() {
             return;
         }
         let (due, wait): (Vec<_>, Vec<_>) =

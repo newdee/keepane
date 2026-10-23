@@ -8066,14 +8066,17 @@ async fn the_smaller_tmux_gaps_are_closed() {
 /// Windows asks every top-level window WM_QUERYENDSESSION before a shutdown
 /// or logoff; the server keeps a hidden one for that and saves everything
 /// when asked. The server runs in this process, so the test can ask the
-/// same way Windows would.
+/// same way Windows would. Windows asks more than once and kills the panes'
+/// shells meanwhile: the first save stands, the windows as they were.
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shutdown_saves_every_session_first() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_QUERYENDSESSION};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_ENDSESSION, WM_QUERYENDSESSION};
     let h = Harness::start("endsession").await;
     h.cli(&["new", "-d", "-s", "bye"]).await;
-    h.wait_capture("bye:0", "prompt", |t| t.contains("keepane>")).await;
+    h.cli(&["split-window", "-d", "-t", "bye:0"]).await;
+    h.wait_capture("bye:0.0", "prompt", |t| t.contains("keepane>")).await;
+    h.wait_capture("bye:0.1", "the second pane's prompt", |t| t.contains("keepane>")).await;
     let file = || {
         std::fs::read_dir(&h.sessions_dir)
             .ok()
@@ -8112,6 +8115,19 @@ async fn a_shutdown_saves_every_session_first() {
     assert_eq!(allowed, 1, "the shutdown may go on");
     let saved = file();
     assert!(saved.contains("typed-just-before-shutdown"), "saved on the way out: {saved}");
+    let panes = |text: &str| text.matches("\"argv\"").count();
+    assert_eq!(panes(&saved), 2, "both panes: {saved}");
+    // The shutdown kills the second pane's shell, then asks again (the end
+    // itself) and the tick comes round: the save keeps both panes.
+    h.cli(&["send-keys", "-t", "bye:0.1", "exit", "Enter"]).await;
+    h.wait_for_cli("one pane left", &["list-panes", "-t", "bye:0"], |_, out| out.lines().count() == 1).await;
+    tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_ENDSESSION, 1, 0) }).await.unwrap();
+    let allowed = tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_QUERYENDSESSION, 0, 0) })
+        .await
+        .unwrap();
+    assert_eq!(allowed, 1);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(file(), saved, "the first save stands");
     // A session whose shell ends now (the shutdown killing it) keeps its
     // save: `resume` after the reboot is to bring it back.
     h.cli(&["new", "-d", "-s", "dies"]).await;
@@ -8125,15 +8141,37 @@ async fn a_shutdown_saves_every_session_first() {
     tokio::time::sleep(Duration::from_secs(13)).await;
     let (_, out, _) = h.cli(&["list-saved"]).await;
     assert!(out.lines().any(|l| l.starts_with("dies:")), "kept through the shutdown: {out}");
-    // `autosave off` means off at shutdown too: nothing is written.
+    h.cli(&["kill-server"]).await;
+}
+
+/// `autosave off` means off at shutdown too: nothing is written.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shutdown_saves_nothing_with_autosave_off() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_QUERYENDSESSION};
+    let h = Harness::start("endnosave").await;
     h.cli(&["set", "-g", "autosave", "off"]).await;
-    h.cli(&["send-keys", "-t", "bye:0", "echo after-autosave-off", "Enter"]).await;
-    h.wait_capture("bye:0", "the second echo", |t| t.matches("after-autosave-off").count() >= 2).await;
+    h.cli(&["new", "-d", "-s", "bye"]).await;
+    h.wait_capture("bye:0", "prompt", |t| t.contains("keepane>")).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let hwnd = loop {
+        if let Some(w) = keepane::shutdown::window(&h.socket) {
+            break w as usize;
+        }
+        assert!(Instant::now() < deadline, "the server's shutdown window never came up");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     let allowed = tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_QUERYENDSESSION, 0, 0) })
         .await
         .unwrap();
     assert_eq!(allowed, 1);
-    assert!(!file().contains("after-autosave-off"), "autosave off is respected: {}", file());
+    let saved: Vec<_> = std::fs::read_dir(&h.sessions_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .collect();
+    assert!(saved.is_empty(), "autosave off is respected: {saved:?}");
     h.cli(&["kill-server"]).await;
 }
 
