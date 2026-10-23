@@ -406,6 +406,17 @@ impl Tab {
         }
     }
 
+    /// Its name where room is short: each its own.
+    fn short(self) -> &'static str {
+        match self {
+            Tab::Screen => "Scr",
+            Tab::Scrollback => "Back",
+            Tab::Events => "Ev",
+            Tab::Trace => "Tr",
+            Tab::Detail => "Det",
+        }
+    }
+
     /// Read from the bottom up (a screen, a log) rather than from the top.
     fn read_up(self) -> bool {
         !matches!(self, Tab::Detail | Tab::Trace)
@@ -1409,19 +1420,16 @@ impl Board {
 
     fn main_box(&self, r: Rect) -> Vec<String> {
         let focused = self.focus == Panel::Main;
-        // The tabs by name; where that leaves the title too little room,
-        // the others by their first three letters.
         let tabs_of = |short: bool| {
             TABS.iter()
                 .map(|t| match (*t == self.tab, short) {
                     (true, _) => format!("\x1b[1;32m{}\x1b[0m", t.word()),
-                    (false, true) => t.word().chars().take(3).collect(),
+                    (false, true) => t.short().to_string(),
                     (false, false) => t.word().to_string(),
                 })
                 .collect::<Vec<_>>()
                 .join("│")
         };
-        let tabs = if width_of(&tabs_of(false)) + 36 > r.w { tabs_of(true) } else { tabs_of(false) };
         let (title, mut head) = match self.chosen_row() {
             Some(p) => {
                 let name = if p.name.is_empty() { String::new() } else { format!(" {}", p.name) };
@@ -1498,6 +1506,17 @@ impl Board {
         lines.extend(shown.into_iter().map(|l| fit(&l, r.inner_w())));
         let title =
             if matches!(self.dialog, Some(Dialog::Help)) { "[?] Keys (any key closes)".to_string() } else { title };
+        // The tabs by name where the title keeps its room; else the others
+        // short; else the one shown alone, `[`/`]` the way to the others.
+        let room = r.inner_w().saturating_sub(width_of(&title) + 4);
+        let (full, short) = (tabs_of(false), tabs_of(true));
+        let tabs = if width_of(&full) <= room {
+            full
+        } else if width_of(&short) <= room {
+            short
+        } else {
+            format!("‹\x1b[1;32m{}\x1b[0m›", self.tab.word())
+        };
         boxed(&title, &tabs, lines, r, focused)
     }
 
@@ -2810,12 +2829,17 @@ mod tests {
             "[2] Inbox %lead",
             "[3] Tasks",
             "[0] %1 lead · ai · busy",
-            "Screen│Scr│Eve│Tra│Det",
+            "Screen│Back│Ev│Tr│Det",
             "pid 4242 · up 16m · quiet 1m",
             "tester",
         ] {
             assert!(text.contains(want), "{want}:\n{text}");
         }
+        // Narrower: the title whole, the tab shown alone.
+        let top = strip(&b.main_box(Rect { x: 0, y: 0, w: 40, h: 8 })[0]);
+        assert!(top.contains("[0] %1 lead · ai · busy") && top.contains("‹Screen›"), "{top}");
+        let wide = strip(&b.main_box(Rect { x: 0, y: 0, w: 120, h: 8 })[0]);
+        assert!(wide.contains("Screen│Scrollback│Events│Trace│Detail"), "{wide}");
     }
 
     /// A pane's agent: its cost and context in the table, all of it over
