@@ -2305,29 +2305,21 @@ async fn under_the_clock_something_moves_with_the_machine() {
         |s: &vt100::Screen| s.rows(0, COLS).skip(usize::from(ROWS) - 4).take(3).collect::<Vec<_>>().join("\n");
     for (kind, marks) in [
         ("fire", &["#", "%"][..]),
-        ("aquarium", &["░"]),
         ("starfield", &["*", "+"]),
-        ("life", &["▀", "▄"]),
-        ("donut", &[]),
-        ("weather", &["~"]),
         ("sharks", &["<", ">", "^", "v", "@", "#", "*", ";"]),
-        ("hourglass", &["="]),
         ("bonsai", &["[", "_"]),
-        ("orbits", &["."]),
-        ("radar", &["."]),
         ("sea", &["~", "-", "^"]),
         ("cat", &["(\")"]),
+        ("dino", &["─", "▌", "▘"]),
+        ("penguins", &["(o>", "<o)", "=(o>", "<o)="]),
+        ("synthwave", &["━", "│", "╱", "╲"]),
+        ("fireworks", &["█"]),
     ] {
         h.cli(&["set", "-g", "clock-mode-animation", kind]).await;
         c.prefix('t').await;
         c.wait_for(kind, |s| {
             let (all, low) = (s.contents(), last_rows(s));
-            all.contains("███")
-                && if kind == "donut" {
-                    all.contains('!') || all.contains(';')
-                } else {
-                    marks.iter().any(|m| low.contains(m))
-                }
+            all.contains("███") && marks.iter().any(|m| low.contains(m))
         })
         .await;
         let moving = c.frames_for(1000).await;
@@ -2400,8 +2392,13 @@ async fn under_the_clock_something_moves_with_the_machine() {
         c.type_str("q").await;
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
     }
-    let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "fireworks"]).await;
-    assert!(code != 0 && err.contains("one of aquarium, bars, bonsai, cat, cycle, donut, fire, hourglass, life, matrix, off, orbits, pulse, radar, random, sea, sharks"), "{err}");
+    let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "unicorns"]).await;
+    assert!(code != 0 && err.contains("one of bars, bonsai, cat, cycle, dino, fire, fireworks, matrix, off, penguins, pulse, random, sea, sharks, starfield, synthwave"), "{err}");
+    // One gone since 0.45, still in a config: random, no error.
+    let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "donut"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["show-options", "-gv", "clock-mode-animation"]).await;
+    assert_eq!(out.trim(), "random");
 }
 
 #[tokio::test(flavor = "multi_thread")]

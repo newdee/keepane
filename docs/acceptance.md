@@ -4992,3 +4992,31 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 2 | 全量 | Windows e2e 141/144：harness 用 plain.conf，测试断言写错了 | 发现问题，不计数；恢复 e2e 断言 |
 | 2 | 全量 | Windows 503 + 11 + 144 | 干净（2/3） |
 | 3 | 跨平台 + 实际命令 | Linux fmt 0、clippy 0、488 + 142；临时 server：`show-options` 显示 heavy，`set ... number` 报错并列出 4 个可选值，缩写 `pane-border-l` 生效，Tab 补全给出 4 个值 | 干净（3/3），验收通过 |
+## 163. 时钟动画：去掉 7 种，加上 dino、penguins、synthwave、fireworks
+
+- 需求：用户要求去掉 life、donut、weather、hourglass、orbits、radar、aquarium，换成可爱的动物或酷炫的动画。选定的 4 种是 dino、penguins、synthwave、fireworks。
+- 新的 4 种（每种都随机器负载和 keepane 的消息变化）：
+  - `dino`：沙漠里奔跑的小恐龙，速度随 CPU（每秒 6 到 26 列）；pane 越多仙人掌越多；跳跃弧线由离它最近的仙人掌算出，仙人掌在它脚下时它至少离地 2 行；网络越忙云飘得越快；右上角分数是跑过的距离；消息是落到头上的 ✉，接到后冒出一颗心。
+  - `penguins`：每个 pane 一只企鹅，各走自己那段冰面；pane 输出多时趴下来滑；CPU 越忙海浪越快，网络流量越大雪越大，内存越高极光越亮；消息是跃上冰面的鱼，鱼上带 ✉。
+  - `synthwave`：霓虹网格，速度随 CPU（每秒 2 到 5 条线）；落日条纹随输出滑动；山的高度随内存；星星随网络闪烁；消息是划过天空的流星。
+  - `fireworks`：烟花频率随输出（每秒 0.7 到 3.2 枚），炸开的大小随 CPU；城市的窗户随内存亮起；消息升起两倍大的烟花，炸开处显示 ✉。
+- 兼容：配置里写着已删除名字的，设成 `random`，不报错（`CLOCK_ANIMATIONS_GONE`）。
+- 调校（看实际渲染出来的帧后改的）：
+  - 雪太密，降到原来的约三分之一。
+  - 网格远处的竖线太挤，改为至少相隔 2 列。
+  - 只有 1 行网格时，原来总有一条横线落在这一行上，画面不动，改为只在接近行中间时画。
+  - 烟花改成每次爆炸只用一个速度，形成环形；城市画在火花前面。
+  - 企鹅各占一段冰面，不再重叠。
+- 会不会引入新 bug：
+  - 保留的 9 种代码没变；`FISH_COLOURS` 移到 mod.rs，sea 和 sharks 引用它。
+  - 公共测试（逐帧确定、只画在区域内、各种尺寸、区域太小时不画、look、空闲时也在动）覆盖了全部 13 种。
+- 测试：
+  - 新单元测试 4 个：`the_dinosaur_runs_with_the_cores_and_jumps_every_cactus`（3000 步里仙人掌在脚下时 lift ≥ 2，没有一次被撞）、`a_penguin_a_pane_on_the_ice`、`the_grid_runs_under_the_sun_with_the_cores`、`the_fireworks_go_up_with_the_output`。
+  - e2e 时钟测试换成新的种类，在真实时钟上每秒至少 3 帧。
+  - 旧名字 donut 设置后显示 random。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制存活 | 6 个变异全部抓到（恐龙速度不随 CPU、不跳、企鹅不滑、网格不随 CPU、烟花不随输出、消息不放烟花） | 干净（1/3） |
+| 2 | 全量 + 跨平台 | Windows 500 + 11 + 144；Linux fmt 0、clippy 0、485 + 142 | 干净（2/3） |
+| 3 | 可复现 | 时钟 e2e 连跑 3 次 3/3（26.7、26.7、26.6 秒）；逐帧确定性测试通过 | 干净（3/3），验收通过 |

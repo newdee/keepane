@@ -10775,8 +10775,8 @@ mod tests {
             clock_on(&mut p, 0x5eed);
             assert_eq!(clock_kind(&opts, &p), Some(k));
         }
-        opts.clock_mode_animation = "donut".into();
-        assert_eq!(clock_kind(&opts, &p), Some(clockanim::Kind::Donut));
+        opts.clock_mode_animation = "dino".into();
+        assert_eq!(clock_kind(&opts, &p), Some(clockanim::Kind::Dino));
         opts.clock_mode_animation = "off".into();
         assert_eq!(clock_kind(&opts, &p), None);
         opts.clock_mode_animation = "random".into();
@@ -10791,12 +10791,12 @@ mod tests {
     fn a_key_turns_the_clocks_kind() {
         use clockanim::Kind;
         assert_eq!(Kind::turned(Some(Kind::Pulse), true), Kind::Matrix);
-        assert_eq!(Kind::turned(Some(Kind::Pulse), false), Kind::Cat);
-        assert_eq!(Kind::turned(Some(Kind::Weather), true), Kind::Sharks);
-        assert_eq!(Kind::turned(Some(Kind::Radar), true), Kind::Sea);
-        assert_eq!(Kind::turned(Some(Kind::Cat), true), Kind::Pulse);
+        assert_eq!(Kind::turned(Some(Kind::Pulse), false), Kind::Fireworks);
+        assert_eq!(Kind::turned(Some(Kind::Starfield), true), Kind::Sharks);
+        assert_eq!(Kind::turned(Some(Kind::Cat), true), Kind::Dino);
+        assert_eq!(Kind::turned(Some(Kind::Fireworks), true), Kind::Pulse);
         assert_eq!(Kind::turned(None, true), Kind::Pulse);
-        assert_eq!(Kind::turned(None, false), Kind::Cat);
+        assert_eq!(Kind::turned(None, false), Kind::Fireworks);
         for k in Kind::ALL {
             assert_eq!(Kind::turned(Some(Kind::turned(Some(k), true)), false), k);
         }
@@ -10809,8 +10809,8 @@ mod tests {
         let mut opts = Options { clock_mode_animation: "off".into(), ..Options::default() };
         clock_on(&mut p, 1);
         assert_eq!(clock_kind(&opts, &p), None);
-        p.clock_over = Some((Kind::Life, Instant::now()));
-        assert_eq!(clock_kind(&opts, &p), Some(Kind::Life));
+        p.clock_over = Some((Kind::Penguins, Instant::now()));
+        assert_eq!(clock_kind(&opts, &p), Some(Kind::Penguins));
         opts.animation = false;
         assert_eq!(clock_kind(&opts, &p), None);
         opts.animation = true;

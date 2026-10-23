@@ -122,10 +122,7 @@ impl Anim {
             let m = (sailed + f64::from(unit(hash(self.seed, i as u64, 123))) * 2.0 * span).rem_euclid(2.0 * span);
             let (x, sail) = if m < span { (m as i64, "|\\") } else { ((2.0 * span - m) as i64, "/|") };
             let rate = self.out_rates.get(i).copied().unwrap_or(0.0);
-            let style = Style {
-                bold: out_level(rate) > 0.3,
-                ..pal.shade(aquarium::FISH_COLOURS[i % aquarium::FISH_COLOURS.len()], 0.0)
-            };
+            let style = Style { bold: out_level(rate) > 0.3, ..pal.shade(FISH_COLOURS[i % FISH_COLOURS.len()], 0.0) };
             for (dx, c) in "\\__/".chars().enumerate() {
                 put(g, band, x + dx as i64, lane, c.encode_utf8(&mut [0; 4]), style);
             }

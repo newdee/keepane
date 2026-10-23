@@ -443,47 +443,44 @@ the temperature, and a bar for each pane of the window by what it prints;
 then, where they fit beside those, messages, the CPU's watts, the battery's,
 swap, and context switches with interrupts. `fire` is a flame for each
 core, as tall as the core is busy, its tip whiter the hotter the CPU, sparks
-with the interrupts. `aquarium` is a fish for each pane of the window,
-faster the more it prints, bubbles with the disks, weed taller with memory
-and swaying with the context switches. `starfield` is a flight through
-stars, more with the processes, faster with the network. `life` is Conway's
-game of life, more generations with the cores, sown with the context
-switches up to a share the memory in use sets. `donut` is a turning torus,
-faster with the cores, thicker with memory. `weather` is clouds with the
-cores, rain with the disks slanting in the network's wind, lightning with
-the interrupts, water as deep as the memory in use. `sharks` is a sea seen
-from above: a school of fish for each pane (six at most), faster the more it
-prints, turning more with the context switches; a shark hunting them, hungry
+with the interrupts. `starfield` is a flight through stars, more with the
+processes, faster with the network. `sharks` is a sea seen from above: a
+school of fish for each pane (six at most), faster the more it prints,
+turning more with the context switches; a shark hunting them, hungry
 sooner with the cores, longer with memory; all of it drifting with the
-network, glints with the disks. `hourglass` is the hour's glass, its sand
-run down as far as the hour has, the minute's and the day's beside it where
-they fit; grains falling faster with the cores, bouncing with the disks.
-`bonsai` is a tree growing through the day, a limb for each pane (six at
-most) shaking with its output, its leaves stirring quicker with the context
-switches, more leaves with memory, leaning in the network's wind, a leaf
-falling now and then, more with the disks. `orbits` is a planet for each
-core, faster the busier it is, round a sun bigger with memory, red when hot,
-flaring with the interrupts, an asteroid belt with the network. `radar` is a
-sweep faster with the cores, a blip for each pane bigger the more it prints,
-contacts with the network, clutter with the interrupts. `sea` is a moonlit
-sea: the moon crossing the sky with the hours, stars by night with memory,
-waves with the cores, the moon's path glittering with the network, a boat
-for each pane faster the more it prints. `cat` is a cat asleep, breathing
-with the cores, a `z` with each breath, its tail with the network, an ear
-with the disks, a ball of yarn rolling faster the more the panes print. In
-each of these 13 a message delivered shows as an `✉` (rising, a comet, on
-a glider, in the torus's hole, falling, in a ripple the shark races to,
-through the glass's neck, from a leaf, a comet round the sun, in from the
-radar's rim, drifting ashore, falling beside the cat, which wakes). In
-`pulse`, `matrix`, `starfield`, `life` and `donut`, and in the shark's eyes,
-the hourglass's glass and the bonsai's leaves, the colour goes from green
-through yellow to red with the CPU's temperature, or with the cores' load
-when there is no temperature; the bars are green at the bottom, yellow
-higher up and red at the top. `random` (the default) picks one of the 16
-each time the clock is put on a pane, never
-the one it had before; `cycle` takes them in turn; a name sets that one;
-`off`, or `animation off`, leaves the clock still. Under a clock, `/` turns
-to the next kind and `?` to the one before, its name shown for a second;
+network, glints with the disks. `bonsai` is a tree growing through the
+day, a limb for each pane (six at most) shaking with its output, its
+leaves stirring quicker with the context switches, more leaves with
+memory, leaning in the network's wind, a leaf falling now and then, more
+with the disks. `sea` is a moonlit sea: the moon crossing the sky with the
+hours, stars by night with memory, waves with the cores, the moon's path
+glittering with the network, a boat for each pane faster the more it
+prints. `cat` is a cat asleep, breathing with the cores, a `z` with each
+breath, its tail with the network, an ear with the disks, a ball of yarn
+rolling faster the more the panes print. `dino` is a dinosaur running a
+desert, faster with the cores, jumping every cactus, more cacti the more
+panes, clouds with the network, its score the distance. `penguins` is an
+ice shelf, a penguin for each pane waddling on its own stretch, sliding on
+its belly while its pane prints a lot, the sea with the cores, snow with
+the network, an aurora with memory. `synthwave` is a neon grid running
+towards you, faster with the cores, under a striped sun whose stripes
+slide with the panes' output, mountains taller with memory, stars with
+the network. `fireworks` is a city at night, its windows lit with memory,
+rockets going up more often the more the panes print, bursting bigger the
+busier the cores. In each of these 10 a message delivered shows as an `✉`
+(rising, a comet, in a ripple the shark races to, from a leaf, drifting
+ashore, falling beside the cat, which wakes, falling to the dinosaur, on a
+fish leaping onto the ice, a meteor, a rocket twice the size). In `pulse`,
+`matrix` and `starfield`, and in the shark's eyes and the bonsai's leaves,
+the colour goes from green through yellow to red with the CPU's
+temperature, or with the cores' load when there is no temperature; the
+bars are green at the bottom, yellow higher up and red at the top.
+`random` (the default) picks one of the 13 each time the clock is put on
+a pane, never the one it had before; `cycle` takes them in turn; a name
+sets that one; `off`, or `animation off`, leaves the clock still
+(`aquarium`, `life`, `donut`, `weather`, `hourglass`, `orbits` and
+`radar`, taken out in 0.46, give `random`). Under a clock, `/` turns to
+the next kind and `?` to the one before, its name shown for a second;
 that holds until the clock goes, the option is not changed (`/` starts one
 under `clock-mode-animation off`, none under `animation off`). The clock
 stays until `q` (tmux's goes at any key); the prefix still works under it.

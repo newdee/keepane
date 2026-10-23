@@ -71,9 +71,8 @@ pub struct Options {
     /// `clock-mode-zones`: other places' time under the clock's date.
     pub clock_mode_zones: Vec<chrono_tz::Tz>,
     /// What moves under the clock (`clock-mode-animation`): `pulse`,
-    /// `matrix`, `bars`, `fire`, `aquarium`, `starfield`, `life`, `donut`,
-    /// `weather`, `sharks`, `hourglass`, `bonsai`, `orbits`, `radar`, `sea`,
-    /// `cat`;
+    /// `matrix`, `bars`, `fire`, `starfield`, `sharks`, `bonsai`, `sea`, `cat`,
+    /// `dino`, `penguins`, `synthwave`, `fireworks`;
     /// `random` (the default: one of them at random each time a
     /// clock is put on a pane, never the one before), `cycle` (the next of
     /// them each time) or `off`; `animation off` stops it too.
@@ -209,26 +208,27 @@ pub struct Options {
 
 /// What `clock-mode-animation` can be.
 pub const CLOCK_ANIMATIONS: &[&str] = &[
-    "aquarium",
     "bars",
     "bonsai",
     "cat",
     "cycle",
-    "donut",
+    "dino",
     "fire",
-    "hourglass",
-    "life",
+    "fireworks",
     "matrix",
     "off",
-    "orbits",
+    "penguins",
     "pulse",
-    "radar",
     "random",
     "sea",
     "sharks",
     "starfield",
-    "weather",
+    "synthwave",
 ];
+
+/// The animations keepane had up to 0.45: a config that still names one
+/// gets `random`, not an error.
+pub const CLOCK_ANIMATIONS_GONE: &[&str] = &["aquarium", "donut", "hourglass", "life", "orbits", "radar", "weather"];
 
 /// What `clock-mode-look` can be.
 pub const CLOCK_LOOKS: &[&str] = &["binary", "blocks", "dots", "plain"];
@@ -973,6 +973,9 @@ impl Options {
             }
             "clock-mode-info" => self.clock_mode_info = parse_bool(value)?,
             "clock-mode-zones" => self.clock_mode_zones = parse_zones(value)?,
+            "clock-mode-animation" if CLOCK_ANIMATIONS_GONE.contains(&value.trim()) => {
+                self.clock_mode_animation = "random".into()
+            }
             "clock-mode-animation" => self.clock_mode_animation = one_of(name, value, CLOCK_ANIMATIONS)?,
             "clock-mode-look" => self.clock_mode_look = one_of(name, value, CLOCK_LOOKS)?,
             "pane-border-lines" => self.pane_border_lines = one_of(name, value, PANE_BORDER_LINES)?,
@@ -1604,12 +1607,18 @@ mod tests {
             assert_eq!(o.get("clock-mode-animation").as_deref(), Some(kind));
         }
         assert_eq!(CLOCK_ANIMATIONS.len(), kinds.len() + 3);
-        let e = o.set("clock-mode-animation", "fireworks").unwrap_err();
-        assert!(
-            e.contains("one of aquarium, bars, bonsai, cat, cycle, donut, fire, hourglass, life, matrix, off"),
-            "{e}"
-        );
-        assert_eq!(o.clock_mode_animation, "random", "a refused value leaves the old one");
+        o.set("clock-mode-animation", "dino").unwrap();
+        let e = o.set("clock-mode-animation", "unicorns").unwrap_err();
+        assert!(e.contains("one of bars, bonsai, cat, cycle, dino, fire, fireworks, matrix, off, penguins"), "{e}");
+        assert_eq!(o.clock_mode_animation, "dino", "a refused value leaves the old one");
+        // One keepane had up to 0.45, still named in a config: random, no
+        // error.
+        for gone in CLOCK_ANIMATIONS_GONE {
+            assert!(!CLOCK_ANIMATIONS.contains(gone), "{gone}");
+            o.set("clock-mode-animation", "dino").unwrap();
+            o.set("clock-mode-animation", gone).unwrap();
+            assert_eq!(o.get("clock-mode-animation").as_deref(), Some("random"), "{gone}");
+        }
         assert_eq!(option_values("clock-mode-animation"), CLOCK_ANIMATIONS);
         assert_eq!(resolve_name("clock-mode-a").as_deref(), Ok("clock-mode-animation"));
         // The characters it is drawn in: its own by default, or a set.

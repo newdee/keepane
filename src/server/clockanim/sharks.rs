@@ -421,7 +421,7 @@ impl Anim {
             } else {
                 "^"
             };
-            let colour = aquarium::FISH_COLOURS[f.school % aquarium::FISH_COLOURS.len()];
+            let colour = FISH_COLOURS[f.school % FISH_COLOURS.len()];
             put(g, band, x, y, mark, Style { bold: f.alarm > 0.5, ..pal.shade(colour, 0.0) });
         }
         // The shark, cell by cell: four points in each, as many inside as

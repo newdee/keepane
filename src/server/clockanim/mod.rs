@@ -1,11 +1,11 @@
 //! What moves under the clock (`clock-mode-animation`): a monitor's traces
 //! (`pulse`), falling characters (`matrix`), an equalizer (`bars`), flames
-//! (`fire`), a fish tank (`aquarium`), a flight through stars (`starfield`),
-//! Conway's game of life (`life`), a spinning torus (`donut`), rain and
-//! lightning (`weather`), a shark hunting fish (`sharks`), sand running
-//! down (`hourglass`), a tree growing (`bonsai`), planets round a sun
-//! (`orbits`), a radar's sweep (`radar`), a moonlit sea (`sea`) or a cat
-//! asleep (`cat`), each moved by what the machine is doing (its cores,
+//! (`fire`), a flight through stars (`starfield`), a shark hunting fish
+//! (`sharks`), a tree growing (`bonsai`), a moonlit sea (`sea`), a cat
+//! asleep (`cat`), a dinosaur running a desert (`dino`), penguins on the
+//! ice (`penguins`), a neon grid under a setting sun (`synthwave`) or
+//! fireworks over a city (`fireworks`), each moved by what the machine is
+//! doing (its cores,
 //! memory, disks, network, the CPU's temperature and power, context
 //! switches, interrupts, swap, processes) and by what keepane does (what
 //! the window's panes print, the messages it delivers).
@@ -19,25 +19,22 @@
 //!
 //! An `Anim` moves only by `step`, by the time and the input it is given:
 //! the same steps give the same frames. The time of day comes in the input
-//! (`hourglass`, `bonsai` and `sea` go by it); nothing reads the clock.
+//! (`bonsai` and `sea` go by it); nothing reads the clock.
 
-mod aquarium;
 mod bars;
 mod bonsai;
 mod cat;
-mod donut;
+mod dino;
 mod fire;
-mod hourglass;
-mod life;
+mod fireworks;
 mod look;
 mod matrix;
-mod orbits;
+mod penguins;
 mod pulse;
-mod radar;
 mod sea;
 mod sharks;
 mod starfield;
-mod weather;
+mod synthwave;
 
 use super::layout::Rect;
 use super::render::{Cell, Grid, Style};
@@ -58,38 +55,32 @@ pub enum Kind {
     Matrix,
     Bars,
     Fire,
-    Aquarium,
     Starfield,
-    Life,
-    Donut,
-    Weather,
     Sharks,
-    Hourglass,
     Bonsai,
-    Orbits,
-    Radar,
     Sea,
     Cat,
+    Dino,
+    Penguins,
+    Synthwave,
+    Fireworks,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 16] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Pulse,
         Kind::Matrix,
         Kind::Bars,
         Kind::Fire,
-        Kind::Aquarium,
         Kind::Starfield,
-        Kind::Life,
-        Kind::Donut,
-        Kind::Weather,
         Kind::Sharks,
-        Kind::Hourglass,
         Kind::Bonsai,
-        Kind::Orbits,
-        Kind::Radar,
         Kind::Sea,
         Kind::Cat,
+        Kind::Dino,
+        Kind::Penguins,
+        Kind::Synthwave,
+        Kind::Fireworks,
     ];
 
     /// Its name, as `clock-mode-animation` takes it.
@@ -99,18 +90,15 @@ impl Kind {
             Kind::Matrix => "matrix",
             Kind::Bars => "bars",
             Kind::Fire => "fire",
-            Kind::Aquarium => "aquarium",
             Kind::Starfield => "starfield",
-            Kind::Life => "life",
-            Kind::Donut => "donut",
-            Kind::Weather => "weather",
             Kind::Sharks => "sharks",
-            Kind::Hourglass => "hourglass",
             Kind::Bonsai => "bonsai",
-            Kind::Orbits => "orbits",
-            Kind::Radar => "radar",
             Kind::Sea => "sea",
             Kind::Cat => "cat",
+            Kind::Dino => "dino",
+            Kind::Penguins => "penguins",
+            Kind::Synthwave => "synthwave",
+            Kind::Fireworks => "fireworks",
         }
     }
 
@@ -146,10 +134,16 @@ impl Kind {
     /// The time between two frames: enough for each to look smooth, no more.
     pub fn frame(self) -> Duration {
         Duration::from_millis(match self {
-            Kind::Pulse | Kind::Donut | Kind::Radar => 50,
-            Kind::Matrix | Kind::Weather | Kind::Sea => 80,
-            Kind::Bars | Kind::Fire | Kind::Starfield | Kind::Life | Kind::Sharks | Kind::Orbits => 66,
-            Kind::Aquarium | Kind::Hourglass | Kind::Bonsai | Kind::Cat => 100,
+            Kind::Pulse => 50,
+            Kind::Matrix | Kind::Sea => 80,
+            Kind::Bars
+            | Kind::Fire
+            | Kind::Starfield
+            | Kind::Sharks
+            | Kind::Dino
+            | Kind::Synthwave
+            | Kind::Fireworks => 66,
+            Kind::Bonsai | Kind::Cat | Kind::Penguins => 100,
         })
     }
 }
@@ -215,6 +209,10 @@ const BRIGHT_WHITE: u8 = 15;
 
 /// A message's mark.
 const ENVELOPE: &str = "✉";
+
+/// The colours of the fish (`sharks`) and the boats (`sea`): each pane
+/// takes the next.
+const FISH_COLOURS: [u8; 6] = [YELLOW, CYAN, MAGENTA, GREEN, BRIGHT_BLUE, RED];
 
 /// Green, yellow or red: by the CPU's temperature when it is known (below
 /// 60 °C, below 80 °C, above), else by how busy the cores are.
@@ -347,7 +345,7 @@ pub struct Anim {
     wave: f64,
     early_beats: u32,
     /// Each message's mark, the last few (which message, when it came:
-    /// `matrix`'s drop, `fire`'s and `aquarium`'s rising envelope…), and
+    /// `matrix`'s drop, `fire`'s rising envelope, `dino`'s falling one…), and
     /// how many of them came with the last step.
     drops: VecDeque<(u64, f64)>,
     arrived: usize,
@@ -358,18 +356,15 @@ pub struct Anim {
     /// `bars`: one a level `levels` gives.
     bars: Vec<Bar>,
     fire: fire::Fire,
-    tank: aquarium::Tank,
     stars: starfield::Stars,
-    life: life::Life,
-    donut: donut::Donut,
-    weather: weather::Weather,
     sea: sharks::Sea,
-    sand: hourglass::Sand,
     tree: bonsai::Tree,
-    sky: orbits::Sky,
-    scope: radar::Scope,
     night: sea::Night,
     nap: cat::Nap,
+    run: dino::Run,
+    ice: penguins::Ice,
+    drive: synthwave::Drive,
+    show: fireworks::Show,
     /// Where the last frame drew text a look leaves as it is.
     kept: RefCell<Vec<(u16, u16, u16)>>,
 }
@@ -403,18 +398,15 @@ impl Anim {
             flicker: 0.0,
             bars: Vec::new(),
             fire: Default::default(),
-            tank: Default::default(),
             stars: Default::default(),
-            life: Default::default(),
-            donut: Default::default(),
-            weather: Default::default(),
             sea: Default::default(),
-            sand: Default::default(),
             tree: Default::default(),
-            sky: Default::default(),
-            scope: Default::default(),
             night: Default::default(),
             nap: Default::default(),
+            run: Default::default(),
+            ice: Default::default(),
+            drive: Default::default(),
+            show: Default::default(),
             kept: RefCell::default(),
         }
     }
@@ -463,18 +455,15 @@ impl Anim {
             Kind::Matrix => self.step_matrix(dt),
             Kind::Bars => self.step_bars(dt),
             Kind::Fire => self.step_fire(dt),
-            Kind::Aquarium => self.step_aquarium(dt),
             Kind::Starfield => self.step_starfield(dt),
-            Kind::Life => self.step_life(dt),
-            Kind::Donut => self.step_donut(dt),
-            Kind::Weather => self.step_weather(dt),
             Kind::Sharks => self.step_sharks(dt),
-            Kind::Hourglass => self.step_hourglass(dt),
             Kind::Bonsai => self.step_bonsai(dt),
-            Kind::Orbits => self.step_orbits(dt),
-            Kind::Radar => self.step_radar(dt),
             Kind::Sea => self.step_sea(dt),
             Kind::Cat => self.step_cat(dt),
+            Kind::Dino => self.step_dino(dt),
+            Kind::Penguins => self.step_penguins(dt),
+            Kind::Synthwave => self.step_synthwave(dt),
+            Kind::Fireworks => self.step_fireworks(dt),
         }
     }
 
@@ -490,18 +479,15 @@ impl Anim {
             Kind::Matrix => self.draw_matrix(g, band, pal),
             Kind::Bars => self.draw_bars(g, band, pal),
             Kind::Fire => self.draw_fire(g, band, pal),
-            Kind::Aquarium => self.draw_aquarium(g, band, pal),
             Kind::Starfield => self.draw_starfield(g, band, pal),
-            Kind::Life => self.draw_life(g, band, pal),
-            Kind::Donut => self.draw_donut(g, band, pal),
-            Kind::Weather => self.draw_weather(g, band, pal),
             Kind::Sharks => self.draw_sharks(g, band, pal),
-            Kind::Hourglass => self.draw_hourglass(g, band, pal),
             Kind::Bonsai => self.draw_bonsai(g, band, pal),
-            Kind::Orbits => self.draw_orbits(g, band, pal),
-            Kind::Radar => self.draw_radar(g, band, pal),
             Kind::Sea => self.draw_sea(g, band, pal),
             Kind::Cat => self.draw_cat(g, band, pal),
+            Kind::Dino => self.draw_dino(g, band, pal),
+            Kind::Penguins => self.draw_penguins(g, band, pal),
+            Kind::Synthwave => self.draw_synthwave(g, band, pal),
+            Kind::Fireworks => self.draw_fireworks(g, band, pal),
         }
         self.dress(g, band, pal);
     }

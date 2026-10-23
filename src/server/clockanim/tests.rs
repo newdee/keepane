@@ -724,41 +724,6 @@ fn the_fire_follows_the_cores_the_heat_and_the_interrupts() {
     assert!(envelopes(&drawn(&a, band(), &pal)).is_empty(), "risen out of the band");
 }
 
-/// The tank: a fish a pane, each faster the more its pane prints; bubbles
-/// with the disks; weed taller the more memory is used; a message's
-/// envelope rises from the sand.
-#[test]
-fn the_aquarium_has_a_fish_a_pane() {
-    let pal = Palette::default();
-    let swim = |outs: &dyn Fn(u64) -> Vec<u64>| {
-        let mut a = Anim::new(Kind::Aquarium, 7);
-        for i in 0..40u64 {
-            a.step(0.1, Input { outs: outs(i), ..Input::default() });
-        }
-        a
-    };
-    let a = swim(&|i| vec![0, i * 100_000, 0]);
-    assert_eq!(a.tank.swum.len(), 3);
-    assert!(a.tank.swum[1] > a.tank.swum[0] * 5.0, "{:?}", a.tank.swum);
-    let angles = |a: &Anim| cells(&drawn(a, full(), &pal), |c| c.text() == "<" || c.text() == ">");
-    // "><>", "><(((o>", ">=>": 3, 3 and 2 marks.
-    assert_eq!(angles(&a), 8, "{}", text(&drawn(&a, full(), &pal)));
-    assert_eq!(angles(&swim(&|_| vec![0])), 3);
-    let one = |load: Load| run(Kind::Aquarium, &load, 40, 0.1);
-    let bubbles = |disk: f64| {
-        let g = drawn(&one(Load { disk: Some((disk, 0.0)), ..Load::default() }), full(), &pal);
-        cells(&g, |c| c.text() == "o" || c.text() == "O")
-    };
-    assert!(bubbles(0.0) == 0 && bubbles(1e9) > 5, "{} {}", bubbles(0.0), bubbles(1e9));
-    let weed = |memory: f32| {
-        let g = drawn(&one(Load { memory: Some(memory), ..Load::default() }), full(), &pal);
-        cells(&g, |c| c.text() == "(" || c.text() == ")")
-    };
-    assert!(weed(1.0) > weed(0.0) * 3, "{} {}", weed(0.0), weed(1.0));
-    let a = run_with_messages(Kind::Aquarium, &Load::default(), 30, 0.1, &[25]);
-    assert_eq!(envelopes(&drawn(&a, band(), &pal)).len(), 1);
-}
-
 /// The stars: more the more processes run; faster the more the network
 /// carries, streaking at a warp; a message a comet across.
 #[test]
@@ -779,109 +744,6 @@ fn the_stars_follow_the_processes_and_the_network() {
     assert_eq!(e.len(), 1, "{}", text(&g));
     assert_eq!(e[0].0, 13);
     assert_eq!(g.get(12, e[0].1).text(), "=");
-}
-
-/// The game of life keeps Conway's rules; more generations the busier the
-/// cores; more alive the more memory is used; a message's glider by the
-/// middle, an envelope on it a while.
-#[test]
-fn the_game_of_life_follows_the_cores_and_memory() {
-    // A blinker turns; a block stands, a year older each generation.
-    let mut life = life::Life::default();
-    life.cells = vec![0; life::GW * life::GH];
-    let at = |x: usize, y: usize| y * life::GW + x;
-    for x in 10..13 {
-        life.cells[at(x, 10)] = 1;
-    }
-    for (x, y) in [(30, 30), (31, 30), (30, 31), (31, 31)] {
-        life.cells[at(x, y)] = 1;
-    }
-    life.generation();
-    let alive: Vec<usize> = (0..life.cells.len()).filter(|&i| life.cells[i] > 0).collect();
-    let mut want = vec![at(11, 9), at(11, 10), at(11, 11), at(30, 30), at(31, 30), at(30, 31), at(31, 31)];
-    want.sort();
-    assert_eq!(alive, want);
-    assert_eq!(life.cells[at(30, 30)], 2);
-    assert_eq!(life.cells[at(11, 10)], 2, "the blinker's middle lives on");
-    // 5 generations a second idle, 15 busy: 10 s.
-    let gens = |cpu: f32| run(Kind::Life, &Load { cpu, ..Load::default() }, 100, 0.1).life.gens;
-    assert_eq!((gens(0.0), gens(1.0)), (50, 150));
-    let alive = |memory: f32| {
-        let load = Load { cpu: 1.0, memory: Some(memory), switches: Some(1e6), ..Load::default() };
-        run(Kind::Life, &load, 100, 0.1).life.cells.iter().filter(|&&c| c > 0).count()
-    };
-    assert!(alive(1.0) > alive(0.0) * 3 / 2, "{} {}", alive(0.0), alive(1.0));
-    let pal = Palette::default();
-    let a = run_with_messages(Kind::Life, &Load::default(), 30, 0.1, &[25]);
-    assert_eq!(a.life.gliders.len(), 1);
-    assert_eq!(envelopes(&drawn(&a, band(), &pal)).len(), 1, "{}", text(&drawn(&a, band(), &pal)));
-    let later = run_with_messages(Kind::Life, &Load::default(), 150, 0.1, &[25]);
-    assert!(later.life.gliders.is_empty() && envelopes(&drawn(&later, band(), &pal)).is_empty());
-    let g = drawn(&run(Kind::Life, &Load::default(), 10, 0.1), band(), &pal);
-    assert!(cells(&g, |c| ["▀", "▄", "█"].contains(&c.text())) > 20, "{}", text(&g));
-}
-
-/// The torus: turning faster the busier the cores; thicker the more memory
-/// is used; a message turns it once more, its envelope in the hole a
-/// while.
-#[test]
-fn the_donut_turns_with_the_cores() {
-    let pal = Palette::default();
-    let turned = |cpu: f32| run(Kind::Donut, &Load { cpu, ..Load::default() }, 20, 0.05).donut.a;
-    assert!((turned(0.0) - 0.5).abs() < 1e-6 && (turned(1.0) - 3.0).abs() < 1e-6, "{} {}", turned(0.0), turned(1.0));
-    let lit = |memory: f32| {
-        cells(
-            &drawn(&run(Kind::Donut, &Load { memory: Some(memory), ..Load::default() }, 20, 0.05), full(), &pal),
-            |c| c.text() != " ",
-        )
-    };
-    assert!(lit(1.0) > lit(0.0) * 6 / 5, "{} {}", lit(0.0), lit(1.0));
-    let a = run_with_messages(Kind::Donut, &Load::default(), 21, 0.05, &[20]);
-    assert!(a.donut.owed > 5.0, "a turn owed: {}", a.donut.owed);
-    let e = envelopes(&drawn(&a, full(), &pal));
-    assert_eq!(e, vec![(32, 7)]);
-    let later = run_with_messages(Kind::Donut, &Load::default(), 60, 0.05, &[20]);
-    assert!(later.donut.owed == 0.0 && envelopes(&drawn(&later, full(), &pal)).is_empty());
-    let g = drawn(&run(Kind::Donut, &Load { temp: Some(90.0), ..Load::default() }, 20, 0.05), full(), &pal);
-    assert!(cells(&g, |c| c.style.fg == Color::Idx(RED)) > 10, "{}", text(&g));
-}
-
-/// The weather: clouds with the cores, rain with the disks, slanting with
-/// the network's wind, lightning with the interrupts, water as deep as the
-/// memory in use; a message falls into it.
-#[test]
-fn the_weather_follows_the_machine() {
-    let pal = Palette::default();
-    let g = |load: Load| drawn(&run(Kind::Weather, &load, 40, 0.066), full(), &pal);
-    let count = |load: Load, marks: &[&str]| cells(&g(load), |c| marks.contains(&c.text()));
-    let clouds = ["░", "▒", "▓"];
-    assert!(count(Load { cpu: 1.0, ..Load::default() }, &clouds) > count(Load::default(), &clouds) * 2);
-    let rain = ["|", "\\"];
-    let disk = |rate: f64| Load { disk: Some((rate, 0.0)), ..Load::default() };
-    assert!(count(disk(1e9), &rain) > count(disk(0.0), &rain) * 4, "{}", text(&g(disk(1e9))));
-    let windy = Load { net: Some((1e9, 0.0)), ..disk(1e9) };
-    assert!(count(windy.clone(), &["\\"]) > 10 && count(disk(1e9), &["\\"]) == 0, "{}", text(&g(windy)));
-    let water = |memory: f32| count(Load { memory: Some(memory), ..Load::default() }, &["~", "-"]);
-    assert_eq!(water(0.0), 64, "a row of water");
-    assert_eq!(water(1.0), 64 * 5, "a row and a third of the rows more");
-    // Lightning: in some quarter second of 10 with the interrupts, never
-    // without.
-    let bolts = |interrupts: f64| {
-        let load = Load { interrupts: Some(interrupts), ..Load::default() };
-        let mut a = Anim::new(Kind::Weather, 7);
-        (0..40)
-            .filter(|_| {
-                a.step(0.25, Input { load: load.clone(), ..Input::default() });
-                cells(&drawn(&a, full(), &pal), |c| c.style.fg == Color::Idx(BRIGHT_YELLOW)) > 0
-            })
-            .count()
-    };
-    assert!(bolts(1e3) == 0 && bolts(1e6) > 3, "{} {}", bolts(1e3), bolts(1e6));
-    // From the clouds (row 3 of 14), 12 rows a second: 0.5 s on, row 9.
-    let a = run_with_messages(Kind::Weather, &Load::default(), 31, 0.05, &[20]);
-    let e = envelopes(&drawn(&a, full(), &pal));
-    assert_eq!(e.len(), 1);
-    assert_eq!(e[0].1, 3 + 6);
 }
 
 /// `steps` frames of `dt`, the input of each from `input`.
@@ -986,63 +848,6 @@ fn the_shark_hunts_a_school_a_pane() {
     assert!(envelopes(&drawn(&told(90), full(), &pal)).is_empty());
 }
 
-/// The glasses: the hour's sand split as the hour has gone, the stream
-/// only while sand is left; the minute's and the day's beside it where
-/// there is room; grains falling faster the busier the cores, bouncing
-/// with the disks; the glass in the CPU's colour; a message's envelope
-/// falling through the neck.
-#[test]
-fn the_hourglass_runs_with_the_hour() {
-    let pal = Palette::default();
-    let at = |day: f64, load: Load| {
-        run_by(Kind::Hourglass, 10, 0.1, |_| Input { load: load.clone(), day, ..Input::default() })
-    };
-    // 14 rows: bulbs of 5 rows, 35 grains between them; the neck on row 7.
-    let sand = |a: &Anim| {
-        let g = drawn(a, full(), &pal);
-        let grains = marked(&g, &["▒", "░"]).into_iter().filter(|&(x, _)| x.abs_diff(32) <= 6);
-        let (above, below): (Vec<_>, Vec<_>) = grains.partition(|&(_, y)| y < 7);
-        let stream = (7..13).any(|y| [":", "."].contains(&g.get(32, y).text()));
-        (above.len(), below.len(), stream)
-    };
-    assert_eq!(sand(&at(36_000.0, Load::default())), (35, 0, true));
-    assert_eq!(sand(&at(37_800.0, Load::default())), (17, 18, true));
-    assert_eq!(sand(&at(39_599.9, Load::default())), (0, 35, true), "the last grains still falling");
-    let g = drawn(&at(36_000.0, Load::default()), full(), &pal);
-    assert!(text(&g).contains("60s") && text(&g).contains("24h"), "{}", text(&g));
-    // The small ones (bulbs of 3 rows, 15 grains, the neck on row 9): at
-    // 10:00:30 the minute's half run down, the day's 0.417 of the way.
-    let small = |g: &Grid, cx: u16| {
-        let grains = marked(g, &["▒", "░"]).into_iter().filter(|&(x, _)| x.abs_diff(cx) <= 4);
-        let (above, below): (Vec<_>, Vec<_>) = grains.partition(|&(_, y)| y < 9);
-        (above.len(), below.len())
-    };
-    let g = drawn(&at(36_030.0, Load::default()), full(), &pal);
-    assert_eq!((small(&g, 18), small(&g, 46)), ((7, 8), (9, 6)), "{}", text(&g));
-    let mut narrow = Grid::new(64, 14);
-    at(36_000.0, Load::default()).draw(&mut narrow, Rect { x: 0, y: 0, w: 30, h: 14 }, &pal);
-    assert!(!text(&narrow).contains("60s") && marked(&narrow, &["="]).len() == 26, "{}", text(&narrow));
-    // Tall and narrow: no wider than the band, both caps whole.
-    let mut tall = Grid::new(20, 40);
-    at(36_000.0, Load::default()).draw(&mut tall, Rect { x: 0, y: 0, w: 20, h: 40 }, &pal);
-    let caps = marked(&tall, &["="]);
-    assert!(caps.len() == 2 * 19 && caps.iter().all(|&(x, _)| (1..20).contains(&x)), "{}", text(&tall));
-    let fall = |cpu: f32| at(36_000.0, Load { cpu, ..Load::default() }).sand.fall;
-    assert!((fall(0.0) - 4.0).abs() < 1e-9 && (fall(1.0) - 20.0).abs() < 1e-9, "{} {}", fall(0.0), fall(1.0));
-    let bounces = |disk: f64| {
-        let a = at(37_800.0, Load { disk: Some((disk, 0.0)), ..Load::default() });
-        marked(&drawn(&a, full(), &pal), &["'"]).len()
-    };
-    assert!(bounces(0.0) == 0 && bounces(1e9) > 0, "{} {}", bounces(0.0), bounces(1e9));
-    let frame = |temp: f32| {
-        let g = drawn(&at(36_000.0, Load { temp: Some(temp), ..Load::default() }), full(), &pal);
-        g.get(32, 1).style.fg
-    };
-    assert_eq!((frame(40.0), frame(90.0)), (Color::Idx(GREEN), Color::Idx(RED)));
-    let a = run_with_messages(Kind::Hourglass, &Load::default(), 13, 0.1, &[10]);
-    assert_eq!(envelopes(&drawn(&a, full(), &pal)), vec![(32, 8)], "6 rows a second, 0.2 s");
-}
-
 /// The tree: a limb a pane (six at most), grown through the day; more
 /// leaves with memory, in the CPU's colour, shaking more with their pane's
 /// output and leaning in the network's wind; leaves falling with the
@@ -1116,122 +921,6 @@ fn the_bonsai_grows_through_the_day() {
     assert!(envelopes(&drawn(&told(80), band, &pal)).is_empty());
 }
 
-/// The sky: a planet a core (eight at most, the cores in groups past
-/// that), faster the busier; the sun bigger with memory, red when hot,
-/// flaring with the interrupts; the belt with the network; a message's
-/// comet across.
-#[test]
-fn the_planets_go_round_with_the_cores() {
-    let pal = Palette::default();
-    let sky = |load: Load, steps: usize| {
-        run_by(Kind::Orbits, steps, 0.066, |_| Input { load: load.clone(), ..Input::default() })
-    };
-    let n = |cores: Vec<f32>| sky(Load { cores, ..Load::default() }, 2).sky.angles.len();
-    assert_eq!((n(vec![]), n(vec![0.5; 4]), n(vec![0.5; 9]), n(vec![0.5; 64])), (1, 4, 5, 8));
-    assert_eq!(
-        orbits::planets(&Load { cores: (0..16).map(|i| (i % 2) as f32).collect(), ..Load::default() }),
-        vec![0.5; 8]
-    );
-    let turned = |level: f32| {
-        let (a, b) = (
-            sky(Load { cores: vec![level], ..Load::default() }, 10),
-            sky(Load { cores: vec![level], ..Load::default() }, 110),
-        );
-        b.sky.angles[0] - a.sky.angles[0]
-    };
-    assert!(turned(1.0) > turned(0.0) * 3.0, "{} {}", turned(0.0), turned(1.0));
-    let g = |load: Load| drawn(&sky(load, 30), full(), &pal);
-    let big = g(Load { memory: Some(0.8), ..Load::default() });
-    assert!(text(&big).contains("-(@)-") && !text(&g(Load { memory: Some(0.2), ..Load::default() })).contains("(@)"));
-    let hot = g(Load { temp: Some(90.0), ..Load::default() });
-    let sun = marked(&hot, &["@"])[0];
-    assert_eq!(hot.get(sun.0, sun.1).style.fg, Color::Idx(RED));
-    let belt = |net: f64| {
-        cells(&g(Load { net: Some((net, 0.0)), ..Load::default() }), |c| {
-            c.text() == "." && c.style.fg == Color::Idx(YELLOW)
-        })
-    };
-    assert!(belt(0.0) == 0 && belt(1e9) > 20, "{} {}", belt(0.0), belt(1e9));
-    let flares = |interrupts: f64| {
-        let mut a = Anim::new(Kind::Orbits, 7);
-        (0..30)
-            .map(|_| {
-                a.step(
-                    0.2,
-                    Input { load: Load { interrupts: Some(interrupts), ..Load::default() }, ..Input::default() },
-                );
-                marked(&drawn(&a, full(), &pal), &["*"]).len()
-            })
-            .sum::<usize>()
-    };
-    assert!(flares(1e3) == 0 && flares(1e6) > 20, "{} {}", flares(1e3), flares(1e6));
-    let told = |steps: usize| run_with_messages(Kind::Orbits, &Load::default(), steps, 0.066, &[10]);
-    assert_eq!(envelopes(&drawn(&told(40), full(), &pal)).len(), 1);
-    assert!(envelopes(&drawn(&told(80), full(), &pal)).is_empty(), "past the sun and gone after 4 s");
-}
-
-/// The screen: the sweep faster the busier the cores; a blip a pane, the
-/// loudest biggest; contacts with the network, clutter with the
-/// interrupts; a message's envelope coming in from the rim; the bearing.
-#[test]
-fn the_radar_sweeps_with_the_cores() {
-    let pal = Palette::default();
-    let scope = |load: Load, outs: Vec<u64>, steps: usize| {
-        run_by(Kind::Radar, steps, 0.05, |i| Input {
-            load: load.clone(),
-            outs: outs.iter().map(|o| o * i as u64).collect(),
-            ..Input::default()
-        })
-    };
-    let swept = |cpu: f32| scope(Load { cpu, ..Load::default() }, vec![0], 10).scope.sweep;
-    assert!((swept(0.0) - 0.75).abs() < 1e-9 && (swept(1.0) - 2.25).abs() < 1e-9, "{} {}", swept(0.0), swept(1.0));
-    let g = drawn(&scope(Load::default(), vec![0, 100_000, 0], 30), full(), &pal);
-    assert_eq!(marked(&g, &["@"]).len(), 1, "the one printing 2 MB a second: {}", text(&g));
-    assert_eq!(marked(&g, &["o", "O"]).len(), 2, "{}", text(&g));
-    assert!(text(&g).contains('°'));
-    // Each blip lit (bold, unfaded) as the sweep passes, faded later in
-    // the turn: over a turn, each of the three seen both ways.
-    let mut a = Anim::new(Kind::Radar, 7);
-    let mut seen: std::collections::HashMap<(u16, u16), (bool, bool)> = Default::default();
-    for _ in 0..90 {
-        a.step(0.05, Input { outs: vec![0; 3], ..Input::default() });
-        let g = drawn(&a, full(), &pal);
-        for (x, y) in marked(&g, &["o"]) {
-            let s = g.get(x, y).style;
-            let e = seen.entry((x, y)).or_default();
-            (e.0, e.1) = (e.0 || (s.bold && !s.dim), e.1 || s.dim);
-        }
-    }
-    assert!(seen.len() == 3 && seen.values().all(|&(lit, faded)| lit && faded), "{seen:?}");
-    // The glow: dots a little behind the sweep, none a little ahead.
-    let a = scope(Load::default(), vec![0], 30);
-    let g = drawn(&a, full(), &pal);
-    let (ry, sweep) = (6.5, a.scope.sweep);
-    let at = |da: f64| {
-        let t = sweep + da;
-        let (x, y) = ((32.0 + 13.0 * 0.7 * t.sin()).floor() as u16, (7.0 - ry * 0.7 * t.cos()).floor() as u16);
-        g.get(x, y).text().to_string()
-    };
-    assert_eq!((at(-0.3).as_str(), at(0.6).as_str()), (".", " "), "{}", text(&g));
-    let plus = |load: Load| marked(&drawn(&scope(load, vec![0], 30), full(), &pal), &["+"]).len();
-    assert!(plus(Load::default()) == 1 && plus(Load { net: Some((1e9, 0.0)), ..Load::default() }) > 5);
-    let dots = |interrupts: f64| {
-        marked(
-            &drawn(&scope(Load { interrupts: Some(interrupts), ..Load::default() }, vec![0], 30), full(), &pal),
-            &["."],
-        )
-        .len()
-    };
-    assert!(dots(1e6) > dots(1e3), "{} {}", dots(1e3), dots(1e6));
-    let told = |steps: usize| {
-        envelopes(&drawn(&run_with_messages(Kind::Radar, &Load::default(), steps, 0.05, &[10]), full(), &pal))
-    };
-    let middle = |e: &[(u16, u16)]| (f64::from(e[0].0) - 32.0).abs() / 2.0 + (f64::from(e[0].1) - 7.0).abs();
-    let (early, late) = (told(15), told(60));
-    assert!(early.len() == 1 && late.len() == 1 && middle(&late) < middle(&early), "{early:?} {late:?}");
-    assert!(told(80).is_empty(), "in by 3 s");
-}
-
 /// The time of day the clock gives the animation: seconds since midnight,
 /// the fraction kept; a leap second (nanoseconds past a billion) counts as
 /// its 59th second again, never as the next day.
@@ -1261,8 +950,8 @@ fn a_step_of_no_time_moves_nothing() {
 /// Every new kind moves on an idle machine at any time of day and in any
 /// band a clock leaves it: its frame changes at least 3 times in a second
 /// at its own frame rate (what the e2e test counts on a real clock). The
-/// day in 50 steps and the last second of each hour (an hourglass nearly
-/// run down), bands 40 and 80 wide, 3 to 9 rows. (`bars` stands still
+/// day in 50 steps and the last second of each hour (the moon at its
+/// turn), bands 40 and 80 wide, 3 to 9 rows. (`bars` stands still
 /// when every figure is 0; a machine never gives that.)
 #[test]
 fn every_kind_moves_on_an_idle_machine() {
@@ -1270,7 +959,9 @@ fn every_kind_moves_on_an_idle_machine() {
     let days: Vec<f64> = (0..48).map(|i| f64::from(i) * 1_800.0).chain([3_599.0, 86_399.0]).collect();
     let bands: Vec<(u16, u16)> = [40u16, 80].into_iter().flat_map(|w| (3u16..=9).map(move |h| (w, h))).collect();
     let mut checked = 0;
-    for kind in [Kind::Sharks, Kind::Hourglass, Kind::Bonsai, Kind::Orbits, Kind::Radar, Kind::Sea, Kind::Cat] {
+    for kind in
+        [Kind::Sharks, Kind::Bonsai, Kind::Sea, Kind::Cat, Kind::Dino, Kind::Penguins, Kind::Synthwave, Kind::Fireworks]
+    {
         for &day in &days {
             let dt = kind.frame().as_secs_f64();
             let mut a = Anim::new(kind, 7);
@@ -1292,7 +983,7 @@ fn every_kind_moves_on_an_idle_machine() {
             }
         }
     }
-    assert_eq!(checked, 7 * 50 * 14);
+    assert_eq!(checked, 8 * 50 * 14);
 }
 
 /// The moon: rising on the left at 18:00, highest at midnight, setting on
@@ -1515,8 +1206,154 @@ fn a_look_redraws_the_cells_and_keeps_the_text() {
     assert!(t.contains("CPU 63%") && t.contains("MEM 41%"), "{t}");
     let t = text(&drawn(&run(Kind::Pulse, &busy(), 60, 0.05), full(), &blocks));
     assert!(t.contains("SYS 48k/s") && t.contains("CPU 63% 67W"), "{t}");
-    let t = text(&drawn(&run(Kind::Hourglass, &busy(), 60, 0.05), full(), &blocks));
-    assert!(t.contains("60s") && t.contains("24h"), "{t}");
-    let t = text(&drawn(&run(Kind::Radar, &busy(), 60, 0.05), full(), &blocks));
-    assert!(t.lines().next().is_some_and(|l| l.contains('°')), "{t}");
+    let t = text(&drawn(&run(Kind::Dino, &busy(), 60, 0.05), full(), &blocks));
+    assert!(t.lines().next().is_some_and(|l| l.trim_end().ends_with("00013")), "the score:\n{t}");
+}
+
+/// The dinosaur: faster the busier the cores (6 columns a second idle, 26
+/// all busy); it is two rows up or more whenever a cactus is under it,
+/// never once caught; more cacti the more panes; a message falls to it as
+/// an envelope and it is glad (a heart), then neither; its score top right.
+#[test]
+fn the_dinosaur_runs_with_the_cores_and_jumps_every_cactus() {
+    let pal = Palette::default();
+    let ran = |cpu: f32| run(Kind::Dino, &Load { cpu, ..Load::default() }, 100, 0.1).run.ran;
+    assert!((ran(0.0) - 60.0).abs() < 0.01 && (ran(1.0) - 260.0).abs() < 0.01, "{} {}", ran(0.0), ran(1.0));
+    let mut a = Anim::new(Kind::Dino, 7);
+    let (mut under, mut jumped) = (0, 0);
+    for i in 0..3000u64 {
+        a.step(
+            0.05,
+            Input {
+                load: Load { cpu: (i % 100) as f32 / 100.0, ..Load::default() },
+                outs: vec![0; 3],
+                ..Input::default()
+            },
+        );
+        let first = (a.run.ran / 16.0).floor() as i64 - 1;
+        for k in first..first + 3 {
+            if let Some((at, _)) = a.cactus(k) {
+                let x = (at - a.run.ran).round() as i64;
+                if x + dino::CACTUS_W > dino::DINO_X && x < dino::DINO_X + dino::DINO_W {
+                    under += 1;
+                    assert!(a.lift() >= 2, "caught at step {i}: cactus at {x}, lift {}", a.lift());
+                }
+            }
+        }
+        jumped += usize::from(a.lift() > 0);
+    }
+    assert!(under > 100 && jumped > under, "{under} {jumped}");
+    let cacti = |panes: usize| {
+        let a = run_by(Kind::Dino, 2, 0.05, |_| Input { outs: vec![0; panes], ..Input::default() });
+        (1..2000).filter(|&k| a.cactus(k).is_some()).count()
+    };
+    assert!(cacti(4) > cacti(1) * 3 / 2, "{} {}", cacti(1), cacti(4));
+    let told = run_with_messages(Kind::Dino, &Load::default(), 52, 0.05, &[50]);
+    let t = text(&drawn(&told, full(), &pal));
+    assert!(t.contains('✉') && !t.contains('♥'), "falling:\n{t}");
+    let glad = run_with_messages(Kind::Dino, &Load::default(), 78, 0.05, &[50]);
+    let t = text(&drawn(&glad, full(), &pal));
+    assert!(!t.contains('✉') && t.contains('♥'), "caught:\n{t}");
+    let later = run_with_messages(Kind::Dino, &Load::default(), 100, 0.05, &[50]);
+    let t = text(&drawn(&later, full(), &pal));
+    assert!(!t.contains('✉') && !t.contains('♥'), "{t}");
+    assert!(t.lines().next().is_some_and(|l| l.trim_end().ends_with("00007")), "the score: {t}");
+}
+
+/// The penguins: one a pane, as many as the ice holds; one whose pane
+/// prints a lot slides on its belly; more snow with the network; a message
+/// is a fish leaping onto the ice with its envelope, for 1.6 s.
+#[test]
+fn a_penguin_a_pane_on_the_ice() {
+    let pal = Palette::default();
+    let heads = |t: &str| t.matches("(o>").count() + t.matches("<o)").count();
+    let three = run_by(Kind::Penguins, 40, 0.1, |_| Input { outs: vec![0; 3], ..Input::default() });
+    let t = text(&drawn(&three, full(), &pal));
+    assert_eq!(heads(&t), 3, "{t}");
+    assert!(!t.contains("=(o>") && !t.contains("<o)="), "{t}");
+    let many = run_by(Kind::Penguins, 40, 0.1, |_| Input { outs: vec![0; 40], ..Input::default() });
+    assert_eq!(heads(&text(&drawn(&many, full(), &pal))), 8, "as many as 42 columns of ice hold, 5 each");
+    // The second pane prints 1 MB a second: its penguin slides.
+    let busy_pane =
+        run_by(Kind::Penguins, 40, 0.1, |i| Input { outs: vec![0, i as u64 * 100_000, 0], ..Input::default() });
+    let t = text(&drawn(&busy_pane, full(), &pal));
+    assert!(t.contains("=(o>") || t.contains("<o)="), "{t}");
+    assert_eq!(heads(&t), 3, "{t}");
+    assert!(busy_pane.ice.gone[1] > 5.0 * busy_pane.ice.gone[0], "{:?}", busy_pane.ice.gone);
+    let snow = |net: f64| {
+        let a = run(Kind::Penguins, &Load { net: Some((net, 0.0)), ..Load::default() }, 20, 0.1);
+        let g = drawn(&a, full(), &pal);
+        cells(&g, |c| c.text() == "*" || c.text() == ".")
+    };
+    assert!(snow(1e9) > 2 * snow(0.0), "{} {}", snow(0.0), snow(1e9));
+    let told = run_with_messages(Kind::Penguins, &Load::default(), 60, 0.1, &[55]);
+    let t = text(&drawn(&told, full(), &pal));
+    assert!(t.contains("<><") && t.contains('✉'), "{t}");
+    let later = run_with_messages(Kind::Penguins, &Load::default(), 80, 0.1, &[55]);
+    let t = text(&drawn(&later, full(), &pal));
+    assert!(!t.contains("<><") && !t.contains('✉'), "{t}");
+}
+
+/// The neon grid: coming nearer quicker the busier the cores (2 lines a
+/// second idle, 5 all busy); the sun on the horizon, yellow at the top and
+/// magenta at the bottom, its stripes sliding with the panes' output; a
+/// message's meteor across the sky, gone once it has crossed.
+#[test]
+fn the_grid_runs_under_the_sun_with_the_cores() {
+    let pal = Palette::default();
+    let travel = |cpu: f32| run(Kind::Synthwave, &Load { cpu, ..Load::default() }, 100, 0.1).drive.travel;
+    assert!((travel(0.0) - 20.0).abs() < 0.01 && (travel(1.0) - 50.0).abs() < 0.01, "{} {}", travel(0.0), travel(1.0));
+    let stripes = |out: u64| {
+        run_by(Kind::Synthwave, 50, 0.1, |i| Input { outs: vec![i as u64 * out], ..Input::default() }).drive.stripes
+    };
+    assert!(stripes(1_000_000) > 3.0 * stripes(0), "{} {}", stripes(0), stripes(1_000_000));
+    let a = run(Kind::Synthwave, &Load::default(), 20, 0.1);
+    let g = drawn(&a, full(), &pal);
+    let sun = |colour: u8| {
+        (0..7u16).flat_map(|y| (0..64u16).map(move |x| (x, y))).any(|(x, y)| {
+            let c = g.get(x, y);
+            ["█", "▀", "▄"].contains(&c.text()) && c.style.fg == Color::Idx(colour)
+        })
+    };
+    assert!(sun(BRIGHT_YELLOW) && sun(MAGENTA), "{}", text(&g));
+    assert!((0..64).all(|x| g.get(x, 7).text() == "━"), "the horizon: {}", text(&g));
+    assert!(cells(&g, |c| c.text() == "╱") > 5 && cells(&g, |c| c.text() == "╲") > 5, "{}", text(&g));
+    let told = run_with_messages(Kind::Synthwave, &Load::default(), 30, 0.05, &[25]);
+    let e = envelopes(&drawn(&told, full(), &pal));
+    assert_eq!(e.len(), 1, "{}", text(&drawn(&told, full(), &pal)));
+    assert!(e[0].1 < 7, "in the sky");
+    let later = run_with_messages(Kind::Synthwave, &Load::default(), 60, 0.05, &[25]);
+    assert!(envelopes(&drawn(&later, full(), &pal)).is_empty());
+}
+
+/// The fireworks: one goes up at once, then more the more the panes print;
+/// bigger bursts the busier the cores; a message sends one up with its
+/// envelope where it bursts; the city's windows lit with the memory.
+#[test]
+fn the_fireworks_go_up_with_the_output() {
+    let pal = Palette::default();
+    let launched = |out: u64| {
+        run_by(Kind::Fireworks, 100, 0.1, |i| Input { outs: vec![i as u64 * out], ..Input::default() }).show.launched
+    };
+    assert!(launched(0) >= 6 && launched(0) <= 9, "{}", launched(0));
+    assert!(launched(1_000_000) > 2 * launched(0), "{} {}", launched(0), launched(1_000_000));
+    // One rocket, burst half a second: its sparks.
+    let sparks = |cpu: f32| {
+        let load = Load { cpu, memory: Some(0.0), ..Load::default() };
+        let a = run_by(Kind::Fireworks, 13, 0.1, |_| Input { load: load.clone(), outs: vec![0], ..Input::default() });
+        assert_eq!(a.show.rockets.len(), 1);
+        cells(&drawn(&a, full(), &pal), |c| c.text() == "+" || c.text() == "*")
+    };
+    assert!(sparks(1.0) > sparks(0.0) * 3 / 2, "{} {}", sparks(0.0), sparks(1.0));
+    let told = run_with_messages(Kind::Fireworks, &Load::default(), 30, 0.05, &[10]);
+    assert!(told.show.rockets.iter().any(|r| r.message));
+    assert_eq!(envelopes(&drawn(&told, full(), &pal)).len(), 1);
+    let later = run_with_messages(Kind::Fireworks, &Load::default(), 70, 0.05, &[10]);
+    assert!(envelopes(&drawn(&later, full(), &pal)).is_empty());
+    let lit = |memory: f32| {
+        let a = run(Kind::Fireworks, &Load { memory: Some(memory), ..Load::default() }, 2, 0.05);
+        cells(&drawn(&a, full(), &pal), |c| c.text() == "▪")
+    };
+    assert_eq!(lit(0.0), 0);
+    assert!(lit(1.0) > 5, "{}", lit(1.0));
 }
