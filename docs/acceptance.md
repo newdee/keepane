@@ -4928,3 +4928,16 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 全量 | fmt 0；clippy Windows 0、macOS 目标 0；Windows 501 + 11 + 143 | 干净（1/3） |
 | 2 | 跨平台 | Linux fmt 0、clippy 0、487 + 142（关机代码只在 Windows 上编译和测试） | 干净（2/3） |
 | 3 | 可复现性 | 两个关机 e2e 连跑 5 次 5/5（每次 16.9 秒）；Windows 全量 e2e 连跑 2 次 143/143（38.4、38.9 秒） | 干净（3/3），验收通过 |
+## 160. CI：分享 zip 的解压检查改用 .NET（0.45.1 发版前）
+
+- 现象：`files_and_folders_are_shared_by_a_link` 在 CI Windows 上连续失败两次（f7c0afb 首跑和重跑），报 `tar: Archive entry has empty or unreadable filename`。10-07 镜像通过，10-21 镜像（windows-2025-vs2026 20261021.278.1）失败。之前记为"偶发、原因不明"。
+- 原因（已复现）：Windows 自带的 bsdtar 3.8.9 把 zip 里的 UTF-8 文件名转成系统 ANSI 代码页，转不了的条目直接跳过。本机代码页 936 放得下"中文"，所以本机一直通过；CI runner 是 1252，放不下。本机用 Python 打一个含 `한글.txt` 的 zip，tar 报同一句错，退出码 1；`Expand-Archive` 能正确解出。
+- 定性：个性，测试环境问题，不是产品缺陷。zip 设置了 UTF-8 标志（第 0x0800 位，单元测试已检查），资源管理器和 .NET 都按 UTF-8 读取。仓库里只有这一处用 tar 解压。
+- 改法：Windows 上改用 `powershell.exe Expand-Archive` 解压，Linux 和 macOS 不变。
+- 会不会引入新 bug：只改测试。变异：去掉 zip 的 UTF-8 标志，新检查报 `中文.txt` 缺失，测试失败（抓到）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制存活 | fmt 0；clippy 0；单测通过；UTF-8 标志变异被抓到 | 干净（1/3） |
+| 2 | 全量 | Windows e2e 143/143（39.0 秒） | 干净（2/3） |
+| 3 | 换环境 | CI 新镜像（ACP 1252）上 Windows、Linux、macOS | 见下 |

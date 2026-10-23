@@ -5710,8 +5710,17 @@ async fn files_and_folders_are_shared_by_a_link() {
     std::fs::write(&zip_file, &zip).unwrap();
     let unpacked = dir.join("unpacked");
     std::fs::create_dir_all(&unpacked).unwrap();
+    // Not Windows' tar: it turns each name into the ANSI code page and skips
+    // one that does not fit there (中文 under 1252, CI's runners).
     let tool = if cfg!(windows) {
-        std::process::Command::new("tar").arg("-xf").arg(&zip_file).arg("-C").arg(&unpacked).output()
+        let script = format!(
+            "Expand-Archive -LiteralPath '{}' -DestinationPath '{}'",
+            zip_file.display().to_string().replace('\'', "''"),
+            unpacked.display().to_string().replace('\'', "''")
+        );
+        std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
     } else {
         std::process::Command::new("python3").args(["-m", "zipfile", "-e"]).arg(&zip_file).arg(&unpacked).output()
     };
