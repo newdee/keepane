@@ -495,8 +495,20 @@ fn record_agents() {
     rec.key("j");
     rec.hold(5);
     rec.still("agents");
+    // T: the first agent's steps as a waterfall, each kind its colour, the
+    // failed test run red.
     rec.key("k");
-    rec.hold(5);
+    rec.hold(2);
+    rec.key("k");
+    rec.hold(2);
+    rec.key("T");
+    rec.wait_for("the trace", |s| s.contents().contains("model calls"), 15);
+    rec.hold(8);
+    rec.still("trace");
+    // [: what happened to the pane, line by line.
+    rec.key("[");
+    rec.hold(6);
+    rec.still("events");
     rec.key("q");
     rec.hold(3);
 

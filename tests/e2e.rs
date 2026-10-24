@@ -10981,8 +10981,12 @@ async fn panes_in_frames_of_their_own() {
     assert!(top.starts_with("╭─ 0 ─") && top.contains("╮╭─ 1 ─"), "{top:?}");
     // Zoomed: one frame round the window.
     c.prefix('z').await;
+    // One frame across the top (unzoomed, column 39 is the left frame's
+    // corner).
     c.wait_for("zoomed in its frame", |s| {
-        s.cell(0, 0).is_some_and(|c| c.contents() == "╭") && s.cell(0, COLS - 1).is_some_and(|c| c.contents() == "╮")
+        s.cell(0, 0).is_some_and(|c| c.contents() == "╭")
+            && s.cell(0, 39).is_some_and(|c| c.contents() == "─")
+            && s.cell(0, COLS - 1).is_some_and(|c| c.contents() == "╮")
     })
     .await;
     let (_, zoomed, _) = h.cli(&["display-message", "-p", "-t", "fr", "#{pane_width}x#{pane_height}"]).await;

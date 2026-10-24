@@ -131,6 +131,8 @@ const ZH = {
     "pane 的工作模式只能在那个 pane 里切换，所以任何 pane 里运行的程序都不能把别的 pane 变成收到什么就执行什么的 shell。发生过的一切记在事件日志里，保留 30 天。",
   "cm.p4":
     "pane 里跑的每个 agent（Claude Code、Codex、pi）都显示模型、花了多少、上下文占了多少、token、CPU 和内存：dashboard 里有，手机上它的卡片上有，<code>keepane list-agents</code> 和 <code>#{agent_cost}</code> 这类变量也有。keepane 读的是 agent 自己写的会话记录；花费按 LiteLLM 的公开价目表（API 标价）计算，也可以 <code>agent-cost off</code> 关掉。",
+  "cm.p5":
+    "每个 agent 一步步在做什么：dashboard 的 Trace 标签页（<kbd>T</kbd>）把它的每一轮画成瀑布图，每次调用模型、每个工具一条横条，画在它运行的时间上，按类型着色（模型、读取、改文件、运行命令、子 agent），失败的标红；<code>keepane trace-pane</code> 输出同样的内容，树状文本或 JSON。",
 
   "c4.title": "你的 .tmux.conf，导入一次就能用",
   "c4.sub":

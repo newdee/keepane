@@ -124,11 +124,16 @@
             the dashboard lists them with the total; <code>keepane list-agents</code> prints the same. (The agents are stand-ins that write real transcripts.)
           </figcaption>
         </figure>
+        <div class="pair">
+          <figure class="shot"><img src="img/trace.png" alt="The dashboard's Trace tab: an agent's turn as a waterfall, each model call and tool a bar where it ran, coloured by kind, the failed test run red" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/events.png" alt="The dashboard's Events tab: what happened to the pane, a line each, newest last" loading="lazy" /></figure>
+        </div>
         <ul class="points">
           <li data-i18n="cm.p1">Every message says where it came from in one line of JSON. A chain of messages is one task, with how long each step waited and took; one that goes round more than eight times is refused.</li>
           <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup</code> sets up the hook and the registration for Claude Code, Codex, Gemini CLI, Cursor CLI or opencode, so the agent is handed its next message when a turn ends; a message for an agent that never says it is free tells you which setup it lacks.</li>
           <li data-i18n="cm.p3">A pane's work mode is changed in that pane, so nothing running in one pane turns another into a shell that runs what it is sent. What happens is kept in an event log for 30 days.</li>
           <li data-i18n="cm.p4">Each agent a pane runs (Claude Code, Codex, pi) shows its model, what it has cost, how full its context is, its tokens, CPU and memory: in the dashboard, on its card on the phone, in <code>keepane list-agents</code> and in <code>#{agent_cost}</code>-style variables. keepane reads the transcripts the agents write; cost is priced by LiteLLM's public list (API list prices), or <code>agent-cost off</code>.</li>
+          <li data-i18n="cm.p5">What each agent does, step by step: the dashboard's Trace tab (<kbd>T</kbd>) draws its turns as a waterfall, each call of the model and each tool a bar where it ran, coloured by kind (the model, reading, editing, running a command, another agent), a failed one red; <code>keepane trace-pane</code> gives the same as a tree or JSON.</li>
         </ul>
       </section>
 

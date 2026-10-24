@@ -114,7 +114,15 @@ set -g pane-border-format " #{pane_index} #{?agent,#{agent_model} #{agent_cost} 
 
 ### agent 正在一步步做什么
 
-同样这些 transcript 也记下了 agent 每一步做了什么、什么时候做的：每一轮（从你的提问到它最后一次回复），以及这一轮里每次调用模型、每次运行工具的起止时间，和有没有失败。dashboard 右边切到 Trace 标签页（按 `]`），会把所选 pane 的 agent 画成瀑布图，每 2 秒刷新：
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/trace-light.png">
+    <img src="docs/img/trace.png" width="880"
+         alt="The dashboard's Trace tab: an agent's turn as a waterfall, each model call and tool a bar where it ran, coloured by kind, the failed test run red">
+  </picture>
+</p>
+
+同样这些 transcript 也记下了 agent 每一步做了什么、什么时候做的：每一轮（从你的提问到它最后一次回复），以及这一轮里每次调用模型、每次运行工具的起止时间，和有没有失败。dashboard 右边切到 Trace 标签页（按 `T`，或用 `]` 切过去），会把所选 pane 的 agent 画成瀑布图，每 2 秒刷新：
 
 ```
 claude  claude-opus-5-5  $2.50  41k tokens  model calls 3  tools 4  ✗ 1 failed

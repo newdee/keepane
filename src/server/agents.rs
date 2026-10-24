@@ -260,12 +260,15 @@ fn claude(v: &Value, u: &mut Usage, seen: &mut HashSet<String>) {
     u.turns += 1;
 }
 
-/// A Claude `user` line: the person's prompt begins a turn; their breaking
-/// it off ends one. A tool's result, a line keepane's agent adds itself
-/// (`isMeta`), and a command Claude Code answers on its own (`/model`,
-/// written `<command-name>…`, and what it printed) are no turn.
+/// A Claude `user` line: the person's prompt begins a turn, and so does a
+/// scheduled task's; their breaking it off ends one. A tool's result, a
+/// line keepane's agent adds itself (`isMeta`), and a command Claude Code
+/// answers on its own (`/model`, written `<command-name>…`, and what it
+/// printed) are no turn.
 fn claude_turn(v: &Value, u: &mut Usage) {
-    if v["isMeta"].as_bool() == Some(true) {
+    // One the agent adds itself is no turn, unless it starts one of its own
+    // (a scheduled task's prompt: `turnOrigin`).
+    if v["isMeta"].as_bool() == Some(true) && !v["turnOrigin"].is_string() {
         return;
     }
     let content = &v["message"]["content"];
@@ -1023,6 +1026,19 @@ mod tests {
     /// Each agent's transcript says when a turn began and ended, and how
     /// (done, or broken off by the person), at the time its line says: the
     /// last one counts. What is no turn says nothing.
+    /// A scheduled task's prompt (`isMeta` with `turnOrigin`) begins a turn
+    /// as the person's does; a line the agent adds itself does not.
+    #[test]
+    fn a_scheduled_prompt_begins_a_turn() {
+        let line = |meta: bool, origin: Option<&str>| {
+            serde_json::json!({"type": "user", "isMeta": meta, "turnOrigin": origin, "timestamp": "2026-10-23T10:00:00Z",
+                "message": {"role": "user", "content": "check the release run"}})
+            .to_string()
+        };
+        assert_eq!(feed_all(Kind::Claude, &[&line(true, Some("scheduled"))]).turn.map(|t| t.over), Some(None));
+        assert_eq!(feed_all(Kind::Claude, &[&line(true, None)]).turn, None);
+        assert_eq!(feed_all(Kind::Claude, &[&line(false, None)]).turn.map(|t| t.over), Some(None));
+    }
     #[test]
     fn the_transcripts_tell_the_turns() {
         let at = |t: &str| chrono::DateTime::parse_from_rfc3339(t).unwrap().with_timezone(&chrono::Local);

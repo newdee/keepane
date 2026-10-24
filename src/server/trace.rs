@@ -103,6 +103,10 @@ pub struct Steps {
     last: i64,
     /// A tool call's id to the subagent it started (Claude's `agentId:`).
     pub agent_of: HashMap<String, String>,
+    /// What the next turn begun without a prompt answers: a line the agent
+    /// was given that is no prompt (a background task done, a message from
+    /// another agent).
+    pending: Option<String>,
 }
 
 /// A transcript line's time, milliseconds since 1970.
@@ -229,7 +233,8 @@ impl Steps {
     /// up again, or read from its middle).
     fn turn_at(&mut self, t: i64) -> String {
         if self.turn.is_none() {
-            self.begin(t, "");
+            let why = self.pending.take().unwrap_or_default();
+            self.begin(t, &why);
         }
         self.turn.clone().unwrap_or_default()
     }
@@ -310,9 +315,17 @@ impl Steps {
     fn claude(&mut self, v: &Value, t: i64) {
         let m = &v["message"];
         match v["type"].as_str() {
-            Some("user") if v["isMeta"].as_bool() != Some(true) => {
+            // A line the agent adds itself (`isMeta`) is no prompt, unless it
+            // starts a turn of its own: a scheduled one.
+            Some("user") if v["isMeta"].as_bool() != Some(true) || v["turnOrigin"].is_string() => {
                 if let Value::String(s) = &m["content"] {
-                    self.prompt(t, s);
+                    match v["turnOrigin"].as_str() {
+                        Some(origin) if !s.trim_start().starts_with('<') => {
+                            self.pending = None;
+                            self.begin(t, &format!("({origin}) {}", s.trim()));
+                        }
+                        _ => self.prompt(t, s),
+                    }
                     return;
                 }
                 for b in m["content"].as_array().into_iter().flatten() {
@@ -362,6 +375,26 @@ impl Steps {
                     self.end_turn(t, false);
                 }
             }
+            // Queued while it worked (an older Claude Code): what the turn
+            // it begins answers.
+            Some("queue-operation") if v["operation"] == "enqueue" => {
+                let text = v["content"].as_str().unwrap_or_default().trim_start();
+                self.pending =
+                    if text.starts_with('<') { given(text) } else { Some(short(text, 100)) }.filter(|s| !s.is_empty());
+            }
+            // What came while the agent worked, given to it once it could
+            // take it (your message, a background task done): it begins the
+            // turn when none runs; one that runs goes on.
+            Some("attachment") if v["attachment"]["type"] == "queued_command" && self.turn.is_none() => {
+                let text = v["attachment"]["prompt"].as_str().unwrap_or_default().trim_start();
+                if text.starts_with('<') {
+                    if let Some(why) = given(text) {
+                        self.begin(t, &why);
+                    }
+                } else if !text.is_empty() {
+                    self.begin(t, text);
+                }
+            }
             _ => {}
         }
     }
@@ -372,7 +405,13 @@ impl Steps {
         let first = text.trim_start();
         if first.starts_with("[Request interrupted by user") {
             self.end_turn(t, true);
-        } else if !first.starts_with('<') && !first.is_empty() {
+        } else if first.starts_with('<') {
+            // Not the person's: what a turn it starts answers.
+            if let Some(why) = given(first) {
+                self.pending = Some(why);
+            }
+        } else if !first.is_empty() {
+            self.pending = None;
             self.begin(t, first);
         }
     }
@@ -467,6 +506,36 @@ impl Steps {
     /// The turn running, by its id.
     pub fn running(&self) -> Option<&str> {
         self.turn.as_deref()
+    }
+}
+
+/// What a line the agent was given (not the person's prompt) is, to name the
+/// turn it starts: a background task done (its summary), another agent's
+/// message, a command; none for what starts no work of its own (a reminder
+/// the agent adds, a command's output).
+fn given(text: &str) -> Option<String> {
+    let inner = |tag: &str| {
+        let open = format!("<{tag}>");
+        let start = text.find(&open)? + open.len();
+        let end = text[start..].find(&format!("</{tag}>"))? + start;
+        Some(text[start..end].trim().to_string())
+    };
+    let tag: String = text[1..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    match tag.as_str() {
+        "task-notification" => Some(match inner("summary") {
+            Some(s) if !s.is_empty() => short(&s, 100),
+            _ => "a background task done".into(),
+        }),
+        "agent-message" => {
+            let from = text.split("from=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("an agent");
+            Some(format!("a message from {from}"))
+        }
+        "command-name" => inner("command-name"),
+        "system-reminder" | "local-command-stdout" | "local-command-stderr" | "command-message" | "command-args" => {
+            None
+        }
+        "" => None,
+        other => Some(other.replace('-', " ")),
     }
 }
 

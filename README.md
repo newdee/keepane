@@ -234,10 +234,18 @@ set -g pane-border-format " #{pane_index} #{?agent,#{agent_model} #{agent_cost} 
 
 ### What an agent is doing, step by step
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/trace-light.png">
+    <img src="docs/img/trace.png" width="880"
+         alt="The dashboard's Trace tab: an agent's turn as a waterfall, each model call and tool a bar where it ran, coloured by kind, the failed test run red">
+  </picture>
+</p>
+
 The same transcripts say what the agent did and when: each turn (your
 prompt to its last reply), and in it each call of the model and each tool
 it ran, from when to when, and whether it failed. The dashboard's Trace tab
-(`]` to it on the right) draws the chosen pane's agent as a waterfall,
+(`T`, or `]` to it on the right) draws the chosen pane's agent as a waterfall,
 live (read every two seconds):
 
 ```

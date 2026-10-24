@@ -356,3 +356,61 @@ fn tools_by_kind_and_what_they_were_given() {
     assert!(codex_failed(&serde_json::json!("Process exited with code 2")));
     assert!(!codex_failed(&serde_json::json!("no code said")));
 }
+
+/// A turn not begun by the person's typed prompt is named by what began it:
+/// a message given once the agent could take it (`queued_command`: yours,
+/// or a background task done, by its summary); one queued by an older
+/// Claude Code (`queue-operation`); a scheduled task's prompt (`isMeta`
+/// with `turnOrigin`). A message queued while a turn runs begins none. A
+/// line the agent adds itself begins none either.
+#[test]
+fn every_turn_is_named_by_what_began_it() {
+    let queued = |t: f64, prompt: &str| {
+        serde_json::json!({"type": "attachment", "timestamp": at(t), "attachment": {"type": "queued_command", "prompt": prompt}}).to_string()
+    };
+    let done = |t: f64, id: &str| claude_reply(t, id, serde_json::json!([{"type": "text"}]), Some("end_turn"));
+    let notice = "<task-notification>\n<status>completed</status>\n<summary>Background command \"tests\" completed (exit code 0)</summary>\n</task-notification>";
+    let scheduled =
+        serde_json::json!({"type": "user", "isMeta": true, "turnOrigin": "scheduled", "timestamp": at(40.0),
+        "message": {"role": "user", "content": "check the release run"}})
+        .to_string();
+    let meta = serde_json::json!({"type": "user", "isMeta": true, "timestamp": at(50.0), "message": {"role": "user", "content": "caveat"}}).to_string();
+    let enqueue = serde_json::json!({"type": "queue-operation", "operation": "enqueue", "timestamp": at(60.0),
+        "content": "<agent-message from=\"helper\">\nfound it\n</agent-message>"})
+    .to_string();
+    let s = fed(
+        Kind::Claude,
+        &[
+            claude_prompt(0.0, "build it"),
+            queued(1.0, "and then test it"),
+            done(5.0, "a"),
+            queued(10.0, "and then test it"),
+            done(15.0, "b"),
+            queued(20.0, notice),
+            done(25.0, "c"),
+            scheduled,
+            done(45.0, "d"),
+            meta,
+            enqueue,
+            done(65.0, "e"),
+        ],
+    );
+    let turns: Vec<&str> = s.spans.iter().filter(|x| x.kind == SpanKind::Turn).map(|x| x.name.as_str()).collect();
+    assert_eq!(
+        turns,
+        [
+            "build it",
+            "and then test it",
+            "Background command \"tests\" completed (exit code 0)",
+            "(scheduled) check the release run",
+            "a message from helper",
+        ]
+    );
+    assert_eq!(given("<command-name>/model</command-name>\n<command-args></command-args>"), Some("/model".into()));
+    assert_eq!(given("<system-reminder>be brief</system-reminder>"), None);
+    assert_eq!(
+        given("<task-notification><status>failed</status></task-notification>"),
+        Some("a background task done".into())
+    );
+    assert_eq!(given("<bash-input>ls</bash-input>"), Some("bash input".into()));
+}

@@ -412,7 +412,7 @@ impl Tab {
             Tab::Screen => "Scr",
             Tab::Scrollback => "Back",
             Tab::Events => "Ev",
-            Tab::Trace => "Tr",
+            Tab::Trace => "Trace",
             Tab::Detail => "Det",
         }
     }
@@ -497,6 +497,9 @@ pub struct Board {
     pub web: Option<usize>,
     /// The Trace tab shows every turn open, not only the latest (`e`).
     pub trace_all: bool,
+    /// How far the main panel scrolls: its lines beyond its rows, as the
+    /// last frame drew it.
+    scroll_most: std::cell::Cell<usize>,
 }
 
 /// Visible width of text that may hold SGR sequences.
@@ -696,6 +699,7 @@ impl Board {
             now: 0,
             web: None,
             trace_all: false,
+            scroll_most: std::cell::Cell::new(0),
         }
     }
 
@@ -829,8 +833,9 @@ impl Board {
         // Up is away from the bottom for what is read from the bottom, and
         // back towards the top for what is read from the top.
         let by = if self.tab.read_up() { up } else { -up };
-        // The trace comes as one line and is drawn as many.
-        let most = if self.tab == Tab::Trace { 10_000 } else { self.main.len() };
+        // As far as the last frame drawn has lines beyond its rows: at the
+        // top (or the bottom) a page of lines still shows, never none.
+        let most = self.scroll_most.get();
         self.scroll = (self.scroll as isize + by).clamp(0, most as isize) as usize;
     }
 
@@ -941,6 +946,13 @@ impl Board {
             }
             KeyCode::Char(']') if plain => {
                 self.switch_tab(1);
+                return Action::Redraw;
+            }
+            // Straight to the chosen pane's agent, step by step.
+            KeyCode::Char('T') if !k.ctrl && !k.alt => {
+                let at = TABS.iter().position(|t| *t == self.tab).unwrap_or(0) as isize;
+                let to = TABS.iter().position(|t| *t == Tab::Trace).unwrap_or(0) as isize;
+                self.switch_tab(to - at);
                 return Action::Redraw;
             }
             KeyCode::Char('?') if plain => {
@@ -1092,8 +1104,8 @@ impl Board {
         match code {
             KeyCode::Up | KeyCode::Char('k') => self.scroll_by(1),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_by(-1),
-            KeyCode::Home | KeyCode::Char('g') => self.scroll_by(self.main.len() as isize),
-            KeyCode::End | KeyCode::Char('G') => self.scroll_by(-(self.main.len() as isize)),
+            KeyCode::Home | KeyCode::Char('g') => self.scroll_by(isize::MAX / 2),
+            KeyCode::End | KeyCode::Char('G') => self.scroll_by(-(isize::MAX / 2)),
             KeyCode::Enter => self.focus_on(self.left),
             KeyCode::Char('e') if self.tab == Tab::Trace => self.trace_all = !self.trace_all,
             _ => {}
@@ -1420,16 +1432,23 @@ impl Board {
 
     fn main_box(&self, r: Rect) -> Vec<String> {
         let focused = self.focus == Panel::Main;
-        let tabs_of = |short: bool| {
+        // The tabs on a row of their own, the one shown bold green: each by
+        // its full name, two spaces apart, else one, else the others by a
+        // short name of their own; all of them always in sight.
+        let row_of = |short: bool, gap: &str| {
             TABS.iter()
                 .map(|t| match (*t == self.tab, short) {
-                    (true, _) => format!("\x1b[1;32m{}\x1b[0m", t.word()),
-                    (false, true) => t.short().to_string(),
-                    (false, false) => t.word().to_string(),
+                    (true, _) => paint("1;32", t.word()),
+                    (false, true) => paint("2", t.short()),
+                    (false, false) => paint("2", t.word()),
                 })
                 .collect::<Vec<_>>()
-                .join("│")
+                .join(gap)
         };
+        let tab_row = [row_of(false, "  "), row_of(false, " ")]
+            .into_iter()
+            .find(|row| width_of(row) <= r.inner_w())
+            .unwrap_or_else(|| row_of(true, " "));
         let (title, mut head) = match self.chosen_row() {
             Some(p) => {
                 let name = if p.name.is_empty() { String::new() } else { format!(" {}", p.name) };
@@ -1485,6 +1504,7 @@ impl Board {
         if !(self.tab == Tab::Detail && self.detail.is_some()) {
             head.push(format!("\x1b[2m{}\x1b[0m", "─".repeat(r.inner_w())));
         }
+        head.insert(0, tab_row);
         let room = r.inner_h().saturating_sub(head.len());
         let body: Vec<String> = match (&self.dialog, self.tab) {
             (Some(Dialog::Help), _) => help_lines(),
@@ -1494,11 +1514,15 @@ impl Board {
             (_, Tab::Detail) => self.detail_view(r.inner_w()),
             _ => self.main.clone(),
         };
+        // How far it can scroll: the lines beyond the rows it has.
+        let most = body.len().saturating_sub(room);
+        self.scroll_most.set(most);
+        let scroll = self.scroll.min(most);
         let shown: Vec<String> = if matches!(self.dialog, Some(Dialog::Help)) || !self.tab.read_up() {
-            let from = if matches!(self.dialog, Some(Dialog::Help)) { 0 } else { self.scroll.min(body.len()) };
+            let from = if matches!(self.dialog, Some(Dialog::Help)) { 0 } else { scroll };
             body.into_iter().skip(from).take(room).collect()
         } else {
-            let end = body.len().saturating_sub(self.scroll);
+            let end = body.len().saturating_sub(scroll);
             let from = end.saturating_sub(room);
             body[from..end].to_vec()
         };
@@ -1506,18 +1530,7 @@ impl Board {
         lines.extend(shown.into_iter().map(|l| fit(&l, r.inner_w())));
         let title =
             if matches!(self.dialog, Some(Dialog::Help)) { "[?] Keys (any key closes)".to_string() } else { title };
-        // The tabs by name where the title keeps its room; else the others
-        // short; else the one shown alone, `[`/`]` the way to the others.
-        let room = r.inner_w().saturating_sub(width_of(&title) + 4);
-        let (full, short) = (tabs_of(false), tabs_of(true));
-        let tabs = if width_of(&full) <= room {
-            full
-        } else if width_of(&short) <= room {
-            short
-        } else {
-            format!("‹\x1b[1;32m{}\x1b[0m›", self.tab.word())
-        };
-        boxed(&title, &tabs, lines, r, focused)
+        boxed(&title, "", lines, r, focused)
     }
 
     /// The bottom line: what is being typed, the question, a note, or the
@@ -1559,7 +1572,7 @@ impl Board {
             Panel::Main if self.tab == Tab::Trace => "j/k scroll  g/G top/bottom  e every turn  [/] tab  h back",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
-        let all = "Tab/1230 panel  / filter  ? keys  q quit";
+        let all = "Tab/1230 panel  T trace  / filter  ? keys  q quit";
         format!(" {}  {}  {}", key_hints(keys), paint("2", "│"), key_hints(all))
     }
 
@@ -1934,6 +1947,7 @@ fn help_lines() -> Vec<String> {
         "Everywhere",
         "  Tab / Shift+Tab, 1 2 3 0, h / l   change panel",
         "  [ / ]                             change the tab on the right",
+        "  T                                 the trace of the pane's agent",
         "  PgUp / PgDn, C-b / C-f            page the right panel (C-u / C-d half a page;",
         "                                    in the prefix-v popup, C-b C-b sends C-b)",
         "  g / G, Home / End                 the first / last row of a list; top / bottom on the right",
@@ -2829,17 +2843,19 @@ mod tests {
             "[2] Inbox %lead",
             "[3] Tasks",
             "[0] %1 lead · ai · busy",
-            "Screen│Back│Ev│Tr│Det",
+            "Screen  Scrollback  Events  Trace  Detail",
             "pid 4242 · up 16m · quiet 1m",
             "tester",
         ] {
             assert!(text.contains(want), "{want}:\n{text}");
         }
-        // Narrower: the title whole, the tab shown alone.
-        let top = strip(&b.main_box(Rect { x: 0, y: 0, w: 40, h: 8 })[0]);
-        assert!(top.contains("[0] %1 lead · ai · busy") && top.contains("‹Screen›"), "{top}");
-        let wide = strip(&b.main_box(Rect { x: 0, y: 0, w: 120, h: 8 })[0]);
-        assert!(wide.contains("Screen│Scrollback│Events│Trace│Detail"), "{wide}");
+        // Narrower: the title whole on the border, every tab on the row
+        // under it, closer, then by short names.
+        let at = |w: usize| b.main_box(Rect { x: 0, y: 0, w, h: 8 }).iter().map(|l| strip(l)).collect::<Vec<_>>();
+        assert!(at(40)[0].contains("[0] %1 lead · ai · busy"), "{:?}", at(40));
+        assert!(at(120)[1].contains("Screen  Scrollback  Events  Trace  Detail"), "{:?}", at(120));
+        assert!(at(41)[1].contains("Screen Scrollback Events Trace Detail"), "{:?}", at(41));
+        assert!(at(30)[1].contains("Screen Back Ev Trace Det"), "{:?}", at(30));
     }
 
     /// A pane's agent: its cost and context in the table, all of it over
@@ -3076,6 +3092,9 @@ mod tests {
         assert_eq!((b.focus, b.chosen.as_deref()), (Panel::Panes, Some("%3")));
         // The main panel takes focus; the wheel scrolls it.
         b.set_main((0..100).map(|i| format!("line {i}")).collect());
+        // Drawn once, as the dashboard always is before a key: how far it
+        // scrolls is known.
+        let _ = b.frame();
         let m = layout.main.unwrap();
         b.mouse(&click(m.x + 5, m.y + 5));
         assert_eq!(b.focus, Panel::Main);
@@ -3282,5 +3301,61 @@ mod tests {
         assert!(b.trace_all);
         b.key(Key::plain(KeyCode::Char('e')));
         assert!(!b.trace_all);
+    }
+
+    /// To the top (`g`, Home) and the bottom (`G`, End), in a tab read from
+    /// the bottom (a screen) and in one read from the top (the trace): a
+    /// page of lines in sight each time, the first or the last, never an
+    /// empty panel; `k` held past the top stays there.
+    #[test]
+    fn the_main_panel_scrolls_to_its_ends_and_no_further() {
+        let mut b = board();
+        b.focus = Panel::Main;
+        let shown = |b: &Board| {
+            let layout = b.layout();
+            b.main_box(layout.main.unwrap())
+                .iter()
+                .map(|l| strip(l).trim_matches('│').trim().to_string())
+                .collect::<Vec<_>>()
+        };
+        b.tab = Tab::Screen;
+        b.set_main((0..100).map(|i| format!("line {i}")).collect());
+        let _ = b.frame();
+        b.key(Key::plain(KeyCode::Char('g')));
+        let s = shown(&b);
+        assert!(s.iter().any(|l| l == "line 0") && s.iter().filter(|l| l.starts_with("line ")).count() > 5, "{s:#?}");
+        for _ in 0..50 {
+            b.key(Key::plain(KeyCode::Char('k')));
+        }
+        assert!(shown(&b).iter().any(|l| l == "line 0"), "held past the top");
+        b.key(Key::plain(KeyCode::Char('G')));
+        assert!(shown(&b).iter().any(|l| l == "line 99"));
+        // Shorter than the panel: nowhere to scroll, all of it in sight.
+        b.set_main((0..3).map(|i| format!("line {i}")).collect());
+        let _ = b.frame();
+        b.key(Key::plain(KeyCode::Char('g')));
+        assert_eq!((b.scroll, shown(&b).iter().filter(|l| l.starts_with("line ")).count()), (0, 3));
+        // Read from the top: G shows the last rows, g the first.
+        b.tab = Tab::Trace;
+        let spans: Vec<serde_json::Value> = (0..60)
+            .map(|i| {
+                serde_json::json!({"id": format!("s{i}"), "parent": if i == 0 { None } else { Some("s0") },
+                    "kind": if i == 0 { "turn" } else { "read" }, "name": format!("step{i}"), "detail": "",
+                    "start": i * 1000, "end": i * 1000 + 500, "failed": false, "tokens": 0})
+            })
+            .collect();
+        let doc = serde_json::json!({"agent": "claude", "model": "m", "now": 70_000, "spans": spans}).to_string();
+        b.set_main(vec![doc]);
+        let _ = b.frame();
+        b.key(Key::plain(KeyCode::Char('G')));
+        let s = shown(&b);
+        assert!(s.iter().any(|l| l.starts_with("step59")), "{s:#?}");
+        b.key(Key::plain(KeyCode::Char('g')));
+        assert!(shown(&b).iter().any(|l| l.starts_with("claude")), "the top again");
+        // T: straight to the trace from any panel.
+        b.tab = Tab::Screen;
+        b.focus = Panel::Panes;
+        b.key(Key::plain(KeyCode::Char('T')));
+        assert_eq!(b.tab, Tab::Trace);
     }
 }
