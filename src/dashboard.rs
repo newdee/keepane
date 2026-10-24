@@ -1501,7 +1501,11 @@ impl Board {
                 None => vec!["\x1b[2mPick a message ([2]) or a task ([3]): it shows here\x1b[0m".into()],
             };
         }
-        if !(self.tab == Tab::Detail && self.detail.is_some()) {
+        if self.tab == Tab::Trace {
+            // The trace says whose it is on its first line: its rows for it.
+            head = Vec::new();
+        }
+        if !(self.tab == Tab::Detail && self.detail.is_some()) && self.tab != Tab::Trace {
             head.push(format!("\x1b[2m{}\x1b[0m", "─".repeat(r.inner_w())));
         }
         head.insert(0, tab_row);

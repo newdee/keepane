@@ -325,8 +325,13 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-clock-light.gif">
     <img src="docs/img/keepane-clock.gif" width="880"
-         alt="一个正在编译的 pane 上打开五次时钟：心跳随 CPU 加快、放慢的监护仪，字符雨，每个核心、内存、磁盘、网络和 pane 输出的柱状图，月光下的海（随后改用 dots 字符），以及被消息叫醒的睡猫">
+         alt="一个正在编译的 pane 上打开七次时钟：心跳随 CPU 加快、放慢的监护仪，字符雨，每个核心、内存、磁盘、网络和 pane 输出的柱状图，月光下的海（随后改用 dots 字符），以及被消息叫醒的睡猫，奔跑的小恐龙和落日下的霓虹网格">
   </picture>
+</p>
+
+<p align="center">
+  <img src="docs/img/clock-pulse.png" width="436" alt="监护仪：心跳、网络、磁盘、系统各一条波形，旁边写着对应数字">
+  <img src="docs/img/clock-bars.png" width="436" alt="柱状图：每个核心、内存、磁盘、网络、温度和每个 pane 的输出各一组，带标签">
 </p>
 
 copy mode 的常用操作：

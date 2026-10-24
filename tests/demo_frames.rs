@@ -505,10 +505,6 @@ fn record_agents() {
     rec.wait_for("the trace", |s| s.contents().contains("make parse_line"), 15);
     rec.hold(8);
     rec.still("trace");
-    // [: what happened to the pane, line by line.
-    rec.key("[");
-    rec.hold(6);
-    rec.still("events");
     rec.key("q");
     rec.hold(3);
 
@@ -1014,6 +1010,7 @@ Remove-Item $file -ErrorAction SilentlyContinue
     rec.hold(16);
     kp(&["send-message", "-t", "%tests", "echo 'tests: 42 passed'"]);
     rec.hold(12);
+    rec.still("clock-pulse");
     kp(&["send-message", "-t", "%tests", "echo 'lint: clean'"]);
     rec.hold(12);
     // q puts the clock away; the build went on under it.
@@ -1040,6 +1037,7 @@ Remove-Item $file -ErrorAction SilentlyContinue
     rec.hold(14);
     kp(&["send-message", "-t", "%tests", "echo 'release: ready'"]);
     rec.hold(16);
+    rec.still("clock-bars");
     rec.key("q");
     rec.hold(5);
 
@@ -1064,6 +1062,24 @@ Remove-Item $file -ErrorAction SilentlyContinue
     rec.hold(14);
     kp(&["send-message", "-t", "%tests", "echo 'tests: 42 passed'"]);
     rec.hold(16);
+    rec.key("q");
+    rec.hold(5);
+
+    // A dinosaur running the build's desert, a message falling to it.
+    kp(&["set", "-g", "clock-mode-animation", "dino"]);
+    rec.key("\x02t");
+    rec.until("the dinosaur", |s| s.contents().contains("▀▄██▛"), 10);
+    rec.hold(12);
+    kp(&["send-message", "-t", "%tests", "echo 'tests: 42 passed'"]);
+    rec.hold(12);
+    rec.key("q");
+    rec.hold(4);
+
+    // A neon grid under a striped sun, quicker with the cores.
+    kp(&["set", "-g", "clock-mode-animation", "synthwave"]);
+    rec.key("\x02t");
+    rec.until("the grid", |s| s.contents().contains("━━━━"), 10);
+    rec.hold(14);
     rec.key("q");
     rec.hold(5);
 

@@ -620,8 +620,13 @@ the default, keeps its own characters.
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-clock-light.gif">
     <img src="docs/img/keepane-clock.gif" width="880"
-         alt="The clock over a pane running a build, five times: a monitor whose heartbeat speeds up and slows down with the CPU, falling characters, bars for each core, memory, the disks, the network and the pane's output, a moonlit sea drawn then in dots, and a cat asleep that a message wakes">
+         alt="The clock over a pane running a build, seven times: a monitor whose heartbeat speeds up and slows down with the CPU, falling characters, bars for each core, memory, the disks, the network and the pane's output, a moonlit sea drawn then in dots, and a cat asleep that a message wakes, a dinosaur running a desert and a neon grid under a striped sun">
   </picture>
+</p>
+
+<p align="center">
+  <img src="docs/img/clock-pulse.png" width="436" alt="The pulse monitor: the heartbeat, the network, the disks and the system as traces, each with its figures">
+  <img src="docs/img/clock-bars.png" width="436" alt="The bars: a bar a core, memory, the disks, the network, the temperature and each pane's output, each group labelled">
 </p>
 
 Copy mode, the keys used most:
