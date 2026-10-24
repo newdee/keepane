@@ -132,7 +132,7 @@ function turnEnd() {
   n += 1;
   const rec =
     kind === "claude"
-      ? { type: "assistant", cwd, timestamp: now(), message: { id: `msg_${n}`, model, stop_reason: "end_turn", content: [] } }
+      ? { type: "assistant", cwd, timestamp: now(), message: { id: `msg_${n}`, model, stop_reason: "end_turn", content: [], usage: { input_tokens: 4, cache_read_input_tokens: context, output_tokens: 90 } } }
       : { type: "event_msg", timestamp: now(), payload: { type: "task_complete" } };
   fs.appendFileSync(file, JSON.stringify(rec) + "\n");
 }
