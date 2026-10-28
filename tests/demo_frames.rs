@@ -502,7 +502,8 @@ fn record_agents() {
     rec.key("k");
     rec.hold(2);
     rec.key("T");
-    rec.wait_for("the trace", |s| s.contents().contains("make parse_line"), 15);
+    // Read from the bottom: the latest steps, a test run among them.
+    rec.wait_for("the trace", |s| s.contents().contains("$ cargo test"), 15);
     rec.hold(8);
     rec.still("trace");
     rec.key("q");

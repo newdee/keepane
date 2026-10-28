@@ -5180,3 +5180,28 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | CI 三平台 | 381bd71：macOS、Ubuntu、Windows 的 fmt/clippy/test 和网页检查全部通过 | 干净（3/3），验收通过 |
 
 - 发布：v0.48.0（tag 在 381bd71）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（8de29b0）；winget PR #441466 已更新为 0.48.0。
+## 169. Trace：很多轮叫 "(a turn)"；模型和命令看不出是哪个；不自动滚到最新
+
+- 用户反馈：Trace 上面一排都是 "a turn"；步骤只显示 model 和命令工具名，看不出是哪个模型、执行了什么；应该自动滚到底部显示最新的工作。
+- 事实：
+  - 用户的服务器还是 0.47.0（scoop）。"(a turn)" 在 0.47.1 已修：后台任务完成等开始的轮次用摘要命名。用本机两份真实 transcript 回放新代码：31 + 31 轮，空名 0。
+  - 新代码又有一个问题：Claude Code 2.1.3xx 在每个 user 行都写 `turnOrigin`，手打的是 `human`。0.47.1 只把 `turnOrigin` 当定时任务，所以每个手打的提问显示成 `(human) …`。
+  - `!` 命令开始的轮次显示成 `bash stdout`；别的会话发来的消息显示成 `(peer) Another Claude session sent a message:`。
+  - 模型行只写 `model`；命令行写工具名（`PowerShell`、Codex 的 `exec_command`），命令本身在 36 列的标签里被截掉大半。
+  - 超过 120 字符的文件路径截掉的是末尾，文件名没了（`…\tasks\bnm1…`）。
+  - Trace 标签页从顶部读，最新一步在最底下，要按 `G` 才看得到。
+- 定性：
+  - `turnOrigin`：个性（只在 trace 命名里），边界遗漏（新版 Claude Code 给所有行都写了它）。同类出现点：`agents.rs:296` 只在 `isMeta` 时看它，不受影响。
+  - 模型名、命令、路径、滚动：显示层的遗漏，不是结构问题。Codex 的模型原来没有传进步骤（回复里不写），补读 `turn_context`。
+- 改法：
+  - 轮次命名：`human`/`sdk` 原样；`peer` 用发送者（`a message from a27`，管道地址的写 `another session`）；其他 `(scheduled) …`；`<bash-input>` 命名为 `! 命令`，`<bash-stdout>`/`<bash-stderr>` 不命名。
+  - 步骤：模型行显示短名（`opus-5-5`，去掉 `claude-` 和日期；运行中的用 agent 当前模型）；命令行显示 `$ 命令`；标签宽度从 2/5（最多 44）改成 11/20（最多 64）；路径超长时保留末尾。
+  - Trace 和 Screen 一样从底部读：打开就在底部，新步骤来了也一直显示最新一步；`g` 到顶，`G` 回底。
+- 新 bug 风险评估：`read_up` 影响 `scroll_by` 方向和截取；测试覆盖 `g`/`G`/新步骤到来。标签加宽后 bar 变窄（100 列时 51→36），窄屏（30 列）仍不画 bar。`run` 类没有参数时回退到工具名（`$ BashOutput`）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 逻辑 + 真实数据 | 复读 diff；fmt 0、clippy 0；Windows 530 + 11 + 147；真实 transcript 两份各 31 轮，空名 0、`(human)` 0 | 干净（1/3） |
+| 2 | 机制存活 | 9 个变异全部被抓到（Trace 不从底部读、`human` 加前缀、Codex 模型不记、bash-stdout 命名、路径截末尾、模型名不显示、命令不加 `$`、cross-session 不命名、peer 不找发送者） | 干净（2/3） |
+| 3 | 边界 | 新增断言：没有模型名时显示 `model`、peer 无标签时 `(peer) …`、超长路径 120 字符保留文件名、30 列不画 bar；Windows 530 + 11 + 147 | 干净（3/3），验收通过 |
+| 4 | 跨平台 | Linux（WSL）fmt、clippy 干净；515 + 144 | 干净 |

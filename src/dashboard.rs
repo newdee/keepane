@@ -2078,11 +2078,13 @@ pub fn trace_view(json: &str, width: usize, all: bool) -> Vec<String> {
         out.push(dim("No turn yet."));
         return out;
     }
-    // What each step was before where it ran: a command, a file, read.
-    let label_w = (width * 11 / 20).clamp(16, 64);
-    let model = v["model"].as_str().unwrap_or_default();
+    // What each step was before where it ran: a command, a file, read;
+    // narrow, the bars keep 15 columns first.
     let dur_w = 7;
-    let bar_w = width.saturating_sub(label_w + dur_w + 2);
+    let label_w = (width * 11 / 20).clamp(16, 64).min(width.saturating_sub(dur_w + 3 + 15)).max(16);
+    let model = v["model"].as_str().unwrap_or_default();
+    // The label, a space, the time, two spaces: the bar to the edge.
+    let bar_w = width.saturating_sub(label_w + dur_w + 3);
     for (i, turn) in turns.iter().enumerate() {
         let open = all || i + 1 == turns.len();
         let total = (turn.end.unwrap_or(now) - turn.start).max(1);
@@ -3291,7 +3293,7 @@ mod tests {
         assert!(text[2].starts_with("▸ first") && text[2].trim_end().ends_with("5.0s"), "{text:#?}");
         assert!(text[3].starts_with("▾ fix the test running") && text[3].trim_end().ends_with("1m40s"), "{text:#?}");
         assert!(!text.iter().any(|l| l.contains("opus 1.2k tokens") && l.contains("5.0s")), "the older turn closed");
-        // Bars: 100 columns, a label of 55, 7 for the time, 36 for the bar
+        // Bars: 100 columns, a label of 55, 7 for the time, 35 for the bar
         // from column 65, over the turn's 100 s.
         let bar = |row: &str| {
             let s = &row[row.char_indices().nth(65).unwrap().0..];
@@ -3300,8 +3302,8 @@ mod tests {
         };
         let row =
             |what: &str| text.iter().find(|l| l.contains(what)).unwrap_or_else(|| panic!("{what}: {text:#?}")).clone();
-        assert_eq!(bar(&row("opus 1.2k tokens")), (0, 3), "0-10 s of 100: 3 of 36 columns");
-        assert_eq!(bar(&row("cargo test")), (7, 11), "20-50 s");
+        assert_eq!(bar(&row("opus 1.2k tokens")), (0, 3), "0-10 s of 100: 3 of 35 columns");
+        assert_eq!(bar(&row("cargo test")), (7, 10), "20-50 s");
         assert!(
             row("Read").contains(r"Read …\") && row("Read").contains(r"\dashboard_parts\view.rs"),
             "{}",
@@ -3337,6 +3339,21 @@ mod tests {
         let none = serde_json::json!({"pane": "%1", "agent": null, "now": 0, "spans": []}).to_string();
         assert!(strip(&trace_view(&none, 80, false)[0]).starts_with("No agent in this pane"));
         assert!(strip(&trace_view("", 80, false)[0]).starts_with("reading the trace"));
+        // A panel of 40 (the dashboard beside its lists): a label of 16, the
+        // bars their 15 columns.
+        let forty: Vec<String> = trace_view(&doc(spans.clone(), 110_000), 40, false).iter().map(|l| strip(l)).collect();
+        let tests = forty.iter().find(|l| l.contains("cargo")).unwrap();
+        assert!(tests.contains('▓') && tests.chars().count() <= 40, "{forty:#?}");
+        // Every row, the ruler too, within the width: a bar to the end not cut.
+        assert!(text.iter().chain(&forty).all(|l| l.chars().count() <= 100), "{text:#?}");
+        let ruler = text.iter().find(|l| l.starts_with("    ") && l.trim_start().starts_with('0')).unwrap();
+        assert_eq!(ruler.chars().count(), 100, "the ruler ends at the edge: {ruler:?}");
+        // At any width from 40 on: every step row within it, its bar drawn.
+        for w in 40..=220 {
+            let at: Vec<String> = trace_view(&doc(spans.clone(), 110_000), w, false).iter().map(|l| strip(l)).collect();
+            let rows: Vec<&String> = at.iter().filter(|l| l.contains("cargo") || l.contains("Glob")).collect();
+            assert!(rows.iter().all(|l| l.chars().count() <= w && l.contains(['▓', '▒'])), "{w}: {at:#?}");
+        }
         // Narrow: no bars, the rows still.
         let narrow: Vec<String> = trace_view(&doc(spans, 110_000), 30, false).iter().map(|l| strip(l)).collect();
         assert!(
