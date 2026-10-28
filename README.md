@@ -465,6 +465,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `/` | browse what panes printed, by pane and day (`choose-history`) |
 | `y` | copy what the last command printed, without the prompt or the command, to a paste buffer and the clipboard (`copy-output`) |
 | `Y` | pick a command any pane ran, newest first: go there, copy what it printed, run it again (`choose-marks`) |
+| `@` | pick a machine `ssh` reached: go to the pane on it, or connect in a new window or a split (`choose-ssh`, see SSH machines) |
 | `F` | put a label on every path, web address and git hash on screen; type one to copy that thing, in capitals to open it (`hints`, see below) |
 | `e` | show the environment every pane gets, in colour: what `set-environment` set, and what keepane sets itself (`show-environment`; see Environment) |
 | `{` / `}` | swap pane with previous / next |
@@ -741,6 +742,36 @@ agent beside it (`keepane send-message --to %claude "fix this: $(keepane
 show-buffer)"`), which gets it when it is free. (The agent in the recording
 is a stand-in that writes an agent's transcript; any agent set up with
 `keepane setup` works the same way.)
+
+### SSH machines
+
+`C-b @` (`choose-ssh`) lists the machines you reach with `ssh`, in a box:
+the ones a pane is connected to now first (a green dot and the pane), then
+by when you last connected. Each row has its name, who and where
+(`root@10.0.0.5:2222`), when, how many times, and where it was found when
+no pane has connected to it yet (`config`, `seen`, `history`).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/ssh-light.png">
+    <img src="docs/img/ssh.png" width="880"
+         alt="The ssh box over a pane: a machine connected to now with a green dot and its pane, others by when they were last used, the keys on the box's lower edge">
+  </picture>
+</p>
+
+Enter goes to the pane connected to it, else opens a window named after
+it that runs `ssh`; `s` connects in a split beside the pane, `y` copies
+the command, `d` takes the machine off the list, `f` filters.
+
+The list comes from four places: each `ssh` keepane sees start in a pane
+(one use each, with its time), the `Host` lines of `~/.ssh/config`, the
+names in `~/.ssh/known_hosts` (hashed ones say nothing), and, once, the
+`ssh` commands in the shells' history files. The used ones are kept in
+`%LOCALAPPDATA%\keepane\ssh-hosts.json`: names, users, ports, times and
+counts. No password or key is read or kept. `keepane ssh-hosts` prints the
+list (`-J` as JSON, which the MCP tool `list_ssh_hosts` gives agents);
+`#{pane_ssh_host}` says where a pane's `ssh` goes, and the dashboard shows
+it as what the pane runs.
 
 A shell started with a script or command of its own (`pwsh -File`,
 `bash -c`) is left as it is, hook and all; that script can install the hook

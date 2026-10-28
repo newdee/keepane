@@ -101,6 +101,10 @@ const ZH = {
     "<kbd>C-b Y</kbd> 列出所有 pane 跑过的命令，最新的在前。<kbd>Enter</kbd> 进入复制模式并跳到那条命令，<kbd>y</kbd> 复制它的输出，<kbd>r</kbd> 再跑一次。",
   "ch.p6":
     "在 <kbd>C-b /</kbd> 面板里按 <kbd>/</kbd>，搜索所有 pane 所有天的历史；选中一行，查看器就停在那一行打开。脚本里用 <code>find-text -H</code>。",
+  "ch.p7":
+    "<kbd>C-b @</kbd> 列出 <code>ssh</code> 去过的机器：正有 pane 连着的排最前，其余按上次使用排，你的 <code>~/.ssh/config</code> 和 <code>known_hosts</code> 也在里面。<kbd>Enter</kbd> 跳到连着它的 pane 或在新窗口连接，<kbd>s</kbd> 分屏连接。不读也不存任何密码或密钥。",
+  "ch.caption3":
+    "<kbd>C-b @</kbd>：正连着的机器是绿色；其余按上次使用、次数排，并标出来源。",
   "ch.caption2":
     "测试失败；<kbd>C-b y</kbd> 取下它的输出；一条消息交给旁边的 agent，agent 改好了；测试通过。",
 

@@ -91,7 +91,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>671</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>688</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -220,7 +220,14 @@ keepane link capture 192.168.1.20:7681/%agent</code></pre>
           <li data-i18n="ch.p4"><kbd>C-b y</kbd> copies what the last command printed, and nothing else: a failing test's output, ready for an issue or an agent.</li>
           <li data-i18n="ch.p5"><kbd>C-b Y</kbd> lists the commands every pane ran, newest first. <kbd>Enter</kbd> goes to one in copy mode, <kbd>y</kbd> copies what it printed, <kbd>r</kbd> runs it again.</li>
           <li data-i18n="ch.p6">In the <kbd>C-b /</kbd> picker, <kbd>/</kbd> searches every day of every pane; a line found opens in the pager at that line. <code>find-text -H</code> does the same from a script.</li>
+          <li data-i18n="ch.p7"><kbd>C-b @</kbd> lists the machines you reach with <code>ssh</code>: the ones a pane is on now first, then by last use, with your <code>~/.ssh/config</code> and <code>known_hosts</code>. <kbd>Enter</kbd> goes to the pane on one or connects in a new window, <kbd>s</kbd> in a split. No password or key is read or kept.</li>
         </ul>
+        <figure class="stage">
+          <img src="img/ssh.png" width="880" loading="lazy" alt="The C-b @ box: a machine connected to now with a green dot and its pane, the others by when they were last used, how often, and where each was found" />
+          <figcaption data-i18n="ch.caption3">
+            <kbd>C-b @</kbd>: the machine a pane is on now, green; the others by last use, how often, and where they were found.
+          </figcaption>
+        </figure>
         <figure class="stage">
           <img src="img/keepane-fix.gif" width="880" loading="lazy" alt="A test fails; C-b y copies what it printed; send-message hands it to the agent pane beside it, which fixes the code and says it is free; the test then passes" />
           <figcaption data-i18n="ch.caption2">

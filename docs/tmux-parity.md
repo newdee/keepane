@@ -146,7 +146,7 @@ tmux's table, with what keepane does today.
 | `<` / `>` | display-menu | yes (window menu / pane menu) |
 
 keepane adds `h` `j` `k` `l` (move), `H` `J` `K` `L` (resize), `C-s` / `C-r`
-(save every session / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed), `F` (hints: pick a path, address or hash on screen), `e` (show-environment: the environment every pane gets, in colour) and `Y` (choose-marks: pick a command any pane ran) on top of that table. Without the prefix, `F12` turns `passthrough` on and off (tmux binds nothing in its root table but the mouse).
+(save every session / restore), `S` (synchronize-panes), `u` (undo-kill), `C-t` (pane-timestamps), `v` (dashboard), `y` (copy-output: what the last command printed), `F` (hints: pick a path, address or hash on screen), `e` (show-environment: the environment every pane gets, in colour) , `Y` (choose-marks: pick a command any pane ran) and `@` (choose-ssh: pick a machine `ssh` reached) on top of that table. Without the prefix, `F12` turns `passthrough` on and off (tmux binds nothing in its root table but the mouse).
 
 ## Copy mode
 
@@ -243,7 +243,8 @@ and tmux-battery), and `pane_output_count` (how many times the pane has
 printed, which `keepane web` watches), and for pane messages `pane_name` `pane_address` `pane_work_mode`
 `pane_idle` `pane_state` `pane_unheard` `pane_inbox` `pane_status` `pane_message`, and for the agent a pane
 runs `agent` `agent_model` `agent_cost` `agent_tokens` `agent_context` `agent_cpu` `agent_mem`
-`agent_tools` `agent_turns` (`list-agents`, keepane's own command, gives the same). Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
+`agent_tools` `agent_turns` (`list-agents`, keepane's own command, gives the same), and
+`pane_ssh_host` (where the pane's `ssh` goes; `ssh-hosts` lists every machine). Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
 `s/a/b/:`, nestable. Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`,
 `#{?name!=value,…}`; comparisons `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}`
 `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and

@@ -109,7 +109,11 @@ call of the model and each tool, from when to when, failed or not; a tree,
 or `-J` JSON; the dashboard's Trace tab (`T`) draws it as a waterfall,
 each kind in its colour, `e` opening every turn),
 `status-line` (a session's status line as drawn; `-J` its parts, their colours
-and each window's pane, which the phone page draws under the screen).
+and each window's pane, which the phone page draws under the screen),
+`choose-ssh` (prefix `@`: the machines `ssh` reached, connected ones first,
+then by last use; Enter goes to the pane on one, else connects in a new
+window named after it; `s` connects in a split, `y` copies the command,
+`d` removes one, `f` filters), `ssh-hosts` (the same list; `-J` as JSON).
 
 ### Panes that pass messages
 
@@ -523,6 +527,16 @@ list, fetched with `curl` once a day (an hour later after a failed try)
 while an agent runs (pi says its own); these are API list prices, not what a subscription is billed. A
 cost with `+` after it left out a model the list does not have.
 `set -g agent-cost off` stops the fetch and leaves cost out.
+
+The machines `choose-ssh` and `ssh-hosts` list come from four places:
+an `ssh` running in a pane (each new one counts a use, with its time;
+`#{pane_ssh_host}` says where it goes), the `Host` lines of
+`~/.ssh/config` (not patterns), the names in `~/.ssh/known_hosts` (not
+hashed ones), and, once, the `ssh` commands in the shells' history files.
+`ssh-hosts.json` in the data directory (in an `ssh` folder of the saved
+sessions when `sessions-dir` or `KEEPANE_SESSIONS_DIR` moves them) keeps
+the used ones: names, users, ports, times, counts, and the names `d` took
+off. No password or key is read or kept.
 
 ## ENVIRONMENT
 

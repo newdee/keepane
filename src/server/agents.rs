@@ -214,6 +214,10 @@ pub fn feed(kind: Kind, line: &str, u: &mut Usage, seen: &mut HashSet<String>) {
 }
 
 fn claude(v: &Value, u: &mut Usage, seen: &mut HashSet<String>) {
+    if let Some(m) = claude_model_named(v) {
+        u.model = m;
+        return;
+    }
     if v["type"] == "user" {
         claude_turn(v, u);
         return;
@@ -258,6 +262,27 @@ fn claude(v: &Value, u: &mut Usage, seen: &mut HashSet<String>) {
             n(&last["input_tokens"]) + n(&last["cache_read_input_tokens"]) + n(&last["cache_creation_input_tokens"]);
     }
     u.turns += 1;
+}
+
+/// The model a Claude line says is now in use, before any reply of it:
+/// `/model`'s answer (`Set model to `Opus 5.5 (1M context)``, its name as
+/// shown, without what is in brackets), then, when the next prompt goes,
+/// the model's identity given to the agent and each request's model (the
+/// main thread's; a subagent writes its own transcript).
+fn claude_model_named(v: &Value) -> Option<String> {
+    let id = match v["type"].as_str()? {
+        "attachment" if v["attachment"]["type"] == "model" => v["attachment"]["identity"]["modelId"].as_str(),
+        "api-request" if v["querySource"] == "repl_main_thread" => v["params"]["model"].as_str(),
+        "user" => {
+            let text = v["message"]["content"].as_str()?;
+            let named = text.trim_start().strip_prefix("<local-command-stdout>Set model to `")?;
+            let name = named.split('`').next()?;
+            let name = name.split(" (").next().unwrap_or(name).trim();
+            return (!name.is_empty()).then(|| name.to_string());
+        }
+        _ => None,
+    };
+    id.filter(|m| !m.is_empty() && !m.starts_with('<')).map(String::from)
 }
 
 /// A Claude `user` line: the person's prompt begins a turn, and so does a
@@ -847,6 +872,7 @@ impl Server {
                 let events = self.events.clone();
                 std::thread::spawn(move || {
                     let mut w = Watcher::default();
+                    let mut ssh_known = HashMap::new();
                     while let Ok(ask) = rx.recv() {
                         // A look that panics (a bug) answers nothing and
                         // starts over, rather than leave the server waiting.
@@ -859,7 +885,14 @@ impl Server {
                                 HashMap::new()
                             }
                         };
-                        if events.send(Event::AgentStats(stats)).is_err() {
+                        // Each pane's `ssh`, from the same process snapshot.
+                        let look = std::panic::AssertUnwindSafe(|| super::sshhosts::seen(&ask.panes, &mut ssh_known));
+                        let ssh = std::panic::catch_unwind(look).unwrap_or_else(|_| {
+                            log::error!("ssh-hosts: a look failed; starting over");
+                            ssh_known = HashMap::new();
+                            HashMap::new()
+                        });
+                        if events.send(Event::AgentStats(stats)).is_err() || events.send(Event::SshSeen(ssh)).is_err() {
                             break;
                         }
                     }
@@ -1146,6 +1179,39 @@ mod tests {
         assert_eq!(u.by_model["claude-opus-5-5"].output, 300, "each model's own");
         assert_eq!(u.by_model["claude-haiku-4-5"].output, 10);
         assert_eq!(t.total(), 5 + 310 + 2300 + 50);
+    }
+
+    #[test]
+    fn a_claude_model_switch_shows_before_its_first_reply() {
+        let reply = claude_reply("msg_1", "claude-fable-5-1", &["text"], r#"{"input_tokens":1,"output_tokens":2}"#);
+        let set = |name: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"role":"user","content":"<local-command-stdout>Set model to `{name}` and saved as your default for new sessions</local-command-stdout>"}}}}"#
+            )
+        };
+        let identity = r#"{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5","marketingName":"Opus 5.5"}}}"#;
+        let request = |model: &str, source: &str| {
+            format!(r#"{{"type":"api-request","querySource":"{source}","params":{{"model":"{model}"}}}}"#)
+        };
+        // Replies alone, as before.
+        assert_eq!(feed_all(Kind::Claude, &[&reply]).model, "claude-fable-5-1");
+        // `/model`: its name as shown, what is in brackets left out.
+        let named = set("Opus 5.5 (1M context) (default)");
+        assert_eq!(feed_all(Kind::Claude, &[&reply, &named]).model, "Opus 5.5");
+        assert_eq!(feed_all(Kind::Claude, &[&reply, &set("Fable 5.1")]).model, "Fable 5.1");
+        // The next prompt: the identity it is given, then each request.
+        assert_eq!(feed_all(Kind::Claude, &[&reply, &named, identity]).model, "claude-opus-5-5");
+        let main = request("claude-opus-5-5", "repl_main_thread");
+        assert_eq!(feed_all(Kind::Claude, &[&reply, &main]).model, "claude-opus-5-5");
+        // Another kind of request (a title made by a small model) is not the agent's.
+        assert_eq!(feed_all(Kind::Claude, &[&reply, &request("claude-haiku-4-5", "title")]).model, "claude-fable-5-1");
+        // None of these is a turn or counts tokens.
+        let u = feed_all(Kind::Claude, &[&reply, &named, identity, &main]);
+        assert_eq!((u.turns, u.tokens.output), (1, 2));
+        assert_eq!(u.by_model.keys().collect::<Vec<_>>(), ["claude-fable-5-1"]);
+        // Other local commands' output says nothing of the model.
+        let other = r#"{"type":"user","message":{"content":"<local-command-stdout>Set effort to high</local-command-stdout>"}}"#;
+        assert_eq!(feed_all(Kind::Claude, &[&reply, other]).model, "claude-fable-5-1");
     }
 
     #[test]

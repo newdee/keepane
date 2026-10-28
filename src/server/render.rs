@@ -1442,6 +1442,222 @@ pub fn draw_menu(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: us
         }
     }
 }
+/// The columns of the machines' box (`choose-ssh`) that fit, and how wide
+/// each is: the name always; then, as room allows, when it was used, how
+/// often, who and where, and the panes connected (or where it was found).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SshCols {
+    name: usize,
+    when: usize,
+    count: usize,
+    detail: usize,
+    tag: usize,
+}
+
+impl SshCols {
+    /// Inside the box: the marker and the dot, the columns, a gap of two
+    /// before each but the name, a space at the end.
+    fn width(&self) -> usize {
+        let gap = |w: usize| if w > 0 { w + 2 } else { 0 };
+        3 + self.name + gap(self.detail) + gap(self.when) + gap(self.count) + gap(self.tag) + 1
+    }
+}
+
+fn ssh_tag(r: &super::sshhosts::Row) -> String {
+    if r.panes.is_empty() {
+        r.source.to_string()
+    } else {
+        r.panes.iter().map(|(_, a)| a.as_str()).collect::<Vec<_>>().join(" ")
+    }
+}
+
+fn ssh_count(r: &super::sshhosts::Row) -> String {
+    if r.count > 0 { format!("×{}", r.count) } else { String::new() }
+}
+
+/// What the machines' box says on its bottom edge, the keys first.
+const SSH_KEYS: [(&str, &str); 6] =
+    [("Enter", "connect"), ("s", "split"), ("y", "copy"), ("d", "remove"), ("f", "filter"), ("q", "")];
+
+/// One key on the box's lower edge as drawn: ` k what `.
+fn ssh_key_width(k: &str, what: &str) -> usize {
+    k.width() + if what.is_empty() { 0 } else { 1 + what.width() } + 2
+}
+
+/// Every key on the lower edge, a `·` between two.
+fn ssh_keys_width() -> usize {
+    SSH_KEYS.iter().map(|(k, w)| ssh_key_width(k, w)).sum::<usize>() + SSH_KEYS.len() - 1
+}
+
+/// The columns that fit in `room` (inside the box): the least needed go
+/// first (the tag, who and where, how often, when), then the name is cut.
+fn ssh_cols(rows: &[&super::sshhosts::Row], room: usize) -> SshCols {
+    let w = |f: &dyn Fn(&super::sshhosts::Row) -> usize| rows.iter().map(|r| f(r)).max().unwrap_or(0);
+    let mut c = SshCols {
+        name: w(&|r| r.name.width()).min(32),
+        when: w(&|r| r.when.width()),
+        count: w(&|r| ssh_count(r).width()),
+        detail: w(&|r| r.detail.width()).min(36),
+        tag: w(&|r| ssh_tag(r).width()).min(24),
+    };
+    let drops: [fn(&mut SshCols); 4] = [|c| c.tag = 0, |c| c.detail = 0, |c| c.count = 0, |c| c.when = 0];
+    for drop in drops {
+        if c.width() <= room {
+            break;
+        }
+        drop(&mut c);
+    }
+    if c.width() > room {
+        c.name = c.name.saturating_sub(c.width() - room).max(1);
+    }
+    c
+}
+
+/// Where the machines' box goes in `area`: its outline, in the middle, as
+/// wide as its columns (and its title and keys) and as tall as its rows
+/// (as many as fit; two for the word when there are none); and the rows
+/// inside it that hold the machines.
+pub fn ssh_box(area: Rect, rows: &[&super::sshhosts::Row]) -> (Rect, Rect) {
+    let inner = ssh_cols(rows, usize::from(area.w.saturating_sub(2))).width().max(ssh_keys_width() + 2).max(44);
+    let w = (inner as u16 + 2).min(area.w);
+    let n = if rows.is_empty() { 2 } else { rows.len() };
+    let body_h = (n as u16).min(area.h.saturating_sub(2));
+    let h = body_h + 2;
+    let (x, y) = (area.x + (area.w - w) / 2, area.y + area.h.saturating_sub(h) / 2);
+    (Rect { x, y, w, h }, Rect { x: x + 1, y: y + 1, w: w.saturating_sub(2), h: body_h })
+}
+
+/// `choose-ssh`: the machines in a box in the middle, rounded, `ssh` and
+/// how many on its top edge, the keys on its bottom one. A row a machine: a
+/// dot (green, a pane is connected to it now; hollow, it was connected to
+/// before), its name, who and where, when and how often, and the panes on
+/// it (or where it was found: the config, `known_hosts`, the history). The
+/// picked row on the quiet bar, marked at the left. `total` is how many
+/// there are before the filter.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_ssh(
+    g: &mut Grid,
+    area: Rect,
+    rows: &[&super::sshhosts::Row],
+    sel: usize,
+    top: usize,
+    total: usize,
+    filter: &str,
+) {
+    if !menu_fits(area) {
+        let lines: Vec<String> = rows.iter().map(|r| format!("{} {}", r.name, r.detail)).collect();
+        draw_chooser(g, area, &lines, sel, top, "Enter connect  s split  y copy  d remove", "");
+        return;
+    }
+    let (outer, body) = ssh_box(area, rows);
+    let border = Style::colors(Color::Idx(3), Color::Default);
+    let faint = Style::colors(Color::Idx(8), Color::Default);
+    g.fill(outer, Style::default());
+    draw_frame(g, outer, border);
+    // The top edge: the title at the left, how many at the right.
+    let edge = outer.w.saturating_sub(4);
+    let used = g.put_str(outer.x + 2, outer.y, " ssh ", Style { bold: true, ..border }, edge);
+    let filter = filter.trim();
+    let count = match (filter.is_empty(), total) {
+        (true, 1) => " 1 machine ".to_string(),
+        (true, n) => format!(" {n} machines "),
+        (false, _) => format!(" “{filter}” {} of {total} ", rows.len()),
+    };
+    let cw = count.width() as u16;
+    if used + cw < edge {
+        g.put_str(outer.x + outer.w - 2 - cw, outer.y, &count, faint, cw);
+    }
+    // The bottom edge: the keys.
+    let y1 = outer.y + outer.h - 1;
+    let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) };
+    let mut x = outer.x + 2;
+    let end = outer.x + outer.w.saturating_sub(2);
+    for (n, (k, what)) in SSH_KEYS.iter().enumerate() {
+        let text_w = ssh_key_width(k, what) as u16 + u16::from(n > 0);
+        if x + text_w > end {
+            break;
+        }
+        if n > 0 {
+            x += g.put_str(x, y1, "·", faint, 1);
+        }
+        x += g.put_str(x, y1, " ", faint, 1);
+        x += g.put_str(x, y1, k, key, k.width() as u16);
+        if !what.is_empty() {
+            x += g.put_str(x, y1, &format!(" {what}"), faint, end - x);
+        }
+        x += g.put_str(x, y1, " ", faint, 1);
+    }
+    if rows.is_empty() {
+        let (head, tail) = if filter.is_empty() {
+            ("no machine yet", "ssh from a pane, or name one in ~/.ssh/config")
+        } else {
+            ("nothing matches", "f changes the filter, Escape clears it")
+        };
+        for (i, (s, st)) in [(head, Style { bold: true, ..Style::default() }), (tail, faint)].into_iter().enumerate() {
+            if (i as u16) < body.h {
+                let sw = (s.width() as u16).min(body.w);
+                g.put_str(body.x + (body.w - sw) / 2, body.y + i as u16, s, st, sw);
+            }
+        }
+        return;
+    }
+    let c = ssh_cols(rows, usize::from(body.w));
+    let green = Color::Idx(2);
+    for (row, i) in (top..rows.len()).take(usize::from(body.h)).enumerate() {
+        let r = rows[i];
+        let y = body.y + row as u16;
+        let picked = i == sel;
+        let bg = if picked { Color::Idx(0) } else { Color::Default };
+        let on = |fg: Color| Style::colors(fg, bg);
+        if picked {
+            g.fill(Rect { x: body.x, y, w: body.w, h: 1 }, on(Color::Default));
+            g.set(body.x, y, Cell::new("▌", false, SELECTED));
+        }
+        let live = !r.panes.is_empty();
+        let (dot, dot_style) = match (live, r.count > 0) {
+            (true, _) => ("●", on(green)),
+            (false, true) => ("○", on(Color::Idx(8))),
+            (false, false) => ("·", on(Color::Idx(8))),
+        };
+        g.set(body.x + 1, y, Cell::new(dot, false, dot_style));
+        let name_style = if picked {
+            Style { bold: true, ..on(Color::Idx(15)) }
+        } else {
+            Style { bold: true, ..on(Color::Default) }
+        };
+        let mut x = body.x + 3;
+        x += g.put_str(x, y, &fit(&r.name, c.name), name_style, c.name as u16);
+        let mut col = |x: &mut u16, w: usize, text: &str, st: Style, right: bool| {
+            if w == 0 {
+                return;
+            }
+            *x += 2;
+            let text = if right && text.width() < w {
+                format!("{}{text}", " ".repeat(w - text.width()))
+            } else {
+                fit(text, w)
+            };
+            *x += g.put_str(*x, y, &text, st, w as u16);
+        };
+        col(&mut x, c.detail, &r.detail, on(Color::Idx(8)), false);
+        let when_style = if live { Style { bold: true, ..on(green) } } else { on(Color::Idx(7)) };
+        col(&mut x, c.when, &r.when, when_style, true);
+        col(&mut x, c.count, &ssh_count(r), on(Color::Idx(3)), true);
+        let tag_style = if live { on(green) } else { on(Color::Idx(8)) };
+        col(&mut x, c.tag, &ssh_tag(r), tag_style, false);
+    }
+    // More than fits: where the window is, on the right edge.
+    let n = rows.len();
+    let h = usize::from(body.h);
+    if n > h && h > 0 {
+        let thumb = (h * h).div_ceil(n).max(1);
+        let at = (top * (h - thumb)).checked_div(n - h).unwrap_or(0);
+        for i in at..(at + thumb).min(h) {
+            g.set(outer.x + outer.w - 1, body.y + i as u16, Cell::new("┃", false, border));
+        }
+    }
+}
+
 pub fn draw_chooser(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: usize, actions: &str, status: &str) {
     draw_chooser_tinted(g, area, lines, &[], sel, top, actions, status);
 }
@@ -2213,6 +2429,96 @@ mod tests {
         let mut g = Grid::new(8, 2);
         draw_menu(&mut g, Rect { x: 0, y: 0, w: 8, h: 2 }, &lines, 1, 0, true);
         assert_eq!(rows(&g, 8, 2)[0], "pane 2");
+    }
+
+    fn ssh_row(
+        i: usize,
+        name: &str,
+        detail: &str,
+        when: &str,
+        count: u64,
+        source: &'static str,
+    ) -> super::super::sshhosts::Row {
+        super::super::sshhosts::Row {
+            index: i,
+            name: name.into(),
+            detail: detail.into(),
+            when: when.into(),
+            count,
+            panes: Vec::new(),
+            source,
+            argv: vec!["ssh".into(), name.into()],
+        }
+    }
+
+    /// `choose-ssh`: a box in the middle, a row a machine (a dot, the name,
+    /// who and where, when, how often, the pane or where it was found), the
+    /// keys on its lower edge; narrower, the least needed columns go first.
+    #[test]
+    fn the_machines_box() {
+        let rows = |g: &Grid, w: u16, h: u16| -> Vec<String> {
+            (0..h).map(|y| (0..w).map(|x| g.get(x, y).text()).collect::<String>().trim_end().to_string()).collect()
+        };
+        let mut live = ssh_row(0, "web-1", "deploy@web-1", "now", 15, "");
+        live.panes = vec![(3, "ops:1.0".into())];
+        let rows_ = [live, ssh_row(1, "db", "pg@10.0.4.12", "1d ago", 6, ""), ssh_row(2, "gh", "", "", 0, "seen")];
+        let shown: Vec<&super::super::sshhosts::Row> = rows_.iter().collect();
+        let area = Rect { x: 0, y: 0, w: 80, h: 9 };
+        let mut g = Grid::new(80, 9);
+        draw_ssh(&mut g, area, &shown, 1, 0, 3, "");
+        let r = rows(&g, 80, 9);
+        assert_eq!(
+            r[2..7],
+            [
+                "        ╭─ ssh ─────────────────────────────────────────── 3 machines ─╮",
+                "        │ ● web-1  deploy@web-1     now  ×15  ops:1.0                  │",
+                "        │▌○ db     pg@10.0.4.12  1d ago   ×6                           │",
+                "        │ · gh                                seen                     │",
+                "        ╰─ Enter connect · s split · y copy · d remove · f filter · q ─╯",
+            ],
+            "{r:#?}"
+        );
+        assert_eq!(g.get(10, 3).style.fg, Color::Idx(2), "connected now: a green dot");
+        assert_eq!(g.get(9, 4).style, SELECTED, "the picked row marked");
+        assert_eq!(g.get(30, 4).style.bg, Color::Idx(0), "on the quiet bar");
+        let (outer, body) = ssh_box(area, &shown);
+        assert_eq!((outer.h, body.h, body.y), (5, 3, 3));
+        // Narrow: the tag, then who and where, go; the keys that fit stay.
+        let mut g = Grid::new(40, 9);
+        draw_ssh(&mut g, Rect { x: 0, y: 0, w: 40, h: 9 }, &shown, 0, 0, 3, "");
+        let r = rows(&g, 40, 9);
+        assert!(r[3].contains("● web-1") && r[3].contains("now") && !r[3].contains("ops:1.0"), "{r:#?}");
+        assert!(r[4].contains("10.0.4.12") && !r[5].contains("seen"), "{r:#?}");
+        assert_eq!(r[6], "╰─ Enter connect · s split · y copy ───╯", "the keys that fit");
+        let mut g = Grid::new(30, 9);
+        draw_ssh(&mut g, Rect { x: 0, y: 0, w: 30, h: 9 }, &shown, 0, 0, 3, "");
+        let r = rows(&g, 30, 9);
+        assert!(r[3].contains("● web-1") && !r[4].contains("10.0.4.12") && r[4].contains("1d ago"), "{r:#?}");
+        // A filter: what it is and how many of all; nothing left says so.
+        let mut g = Grid::new(80, 9);
+        draw_ssh(&mut g, area, &shown[..1], 0, 0, 3, "web");
+        assert!(rows(&g, 80, 9)[3].contains("“web” 1 of 3"), "{:#?}", rows(&g, 80, 9));
+        let mut g = Grid::new(80, 9);
+        draw_ssh(&mut g, area, &[], 0, 0, 3, "zzz");
+        let r = rows(&g, 80, 9).join("\n");
+        assert!(r.contains("nothing matches") && r.contains("“zzz” 0 of 3"), "{r}");
+        let mut g = Grid::new(80, 9);
+        draw_ssh(&mut g, area, &[], 0, 0, 0, "");
+        let r = rows(&g, 80, 9).join("\n");
+        assert!(r.contains("no machine yet") && r.contains("0 machines"), "{r}");
+        // More than fit: from `top`, and where the window is on the right edge.
+        let many: Vec<_> = (0..20).map(|i| ssh_row(i, &format!("h{i}"), "", "", 1, "")).collect();
+        let shown: Vec<_> = many.iter().collect();
+        let mut g = Grid::new(80, 8);
+        draw_ssh(&mut g, Rect { x: 0, y: 0, w: 80, h: 8 }, &shown, 19, 14, 20, "");
+        let r = rows(&g, 80, 8);
+        assert!(r[1].contains("h14") && r[6].contains("h19"), "{r:#?}");
+        assert!(r[6].trim_end().ends_with('┃'), "the thumb at the bottom: {r:#?}");
+        assert!(!r[1].trim_end().ends_with('┃'), "{r:#?}");
+        // No room for a box: the list.
+        let mut g = Grid::new(10, 2);
+        draw_ssh(&mut g, Rect { x: 0, y: 0, w: 10, h: 2 }, &shown, 0, 0, 20, "");
+        assert!(rows(&g, 10, 2)[0].starts_with("h0"));
     }
 
     /// `pane-frames`: each pane in a frame of its own in the cells around

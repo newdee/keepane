@@ -268,6 +268,7 @@ keepane kill-server
 | `/` | 按 pane 和日期翻看输出过的历史（`choose-history`） |
 | `y` | 把上一条命令的输出（不含提示符和命令本身）复制到粘贴缓冲区和剪贴板（`copy-output`） |
 | `Y` | 从所有 pane 跑过的命令里挑一条（最新的在前）：跳过去、复制它的输出、再跑一次（`choose-marks`） |
+| `@` | 挑一台 `ssh` 去过的机器：跳到连着它的 pane，或在新窗口、分屏里连接（`choose-ssh`，见 SSH 机器） |
 | `F` | 给屏幕上的路径、网址和 git hash 都标上字母；按字母复制，按大写字母打开（`hints`，见下文） |
 | `e` | 用彩色显示每个 pane 拿到的环境变量：`set-environment` 设的，和 keepane 自己设的（`show-environment`，见"环境变量"） |
 | `{` / `}` | 和前一个 / 后一个 pane 交换位置 |
@@ -386,6 +387,22 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
 </p>
 
 测试失败；`C-b y` 取下它的输出；一条消息交给旁边的 agent（`keepane send-message --to %claude "fix this: $(keepane show-buffer)"`），它空闲时就收到。（录屏里的 agent 是写会话记录的替身；用 `keepane setup` 装好的 agent 也一样。）
+
+### SSH 机器
+
+`C-b @`（`choose-ssh`）在一个圆角框里列出 `ssh` 去过的机器：正连着的排在最前（绿点，加上所在 pane），其余按上次连接时间排。每行是名字、用户和地址（`root@10.0.0.5:2222`）、多久前、连过几次；还没从 pane 连过的，标出来源（`config`、`seen`、`history`）。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/ssh-light.png">
+    <img src="docs/img/ssh.png" width="880"
+         alt="pane 上方的 ssh 框：正连着的机器带绿点和所在 pane，其余按上次使用时间排，按键写在框的下边">
+  </picture>
+</p>
+
+Enter 跳到连着这台机器的 pane，没有就新开一个以它命名的窗口运行 `ssh`；`s` 在旁边分屏连接，`y` 复制命令，`d` 把它从列表里去掉，`f` 过滤。
+
+列表来自四处：keepane 在 pane 里看到的每个新 `ssh`（每次记一次，带时间）、`~/.ssh/config` 的 `Host` 行、`~/.ssh/known_hosts` 里的名字（哈希过的看不出名字，跳过），以及第一次时从各 shell 历史文件里读到的 `ssh` 命令。连接过的机器存在 `%LOCALAPPDATA%\keepane\ssh-hosts.json`：名字、用户、端口、时间和次数。不读也不存任何密码或密钥。`keepane ssh-hosts` 打印这个列表（`-J` 输出 JSON，MCP 工具 `list_ssh_hosts` 给 agent 的就是它）；`#{pane_ssh_host}` 给出 pane 里的 `ssh` 连到哪，dashboard 把它显示成这个 pane 在运行的东西。
 
 带脚本或命令启动的 shell（`pwsh -File`、`bash -c`）keepane 不去动它，也就没有 hook；可以在那个脚本里自己装上：PowerShell 里写 `Invoke-Expression (keepane __shell-hook | Out-String)`，bash 里写 `eval "$(keepane __shell-hook)"`。
 

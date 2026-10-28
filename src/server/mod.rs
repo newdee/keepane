@@ -29,6 +29,7 @@ mod public_ip;
 pub mod render;
 mod share_host;
 mod shellhist;
+mod sshhosts;
 pub mod trace;
 mod web_fit;
 mod web_host;
@@ -134,6 +135,8 @@ enum Event {
     PublicIp(Option<String>),
     /// The panes' agents were looked at (`agents`).
     AgentStats(HashMap<PaneId, agents::Stats>),
+    /// The `ssh` running in each pane, by the same look (`sshhosts`).
+    SshSeen(HashMap<PaneId, (u32, sshhosts::Target)>),
     /// The price list was fetched, or could not be (`prices`).
     Prices(Option<Box<prices::Prices>>),
     /// A request to the phones' page told who asked (`web_host`).
@@ -436,6 +439,8 @@ enum ChooserItem {
     Hit(usize),
     /// A command a shell ran (`choose-marks`), by its place in the list.
     Ran(usize),
+    /// A machine reached with `ssh` (`choose-ssh`), by its place in the book.
+    Ssh(usize),
     /// A title or separator line: shown, never selected.
     Separator,
     /// A machine in the chart: this one (None), or a paired one by its
@@ -511,6 +516,8 @@ enum ChooserKind {
     Hits { hits: Vec<crate::histlog::LogHit>, search: String },
     /// The commands the panes' shells ran, newest first (`choose-marks`).
     Marks(Vec<Ran>),
+    /// The machines reached with `ssh` (`choose-ssh`), connected ones first.
+    Ssh,
 }
 
 /// A command a pane's shell ran that its screen still holds.
@@ -567,7 +574,7 @@ impl ChooserKind {
 
     /// Its lines go through a filter (`f`): the live ones, and the commands.
     fn filtered(&self) -> bool {
-        self.live() || matches!(self, ChooserKind::Marks(_))
+        self.live() || matches!(self, ChooserKind::Marks(_) | ChooserKind::Ssh)
     }
 }
 
@@ -1253,6 +1260,8 @@ pub struct Server {
     public_ip: public_ip::PublicIp,
     /// The panes' agents, as last looked at (`agents`).
     agents: agents::Agents,
+    /// The machines reached with `ssh`, and each pane's `ssh` now.
+    ssh: sshhosts::Ssh,
     /// What their tokens cost (`prices`), while `agent-cost` is on.
     prices: prices::PriceList,
     /// The phones' page, while it is served (`web-start`).
@@ -1571,6 +1580,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("F", "hints"),
         ("e", "show-environment"),
         ("Y", "choose-marks"),
+        ("@", "choose-ssh"),
     ];
     for (k, l) in lines {
         let key = Key::parse(k).expect(k);
@@ -1666,6 +1676,7 @@ impl Server {
             newer: newer::Check::default(),
             public_ip: public_ip::PublicIp::default(),
             agents: agents::Agents::default(),
+            ssh: sshhosts::Ssh::default(),
             prices: prices::PriceList::default(),
             web: None,
             web_retry: None,
@@ -2556,6 +2567,7 @@ impl Server {
             Event::NewerChecked(latest) => self.newer_checked(latest),
             Event::PublicIp(ip) => self.public_ip_answered(ip),
             Event::AgentStats(stats) => self.agents_seen(stats),
+            Event::SshSeen(seen) => self.ssh_seen(seen),
             Event::Prices(p) => self.prices_fetched(p),
             Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
@@ -5929,6 +5941,22 @@ impl Server {
                 c.chooser = Some(Chooser::new(ChooserKind::Marks(ran), items, lines, 0));
                 Outcome::Ok
             }
+            Cmd::ChooseSsh => {
+                let Some(cid) = cid else { return Outcome::Error("choose-ssh: no client".into()) };
+                if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+                    return Outcome::Error("choose-ssh: client not attached".into());
+                }
+                self.ssh_refresh();
+                let rows = self.ssh_rows();
+                let items = rows.iter().map(|r| ChooserItem::Ssh(r.index)).collect();
+                let lines = rows.iter().map(|r| r.text()).collect();
+                let c = self.clients.get_mut(&cid).unwrap();
+                c.prompt = None;
+                c.overlay = None;
+                c.chooser = Some(Chooser::new(ChooserKind::Ssh, items, lines, 0));
+                Outcome::Ok
+            }
+            Cmd::SshHosts { json } => self.list_ssh_hosts(json),
             Cmd::ChooseHistory { search } => {
                 let Some(cid) = cid else { return Outcome::Error("choose-history: no client".into()) };
                 if self.clients.get(&cid).and_then(|c| c.session).is_none() {
@@ -6602,6 +6630,7 @@ impl Server {
             if let Some(a) = self.agents.stats.get(&pid) {
                 a.fill(&mut ctx);
             }
+            ctx.pane_ssh_host = self.ssh_host_of(pid);
         }
         if let Some(r) = w.rect_of(pid) {
             let area = self.window_area(sess.cols, sess.rows);
@@ -7547,6 +7576,14 @@ impl Server {
             }
             // Read when it opened, but filtered (`f`) like a live one.
             ChooserKind::Marks(ran) => return Some(marks_lines(ran)),
+            // From the book, so a connection made meanwhile shows.
+            ChooserKind::Ssh => {
+                let rows = self.ssh_rows();
+                return Some((
+                    rows.iter().map(|r| ChooserItem::Ssh(r.index)).collect(),
+                    rows.iter().map(|r| r.text()).collect(),
+                ));
+            }
             ChooserKind::Found | ChooserKind::Menu(_) | ChooserKind::History { .. } | ChooserKind::Hits { .. } => {
                 return None;
             }
@@ -7934,6 +7971,17 @@ impl Server {
                 c.chooser = None;
                 if key == 'y' { self.copy_ran(cid, &r) } else { self.rerun(cid, &r) }
             }
+            // The machines: `s` connects in a split, `y` copies the command.
+            (KeyCode::Char(key @ ('s' | 'y')), false, false) if matches!(ch.kind, ChooserKind::Ssh) => {
+                let Some(ChooserItem::Ssh(i)) = ch.items.get(ch.sel).copied() else { return };
+                c.chooser = None;
+                if key == 's' { self.ssh_go(cid, i, true) } else { self.ssh_copy(cid, i) }
+            }
+            // `d` (or Delete) takes one off the list; the picker stays.
+            (KeyCode::Char('d'), false, false) | (KeyCode::DC, _, _) if matches!(ch.kind, ChooserKind::Ssh) => {
+                let Some(ChooserItem::Ssh(i)) = ch.items.get(ch.sel).copied() else { return };
+                self.ssh_forget(cid, i);
+            }
             // The history picker (and its hits): `/` looks through every day
             // of the log, a picker of the lines that hold it opening then.
             (KeyCode::Char('/'), false, false)
@@ -8055,6 +8103,7 @@ impl Server {
                             self.go_to_ran(cid, &r);
                         }
                     }
+                    Some(ChooserItem::Ssh(i)) => self.ssh_go(cid, i, false),
                     Some(ChooserItem::Menu(_))
                     | Some(ChooserItem::Separator)
                     | Some(ChooserItem::Log(..))
@@ -8692,6 +8741,12 @@ impl Server {
             // Wheel moves the selection; a click puts it on that line.
             let (cols, rows) = (c.cols, c.rows);
             let area = self.window_area(cols, rows);
+            let ssh_rows = self
+                .clients
+                .get(&cid)
+                .and_then(|c| c.chooser.as_ref())
+                .filter(|ch| matches!(ch.kind, ChooserKind::Ssh))
+                .map(|_| self.ssh_rows());
             let ch = self.clients.get_mut(&cid).unwrap().chooser.as_mut().unwrap();
             if m.flags & MOUSE_WHEELED != 0 {
                 ch.typed = None;
@@ -8702,6 +8757,10 @@ impl Server {
                     ChooserKind::Menu(entries) if render::menu_fits(area) => {
                         let titled = ch.items.len() > entries.len();
                         (render::menu_box(area, &ch.lines, titled).1, usize::from(titled).max(ch.top))
+                    }
+                    ChooserKind::Ssh if render::menu_fits(area) => {
+                        let all = ssh_rows.as_deref().unwrap_or_default();
+                        (render::ssh_box(area, &sshhosts::shown(all, &ch.items)).1, ch.top)
                     }
                     _ => (Rect { h: area.h.saturating_sub(1), ..area }, ch.top),
                 };
@@ -9338,6 +9397,13 @@ impl Server {
             ch.lines = lines;
             ch.settle(1); // a filter may have taken the selected line away
         }
+        // The machines' picker draws from its rows, not its lines.
+        let ssh_rows = self
+            .clients
+            .get(&cid)
+            .and_then(|c| c.chooser.as_ref())
+            .filter(|ch| matches!(ch.kind, ChooserKind::Ssh))
+            .map(|_| self.ssh_rows());
         let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else { return };
         let pane_base_index = self.opts.pane_base_index;
         let (status_top, border_fg, active_fg, opts_status) =
@@ -9683,6 +9749,10 @@ impl Server {
                 ChooserKind::Menu(entries) if render::menu_fits(area) => {
                     usize::from(render::menu_box(area, &ch.lines, ch.items.len() > entries.len()).1.h)
                 }
+                ChooserKind::Ssh if render::menu_fits(area) => {
+                    let all = ssh_rows.as_deref().unwrap_or_default();
+                    usize::from(render::ssh_box(area, &sshhosts::shown(all, &ch.items)).1.h)
+                }
                 _ => area.h.saturating_sub(1) as usize,
             };
             if ch.sel < ch.top {
@@ -9745,6 +9815,9 @@ impl Server {
                 render::draw_chart(&mut grid, area, &nodes, ch.sel, ch.all, actions, &status.join(" "));
             } else if let ChooserKind::Menu(entries) = &ch.kind {
                 render::draw_menu(&mut grid, area, &ch.lines, ch.sel, ch.top, ch.items.len() > entries.len());
+            } else if let (ChooserKind::Ssh, Some(all)) = (&ch.kind, &ssh_rows) {
+                let shown = sshhosts::shown(all, &ch.items);
+                render::draw_ssh(&mut grid, area, &shown, ch.sel, ch.top, all.len(), &ch.filter);
             } else if matches!(ch.kind, ChooserKind::Tree { style: TreeStyle::Tree, .. }) {
                 let depths: Vec<usize> = ch.items.iter().map(|i| i.depth().unwrap_or(0)).collect();
                 let rows: Vec<(String, String, usize)> = render::tree_leads(&depths)

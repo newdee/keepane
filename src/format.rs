@@ -178,6 +178,9 @@ pub struct Context {
     pub agent_mem: String,
     pub agent_tools: String,
     pub agent_turns: String,
+    /// Where the pane's `ssh` goes (`root@web1:2222`), empty when it runs
+    /// none (server `sshhosts`).
+    pub pane_ssh_host: String,
 }
 
 /// A count as people read it: `950`, `1.2k`, `123k`, `4.5M`, `1.2G`.
@@ -391,6 +394,7 @@ impl Context {
             "agent_mem" => self.agent_mem.clone(),
             "agent_tools" => self.agent_tools.clone(),
             "agent_turns" => self.agent_turns.clone(),
+            "pane_ssh_host" => self.pane_ssh_host.clone(),
             "version" => env!("CARGO_PKG_VERSION").to_string(),
             "pid" => std::process::id().to_string(),
             _ => return None,

@@ -47,6 +47,8 @@ $takes = @(
     @{ Env = "KEEPANE_DEMO_OUT9"; Test = "record_resume"; Name = "keepane-resume" },
     # The clock and what moves under it, over a stand-in build.
     @{ Env = "KEEPANE_DEMO_OUT10"; Test = "record_clock"; Name = "keepane-clock" },
+    # The machines ssh reached (a stand-in ssh): its picture only.
+    @{ Env = "KEEPANE_DEMO_OUT11"; Test = "record_ssh"; Name = "keepane-ssh"; NoGif = $true },
     # The tour: a panel beside the terminal, and the phone (Edge through
     # puppeteer-core, as tools/make-phone-shots.ps1 does).
     @{ Env = "KEEPANE_DEMO_OUT5"; Test = "record_tour"; Name = "keepane-tour"; Panel = 380 }
@@ -91,10 +93,12 @@ foreach ($t in $takes) {
 
     $pattern = Join-Path $png "f%04d.png"
     $scale = if ($Width -gt 0) { "scale=${Width}:-2:flags=lanczos" } else { "null" }
-    ffmpeg -v error -y -framerate 5 -i $pattern -vf "$scale,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" "docs/img/$($t.Name)$suffix.gif"
-    if ($LASTEXITCODE -ne 0) { throw "gif $($t.Name) failed" }
-    ffmpeg -v error -y -framerate 5 -i $pattern -vf $scale -c:v libx264 -pix_fmt yuv420p -crf 26 -movflags +faststart "docs/img/$($t.Name)$suffix.mp4"
-    if ($LASTEXITCODE -ne 0) { throw "mp4 $($t.Name) failed" }
+    if (-not $t.NoGif) {
+        ffmpeg -v error -y -framerate 5 -i $pattern -vf "$scale,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" "docs/img/$($t.Name)$suffix.gif"
+        if ($LASTEXITCODE -ne 0) { throw "gif $($t.Name) failed" }
+        ffmpeg -v error -y -framerate 5 -i $pattern -vf $scale -c:v libx264 -pix_fmt yuv420p -crf 26 -movflags +faststart "docs/img/$($t.Name)$suffix.mp4"
+        if ($LASTEXITCODE -ne 0) { throw "mp4 $($t.Name) failed" }
+    }
 
     foreach ($still in Get-ChildItem $png -Filter "still-*.png") {
         $name = $still.BaseName.Substring("still-".Length)

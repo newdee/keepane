@@ -53,6 +53,7 @@ fn known(c: &str) -> Option<(usize, &'static str)> {
         "hints" => (3, "pick text on screen"),
         "choose-history" => (3, "history"),
         "choose-jobs" => (3, "jobs"),
+        "choose-ssh" => (3, "ssh machines"),
         "show-environment -g" => (3, "environment"),
         "command-prompt" => (3, "command"),
         // (`?`, every key, is the panel's own footer.)
@@ -252,10 +253,11 @@ mod tests {
         );
         let tools = entries(&g, "Tools");
         assert_eq!(tools.first(), Some(&s("v", "dashboard")));
-        assert_eq!(tools.last(), Some(&s(":", "command")));
+        assert!(tools.contains(&s(":", "command")));
         assert!(tools.contains(&s("y", "copy last output")));
         assert!(tools.contains(&s("e", "environment")));
         assert!(tools.contains(&s("Y", "pick a command")));
+        assert!(tools.contains(&s("@", "ssh machines")));
         assert!(tools.iter().all(|(k, _)| k != "?"), "`?` is the footer's");
     }
 

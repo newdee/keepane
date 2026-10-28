@@ -225,6 +225,13 @@ fn tools() -> Vec<Value> {
         ),
         tool("show_task", "A task's messages step by step.", json!({ "id": n("Task id") }), &["id"]),
         tool(
+            "list_ssh_hosts",
+            "The machines reached with ssh (from the panes, ~/.ssh/config, known_hosts), as JSON, connected \
+             ones first: name, user, host, port, last use, count, the panes on it now, the command that connects.",
+            json!({}),
+            &[],
+        ),
+        tool(
             "query_events",
             "Lines of keepane's event log (JSON), newest last.",
             json!({ "pane": s("Only about this pane or session"), "since": s("Like 15m, 2h, 1d"), "last": n("Only the last this many lines") }),
@@ -242,6 +249,7 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
     let mut argv = match name {
         "whoami" => v(&["whoami"]),
         "list_links" => v(&["link-list"]),
+        "list_ssh_hosts" => v(&["ssh-hosts", "-J"]),
         "link_info" => vec!["link-info".into(), need("host")?],
         "read_screen" => {
             let pane = need("pane")?;

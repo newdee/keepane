@@ -634,6 +634,71 @@ fn record_resume() {
     d.finish();
 }
 
+/// The machines `ssh` reached (`C-b @`): a book of earlier ones, and one a
+/// pane is on now. The `ssh` there is a stand-in (cmd.exe under that name,
+/// its command line an ssh one, showing a remote-looking prompt): nothing
+/// connects anywhere. Only its picture is used.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_ssh() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT11").unwrap_or_else(|_| "target/demo-frames-11".into());
+    let mut d = Demo::start("demo11", &out_dir, "");
+    // The book as some weeks of use leave it.
+    let now = chrono::Utc::now().timestamp();
+    let book = serde_json::json!({
+        "imported": true,
+        "hosts": [
+            { "name": "web-1.prod", "user": "deploy", "last": now - 2 * 3600, "count": 14, "source": "used" },
+            { "name": "db-primary", "user": "postgres", "real": "10.0.4.12", "last": now - 26 * 3600, "count": 6, "source": "used" },
+            { "name": "build-box", "user": "ci", "port": 2222, "last": now - 3 * 86_400, "count": 31, "source": "used" },
+            { "name": "pi.local", "user": "pi", "last": now - 15 * 86_400, "count": 3, "source": "used" },
+            { "name": "jump.corp", "count": 2, "source": "used" },
+            { "name": "staging", "user": "deploy", "real": "10.0.8.30", "count": 0, "source": "config" },
+            { "name": "github.com", "count": 0, "source": "seen" },
+        ],
+    });
+    let ssh_dir = d.tmp.join("sessions").join("ssh");
+    std::fs::create_dir_all(&ssh_dir).expect("ssh dir");
+    std::fs::write(ssh_dir.join("ssh-hosts.json"), book.to_string()).expect("ssh book");
+    let bin = d.tmp.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin dir");
+    let fake = bin.join("ssh.exe");
+    let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    std::fs::copy(format!(r"{sys}\System32\cmd.exe"), &fake).expect("stand-in ssh");
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s ops"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(2);
+    rec.type_line("'release 0.48 built, ready to deploy'");
+    rec.wait_for("the work", |s| s.contents().contains("ready to deploy"), 20);
+    rec.hold(2);
+    // A window on the web server.
+    let fake = fake.to_string_lossy().into_owned();
+    let status = std::process::Command::new(&d.exe)
+        .args(["-L", &socket, "new-window", "-d", "-n", "web-1", &fake, "deploy@web-1.prod"])
+        .args(["/k", "prompt deploy@web-1:~$$$S"])
+        .status()
+        .expect("new-window");
+    assert!(status.success());
+    let rec = &mut d.rec;
+    rec.wait_for("its window", |s| s.contents().contains("1:web-1"), 20);
+    // The watcher looks every two seconds.
+    rec.hold(20);
+    rec.key("\x02@");
+    rec.wait_for("the machines", |s| s.contents().contains("7 machines") && s.contents().contains("now"), 20);
+    rec.hold(4);
+    rec.key("j");
+    rec.hold(4);
+    rec.still("ssh");
+    rec.key("q");
+    rec.hold(2);
+
+    d.finish();
+}
+
 /// The sixth recording: `C-b w`, the chart of every session, window and
 /// pane, moved through with hjkl; `a` opens all of it, `v` turns it into
 /// the tree and the list.

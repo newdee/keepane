@@ -5142,3 +5142,32 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 全量 + 跨平台（修复后） | Windows 515 + 11 + 145；Linux fmt 0、clippy 0、500 + 143 | 干净（1/3） |
 | 2 | 真实数据 | 本机全部 Claude transcript：768 轮，0 轮没有名字（修复前 765 轮里 182 轮） | 干净（2/3） |
 | 3 | 实际画面 | 重拍 agents 和 clock 两组（深色和浅色），逐张看：trace 显示 12 步，失败的一步标红；pulse 和 bars 两个监控画面正常；dashboard 标签行显示全部 5 个标签 | 干净（3/3），验收通过 |
+## 168. SSH 机器（`C-b @`、`ssh-hosts`）；切换模型后 trace 仍显示旧模型
+
+- 用户需求：SSH 会话管理，能看到登录过的机器，有快捷键或面板。按推荐方案做，要求好看。用户另提"手动添加 ssh 认证"，讨论后决定先不做；推荐方案里的 `d`（从列表去掉）一起做了。
+- 做了什么：
+  - 数据来自四处：pane 里看到的 `ssh` 进程（每个新进程记一次使用，带时间）、`~/.ssh/config` 的 `Host`（跳过通配）、`known_hosts` 的明文名字（跳过哈希行）、第一次时读各 shell 历史里的 `ssh` 命令。只存连过的机器到 `ssh-hosts.json`；不读也不存密码或密钥。
+  - `C-b @`（`choose-ssh`）：圆角框，正连着的排最前（绿点 + 所在 pane），其余按上次使用、次数排；列宽不够时依次去掉来源、用户和地址、次数、时间；超出时右边框显示滚动位置。Enter 跳到连着的 pane，没有就新开以它命名的窗口；`s` 分屏连接；`y` 复制命令；`d` 去掉（config 和 known_hosts 重读也不再出现，再连一次就回来）；`f` 过滤。
+  - `ssh-hosts [-J]`、`#{pane_ssh_host}`、MCP 工具 `list_ssh_hosts`、dashboard 的 running 列显示 `ssh <host>`。
+- trace 的模型 bug 定性：
+  - 个性：只有 Claude 有。Codex 在每轮开始读 `turn_context`，pi 读 `model_change`，都会马上变。
+  - 边界遗漏：Claude 的模型只从回复里取。`/model` 之后，要等新模型第一次回复写完才变。
+  - 改法：补读 3 种行：`/model` 的输出（先显示名字）、`model` attachment、主线程 `api-request` 的 `params.model`（显示 id）。它们都不算一轮、不计 token。
+  - 用户 smep 的真实 transcript：修复前到第 14722 行才变；修复后第 14701 行变成 `Opus 5.5`，第 14704 行变成 `claude-opus-5-5`。
+- 过程中发现并修掉的问题：
+  - e2e 的服务器在测试进程内运行，`sessions-dir` 是选项不是环境变量，所以主机簿会写进真实数据目录。另外 sessions 目录里所有 `.json` 都会被当成存档。改为：sessions 被移走时（环境变量或选项），主机簿放在它的 `ssh/` 子目录里。
+  - 按键栏的键名最多画 2 列，`Enter` 会被截断（原来用 `⏎`，该字形宽度不明确，渲染时挤在一起）。改为按实际宽度画，并改用 `Enter`。
+  - 框的宽度多算了 2 列（键栏宽度公式不准），改为与绘制共用同一个宽度函数。
+  - 真实数据：known_hosts 里的地址，历史里有 `root@` 2 次、`lighthouse@` 1 次，原来全部并入没有用户的那一条，连接命令丢了用户。改为宽松匹配时补上缺的用户和端口，另一个用户成为单独一条；来源改为 used。
+  - 静态检查：picker 底栏 `actions` 里 Ssh 那一项没有人读（`draw_ssh` 自己画按键），删掉。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 全量 + 跨平台 | Windows 529 + 11 + 146；Linux 514 + 144（含 Linux 上的 ssh e2e） | 测试全绿 |
+| 1 | 真实数据（同一轮） | 本机 ~/.ssh 与 PSReadLine 历史：7 行 ssh、计 6（1 行是 `210.16/163.110` 的笔误，正确拒绝）；发现 known_hosts 条目吞掉用户 | 发现问题，不计数 |
+| 2 | 真实数据（修复后） | 11 条，`root@`/`lighthouse@` 各自独立；smep transcript 模型在 14701/14704 行切换 | 测试全绿 |
+| 2 | 静态一致性（同一轮） | Windows 530 + 11 + 146、Linux 515 + 144；review 找到 Ssh 底栏的死字符串 | 发现问题，不计数 |
+| 1 | 机制存活 | 7 个变异全部被抓到（每次都计数、任意请求的模型、不补用户、不存 forgotten、主机簿放进 sessions、dashboard 忽略 ssh 字段、键名截成 2 列） | 干净（1/3） |
+| 2 | 边界 + 真实路径 | 5000 行 known_hosts + 300 个 alias：release 21 ms/次、排序 0.7 ms；新增 e2e：PATH 上的替身 ssh，Enter 开窗口（次数 4→5）、`s` 分屏（6，2 个 pane）、已连接时 Enter 不开新窗口 | 干净（2/3） |
+| 3 | 可复现 + 全量 + 跨平台 | 两个 ssh e2e 连跑 10 次 10/10；Windows fmt 0、clippy 0、530 + 11 + 147；Linux 515 + 144；review 未发现不确定的顺序（历史计数用有序 Vec，排序以名字、再以下标定序，JSON 保序） | 干净（3/3），验收通过 |
+- 遗留：两个 keepane 服务器（不同 socket，同一数据目录）同时写主机簿时后写的覆盖先写的，计数可能少记；Linux/macOS 上没有 Enter/`s` 真实连接路径的 e2e（sh 的副本接不了 ssh 的参数），由 argv 单元测试和 Windows e2e 覆盖。

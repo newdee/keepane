@@ -55,7 +55,7 @@ pub fn needs_yes(argv: &[String]) -> bool {
 }
 
 /// `list-panes -F` for the board: one pane a line, tab-separated.
-pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}\t#{pane_state}";
+pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}\t#{pane_state}\t#{pane_ssh_host}";
 
 /// The agent a pane runs, its figures as the `agent_*` formats write them.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -187,7 +187,11 @@ impl PaneRow {
             idle: f[6] == "1",
             inbox: f[7].parse().unwrap_or(0),
             status: f[8].into(),
-            command: f[9].into(),
+            // An `ssh` in it says where it goes (from a server that knows).
+            command: match f.get(32).filter(|h| !h.is_empty()) {
+                Some(host) => format!("ssh {host}"),
+                None => f[9].into(),
+            },
             message: f[10].into(),
             dead: f[11] == "1",
             path: f[12].into(),
@@ -2505,6 +2509,13 @@ mod tests {
         let r = PaneRow::parse(&format!("{line}\t0{agent}\tmain\t\tno-agent")).unwrap();
         assert_eq!(r.state_styled(), paint("2", "no-agent"));
         assert_eq!(PaneRow::parse(line).unwrap().state(), "idle", "an older server: by pane_idle");
+        // An `ssh` in it: where it goes, in place of the program's name;
+        // none, or an older server: the program.
+        let ssh = PaneRow::parse(&format!("{line}\t0{agent}\tmain\t\ttyping\troot@web1:2222")).unwrap();
+        assert_eq!(ssh.command, "ssh root@web1:2222");
+        let none = PaneRow::parse(&format!("{line}\t0{agent}\tmain\t\ttyping\t")).unwrap();
+        assert_eq!(none.command, "claude");
+        assert_eq!(PaneRow::parse(line).unwrap().command, "claude");
         let q = Queued::parse("  #6  from %lead  waiting 3s  second  with  gaps").unwrap();
         assert_eq!(
             (q.id.as_str(), q.from.as_str(), q.waiting.as_str(), q.text.as_str()),

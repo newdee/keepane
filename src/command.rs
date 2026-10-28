@@ -210,6 +210,11 @@ pub enum Cmd {
         /// `-J`: as JSON, every figure as a number.
         json: bool,
     },
+    /// `ssh-hosts [-J]`: the machines reached with `ssh` (the panes'
+    /// connections, `~/.ssh/config`, `known_hosts`), last used first.
+    SshHosts {
+        json: bool,
+    },
     /// `trace-pane [-J] [-t pane]`: what the pane's agent did, step by step:
     /// its latest turns, each model call and tool in them, from when to when.
     TracePane {
@@ -595,6 +600,10 @@ pub enum Cmd {
     /// screen still holds, newest first (prefix `Y`): Enter goes to one in
     /// copy mode, `y` copies what it printed, `r` runs it again.
     ChooseMarks,
+    /// `choose-ssh`: the machines reached with `ssh` (prefix `@`): Enter
+    /// goes to the pane connected to one, else connects in a new window;
+    /// `s` connects in a split, `y` copies the command.
+    ChooseSsh,
     /// `undo-kill`: the pane or window killed last comes back where it
     /// was, programs still running, within `undo-kill-time` seconds.
     UndoKill,
@@ -1065,6 +1074,7 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)
             }
             Cmd::ListAgents { json } => f.write_str(if *json { "list-agents -J" } else { "list-agents" }),
+            Cmd::SshHosts { json } => f.write_str(if *json { "ssh-hosts -J" } else { "ssh-hosts" }),
             Cmd::TracePane { target, json } => {
                 f.write_str("trace-pane")?;
                 if *json {
@@ -1607,6 +1617,7 @@ impl fmt::Display for Cmd {
             Cmd::ChooseClient => f.write_str("choose-client"),
             Cmd::ChooseJobs => f.write_str("choose-jobs"),
             Cmd::ChooseMarks => f.write_str("choose-marks"),
+            Cmd::ChooseSsh => f.write_str("choose-ssh"),
             Cmd::ChooseHistory { search } => {
                 f.write_str("choose-history")?;
                 if let Some(s) = search {
@@ -2272,6 +2283,7 @@ pub const COMMANDS: &[&str] = &[
     "choose-client",
     "choose-history",
     "choose-marks",
+    "choose-ssh",
     "choose-jobs",
     "choose-session",
     "clock-mode",
@@ -2323,6 +2335,7 @@ pub const COMMANDS: &[&str] = &[
     "list-keys",
     "list-marks",
     "list-agents",
+    "ssh-hosts",
     "trace-pane",
     "status-line",
     "copy-output",
@@ -2431,6 +2444,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("choose-client", &[]),
     ("choose-history", &["-s"]),
     ("choose-marks", &[]),
+    ("choose-ssh", &[]),
     ("choose-jobs", &[]),
     ("choose-session", &["-s", "-w", "-Z"]),
     ("clock-mode", &["-t"]),
@@ -2467,6 +2481,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-keys", &[]),
     ("list-marks", &["-J", "-t"]),
     ("list-agents", &["-J"]),
+    ("ssh-hosts", &["-J"]),
     ("trace-pane", &["-J", "-t"]),
     ("status-line", &["-J", "-t"]),
     ("copy-output", &["-p", "-t"]),
@@ -2947,6 +2962,17 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ListAgents { json }
+        }
+        "ssh-hosts" => {
+            let mut json = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-J" => json = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::SshHosts { json }
         }
         "copy-output" => {
             let (mut target, mut print) = (None, false);
@@ -3818,6 +3844,10 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "choose-marks" => {
             a.none_left(n)?;
             Cmd::ChooseMarks
+        }
+        "choose-ssh" => {
+            a.none_left(n)?;
+            Cmd::ChooseSsh
         }
         "choose-history" => {
             let mut search = None;
@@ -4750,10 +4780,17 @@ mod tests {
         assert_eq!(p("status-line -J -t work"), Cmd::StatusLine { target: Some(Target::parse("work")), json: true });
         assert_eq!(p("status-line"), Cmd::StatusLine { target: None, json: false });
         assert!(parse_line("list-agents -x").is_err() && parse_line("list-agents x").is_err());
+        assert_eq!(p("ssh-hosts -J"), Cmd::SshHosts { json: true });
+        assert_eq!(p("ssh-hosts"), Cmd::SshHosts { json: false });
+        assert_eq!(p("choose-ssh"), Cmd::ChooseSsh);
+        assert!(parse_line("ssh-hosts -x").is_err() && parse_line("choose-ssh x").is_err());
         let all = ["trace-message 5 -w 3 -J", "show-task 12 -J", "show-task 12", "list-marks -J -t %3", "list-marks"];
         for s in all.into_iter().chain([
             "list-agents -J",
             "list-agents",
+            "ssh-hosts -J",
+            "ssh-hosts",
+            "choose-ssh",
             "trace-pane -J -t %3",
             "trace-pane",
             "status-line -J -t work",

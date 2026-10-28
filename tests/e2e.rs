@@ -8476,6 +8476,228 @@ async fn choose_jobs_edges() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `choose-ssh` (prefix @), `ssh-hosts` and `#{pane_ssh_host}`: an `ssh` in
+/// a pane is seen, counted once, listed first while it runs, and its
+/// machine kept in the book. The `ssh` is a stand-in (a copy of cmd.exe, or
+/// of sh, under that name, its command line an ssh one): nothing connects.
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_ssh_lists_the_machines_the_panes_reach() {
+    let h = Harness::start("choosessh").await;
+    let dir = std::env::temp_dir().join(format!("keepane-test-fake-ssh-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(windows)]
+    let (argv, label, command) = {
+        let fake = dir.join("ssh.exe");
+        let cmd = std::path::PathBuf::from(std::env::var("WINDIR").unwrap()).join(r"System32\cmd.exe");
+        std::fs::copy(cmd, &fake).unwrap();
+        let fake = fake.to_string_lossy().into_owned();
+        let argv = [fake.as_str(), "-p", "2222", "me@box.example", "/c", "ping -n 120 127.0.0.1 >nul"];
+        (argv.map(String::from).to_vec(), "me@box.example:2222", "ssh -p 2222 me@box.example")
+    };
+    #[cfg(unix)]
+    let (argv, label, command) = {
+        let fake = dir.join("ssh");
+        std::fs::copy("/bin/sh", &fake).unwrap();
+        let fake = fake.to_string_lossy().into_owned();
+        // No spaces in a word: Linux gives the command line back joined.
+        let argv = [fake.as_str(), "-c", "sleep${IFS}120;:", "me@box.example"];
+        (argv.map(String::from).to_vec(), "me@box.example", "ssh me@box.example")
+    };
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "s"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    // Nothing yet: an empty list, and the picker says how one gets there.
+    let (code, out, err) = h.cli(&["ssh-hosts"]).await;
+    assert_eq!((code, out.trim()), (0, ""), "{err}");
+    assert_eq!(h.cli(&["ssh-hosts", "-J"]).await.1.trim(), "[]");
+    c.prefix('@').await;
+    c.wait_for("the empty box", |s| s.contents().contains("no machine yet")).await;
+    c.type_str("q").await;
+    c.wait_for("closed", |s| !s.contents().contains("no machine yet")).await;
+
+    let mut new_window = vec!["new-window", "-d", "-t", "s", "-n", "far"];
+    new_window.extend(argv.iter().map(String::as_str));
+    let (code, _, err) = h.cli(&new_window).await;
+    assert_eq!(code, 0, "{err}");
+    // The watcher looks every 2 s.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let json = loop {
+        let out = h.cli(&["ssh-hosts", "-J"]).await.1;
+        if out.contains("box.example") && out.contains("\"at\"") {
+            break out;
+        }
+        assert!(Instant::now() < deadline, "the ssh was not seen: {out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    let m = &v[0];
+    assert_eq!(
+        (m["name"].as_str(), m["user"].as_str(), m["count"].as_u64()),
+        (Some("box.example"), Some("me"), Some(1))
+    );
+    assert_eq!(m["source"], "used");
+    assert_eq!(m["command"], command);
+    assert_eq!(m["panes"][0]["at"], "s:1.0", "{json}");
+    assert!(m["last"].as_i64().is_some_and(|l| l > 1_700_000_000), "{json}");
+    let (_, host, _) = h.cli(&["display-message", "-p", "-t", "s:far", "#{pane_ssh_host}"]).await;
+    assert_eq!(host.trim(), label);
+    let (_, here, _) = h.cli(&["display-message", "-p", "-t", "s:0", "[#{pane_ssh_host}]"]).await;
+    assert_eq!(here.trim(), "[]", "a pane with no ssh says nothing");
+    // Seen again and again while it runs: still one use.
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    let (_, again, _) = h.cli(&["ssh-hosts", "-J"]).await;
+    assert!(again.contains("\"count\":1"), "{again}");
+    // Kept in an `ssh` folder of the moved sessions, not among them.
+    let book = h.sessions_dir.join("ssh").join("ssh-hosts.json");
+    let kept = std::fs::read_to_string(&book).unwrap();
+    assert!(kept.contains("box.example") && kept.contains("\"count\": 1"), "{kept}");
+    assert!(!h.sessions_dir.join("ssh-hosts.json").exists());
+    let (_, text, _) = h.cli(&["ssh-hosts"]).await;
+    assert!(text.starts_with("● box.example") && text.contains("now") && text.contains("s:1.0"), "{text}");
+
+    // The picker: the machine, connected now, in a box with its keys.
+    c.prefix('@').await;
+    c.wait_for("the machines", |s| {
+        let t = s.contents();
+        t.contains(" ssh ") && t.contains("1 machine") && t.contains("box.example") && t.contains("now")
+    })
+    .await;
+    let text = c.text();
+    assert!(text.contains('●') && text.contains("╭") && text.contains("connect"), "{text}");
+    assert!(text.contains(label.split_once('@').unwrap().0), "who: {text}");
+    // `d` on one connected to now: kept, said why.
+    c.type_str("d").await;
+    c.wait_for("not taken off", |s| s.contents().contains("connected to now")).await;
+    // `y` copies the command that connects to it.
+    c.prefix('@').await;
+    c.wait_for("the machines", |s| s.contents().contains("1 machine")).await;
+    c.type_str("y").await;
+    c.wait_for("copied", |s| s.contents().contains("copied `ssh")).await;
+    assert_eq!(h.cli(&["show-buffer"]).await.1.trim(), command);
+    // A filter that matches nothing, then Enter: to the pane on it.
+    c.prefix('@').await;
+    c.wait_for("the machines", |s| s.contents().contains("1 machine")).await;
+    c.type_str("f").await;
+    c.type_str("zzz").await;
+    c.key(0x0D, '\r', 0).await;
+    c.wait_for("nothing matches", |s| s.contents().contains("nothing matches") && s.contents().contains("0 of 1"))
+        .await;
+    c.type_str("f").await;
+    for _ in 0..3 {
+        c.key(0x08, '\x08', 0).await;
+    }
+    c.key(0x0D, '\r', 0).await;
+    c.wait_for("back", |s| s.contents().contains("1 machine") && !s.contents().contains("(filter)")).await;
+    c.key(0x0D, '\r', 0).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, wins, err) = h.cli(&["list-windows", "-t", "s"]).await;
+        if wins.lines().any(|l| l.contains(": far* ")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Enter did not go to the pane on it: {wins} {err}\n{}", c.text());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Its ssh gone: no longer connected; `d` takes it off, and it stays off.
+    h.cli(&["kill-window", "-t", "s:far"]).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while h.cli(&["ssh-hosts", "-J"]).await.1.contains("\"at\"") {
+        assert!(Instant::now() < deadline, "still connected after its window went");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    c.prefix('@').await;
+    c.wait_for("not connected", |s| s.contents().contains("1 machine") && s.contents().contains('○')).await;
+    c.type_str("d").await;
+    c.wait_for("taken off", |s| s.contents().contains("no machine yet")).await;
+    c.type_str("q").await;
+    assert_eq!(h.cli(&["ssh-hosts", "-J"]).await.1.trim(), "[]");
+    let kept = std::fs::read_to_string(&book).unwrap();
+    assert!(kept.contains("\"forgotten\"") && kept.contains("box.example"), "{kept}");
+    // From a script there is no client to draw it for.
+    let (code, _, err) = h.cli(&["choose-ssh"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("not attached"), "{err}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `choose-ssh` on a machine no pane is on: Enter opens a window named
+/// after it running `ssh`, `s` a split beside the pane; each is then seen
+/// as a use. The `ssh` found first on the PATH is a stand-in (cmd.exe
+/// under that name, which stays open): nothing connects. Windows only: a
+/// copy of sh cannot take ssh's arguments.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn choose_ssh_connects_in_a_window_and_a_split() {
+    let dir = std::env::temp_dir().join(format!("keepane-test-path-ssh-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cmd = std::path::PathBuf::from(std::env::var("WINDIR").unwrap()).join(r"System32\cmd.exe");
+    std::fs::copy(cmd, dir.join("ssh.exe")).unwrap();
+    // First on the PATH of every pane this process starts (the directory
+    // holds only this, so no other test finds anything new there).
+    let path = std::env::var("PATH").unwrap_or_default();
+    if !path.starts_with(&dir.to_string_lossy().into_owned()) {
+        unsafe { std::env::set_var("PATH", format!("{};{path}", dir.display())) };
+    }
+    let h = Harness::start("sshconnect").await;
+    // The book as an earlier day left it.
+    let book = h.sessions_dir.join("ssh");
+    std::fs::create_dir_all(&book).unwrap();
+    std::fs::write(
+        book.join("ssh-hosts.json"),
+        r#"{"hosts":[{"name":"box","user":"me","port":2222,"last":1700000000,"count":4,"source":"used"}]}"#,
+    )
+    .unwrap();
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "s"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    c.prefix('@').await;
+    c.wait_for("the book", |s| s.contents().contains("1 machine") && s.contents().contains("me@box:2222")).await;
+    // Enter: a window named after it, running `ssh -p 2222 me@box`.
+    c.key(0x0D, '\r', 0).await;
+    let seen = |out: &str, panes: usize, count: u64| {
+        out.contains(&format!("\"count\":{count}")) && out.matches("\"at\"").count() == panes
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let out = h.cli(&["ssh-hosts", "-J"]).await.1;
+        if seen(&out, 1, 5) {
+            assert!(out.contains("\"at\":\"s:1.0\""), "{out}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "Enter's window was not seen as a use: {out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (_, wins, _) = h.cli(&["list-windows", "-t", "s"]).await;
+    assert!(wins.contains("1: box*"), "{wins}");
+    let (_, host, _) = h.cli(&["display-message", "-p", "-t", "s:box", "#{pane_ssh_host}"]).await;
+    assert_eq!(host.trim(), "me@box:2222");
+    // `s`: a split beside the pane, a second use, both panes listed.
+    c.prefix('@').await;
+    c.wait_for("connected now", |s| s.contents().contains("s:1.0")).await;
+    c.type_str("s").await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let out = h.cli(&["ssh-hosts", "-J"]).await.1;
+        if seen(&out, 2, 6) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the split was not seen as a use: {out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (_, panes, _) = h.cli(&["list-panes", "-t", "s:box"]).await;
+    assert_eq!(panes.lines().count(), 2, "{panes}");
+    // Enter on it now goes to a pane on it: no third window.
+    c.prefix('@').await;
+    c.wait_for("connected now", |s| s.contents().contains("s:1.0")).await;
+    c.key(0x0D, '\r', 0).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (_, wins, _) = h.cli(&["list-windows", "-t", "s"]).await;
+    assert_eq!(wins.lines().count(), 2, "{wins}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn focus_pane_brings_every_attached_client_to_that_pane() {
     let h = Harness::start("focus").await;
