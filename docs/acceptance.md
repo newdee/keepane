@@ -5171,3 +5171,10 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 2 | 边界 + 真实路径 | 5000 行 known_hosts + 300 个 alias：release 21 ms/次、排序 0.7 ms；新增 e2e：PATH 上的替身 ssh，Enter 开窗口（次数 4→5）、`s` 分屏（6，2 个 pane）、已连接时 Enter 不开新窗口 | 干净（2/3） |
 | 3 | 可复现 + 全量 + 跨平台 | 两个 ssh e2e 连跑 10 次 10/10；Windows fmt 0、clippy 0、530 + 11 + 147；Linux 515 + 144；review 未发现不确定的顺序（历史计数用有序 Vec，排序以名字、再以下标定序，JSON 保序） | 干净（3/3），验收通过 |
 - 遗留：两个 keepane 服务器（不同 socket，同一数据目录）同时写主机簿时后写的覆盖先写的，计数可能少记；Linux/macOS 上没有 Enter/`s` 真实连接路径的 e2e（sh 的副本接不了 ssh 的参数），由 argv 单元测试和 Windows e2e 覆盖。
+- 发布前 CI 发现：macOS 上 `choose_ssh_lists_…` 失败（"the ssh was not seen"）。原因是 macOS 的 `/bin/sh` 是个转接程序，会换成 bash（或 dash、zsh）运行，替身进程因此叫 `bash`。定性：个性，只是测试替身的问题；属于测试环境的边界遗漏。产品路径不受影响：macOS 取进程名用 `pbi_comm`（可执行文件名），真的 ssh 就叫 `ssh`。改为复制 `/bin/bash`。重新验收：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | macOS 产品路径 review + Linux | 读 `tree_of`（`pbi_comm`）和 `process_command_line`（`ps -o command=`），无问题；Linux ssh e2e 连跑 5 次 5/5 | 干净（1/3） |
+| 2 | 全量（Windows） | clippy 0；530 + 11 + 147 | 干净（2/3） |
+| 3 | CI 三平台 | 见提交 | 见下 |

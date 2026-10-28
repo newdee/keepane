@@ -8479,7 +8479,7 @@ async fn choose_jobs_edges() {
 /// `choose-ssh` (prefix @), `ssh-hosts` and `#{pane_ssh_host}`: an `ssh` in
 /// a pane is seen, counted once, listed first while it runs, and its
 /// machine kept in the book. The `ssh` is a stand-in (a copy of cmd.exe, or
-/// of sh, under that name, its command line an ssh one): nothing connects.
+/// of bash, under that name, its command line an ssh one): nothing connects.
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_ssh_lists_the_machines_the_panes_reach() {
     let h = Harness::start("choosessh").await;
@@ -8497,7 +8497,9 @@ async fn choose_ssh_lists_the_machines_the_panes_reach() {
     #[cfg(unix)]
     let (argv, label, command) = {
         let fake = dir.join("ssh");
-        std::fs::copy("/bin/sh", &fake).unwrap();
+        // bash, not sh: macOS's /bin/sh starts bash (or dash, zsh) in its
+        // place, and the process is then named that.
+        std::fs::copy("/bin/bash", &fake).unwrap();
         let fake = fake.to_string_lossy().into_owned();
         // No spaces in a word: Linux gives the command line back joined.
         let argv = [fake.as_str(), "-c", "sleep${IFS}120;:", "me@box.example"];
@@ -8625,7 +8627,7 @@ async fn choose_ssh_lists_the_machines_the_panes_reach() {
 /// after it running `ssh`, `s` a split beside the pane; each is then seen
 /// as a use. The `ssh` found first on the PATH is a stand-in (cmd.exe
 /// under that name, which stays open): nothing connects. Windows only: a
-/// copy of sh cannot take ssh's arguments.
+/// copy of bash cannot take ssh's arguments.
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_ssh_connects_in_a_window_and_a_split() {
