@@ -128,15 +128,15 @@ set -g pane-border-format " #{pane_index} #{?agent,#{agent_model} #{agent_cost} 
 claude  claude-opus-5-5  $2.50  41k tokens  model calls 3  tools 4  ✗ 1 failed
 ▸ add the share command                                            5.0s
 ▾ fix the test running                                            1m40s
-  model 1.2k tokens                10s  █████
+  opus-5-5 1.2k tokens             10s  █████
   Read …\src\share.rs              10s       █████
-  Bash ✗ cargo test                30s            ███████████████
+  $ ✗ cargo test                   30s            ███████████████
   Task find it                     10s                           █████
     Glob **/*.rs                   1.0s                           █
-  model thinking                   40s                                ████▶
+  opus-5-5 thinking                40s                                ████▶
 ```
 
-每种步骤一种颜色：模型品红，读取和搜索青色，改文件黄色，运行命令蓝色，子 agent 绿色，其他工具不着色，失败的红色并标 `✗`；还在进行的加粗，末尾有 `▶`。Claude 子 agent 的步骤排在启动它的那次调用下面。默认展开最新的一轮，之前的每轮只显示一行（按 `e` 全部展开）；一轮结束后，显示 agent 已经等你多久了。transcript 是一件事做完才写一行，所以模型调用要等回复写下来才显示；一轮还在进行、又没有工具在跑时，就是模型从上一步起一直在工作（`thinking`）。`keepane trace-pane -t <pane>` 把同样的内容打印成树，`-J` 输出 JSON（每一步的类型、名字、参数摘要、起止毫秒数、父步骤）。
+每种步骤一种颜色：模型品红，读取和搜索青色，改文件黄色，运行命令蓝色，子 agent 绿色，其他工具不着色，失败的红色并标 `✗`；还在进行的加粗，末尾有 `▶`。模型调用显示是哪个模型，命令跟在 `$` 后面按原样显示，文件显示路径末尾。每一轮用你的提问命名；不是你提问开始的，用开始它的东西命名：后台任务完成（它的摘要）、`!` 命令、定时任务、别的会话发来的消息。Claude 子 agent 的步骤排在启动它的那次调用下面。默认展开最新的一轮，之前的每轮只显示一行（按 `e` 全部展开）；一轮结束后，显示 agent 已经等你多久了。标签页停在底部，新的步骤来了也一直显示最新一步（`g` 到顶部，`G` 回到底部）。transcript 是一件事做完才写一行，所以模型调用要等回复写下来才显示；一轮还在进行、又没有工具在跑时，就是模型从上一步起一直在工作（`thinking`）。`keepane trace-pane -t <pane>` 把同样的内容打印成树，`-J` 输出 JSON（每一步的类型、名字、参数摘要、起止毫秒数、父步骤）。
 
 只读 keepane pane 里的 agent。但如果别处（另一个终端、编辑器）的 agent 同时在同一个目录里工作，它的记录写在同一个文件夹，会被算进这个 pane。
 

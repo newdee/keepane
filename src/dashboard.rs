@@ -421,9 +421,10 @@ impl Tab {
         }
     }
 
-    /// Read from the bottom up (a screen, a log) rather than from the top.
+    /// Read from the bottom up (a screen, a log, the trace: the latest step
+    /// stays in sight as more come) rather than from the top.
     fn read_up(self) -> bool {
-        !matches!(self, Tab::Detail | Tab::Trace)
+        !matches!(self, Tab::Detail)
     }
 }
 
@@ -2077,7 +2078,9 @@ pub fn trace_view(json: &str, width: usize, all: bool) -> Vec<String> {
         out.push(dim("No turn yet."));
         return out;
     }
-    let label_w = (width * 2 / 5).clamp(16, 44);
+    // What each step was before where it ran: a command, a file, read.
+    let label_w = (width * 11 / 20).clamp(16, 64);
+    let model = v["model"].as_str().unwrap_or_default();
     let dur_w = 7;
     let bar_w = width.saturating_sub(label_w + dur_w + 2);
     for (i, turn) in turns.iter().enumerate() {
@@ -2104,7 +2107,7 @@ pub fn trace_view(json: &str, width: usize, all: bool) -> Vec<String> {
             out.push(format!("{}{}", " ".repeat(label_w + dur_w + 3), dim(&ruler)));
         }
         let mut rows = Vec::new();
-        trace_rows(&steps, &turn.id, 1, (turn.start, total), now, (label_w, dur_w, bar_w), &mut rows);
+        trace_rows(&steps, &turn.id, 1, (turn.start, total), (now, model), (label_w, dur_w, bar_w), &mut rows);
         out.extend(rows);
     }
     if let Some(end) = turns.last().and_then(|t| t.end) {
@@ -2131,15 +2134,25 @@ fn path_tail(path: &str, width: usize) -> String {
     format!("…{sep}{tail}")
 }
 
+/// A model's name, short: `opus-5-5` for `claude-opus-5-5`, no date.
+fn model_short(name: &str) -> &str {
+    let name = name.strip_prefix("claude-").unwrap_or(name);
+    match name.rsplit_once('-') {
+        Some((head, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => head,
+        _ => name,
+    }
+}
+
 /// The rows of the steps under `parent`, `depth` deep, each the next ones
 /// under it after it; bars across `bar_w` columns for the turn's
-/// `(start, length)`.
+/// `(start, length)`. A model call that does not name its model (one
+/// running) is on the agent's `model`.
 fn trace_rows(
     steps: &[Step],
     parent: &str,
     depth: usize,
     (t0, total): (i64, i64),
-    now: i64,
+    (now, model): (i64, &str),
     (label_w, dur_w, bar_w): (usize, usize, usize),
     out: &mut Vec<String>,
 ) {
@@ -2147,17 +2160,27 @@ fn trace_rows(
     for s in steps.iter().filter(|s| s.parent.as_deref() == Some(parent)) {
         let (sgr, ch) = step_look(&s.kind, s.failed);
         let end = s.end.unwrap_or(now);
+        // Which model; a command as a prompt shows it (whichever shell).
+        let name = match s.kind.as_str() {
+            "model" => {
+                let m = model_short(if s.name.is_empty() { model } else { &s.name });
+                if m.is_empty() { "model" } else { m }
+            }
+            "run" => "$",
+            _ => s.name.as_str(),
+        };
         let what = match s.kind.as_str() {
             "model" if s.end.is_none() => "thinking".to_string(),
             "model" if s.tokens > 0 => format!("{} tokens", crate::format::human_count(s.tokens)),
             "model" => String::new(),
             // A file: its end, which says which.
             "read" | "edit" if !s.detail.contains([' ', '*', '?']) && s.detail.contains(['/', '\\']) => {
-                path_tail(&s.detail, label_w.saturating_sub(2 * depth + s.name.len() + 2))
+                path_tail(&s.detail, label_w.saturating_sub(2 * depth + width_of(name) + 2))
             }
+            // A command run with nothing said of it: the tool.
+            "run" if s.detail.is_empty() => s.name.clone(),
             _ => s.detail.clone(),
         };
-        let name = if s.kind == "model" { "model" } else { s.name.as_str() };
         let mark = if s.failed { format!(" {}", paint("31", "✗")) } else { String::new() };
         let label = format!("{}{}{mark} {}", "  ".repeat(depth), paint(sgr, name), paint("2", &what));
         let mut row = format!("{} {}", fit(&label, label_w), fit_right(&took(end - s.start), dur_w));
@@ -2172,7 +2195,7 @@ fn trace_rows(
             row.push_str(&format!("  {}{drawn}{tip}", " ".repeat(from)));
         }
         out.push(row);
-        trace_rows(steps, &s.id, depth + 1, (t0, total), now, (label_w, dur_w, bar_w), out);
+        trace_rows(steps, &s.id, depth + 1, (t0, total), (now, model), (label_w, dur_w, bar_w), out);
     }
 }
 /// An event log line, short: time, what, the gist.
@@ -3267,18 +3290,18 @@ mod tests {
         assert!(raw[1].contains("\x1b[35m█\x1b[0m model") && raw[1].contains("\x1b[36m▓\x1b[0m read"), "{:?}", raw[1]);
         assert!(text[2].starts_with("▸ first") && text[2].trim_end().ends_with("5.0s"), "{text:#?}");
         assert!(text[3].starts_with("▾ fix the test running") && text[3].trim_end().ends_with("1m40s"), "{text:#?}");
-        assert!(!text.iter().any(|l| l.contains("model 1.2k tokens") && l.contains("5.0s")), "the older turn closed");
-        // Bars: 100 columns, a label of 40, 7 for the time, 51 for the bar
-        // from column 50, over the turn's 100 s.
+        assert!(!text.iter().any(|l| l.contains("opus 1.2k tokens") && l.contains("5.0s")), "the older turn closed");
+        // Bars: 100 columns, a label of 55, 7 for the time, 36 for the bar
+        // from column 65, over the turn's 100 s.
         let bar = |row: &str| {
-            let s = &row[row.char_indices().nth(50).unwrap().0..];
+            let s = &row[row.char_indices().nth(65).unwrap().0..];
             let from = s.chars().position(|c| c != ' ').unwrap();
             (from, s.chars().filter(|c| "█▓▒▶".contains(*c)).count())
         };
         let row =
             |what: &str| text.iter().find(|l| l.contains(what)).unwrap_or_else(|| panic!("{what}: {text:#?}")).clone();
-        assert_eq!(bar(&row("model 1.2k tokens")), (0, 5), "0-10 s of 100: 5 of 51 columns");
-        assert_eq!(bar(&row("cargo test")), (10, 15), "20-50 s");
+        assert_eq!(bar(&row("opus 1.2k tokens")), (0, 3), "0-10 s of 100: 3 of 36 columns");
+        assert_eq!(bar(&row("cargo test")), (7, 11), "20-50 s");
         assert!(
             row("Read").contains(r"Read …\") && row("Read").contains(r"\dashboard_parts\view.rs"),
             "{}",
@@ -3286,7 +3309,17 @@ mod tests {
         );
         assert!(row("Glob").starts_with("    Glob **/*.rs"), "under its call, a pattern whole: {}", row("Glob"));
         let failed = raw.iter().find(|l| l.contains("cargo test")).unwrap();
-        assert!(failed.contains("\x1b[31mBash\x1b[0m") && failed.contains("\x1b[31m✗"), "{failed:?}");
+        assert!(failed.contains("\x1b[31m$\x1b[0m") && failed.contains("\x1b[31m✗"), "{failed:?}");
+        assert!(row("cargo test").starts_with("  $ ✗ cargo test"), "a command as typed: {}", row("cargo test"));
+        // The call running names no model: the agent's.
+        assert!(row("thinking").starts_with("  opus thinking"), "{}", row("thinking"));
+        let unknown = serde_json::json!({"agent": "codex", "model": null, "now": 110_000, "spans": spans.clone()});
+        let unknown: Vec<String> = trace_view(&unknown.to_string(), 100, false).iter().map(|l| strip(l)).collect();
+        assert!(unknown.iter().any(|l| l.starts_with("  model thinking")), "no model known: the word: {unknown:#?}");
+        assert_eq!(
+            [model_short("claude-opus-5-5"), model_short("claude-haiku-4-5-20251001"), model_short("gpt-5.5")],
+            ["opus-5-5", "haiku-4-5", "gpt-5.5"]
+        );
         let thinking = raw.iter().find(|l| strip(l).contains("thinking")).unwrap();
         // Running: bold; it runs to now, the turn's end, so no room for its tip.
         assert!(thinking.contains("\x1b[1;35m") && !strip(thinking).contains('▶'), "{thinking:?}");
@@ -3307,7 +3340,7 @@ mod tests {
         // Narrow: no bars, the rows still.
         let narrow: Vec<String> = trace_view(&doc(spans, 110_000), 30, false).iter().map(|l| strip(l)).collect();
         assert!(
-            narrow[2..].iter().all(|l| !l.contains('█')) && narrow.iter().any(|l| l.contains("Bash")),
+            narrow[2..].iter().all(|l| !l.contains('█')) && narrow.iter().any(|l| l.contains("cargo")),
             "{narrow:#?}"
         );
         // `e` opens every turn, and closes them again.
@@ -3318,8 +3351,8 @@ mod tests {
         assert!(!b.trace_all);
     }
 
-    /// To the top (`g`, Home) and the bottom (`G`, End), in a tab read from
-    /// the bottom (a screen) and in one read from the top (the trace): a
+    /// To the top (`g`, Home) and the bottom (`G`, End), in a screen and in
+    /// the trace, both read from the bottom: a
     /// page of lines in sight each time, the first or the last, never an
     /// empty panel; `k` held past the top stays there.
     #[test]
@@ -3350,23 +3383,30 @@ mod tests {
         let _ = b.frame();
         b.key(Key::plain(KeyCode::Char('g')));
         assert_eq!((b.scroll, shown(&b).iter().filter(|l| l.starts_with("line ")).count()), (0, 3));
-        // Read from the top: G shows the last rows, g the first.
+        // The trace, read from the bottom too: the latest step in sight at
+        // once and as more come; g the top, G the bottom again.
         b.tab = Tab::Trace;
-        let spans: Vec<serde_json::Value> = (0..60)
-            .map(|i| {
-                serde_json::json!({"id": format!("s{i}"), "parent": if i == 0 { None } else { Some("s0") },
-                    "kind": if i == 0 { "turn" } else { "read" }, "name": format!("step{i}"), "detail": "",
-                    "start": i * 1000, "end": i * 1000 + 500, "failed": false, "tokens": 0})
-            })
-            .collect();
-        let doc = serde_json::json!({"agent": "claude", "model": "m", "now": 70_000, "spans": spans}).to_string();
-        b.set_main(vec![doc]);
+        let doc = |n: usize| {
+            let spans: Vec<serde_json::Value> = (0..n)
+                .map(|i| {
+                    serde_json::json!({"id": format!("s{i}"), "parent": if i == 0 { None } else { Some("s0") },
+                        "kind": if i == 0 { "turn" } else { "read" }, "name": format!("step{i}"), "detail": "",
+                        "start": i * 1000, "end": i * 1000 + 500, "failed": false, "tokens": 0})
+                })
+                .collect();
+            serde_json::json!({"agent": "claude", "model": "m", "now": 70_000, "spans": spans}).to_string()
+        };
+        b.set_main(vec![doc(60)]);
         let _ = b.frame();
-        b.key(Key::plain(KeyCode::Char('G')));
         let s = shown(&b);
-        assert!(s.iter().any(|l| l.starts_with("step59")), "{s:#?}");
+        assert!(s.iter().any(|l| l.starts_with("step59")), "the latest at once: {s:#?}");
+        b.set_main(vec![doc(64)]);
+        let _ = b.frame();
+        assert!(shown(&b).iter().any(|l| l.starts_with("step63")), "and as more come");
         b.key(Key::plain(KeyCode::Char('g')));
-        assert!(shown(&b).iter().any(|l| l.starts_with("claude")), "the top again");
+        assert!(shown(&b).iter().any(|l| l.starts_with("claude")), "the top");
+        b.key(Key::plain(KeyCode::Char('G')));
+        assert!(shown(&b).iter().any(|l| l.starts_with("step63")), "the bottom again");
         // T: straight to the trace from any panel.
         b.tab = Tab::Screen;
         b.focus = Panel::Panes;

@@ -107,6 +107,8 @@ pub struct Steps {
     /// was given that is no prompt (a background task done, a message from
     /// another agent).
     pending: Option<String>,
+    /// The model Codex says its turn runs on (its replies do not name it).
+    model: String,
 }
 
 /// A transcript line's time, milliseconds since 1970.
@@ -138,6 +140,12 @@ pub fn detail_of(input: &Value) -> String {
     };
     for key in ["command", "cmd", "file_path", "path", "pattern", "query", "url", "description", "prompt"] {
         match &input[key] {
+            // A file by its end: its name.
+            Value::String(s) if matches!(key, "file_path" | "path") && s.trim().chars().count() > 120 => {
+                let s = s.trim();
+                let n = s.chars().count();
+                return format!("…{}", s.chars().skip(n - 119).collect::<String>());
+            }
             Value::String(s) if !s.trim().is_empty() => return short(s, 120),
             Value::Array(a) if !a.is_empty() => {
                 let words: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
@@ -319,10 +327,15 @@ impl Steps {
             // starts a turn of its own: a scheduled one.
             Some("user") if v["isMeta"].as_bool() != Some(true) || v["turnOrigin"].is_string() => {
                 if let Value::String(s) = &m["content"] {
+                    // Typed (`human`, `sdk`): the prompt, as it is. Begun
+                    // by something else: by what (`(scheduled) …`), another
+                    // session's message by who sent it.
                     match v["turnOrigin"].as_str() {
-                        Some(origin) if !s.trim_start().starts_with('<') => {
+                        Some(origin) if !s.trim_start().starts_with('<') && !matches!(origin, "human" | "sdk") => {
                             self.pending = None;
-                            self.begin(t, &format!("({origin}) {}", s.trim()));
+                            let from = (origin == "peer").then(|| s.find('<').and_then(|i| given(&s[i..]))).flatten();
+                            let why = from.unwrap_or_else(|| format!("({}) {}", origin.replace('_', " "), s.trim()));
+                            self.begin(t, &why);
                         }
                         _ => self.prompt(t, s),
                     }
@@ -418,7 +431,13 @@ impl Steps {
 
     fn codex(&mut self, v: &Value, t: i64) {
         let p = &v["payload"];
+        let model = self.model.clone();
         match (v["type"].as_str(), p["type"].as_str()) {
+            (Some("turn_context"), _) => {
+                if let Some(m) = p["model"].as_str().filter(|m| !m.is_empty()) {
+                    self.model = m.to_string();
+                }
+            }
             (Some("event_msg"), Some("task_started")) => self.begin(t, ""),
             (Some("event_msg"), Some("user_message")) => {
                 let text = p["message"].as_str().unwrap_or_default();
@@ -432,10 +451,10 @@ impl Steps {
             (Some("event_msg"), Some(end @ ("task_complete" | "turn_aborted"))) => {
                 self.end_turn(t, end == "turn_aborted")
             }
-            (Some("response_item"), Some("reasoning")) => self.model(t, None, "", 0),
-            (Some("response_item"), Some("message")) if p["role"] == "assistant" => self.model(t, None, "", 0),
+            (Some("response_item"), Some("reasoning")) => self.model(t, None, &model, 0),
+            (Some("response_item"), Some("message")) if p["role"] == "assistant" => self.model(t, None, &model, 0),
             (Some("response_item"), Some(call @ ("function_call" | "custom_tool_call" | "local_shell_call"))) => {
-                self.model(t, None, "", 0);
+                self.model(t, None, &model, 0);
                 let id = p["call_id"].as_str().or_else(|| p["id"].as_str()).unwrap_or_default();
                 let name = p["name"].as_str().unwrap_or(if call == "local_shell_call" { "shell" } else { "tool" });
                 let input = if call == "local_shell_call" {
@@ -530,10 +549,19 @@ fn given(text: &str) -> Option<String> {
             let from = text.split("from=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("an agent");
             Some(format!("a message from {from}"))
         }
+        // Its sender a pipe's address: nothing to know it by.
+        "cross-session-message" => Some("a message from another session".into()),
         "command-name" => inner("command-name"),
-        "system-reminder" | "local-command-stdout" | "local-command-stderr" | "command-message" | "command-args" => {
-            None
-        }
+        // A command the person ran (`!`): it, as typed; its output is not
+        // what the turn answers.
+        "bash-input" => inner("bash-input").map(|c| format!("! {}", short(&c, 98))),
+        "system-reminder"
+        | "local-command-stdout"
+        | "local-command-stderr"
+        | "command-message"
+        | "command-args"
+        | "bash-stdout"
+        | "bash-stderr" => None,
         "" => None,
         other => Some(other.replace('-', " ")),
     }

@@ -160,7 +160,7 @@ fn a_stray_line_begins_no_turn() {
 /// Codex: a turn from `task_started` to `task_complete`, its prompt from
 /// `user_message`; a call and its output by `call_id`, failed by its exit
 /// code; the model's reasoning and messages between, one call while
-/// nothing comes between them.
+/// nothing comes between them, on the model `turn_context` names.
 #[test]
 fn a_codex_turn() {
     let line = |t: f64, ty: &str, payload: Value| {
@@ -169,6 +169,7 @@ fn a_codex_turn() {
     let s = fed(
         Kind::Codex,
         &[
+            line(0.0, "turn_context", serde_json::json!({"model": "gpt-5.5"})),
             line(0.0, "event_msg", serde_json::json!({"type": "task_started"})),
             line(0.1, "event_msg", serde_json::json!({"type": "user_message", "message": "run the tests"})),
             line(3.0, "response_item", serde_json::json!({"type": "reasoning"})),
@@ -205,11 +206,11 @@ fn a_codex_turn() {
         got,
         [
             ("turn", "run the tests", "", ms_at(0.0), Some(ms_at(33.1)), false),
-            ("model", "", "", ms_at(0.1), Some(ms_at(4.0)), false),
+            ("model", "gpt-5.5", "", ms_at(0.1), Some(ms_at(4.0)), false),
             ("run", "shell", "cargo test", ms_at(4.0), Some(ms_at(30.0)), true),
-            ("model", "", "", ms_at(30.0), Some(ms_at(31.0)), false),
+            ("model", "gpt-5.5", "", ms_at(30.0), Some(ms_at(31.0)), false),
             ("edit", "apply_patch", "src/lib.rs", ms_at(31.0), Some(ms_at(31.5)), false),
-            ("model", "", "", ms_at(31.5), Some(ms_at(33.0)), false),
+            ("model", "gpt-5.5", "", ms_at(31.5), Some(ms_at(33.0)), false),
         ]
     );
 }
@@ -349,6 +350,10 @@ fn tools_by_kind_and_what_they_were_given() {
     assert_eq!(detail_of(&serde_json::json!("{\"path\":\"b.rs\"}")), "b.rs");
     assert_eq!(detail_of(&serde_json::json!({"unknown": 1})), "");
     assert_eq!(detail_of(&serde_json::json!({"command": "x".repeat(300)})).chars().count(), 120);
+    // A long path keeps its end, the file's name.
+    let deep = format!(r"C:\{}\tasks\b1.output", "d\\".repeat(100));
+    let kept = detail_of(&serde_json::json!({ "file_path": deep }));
+    assert!(kept.starts_with('…') && kept.ends_with(r"\tasks\b1.output") && kept.chars().count() == 120, "{kept}");
     assert_eq!(
         (took(45), took(4_100), took(39_000), took(192_000)),
         ("45ms".into(), "4.1s".into(), "39s".into(), "3m12s".into())
@@ -362,7 +367,9 @@ fn tools_by_kind_and_what_they_were_given() {
 /// or a background task done, by its summary); one queued by an older
 /// Claude Code (`queue-operation`); a scheduled task's prompt (`isMeta`
 /// with `turnOrigin`). A message queued while a turn runs begins none. A
-/// line the agent adds itself begins none either.
+/// line the agent adds itself begins none either. With `turnOrigin` on
+/// every line: a typed one (`human`, `sdk`) as it is, a task done by its
+/// summary, another session's message by who sent it.
 #[test]
 fn every_turn_is_named_by_what_began_it() {
     let queued = |t: f64, prompt: &str| {
@@ -375,6 +382,11 @@ fn every_turn_is_named_by_what_began_it() {
         "message": {"role": "user", "content": "check the release run"}})
         .to_string();
     let meta = serde_json::json!({"type": "user", "isMeta": true, "timestamp": at(50.0), "message": {"role": "user", "content": "caveat"}}).to_string();
+    let origin = |t: f64, origin: &str, meta: bool, text: &str| {
+        serde_json::json!({"type": "user", "isMeta": meta.then_some(true), "turnOrigin": origin, "timestamp": at(t),
+            "message": {"role": "user", "content": text}})
+        .to_string()
+    };
     let enqueue = serde_json::json!({"type": "queue-operation", "operation": "enqueue", "timestamp": at(60.0),
         "content": "<agent-message from=\"helper\">\nfound it\n</agent-message>"})
     .to_string();
@@ -393,6 +405,30 @@ fn every_turn_is_named_by_what_began_it() {
             meta,
             enqueue,
             done(65.0, "e"),
+            // Claude Code 2.1.3xx says what began each turn: typed, a task
+            // done, another session's message.
+            origin(70.0, "human", false, "ship it"),
+            done(71.0, "f"),
+            origin(72.0, "task_notification", false, notice),
+            done(73.0, "g"),
+            origin(
+                74.0,
+                "peer",
+                true,
+                "Another Claude session sent a message:\n<agent-message from=\"a27\">\nhanded back\n</agent-message>",
+            ),
+            done(75.0, "h"),
+            origin(
+                76.0,
+                "peer",
+                true,
+                "Another Claude session sent a message:\n<cross-session-message from=\"uds:x\">hi",
+            ),
+            done(77.0, "i"),
+            origin(78.0, "sdk", false, "say OK"),
+            done(79.0, "j"),
+            origin(80.0, "peer", true, "no tag in it"),
+            done(81.0, "k"),
         ],
     );
     let turns: Vec<&str> = s.spans.iter().filter(|x| x.kind == SpanKind::Turn).map(|x| x.name.as_str()).collect();
@@ -404,6 +440,12 @@ fn every_turn_is_named_by_what_began_it() {
             "Background command \"tests\" completed (exit code 0)",
             "(scheduled) check the release run",
             "a message from helper",
+            "ship it",
+            "Background command \"tests\" completed (exit code 0)",
+            "a message from a27",
+            "a message from another session",
+            "say OK",
+            "(peer) no tag in it",
         ]
     );
     assert_eq!(given("<command-name>/model</command-name>\n<command-args></command-args>"), Some("/model".into()));
@@ -412,5 +454,7 @@ fn every_turn_is_named_by_what_began_it() {
         given("<task-notification><status>failed</status></task-notification>"),
         Some("a background task done".into())
     );
-    assert_eq!(given("<bash-input>ls</bash-input>"), Some("bash input".into()));
+    assert_eq!(given("<bash-input>ls -la</bash-input>"), Some("! ls -la".into()));
+    assert_eq!(given("<bash-stdout>total 0</bash-stdout><bash-stderr></bash-stderr>"), None);
+    assert_eq!(given("<ide-opened-file>x</ide-opened-file>"), Some("ide opened file".into()));
 }
