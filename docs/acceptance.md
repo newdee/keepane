@@ -5177,4 +5177,6 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 |---|---|---|---|
 | 1 | macOS 产品路径 review + Linux | 读 `tree_of`（`pbi_comm`）和 `process_command_line`（`ps -o command=`），无问题；Linux ssh e2e 连跑 5 次 5/5 | 干净（1/3） |
 | 2 | 全量（Windows） | clippy 0；530 + 11 + 147 | 干净（2/3） |
-| 3 | CI 三平台 | 见提交 | 见下 |
+| 3 | CI 三平台 | 381bd71：macOS、Ubuntu、Windows 的 fmt/clippy/test 和网页检查全部通过 | 干净（3/3），验收通过 |
+
+- 发布：v0.48.0（tag 在 381bd71）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（8de29b0）；winget PR #441466 已更新为 0.48.0。
