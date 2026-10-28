@@ -5213,3 +5213,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 逻辑 + 宽度 | 40–220 共 181 种宽度：每个步骤行不超宽且画出 bar；100 列时标尺正好 100 列；两个变异（不留 15 列、bar 多 1 列）都被抓到；Windows 530 + 11 + 147 | 干净（1/3） |
 | 2 | 真实画面 | 重录 keepane-agents 深色和浅色：40 列右栏 bar 画出、最后一条止于右边框，模型名和 `$ 命令` 可见 | 干净（2/3） |
 | 3 | 跨平台 + CI | Linux fmt、clippy 干净，515 + 144；CI 在 29bdcf8：macOS、Ubuntu、Windows 的 fmt/clippy/test 和网页检查全部通过 | 干净（3/3），验收通过 |
+
+- 发布：v0.48.1（tag 在 854a514，其 CI 通过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（fbe8797）；winget PR #441466 已更新为 0.48.1。
