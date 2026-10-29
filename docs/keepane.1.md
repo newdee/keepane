@@ -102,8 +102,9 @@ marked; `-c` the commands only, `-m` every message sent to it),
 `list-done` (when panes were done: `done-events`, told to the phone, `notify`,
 the `pane-done` hook and `done-webhook`),
 `show-messages`, `clock-mode`, `dashboard` (panes, inboxes, tasks and the
-chosen pane's screen, to act on), `list-agents` (the Claude Code, Codex and
-pi the panes run: model, cost, tokens, context, CPU, memory; `-J` as JSON),
+chosen pane's screen, to act on), `list-agents` (the Claude Code, Codex, pi
+and Cursor CLI the panes run: model, cost, tokens, context, CPU, memory;
+Cursor's CPU and memory only; `-J` as JSON),
 `trace-pane` (what a pane's agent did, step by step: its latest turns, each
 call of the model and each tool, from when to when, failed or not; a tree,
 or `-J` JSON; the dashboard's Trace tab (`T`) draws it as a waterfall,

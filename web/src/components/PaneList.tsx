@@ -579,7 +579,11 @@ function AgentLine({ a }: { a: Agent }) {
     <div
       data-agent={a.kind}
       className="mt-1.5 flex min-w-0 items-center gap-2 pl-4.5 text-xs tabular-nums text-muted"
-      title={t(`${a.kind}: ${a.tokens} tokens, memory ${a.mem}`, `${a.kind}：${a.tokens} tokens，内存 ${a.mem}`)}
+      title={
+        a.tokens
+          ? t(`${a.kind}: ${a.tokens} tokens, memory ${a.mem}`, `${a.kind}：${a.tokens} tokens，内存 ${a.mem}`)
+          : t(`${a.kind}: memory ${a.mem}`, `${a.kind}：内存 ${a.mem}`)
+      }
     >
       <span className="min-w-0 truncate font-medium text-foreground">{a.model || a.kind}</span>
       {a.cost ? <span className="shrink-0">{a.cost}</span> : null}
@@ -593,7 +597,7 @@ function AgentLine({ a }: { a: Agent }) {
           {a.context}
         </span>
       ) : null}
-      <span className="shrink-0">{a.tokens}</span>
+      {a.tokens ? <span className="shrink-0">{a.tokens}</span> : null}
       <span className="shrink-0">{t(`cpu ${a.cpu}`, `CPU ${a.cpu}`)}</span>
     </div>
   );

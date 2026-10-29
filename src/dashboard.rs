@@ -115,20 +115,22 @@ impl AgentRow {
         } else {
             format!("{sep}{} {}", paint("2", "context"), paint_context(&self.context))
         };
+        // A count not known (an agent whose transcripts are not read) is
+        // left out, word and all.
+        let count = |n: &str, word: &str| {
+            if n.is_empty() { String::new() } else { format!("{sep}{n} {}", paint("2", word)) }
+        };
         // What matters most first: a narrow panel cuts the end.
         format!(
-            "{}{model}{cost}{context}{sep}{} {}{sep}{} {}{sep}{} {}{sep}{} {}{sep}{} {}",
+            "{}{model}{cost}{context}{}{sep}{} {}{sep}{} {}{}{}",
             paint("35", &self.kind),
-            self.tokens,
-            paint("2", "tokens"),
+            count(&self.tokens, "tokens"),
             paint("2", "cpu"),
             self.cpu,
             paint("2", "mem"),
             self.mem,
-            self.tools,
-            paint("2", "tools"),
-            self.turns,
-            paint("2", "turns"),
+            count(&self.tools, "tools"),
+            count(&self.turns, "turns"),
         )
     }
 
@@ -607,16 +609,24 @@ struct Column {
     cells: Vec<String>,
     right: bool,
     keep: u8,
+    /// When room is short, cut to as few as this many columns (a cut cell
+    /// ends in `…`) before it goes; 0: whole or not at all.
+    least: usize,
+    /// The width it was cut to.
+    cut: Option<usize>,
 }
 
 impl Column {
-    /// As wide as its widest cell or its heading.
+    /// As wide as its widest cell or its heading, unless it was cut.
     fn width(&self) -> usize {
-        self.cells.iter().map(|c| width_of(c)).max().unwrap_or(0).max(self.head.len())
+        let whole = self.cells.iter().map(|c| width_of(c)).max().unwrap_or(0).max(self.head.len());
+        self.cut.map_or(whole, |w| w.min(whole))
     }
 
     fn cell(&self, text: &str) -> String {
-        if self.right { fit_right(text, self.width()) } else { fit(text, self.width()) }
+        let width = self.width();
+        let text = if width_of(text) > width { clip(text, width - 1).0 + "…" } else { text.to_string() };
+        if self.right { fit_right(&text, width) } else { fit(&text, width) }
     }
 }
 
@@ -1303,7 +1313,7 @@ impl Board {
             if r.activity > 0 { crate::format::human_duration(self.now - r.activity) } else { String::new() }
         };
         let inbox_of = |r: &PaneRow| if r.inbox > 0 { paint("1;34", &r.inbox.to_string()) } else { String::new() };
-        let col = |head, cells, right, keep| Column { head, cells, right, keep };
+        let col = |head, cells, right, keep| Column { head, cells, right, keep, least: 0, cut: None };
         let mut cols = vec![col(
             "pane",
             shown.iter().map(|r| format!("{} {}", r.place, paint("2", &r.id))).collect(),
@@ -1311,7 +1321,9 @@ impl Board {
             u8::MAX,
         )];
         if shown.iter().any(|r| !r.name.is_empty()) {
-            cols.push(col("name", shown.iter().map(|r| paint("1", &r.name)).collect(), false, 3));
+            // One long name cuts the column, not every pane's name out.
+            let names = col("name", shown.iter().map(|r| paint("1", &r.name)).collect(), false, 3);
+            cols.push(Column { least: 8, ..names });
         }
         if shown.iter().any(|r| r.mode != "normal" || r.dead) {
             cols.push(col("mode", shown.iter().map(|r| r.mode_styled()).collect(), false, 1));
@@ -1327,11 +1339,18 @@ impl Board {
         let running = shown.iter().map(|r| width_of(&what_of(r))).max().unwrap_or(0).clamp(7, RUNNING);
         let used = |cols: &[Column]| 1 + cols.iter().map(|c| c.width() + 1).sum::<usize>() + 1;
         while used(&cols) + running > width {
-            let Some(least) = cols.iter().enumerate().filter(|(_, c)| c.keep != u8::MAX).min_by_key(|(_, c)| c.keep)
+            let Some(i) =
+                cols.iter().enumerate().filter(|(_, c)| c.keep != u8::MAX).min_by_key(|(_, c)| c.keep).map(|(i, _)| i)
             else {
                 break;
             };
-            cols.remove(least.0);
+            let over = used(&cols) + running - width;
+            let c = &mut cols[i];
+            if c.width() > c.least && c.least > 0 {
+                c.cut = Some(c.width().saturating_sub(over).max(c.least));
+            } else {
+                cols.remove(i);
+            }
         }
         // What each column is, over it, dim; a blank cell is nothing there,
         // not a sign standing for nothing.
@@ -3045,6 +3064,40 @@ mod tests {
         assert!(text.contains("[0] %3 ─") && !text.contains("normal ·"), "{text}");
     }
 
+    /// One pane with a long name, in a panel too narrow for it: the name
+    /// column is cut (the long one ends in `…`), not dropped, so the other
+    /// panes' names still show whole. The long name costs the names at
+    /// most what 8 columns cost: they show from 2 columns wider at most.
+    #[test]
+    fn a_long_name_cuts_the_name_column_not_every_name() {
+        let long = "a-very-long-name-for-the-tester-pane";
+        let mut b = board();
+        let mut rows = b.rows.clone();
+        rows[1].name = long.into();
+        b.set_rows(rows);
+        b.resize(84, 21);
+        let text = screen(&b).join("\n");
+        assert!(text.contains("lead") && text.contains("a-very-") && text.contains('…'), "{text}");
+        assert!(!text.contains(long), "{text}");
+        // Wide: the whole name, nothing cut.
+        b.resize(220, 30);
+        let text = screen(&b).join("\n");
+        assert!(text.contains(long) && !text.contains('…'), "{text}");
+        // The narrowest table that still has the names, with the long name
+        // and without it.
+        let narrowest = |b: &Board| {
+            (0..=200).find(|w| {
+                let (_, heading, table) = b.pane_table(30, *w);
+                let named = heading.is_some_and(|h| strip(&h).contains("name"));
+                assert_eq!(named, table.iter().any(|(_, l)| strip(l).contains("lead")), "{w}: heading and names");
+                named
+            })
+        };
+        let with_long = narrowest(&b).expect("the names show at some width");
+        let short = narrowest(&board()).expect("the names show at some width");
+        assert!(with_long <= short + 2, "long {with_long}, short {short}");
+    }
+
     /// The board's own format, as the server fills it, reads back: the
     /// agent's figures land in their fields.
     #[test]
@@ -3074,6 +3127,12 @@ mod tests {
         let a = r.agent.unwrap();
         let got = [&a.kind, &a.model, &a.cost, &a.tokens, &a.context, &a.cpu, &a.mem, &a.tools, &a.turns];
         assert_eq!(got, ["codex", "gpt-5.5", "$0.06", "27k", "5%", "3%", "120M", "4", "2"]);
+        let line = strip(&a.line());
+        assert_eq!(line, "codex gpt-5.5 · $0.06 · context 5% · 27k tokens · cpu 3% · mem 120M · 4 tools · 2 turns");
+        // An agent whose counts are not known (Cursor): its line leaves
+        // them out, word and all.
+        let cursor = AgentRow { kind: "cursor".into(), cpu: "0%".into(), mem: "6M".into(), ..AgentRow::default() };
+        assert_eq!(strip(&cursor.line()), "cursor · cpu 0% · mem 6M");
         let none = crate::format::Context { pane_id: 8, ..Default::default() };
         let segs = crate::format::expand(
             PANE_FORMAT,

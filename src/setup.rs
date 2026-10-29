@@ -76,11 +76,12 @@ impl Agent {
 
     /// The agent a program is, by its name (`codex`, `codex.exe`, a path).
     /// Either separator, on any system: a Windows path read on Linux (or a
-    /// name from the other machine) is still split.
+    /// name from the other machine) is still split. Cursor CLI goes by
+    /// `agent` too, its new name.
     pub fn of_program(program: &str) -> Option<Agent> {
         let name = program.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
         let stem = name.strip_suffix(".exe").unwrap_or(&name);
-        AGENTS.into_iter().find(|a| a.program() == stem)
+        AGENTS.into_iter().find(|a| a.program() == stem).or((stem == "agent").then_some(Agent::Cursor))
     }
 }
 
@@ -561,6 +562,7 @@ mod tests {
         // The programs, and the words for them.
         assert_eq!(Agent::of_program("C:\\x\\codex.exe"), Some(Agent::Codex));
         assert_eq!(Agent::of_program("cursor-agent"), Some(Agent::Cursor));
+        assert_eq!(Agent::of_program(r"C:\Users\me\AppData\Local\cursor-agent\agent.exe"), Some(Agent::Cursor));
         assert_eq!(Agent::of_program("pwsh"), None);
         assert_eq!(Agent::parse("cursor"), Some(Agent::Cursor));
         assert_eq!(Agent::parse("cursor-agent"), Some(Agent::Cursor));

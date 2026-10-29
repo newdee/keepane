@@ -4067,6 +4067,79 @@ async fn send_keys_dash_x_drives_copy_mode() {
     h.cli(&["kill-server"]).await;
 }
 
+/// vi's keys in copy mode, typed as a keyboard sends them (Shift held for
+/// `V`, `F`, `$`): `f` and `;` jump along the row, `$` stops on the last
+/// character, `V` copies the whole line, `t` and `F` stop next to and on
+/// a character; and tmux's names for the jumps, from a script.
+#[tokio::test(flavor = "multi_thread")]
+async fn vi_keys_jump_and_select_lines_in_copy_mode() {
+    const VK_4: u16 = 0x34;
+    const VK_OEM_1: u16 = 0xBA;
+    const VK_OEM_PERIOD: u16 = 0xBE;
+    let h = Harness::start("vikeys").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "v"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    h.cli(&["send-keys", "-t", "v:0", "echo alpha.beta.gamma", "Enter"]).await;
+    h.wait_capture("v:0", "echo output", |t| t.matches("alpha.beta.gamma").count() >= 2).await;
+    let buffer_is = async |want: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let out = h.cli(&["show-buffer"]).await.1;
+            if out.trim_end() == want {
+                return;
+            }
+            assert!(Instant::now() < deadline, "buffer {out:?}, waiting for {want:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    // Copy mode on the output line's first column: back to the nearest
+    // `gamma` (the output, under the command that printed it), then `0`.
+    let to_output = async |c: &mut Conn| {
+        c.prefix('[').await;
+        c.type_str("?gamma").await;
+        c.enter().await;
+        c.type_str("0").await;
+    };
+    // alpha.beta.gamma: the dots are columns 5 and 10, g is 11.
+    to_output(&mut c).await;
+    c.type_str("f").await;
+    c.key(VK_OEM_PERIOD, '.', 0).await;
+    c.key(VK_OEM_1, ';', 0).await;
+    c.type_str("v").await;
+    c.key(VK_4, '$', SHIFT_PRESSED).await;
+    c.enter().await;
+    buffer_is(".gamma").await;
+    // V: the whole line, wherever the cursor is on it.
+    to_output(&mut c).await;
+    c.type_str("ll").await;
+    c.key(b'V' as u16, 'V', SHIFT_PRESSED).await;
+    c.enter().await;
+    buffer_is("alpha.beta.gamma").await;
+    // t stops short of the g (the dot), F goes back onto the a before it.
+    to_output(&mut c).await;
+    c.type_str("tgv").await;
+    c.key(b'F' as u16, 'F', SHIFT_PRESSED).await;
+    c.type_str("a").await;
+    c.enter().await;
+    buffer_is("a.").await;
+    // From a script, by tmux's names.
+    to_output(&mut c).await;
+    for argv in [
+        vec!["send-keys", "-t", "v:0", "-X", "jump-forward", "b"],
+        vec!["send-keys", "-t", "v:0", "-X", "begin-selection"],
+        vec!["send-keys", "-t", "v:0", "-X", "jump-to-forward", "g"],
+        vec!["send-keys", "-t", "v:0", "-X", "copy-selection"],
+    ] {
+        let (code, _, err) = h.cli(&argv).await;
+        assert_eq!(code, 0, "{argv:?}: {err}");
+    }
+    buffer_is("beta.").await;
+    let (code, _, err) = h.cli(&["send-keys", "-t", "v:0", "-X", "jump-forward"]).await;
+    assert!(code != 0 && err.contains("which character"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn remain_on_exit_keeps_the_pane_and_history_survives_resume() {
     let h = Harness::start("remain").await;

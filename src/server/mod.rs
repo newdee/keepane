@@ -5471,6 +5471,29 @@ impl Server {
                     "halfpage-up" => Key::ctrl('u'),
                     "halfpage-down" => Key::ctrl('d'),
                     "begin-selection" => Key::ch(' '),
+                    "select-line" => Key::ch('V'),
+                    "jump-again" => Key::ch(';'),
+                    "jump-reverse" => Key::ch(','),
+                    "jump-forward" | "jump-backward" | "jump-to-forward" | "jump-to-backward" => {
+                        // The character to look for, as tmux takes it.
+                        let Some(target) = arg.as_deref().and_then(|a| a.chars().next()) else {
+                            return Outcome::Error(format!("send-keys -X {name}: which character?"));
+                        };
+                        let kind = match name.as_str() {
+                            "jump-forward" => 'f',
+                            "jump-backward" => 'F',
+                            "jump-to-forward" => 't',
+                            _ => 'T',
+                        };
+                        if let Some(pane) = self.find_pane_mut(pid)
+                            && pane.copy.is_none()
+                        {
+                            enter_copy_mode(pane);
+                        }
+                        self.copy_key(cid, pid, Key::ch(kind));
+                        self.copy_key(cid, pid, Key::ch(target));
+                        return Outcome::Ok;
+                    }
                     "rectangle-toggle" | "rectangle-on" => Key::ctrl('v'),
                     "copy-selection" | "copy-selection-and-cancel" | "copy-pipe-and-cancel" => Key::ch('y'),
                     "cancel" | "stop-selection" => Key::ch('q'),
@@ -8510,6 +8533,20 @@ impl Server {
         };
         let rows = p.rows as i64;
         let cols = p.cols;
+        // After `f` `F` `t` `T`: the character it looks for (a digit too);
+        // any other key leaves the jump undone.
+        if let Some((kind, n)) = p.copy.as_mut().and_then(|c| c.jump.take()) {
+            if let KeyCode::Char(target) = k.code
+                && !k.ctrl
+                && !k.alt
+            {
+                copy_jump(p, kind, target, n);
+                if let Some(c) = p.copy.as_mut() {
+                    c.last_jump = Some((kind, target));
+                }
+            }
+            return;
+        }
         // vi counts: digits before a motion repeat it ("3j"), except a 0 with
         // no count yet, which is "start of line".
         let has_count = p.copy.as_ref().and_then(|c| c.count).is_some();
@@ -8542,6 +8579,7 @@ impl Server {
             (KeyCode::Escape, _, _) => {
                 if c.anchor.is_some() {
                     c.anchor = None;
+                    c.lines = false;
                 } else {
                     exit_copy_mode(p);
                 }
@@ -8593,16 +8631,45 @@ impl Server {
                 let abs = copy_abs(p);
                 let c = p.copy.as_mut().unwrap();
                 c.anchor = Some((abs, c.cx));
+                c.lines = false;
             }
-            // A rectangle instead of whole lines, as vi's C-v does.
+            // A rectangle instead of a run of characters, as vi's C-v does.
             (KeyCode::Char('v'), true, _) => {
                 let abs = copy_abs(p);
                 let c = p.copy.as_mut().unwrap();
                 c.rect = !c.rect;
+                c.lines = false;
                 if c.anchor.is_none() {
                     c.anchor = Some((abs, c.cx));
                 }
             }
+            // Whole lines, as vi's V; V again: no selection.
+            (KeyCode::Char('V'), false, false) => {
+                if c.anchor.is_some() && c.lines {
+                    c.anchor = None;
+                    c.lines = false;
+                } else {
+                    let abs = copy_abs(p);
+                    let c = p.copy.as_mut().unwrap();
+                    c.anchor = c.anchor.or(Some((abs, c.cx)));
+                    c.lines = true;
+                    c.rect = false;
+                }
+            }
+            // To a character on the cursor's row: the next one typed.
+            (KeyCode::Char(kind @ ('f' | 'F' | 't' | 'T')), false, false) => c.jump = Some((kind, count)),
+            // The last of those again: `;` the same way, `,` the other.
+            (KeyCode::Char(again @ (';' | ',')), false, false) => match c.last_jump {
+                Some((kind, target)) => {
+                    let kind = match again {
+                        ',' if kind.is_lowercase() => kind.to_ascii_uppercase(),
+                        ',' => kind.to_ascii_lowercase(),
+                        _ => kind,
+                    };
+                    copy_jump(p, kind, target, count);
+                }
+                None => self.message(cid, "no previous jump"),
+            },
             // Word motions.
             (KeyCode::Char(w @ ('w' | 'W' | 'b' | 'B' | 'e' | 'E')), false, false) => {
                 copy_word_motion(p, w);
@@ -8954,6 +9021,7 @@ impl Server {
             let abs = copy_abs(pane);
             let c = pane.copy.as_mut().unwrap();
             c.anchor = Some((abs, c.cx));
+            c.lines = false;
             c.dragging = true;
             // From now on the drag is this pane's (`select_drag`).
             self.clients.get_mut(&cid).unwrap().selecting = Some(Selecting { pane: pid, edge: 0, ticking: false });
@@ -9495,8 +9563,9 @@ impl Server {
             }
             if p.copy.is_some() {
                 let cur_abs = copy_abs(p);
+                let ends = copy_ends(p);
                 let cm = p.copy.as_ref().unwrap();
-                let sel = copy_sel_view(p.rows, p.cols, cm, cur_abs);
+                let sel = ends.and_then(|e| copy_sel_view(p.rows, p.cols, e, cm.cy, cur_abs));
                 copy_views.insert(p.id, CopyView { cx: cm.cx, cy: cm.cy, sel, rect: cm.rect, offset: cm.offset });
                 let off = cm.offset;
                 p.parser.screen_mut().set_scrollback(off);
@@ -10247,6 +10316,9 @@ fn enter_copy_mode(p: &mut Pane) {
             search_back: true,
             count: None,
             rect: false,
+            lines: false,
+            jump: None,
+            last_jump: None,
         });
     }
 }
@@ -10641,9 +10713,77 @@ fn copy_to_line_edge(p: &mut Pane, end: bool) {
             }
         }
     }
+    // The end is its last character (vi's `$`), not the blanks after it.
+    let last = if end {
+        let abs = copy_abs(p);
+        let text = p.line_text(abs).0;
+        let text = text.trim_end();
+        let tail = text.chars().last().map_or(0, |ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0));
+        (unicode_width::UnicodeWidthStr::width(text) - tail) as u16
+    } else {
+        0
+    };
     let cols = p.cols;
     let c = p.copy.as_mut().unwrap();
-    c.cx = if end { cols.saturating_sub(1) } else { 0 };
+    c.cx = last.min(cols.saturating_sub(1));
+}
+
+/// vi's `f` `F` `t` `T` on the copy cursor's row: to the `count`th
+/// `target` after the cursor (`F` `T`: before it), on it (`f` `F`) or
+/// next to it, short of it (`t` `T`), where that column is past the
+/// cursor (`;` after `t` goes on to the next one). Not there that many
+/// times: the cursor stays.
+fn copy_jump(p: &mut Pane, kind: char, target: char, count: usize) {
+    let abs = copy_abs(p);
+    let text = p.line_text(abs).0;
+    let chars: Vec<char> = text.chars().collect();
+    let spans = pane::column_spans(&text);
+    // Each character drawn: its first column, its width, itself.
+    let drawn: Vec<(usize, usize, char)> = spans
+        .iter()
+        .enumerate()
+        .filter(|(col, s)| *col == 0 || spans[col - 1] != **s)
+        .map(|(col, s)| (col, spans[col..].iter().take_while(|t| *t == s).count(), chars[s.start]))
+        .collect();
+    let Some(c) = p.copy.as_mut() else { return };
+    let x = usize::from(c.cx);
+    let lands = drawn.iter().filter(|(_, _, ch)| *ch == target).filter_map(|&(col, width, _)| match kind {
+        'f' | 'F' => Some(col),
+        't' => col.checked_sub(1),
+        _ => Some(col + width),
+    });
+    let to = if kind.is_lowercase() {
+        lands.filter(|l| *l > x).nth(count.max(1) - 1)
+    } else {
+        lands.filter(|l| *l < x).collect::<Vec<_>>().into_iter().rev().nth(count.max(1) - 1)
+    };
+    if let Some(to) = to {
+        c.cx = (to as u16).min(p.cols.saturating_sub(1));
+    }
+}
+
+/// The selection's ends in order, each (absolute line, column): the
+/// anchor and the cursor; with `V`, from the first column of the first
+/// line to the last of the last, a line taking every row the terminal
+/// wrapped it onto.
+fn copy_ends(p: &mut Pane) -> Option<((usize, u16), (usize, u16))> {
+    let cur = copy_abs(p);
+    let c = p.copy.as_ref()?;
+    let (mut a, mut b) = (c.anchor?, (cur, c.cx));
+    if a > b {
+        std::mem::swap(&mut a, &mut b);
+    }
+    if c.lines {
+        while a.0 > 0 && p.goes_on(a.0 - 1) {
+            a.0 -= 1;
+        }
+        let last = p.scrollback_len() + p.rows as usize - 1;
+        while b.0 < last && p.goes_on(b.0) {
+            b.0 += 1;
+        }
+        (a.1, b.1) = (0, p.cols.saturating_sub(1));
+    }
+    Some((a, b))
 }
 
 fn copy_abs(p: &mut Pane) -> usize {
@@ -10655,17 +10795,19 @@ fn copy_abs(p: &mut Pane) -> usize {
     max - c.offset + c.cy as usize
 }
 
-/// Selection as inclusive screen coordinates for rendering. `cursor_abs` is
-/// the absolute line under the copy cursor.
-fn copy_sel_view(rows: u16, cols: u16, cm: &CopyMode, cursor_abs: usize) -> Option<((u16, u16), (u16, u16))> {
-    let (abs_a, col_a) = cm.anchor?;
-    let ay = cm.cy as i64 + (abs_a as i64 - cursor_abs as i64);
+/// Selection as inclusive screen coordinates for rendering: its ends
+/// (`copy_ends`), the copy cursor's row on the screen and absolute line.
+fn copy_sel_view(
+    rows: u16,
+    cols: u16,
+    ends: ((usize, u16), (usize, u16)),
+    cy: u16,
+    cursor_abs: usize,
+) -> Option<((u16, u16), (u16, u16))> {
+    let row = |abs: usize| cy as i64 + (abs as i64 - cursor_abs as i64);
     let rows = rows as i64;
-    let mut a = (ay, col_a as i64);
-    let mut b = (cm.cy as i64, cm.cx as i64);
-    if a > b {
-        std::mem::swap(&mut a, &mut b);
-    }
+    let a = (row(ends.0.0), ends.0.1 as i64);
+    let b = (row(ends.1.0), ends.1.1 as i64);
     if b.0 < 0 || a.0 >= rows {
         return None;
     }
@@ -10691,14 +10833,7 @@ fn copy_selection(p: &mut Pane) -> Result<(usize, String, Option<String>), Strin
 /// the rectangle between them), lines joined where the terminal wrapped
 /// them, blanks at their ends dropped.
 fn selected_text(p: &mut Pane) -> Result<String, String> {
-    let cur_abs = copy_abs(p);
-    let c = p.copy.as_ref().unwrap();
-    let Some((abs_a, col_a)) = c.anchor else { return Err("no selection".into()) };
-    let mut a = (abs_a, col_a);
-    let mut b = (cur_abs, c.cx);
-    if a > b {
-        std::mem::swap(&mut a, &mut b);
-    }
+    let Some((a, b)) = copy_ends(p) else { return Err("no selection".into()) };
     let rect = p.copy.as_ref().is_some_and(|c| c.rect);
     let (rx0, rx1) = (a.1.min(b.1) as usize, a.1.max(b.1) as usize);
     let mut text = String::new();
@@ -11076,7 +11211,8 @@ mod tests {
 
     /// `0` and `$` in copy mode go to the ends of the line, across the rows
     /// the terminal wrapped it onto (as tmux's start-of-line and
-    /// end-of-line), so `0 v $` copies the whole line, joined.
+    /// end-of-line), `$` to its last character, not the blanks after it;
+    /// so `0 v $` copies the whole line, joined.
     #[test]
     fn the_ends_of_a_line_are_past_the_rows_it_wrapped_onto() {
         let argv: Vec<String> = if cfg!(windows) {
@@ -11086,7 +11222,7 @@ mod tests {
         };
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut p = Pane::spawn(1, &argv, None, 20, 6, 100, &[], tx).unwrap();
-        // Rows 1 to 3 are one line of 45 characters.
+        // Rows 1 to 3 are one line of 44 characters: 4 on the last row.
         let long = "printf-%s-second-1-second-2-and-more-of-it-x";
         p.process_output(format!("short\r\n{long}\r\nnext").as_bytes());
         enter_copy_mode(&mut p);
@@ -11098,7 +11234,7 @@ mod tests {
         let at = |p: &Pane| p.copy.as_ref().map(|c| (c.cy, c.cx)).unwrap();
         place(&mut p, 2, 5);
         copy_to_line_edge(&mut p, true);
-        assert_eq!(at(&p), (3, 19), "$: the last row of the line");
+        assert_eq!(at(&p), (3, 3), "$: the last character, on the last row of the line");
         copy_to_line_edge(&mut p, false);
         assert_eq!(at(&p), (1, 0), "0: its first row");
         p.copy.as_mut().unwrap().anchor = Some((1, 0));
@@ -11107,12 +11243,151 @@ mod tests {
         // A line of one row: its own ends, as before.
         place(&mut p, 0, 2);
         copy_to_line_edge(&mut p, true);
-        assert_eq!(at(&p), (0, 19));
+        assert_eq!(at(&p), (0, 4), "short: its t");
         copy_to_line_edge(&mut p, false);
         assert_eq!(at(&p), (0, 0));
         place(&mut p, 4, 1);
         copy_to_line_edge(&mut p, false);
         assert_eq!(at(&p), (4, 0), "the row after a wrapped line is a line of its own");
+        // An empty row: column 0.
+        place(&mut p, 5, 3);
+        copy_to_line_edge(&mut p, true);
+        assert_eq!(at(&p), (5, 0), "nothing on it");
+        // A row that ends in a wide character: its first column.
+        let mut p = copy_pane("ab中文  \r\n");
+        p.copy.as_mut().unwrap().cy = 0;
+        copy_to_line_edge(&mut p, true);
+        assert_eq!(at(&p), (0, 4), "文 is columns 4-5, the blanks after it not counted");
+    }
+
+    /// A pane in copy mode with `text` written to it, 20 columns by 6 rows.
+    fn copy_pane(text: &str) -> Pane {
+        let argv: Vec<String> = if cfg!(windows) {
+            ["cmd.exe", "/c", "exit"].map(String::from).to_vec()
+        } else {
+            ["/bin/sh", "-c", "exit"].map(String::from).to_vec()
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut p = Pane::spawn(1, &argv, None, 20, 6, 100, &[], tx).unwrap();
+        p.process_output(text.as_bytes());
+        enter_copy_mode(&mut p);
+        p.copy.as_mut().unwrap().offset = 0;
+        p
+    }
+
+    /// `V` selects whole lines, a wrapped one with all its rows, whatever
+    /// the columns of the anchor and the cursor; `V` again, none; `v` goes
+    /// back to characters. On the screen the rows are lit edge to edge.
+    #[test]
+    fn shift_v_selects_whole_lines() {
+        // Rows: 0 short, 1-3 the long line, 4 next one, 5 last.
+        let long = "printf-%s-second-1-second-2-and-more-of-it-x";
+        let mut p = copy_pane(&format!("short\r\n{long}\r\nnext one\r\nlast"));
+        let put = |p: &mut Pane, row: u16, col: u16| {
+            let c = p.copy.as_mut().unwrap();
+            (c.cy, c.cx) = (row, col);
+        };
+        let c = p.copy.as_mut().unwrap();
+        (c.anchor, c.lines) = (Some((0, 3)), true);
+        put(&mut p, 2, 5);
+        assert_eq!(selected_text(&mut p).unwrap(), format!("short\n{long}"), "row 2 is in the long line");
+        put(&mut p, 4, 2);
+        assert_eq!(selected_text(&mut p).unwrap(), format!("short\n{long}\nnext one"));
+        let ends = copy_ends(&mut p).unwrap();
+        assert_eq!(ends, ((0, 0), (4, 19)), "from the first column to the last");
+        assert_eq!(copy_sel_view(6, 20, ends, 4, 4), Some(((0, 0), (4, 19))), "lit edge to edge");
+        // Upwards: the anchor on the long line's last row, the cursor in
+        // its middle row.
+        p.copy.as_mut().unwrap().anchor = Some((3, 0));
+        put(&mut p, 2, 9);
+        assert_eq!(selected_text(&mut p).unwrap(), long, "one wrapped line: all its rows");
+        // Characters, as before: from the anchor's column to the cursor's.
+        p.copy.as_mut().unwrap().lines = false;
+        assert_eq!(selected_text(&mut p).unwrap(), "nd-more-of-i", "row 2 from column 9, row 3 to column 0");
+    }
+
+    /// vi's `f` `F` `t` `T` on the copy cursor's row: the `count`th one,
+    /// on it or short of it, a wide character counted in its columns; not
+    /// there, the cursor stays.
+    #[test]
+    fn f_and_t_jump_to_a_character_on_the_row() {
+        // Columns: a 0, . 1, b 2, . 3, 中 4-5, . 6, c 7, . 8.
+        let mut p = copy_pane("a.b.中.c.\r\n");
+        let at = |p: &Pane| p.copy.as_ref().unwrap().cx;
+        let put = |p: &mut Pane, col: u16| {
+            let c = p.copy.as_mut().unwrap();
+            (c.cy, c.cx) = (0, col);
+        };
+        put(&mut p, 0);
+        copy_jump(&mut p, 'f', '.', 1);
+        assert_eq!(at(&p), 1);
+        copy_jump(&mut p, 'f', '.', 2);
+        assert_eq!(at(&p), 6, "the second one after the cursor");
+        copy_jump(&mut p, 'F', 'b', 1);
+        assert_eq!(at(&p), 2);
+        copy_jump(&mut p, 'f', '中', 1);
+        assert_eq!(at(&p), 4, "a wide character: its first column");
+        put(&mut p, 0);
+        copy_jump(&mut p, 't', 'c', 1);
+        assert_eq!(at(&p), 6, "short of it");
+        copy_jump(&mut p, 't', '.', 1);
+        assert_eq!(at(&p), 7, "t next to one goes on to the one after (as ; does)");
+        copy_jump(&mut p, 'T', '中', 1);
+        assert_eq!(at(&p), 6, "T: the column after its last");
+        copy_jump(&mut p, 'f', 'z', 1);
+        assert_eq!(at(&p), 6, "not there: stays");
+        copy_jump(&mut p, 'F', '.', 9);
+        assert_eq!(at(&p), 6, "not there that many times: stays");
+        copy_jump(&mut p, 'F', '.', 2);
+        assert_eq!(at(&p), 1, "the second one before the cursor");
+    }
+
+    /// The jumps, `$` and `V` at their edges: a target in the first
+    /// column, the cursor at either end of the row, a count far past what
+    /// is there, an empty screen.
+    #[test]
+    fn copy_motions_at_their_edges() {
+        let mut p = copy_pane("x.y\r\n");
+        let at = |p: &Pane| p.copy.as_ref().unwrap().cx;
+        let put = |p: &mut Pane, col: u16| {
+            let c = p.copy.as_mut().unwrap();
+            (c.cy, c.cx) = (0, col);
+        };
+        put(&mut p, 2);
+        copy_jump(&mut p, 't', 'x', 1);
+        assert_eq!(at(&p), 2, "t to the first column: no column before it");
+        copy_jump(&mut p, 'T', 'y', 1);
+        assert_eq!(at(&p), 2, "T onto the cursor's own column: not past it");
+        put(&mut p, 0);
+        copy_jump(&mut p, 'F', 'x', 1);
+        assert_eq!(at(&p), 0, "nothing before the first column");
+        put(&mut p, 19);
+        copy_jump(&mut p, 'f', '.', 1);
+        assert_eq!(at(&p), 19, "nothing after the last");
+        put(&mut p, 0);
+        copy_jump(&mut p, 'f', '.', 10_000);
+        assert_eq!(at(&p), 0, "a count past what is there: stays");
+        copy_jump(&mut p, 'f', '.', 0);
+        assert_eq!(at(&p), 1, "a count of 0 is 1");
+        // An empty screen: `$` at column 0, a jump finds nothing, `V`
+        // selects the empty row.
+        let mut p = copy_pane("");
+        put(&mut p, 7);
+        copy_to_line_edge(&mut p, true);
+        assert_eq!(at(&p), 0);
+        copy_jump(&mut p, 'f', 'a', 1);
+        assert_eq!(at(&p), 0);
+        let c = p.copy.as_mut().unwrap();
+        (c.anchor, c.lines) = (Some((0, 5)), true);
+        assert_eq!(selected_text(&mut p).unwrap(), "");
+        assert_eq!(copy_ends(&mut p), Some(((0, 0), (0, 19))));
+        // The top of a long scrollback: V from line 0 stays there.
+        let text: String = (0..50).map(|i| format!("line {i}\r\n")).collect();
+        let mut p = copy_pane(&text);
+        let max = p.scrollback_len();
+        let c = p.copy.as_mut().unwrap();
+        (c.offset, c.cy, c.cx, c.anchor, c.lines) = (max, 0, 3, Some((0, 2)), true);
+        assert_eq!(selected_text(&mut p).unwrap(), "line 0");
     }
 
     /// An ask on a thread answers, even when it panics: None then.

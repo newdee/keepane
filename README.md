@@ -198,8 +198,10 @@ to `shell` (where what it gets is run) ask first. The design:
 (The agents in the recording are stand-ins that write Claude Code's and
 Codex's transcripts; keepane reads the real ones the same way.)
 
-keepane knows the agents its panes run: Claude Code, Codex and pi (by the
-program's name, or by what `node` runs). For each, it reads the transcript
+keepane knows the agents its panes run: Claude Code, Codex, pi and Cursor
+CLI (by the program's name, or by what `node` runs; Cursor's `agent` only
+from Cursor's own folder). keepane does not read Cursor's chats: for it,
+only the CPU and memory. For each of the others, it reads the transcript
 the agent writes for its directory (`~/.claude/projects`, `~/.codex/sessions`,
 `~/.pi/agent/sessions`; `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, as the server
 was started with, are followed),
@@ -640,13 +642,16 @@ Copy mode, the keys used most:
 - Moving: `h` `j` `k` `l` or the arrows; `w` `b` `e` by word; `0` `^` `$`,
   `H` `M` `L`, `{` `}`, `g` `G` jump; `[` `]` go to the previous / next
   command the shell ran, where it was typed. `0` and `$` go to the ends of
-  the line the program printed, across the rows a long one wrapped onto.
+  the line the program printed, across the rows a long one wrapped onto;
+  `$` to its last character, not the blanks after it. `f` and a character
+  go to the next one on the row, `F` back to the one before, `t` `T` stop
+  next to it; `;` and `,` do it again, the same way or the other way.
 - Paging: `PageUp` / `PageDown` or `C-b` / `C-f`; `C-u` / `C-d` by half a
   page. Since `C-b` is also the prefix, `C-b C-b` pages up in copy mode. A
   number repeats a key, such as `3j`.
-- Selecting and copying: `Space` or `v` starts a selection, `C-v` makes it
-  a rectangle, `Enter` or `y` copies to a paste buffer and the Windows
-  clipboard.
+- Selecting and copying: `Space` or `v` starts a selection, `V` selects
+  whole lines (`V` again: none), `C-v` makes it a rectangle, `Enter` or
+  `y` copies to a paste buffer and the Windows clipboard.
 - Searching: `/` searches, `?` searches backwards, `n` / `N` go to the next
   hit; ↑ / ↓ at the `/` prompt bring back what was looked for before, the
   last 100; `q` leaves.

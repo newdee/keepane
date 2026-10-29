@@ -101,7 +101,7 @@ keepane send-message --to %lead --task 12 "还有一件事"
 
 （录屏里的 agent 是替身，按 Claude Code 和 Codex 的格式写会话记录；keepane 读真的 agent 也是一样。）
 
-keepane 认得 pane 里跑的 agent：Claude Code、Codex 和 pi（看程序名，或看 `node` 跑的是什么）。每个 agent 都会为它的工作目录写一份会话记录（`~/.claude/projects`、`~/.codex/sessions`、`~/.pi/agent/sessions`；也认 server 启动时的 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`）。keepane 每 2 秒读一次，只读上次之后新写的部分，从中得到模型、用掉的 token、调用工具的次数、回复的次数、上下文占了多少；再从进程表读 agent 及其子进程的 CPU 和内存。Claude Code 的 subagent 算在它的 pane 上。
+keepane 认得 pane 里跑的 agent：Claude Code、Codex、pi 和 Cursor CLI（看程序名，或看 `node` 跑的是什么；Cursor 的 `agent` 只认 Cursor 自己目录里的那个）。keepane 不读 Cursor 的对话，所以 Cursor 只有 CPU 和内存。其余每个 agent 都会为它的工作目录写一份会话记录（`~/.claude/projects`、`~/.codex/sessions`、`~/.pi/agent/sessions`；也认 server 启动时的 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`）。keepane 每 2 秒读一次，只读上次之后新写的部分，从中得到模型、用掉的 token、调用工具的次数、回复的次数、上下文占了多少；再从进程表读 agent 及其子进程的 CPU 和内存。Claude Code 的 subagent 算在它的 pane 上。
 
 花费：pi 自己记了花费，直接用。其余的按 [LiteLLM 的公开价目表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) 给每个模型的 token（新输入、读缓存、写缓存、输出）分别计价。价目表用 `curl` 下载，一天一次（失败了 1 小时后再试），只在有 pane 跑 agent 时才下载，存在数据目录里。表上是各家的 API 标价：订阅（Claude Max、ChatGPT Pro）另有计费，所以这个数是“同样的活走 API 要花多少”。价目表里没有的模型不计价，这时花费后面带 `+`（`$2.10+`：至少这么多）。`set -g agent-cost off` 不下载，也不显示花费；环境变量 `KEEPANE_PRICE_LIST` 可以指定自己的价目表（LiteLLM 的格式）。
 
@@ -337,9 +337,9 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 
 copy mode 的常用操作：
 
-- 移动：`h` `j` `k` `l` 或方向键；`w` `b` `e` 按词移动；`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转；`[` `]` 跳到上一条 / 下一条命令输入的位置。`0` 和 `$` 跳到这一行的开头和结尾；一行太长折成几行显示时，也跳到整行的开头和结尾。
+- 移动：`h` `j` `k` `l` 或方向键；`w` `b` `e` 按词移动；`0` `^` `$`、`H` `M` `L`、`{` `}`、`g` `G` 跳转；`[` `]` 跳到上一条 / 下一条命令输入的位置。`0` 和 `$` 跳到这一行的开头和结尾；一行太长折成几行显示时，也跳到整行的开头和结尾。`$` 停在最后一个字符上，不停在后面的空白处。`f` 加一个字符，跳到本行下一个该字符；`F` 往回找；`t` `T` 停在它旁边一格；`;` 按同一方向再跳一次，`,` 按反方向。
 - 翻页：`PageUp` / `PageDown` 或 `C-b` / `C-f`；`C-u` / `C-d` 翻半页。由于 `C-b` 也是前缀键，在 copy mode 中按 `C-b C-b` 可上翻一页。数字可指定重复次数，例如 `3j`。
-- 选择与复制：`Space` 或 `v` 开始选择，`C-v` 切换矩形选择，`Enter` 或 `y` 复制到粘贴缓冲区和 Windows 剪贴板。
+- 选择与复制：`Space` 或 `v` 开始选择，`V` 按整行选择（再按 `V` 取消），`C-v` 切换矩形选择，`Enter` 或 `y` 复制到粘贴缓冲区和 Windows 剪贴板。
 - 搜索：`/` 开始搜索、`?` 反向搜索，`n` / `N` 跳到下一个结果；在 `/` 提示符里按 ↑ / ↓ 翻出之前搜过的词，保留最近 100 条；`q` 退出。
 
 脚本可用 `send-keys -X <命令名>` 执行对应操作，命令名与 tmux 相同。

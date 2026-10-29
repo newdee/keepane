@@ -1,7 +1,8 @@
 //! The agents in the panes: what each has used and cost so far, how full
 //! its context is, how busy its processes are (`list-agents`, the `agent_*`
 //! formats, the dashboard, the page). Only agents keepane runs: a pane's
-//! process, or one under it, that is Claude Code, Codex or pi.
+//! process, or one under it, that is Claude Code, Codex, pi or Cursor CLI
+//! (its CPU and memory only).
 //!
 //! The numbers come from the transcripts each agent writes for its work in
 //! a directory (read as they grow, from where the last read stopped) and
@@ -32,6 +33,9 @@ pub enum Kind {
     Claude,
     Codex,
     Pi,
+    /// Cursor CLI: known by its process only. Its chats are not read: no
+    /// tokens, cost or trace, its CPU and memory only.
+    Cursor,
 }
 
 impl Kind {
@@ -41,12 +45,21 @@ impl Kind {
             Kind::Claude => "claude",
             Kind::Codex => "codex",
             Kind::Pi => "pi",
+            Kind::Cursor => "cursor",
         }
+    }
+
+    /// Whether keepane reads its transcripts: its tokens, cost, tools,
+    /// turns and trace are known. Cursor's are not; unknown, not none.
+    pub fn read(self) -> bool {
+        self != Kind::Cursor
     }
 
     /// The agent a process is: by its program's name, or, for one a script
     /// runner runs (node, bun), by what its command line runs. Either path
-    /// separator, on any system.
+    /// separator, on any system. Cursor CLI's new name, `agent`, is too
+    /// common a word to go by alone: it runs from Cursor's own folder
+    /// (`cursor-agent`), as does the node that runs its script.
     pub fn of(name: &str, command_line: impl FnOnce() -> Option<String>) -> Option<Kind> {
         let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
         let stem = base.strip_suffix(".exe").unwrap_or(&base);
@@ -54,7 +67,8 @@ impl Kind {
             "claude" => return Some(Kind::Claude),
             "codex" => return Some(Kind::Codex),
             "pi" => return Some(Kind::Pi),
-            "node" | "bun" | "deno" => {}
+            "cursor-agent" => return Some(Kind::Cursor),
+            "node" | "bun" | "deno" | "agent" => {}
             _ => return None,
         }
         let line = command_line()?.to_ascii_lowercase().replace('\\', "/");
@@ -64,6 +78,8 @@ impl Kind {
             Some(Kind::Codex)
         } else if line.contains("pi-coding-agent") {
             Some(Kind::Pi)
+        } else if line.contains("cursor-agent") {
+            Some(Kind::Cursor)
         } else {
             None
         }
@@ -210,6 +226,7 @@ pub fn feed(kind: Kind, line: &str, u: &mut Usage, seen: &mut HashSet<String>) {
         Kind::Claude => claude(&v, u, seen),
         Kind::Codex => codex(&v, u),
         Kind::Pi => pi(&v, u),
+        Kind::Cursor => {}
     }
 }
 
@@ -512,6 +529,7 @@ pub fn transcripts(
             jsonl_in(&dir.join("projects").join(claude_folder(cwd)), Some(since))
         }
         Kind::Pi => jsonl_in(&home.join(".pi").join("agent").join("sessions").join(pi_folder(cwd)), Some(since)),
+        Kind::Cursor => Vec::new(),
         Kind::Codex => {
             // A folder a day (local dates): the days since `since`, a week
             // at most; each session says its directory on its first line.
@@ -636,12 +654,20 @@ impl Stats {
         ctx.agent = self.kind.word().to_string();
         ctx.agent_model = self.usage.model.clone();
         ctx.agent_cost = self.cost_text();
-        ctx.agent_tokens = human_count(self.usage.tokens.total());
         ctx.agent_context = self.context_text();
         ctx.agent_cpu = format!("{:.0}%", self.cpu);
         ctx.agent_mem = crate::sysinfo::human_bytes(self.mem);
-        ctx.agent_tools = self.usage.tools.to_string();
-        ctx.agent_turns = self.usage.turns.to_string();
+        [ctx.agent_tokens, ctx.agent_tools, ctx.agent_turns] = self.counts();
+    }
+
+    /// Tokens, tools called and turns, as they read; empty when not known
+    /// (an agent whose transcripts are not read).
+    pub fn counts(&self) -> [String; 3] {
+        if !self.kind.read() {
+            return Default::default();
+        }
+        let u = &self.usage;
+        [human_count(u.tokens.total()), u.tools.to_string(), u.turns.to_string()]
     }
 }
 
@@ -713,7 +739,7 @@ impl Watcher {
             let price = prices.and_then(|p| p.of(&usage.model));
             let window = usage.window.or_else(|| price.and_then(|p| p.window));
             let context_pct = window.filter(|w| *w > 0).map(|w| (usage.context.min(w) * 100 / w) as u32);
-            let (cost, cost_partial) = usage.priced(prices);
+            let (cost, cost_partial) = if t.kind.read() { usage.priced(prices) } else { (None, false) };
             let own: Vec<&super::trace::Steps> =
                 t.tails.iter().filter(|tail| !tail.helper).map(|tail| &tail.steps).collect();
             let helpers: Vec<(String, &super::trace::Steps)> = t
@@ -934,17 +960,15 @@ impl Server {
         let lines: Vec<String> = rows
             .iter()
             .map(|(pane, at, a)| {
+                let [tokens, tools, turns] = a.counts().map(dash);
                 format!(
-                    "{pane} {at} {} {} cost {} tokens {} context {} cpu {:.0}% mem {} tools {} turns {}",
+                    "{pane} {at} {} {} cost {} tokens {tokens} context {} cpu {:.0}% mem {} tools {tools} turns {turns}",
                     a.kind.word(),
                     dash(a.usage.model.clone()),
                     dash(a.cost_text()),
-                    human_count(a.usage.tokens.total()),
                     dash(a.context_text()),
                     a.cpu,
                     crate::sysinfo::human_bytes(a.mem),
-                    a.usage.tools,
-                    a.usage.turns,
                 )
             })
             .collect();
@@ -970,7 +994,9 @@ impl Server {
                 let v = serde_json::json!({ "pane": format!("%{pid}"), "agent": null, "now": now, "spans": [] });
                 return super::Outcome::Text(v.to_string());
             }
-            return super::Outcome::Error(format!("%{pid} runs no agent keepane reads (Claude Code, Codex, pi)"));
+            return super::Outcome::Error(format!(
+                "%{pid} runs no agent keepane reads (Claude Code, Codex, pi, Cursor CLI)"
+            ));
         };
         if json {
             let v = serde_json::json!({
@@ -1470,6 +1496,24 @@ mod tests {
         );
         assert_eq!(Kind::of("node", cl("node server.js")), None);
         assert_eq!(Kind::of("node", none), None, "a command line not read: not an agent");
+        // Cursor CLI: by its old name; by its new one (`agent`) or as the
+        // node that runs its script, only from Cursor's own folder.
+        assert_eq!(Kind::of(r"C:\Users\me\AppData\Local\cursor-agent\cursor-agent.exe", none), Some(Kind::Cursor));
+        let unix = "/home/me/.local/bin/agent --use-system-ca /home/me/.local/share/cursor-agent/versions/1/index.js";
+        assert_eq!(Kind::of("node", cl(unix)), Some(Kind::Cursor));
+        assert_eq!(Kind::of("agent", cl(unix)), Some(Kind::Cursor));
+        let win = r#""C:\Users\me\AppData\Local\cursor-agent\agent.exe" -p hi"#;
+        assert_eq!(Kind::of("agent.exe", cl(win)), Some(Kind::Cursor));
+        assert_eq!(Kind::of("agent", cl("agent --serve")), None, "another program called agent");
+        assert_eq!(Kind::of("agent", none), None);
+        assert_eq!(Kind::Cursor.word(), "cursor");
+        // Its transcripts are not read: its counts are not known, not 0.
+        let cursor = Stats { kind: Kind::Cursor, ..Stats::default() };
+        assert_eq!(cursor.counts(), [String::new(), String::new(), String::new()]);
+        let mut ctx = crate::format::Context::default();
+        cursor.fill(&mut ctx);
+        assert_eq!((ctx.agent.as_str(), ctx.agent_tokens.as_str(), ctx.agent_cost.as_str()), ("cursor", "", ""));
+        assert_eq!(Stats::default().counts(), ["0".to_string(), "0".into(), "0".into()], "Claude's: known");
     }
 
     /// The watcher on this machine's processes: a pane whose process (this

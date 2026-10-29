@@ -547,6 +547,13 @@ pub struct CopyMode {
     pub count: Option<usize>,
     /// `C-v`: the selection is a rectangle, not a run of lines.
     pub rect: bool,
+    /// `V`: the selection is whole lines, whatever the columns.
+    pub lines: bool,
+    /// `f` `F` `t` `T` typed, with its count: the next character typed is
+    /// what it looks for.
+    pub jump: Option<(char, usize)>,
+    /// The last of those, with what it looked for: `;` and `,` repeat it.
+    pub last_jump: Option<(char, char)>,
 }
 
 /// The lines under a pane's clock, worked out at `at` for a pane `width`
