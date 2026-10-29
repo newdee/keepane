@@ -5268,3 +5268,6 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 |---|---|---|---|
 | 1 | 重复 + Windows | 该测试连跑 10 次 10 次通过；fmt 0、clippy 0；Windows 534 + 11 + 148 | 干净（1/3） |
 | 2 | 跨平台 + 重复 | Linux（WSL）该测试 10 次 10 次通过；fmt、clippy 干净；519 + 145 | 干净（2/3） |
+| 3 | CI | d79fe57：macOS、Ubuntu、Windows 的 fmt/clippy/test 和网页检查全部通过 | 干净（3/3），验收通过 |
+
+- 发布：v0.49.0（tag 在 d79fe57，其 CI 通过）。Release 成功，13 个文件；Homebrew 的 macOS 测试两次排不到 runner（排队 15 分钟后被取消，0 步运行），第三次通过后发布，3 个 sha256 与发布文件一致；manifests 已拉取（cb96852）；winget PR #441466 已更新为 0.49.0（36f2f21）。
