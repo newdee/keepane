@@ -5215,3 +5215,50 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | 跨平台 + CI | Linux fmt、clippy 干净，515 + 144；CI 在 29bdcf8：macOS、Ubuntu、Windows 的 fmt/clippy/test 和网页检查全部通过 | 干净（3/3），验收通过 |
 
 - 发布：v0.48.1（tag 在 854a514，其 CI 通过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（fbe8797）；winget PR #441466 已更新为 0.48.1。
+
+
+## 170. dashboard 长名字让整列 name 消失；copy mode 的 `V`、`$`、vi 跳转；Cursor 认不出；Codex 的 hook；同步 agent 对话（设计稿）
+
+- 用户反馈：有时看不到 pane 的名字，可能是名字太长，整列都没了；Codex pane 缺 ready hook；Cursor 认不出是 agent；`shift V` 不能选中复制，不支持 vim 式跳转（`$` 跳行尾、`0` 跳行首）；新增：把 agent 会话同步到新设备。
+- 事实：
+  - dashboard 的 pane 表：name 列宽 = 最长的名字。放不下时整列删掉（删除顺序 quiet、mode、inbox、name），所以一个长名字让所有 pane 的名字都看不到。网页的列表截断加省略号，没有这个问题。
+  - copy mode：`V` 没有实现；`$` 跳到 pane 最右一列（空白处），不是最后一个字符；`f` `F` `t` `T` `;` `,` 没有实现。`0` 正常。
+  - Cursor CLI：`agents.rs` 只认 claude、codex、pi。Cursor 的新名字是 `agent`（安装脚本把 `agent` 和 `cursor-agent` 都链到 `cursor-agent` 目录里的程序）。
+  - Codex：本机 `~/.codex/hooks.json` 不存在，`keepane setup` 显示 hook 和 MCP 都是 no。Codex 0.142 默认开 hooks，新 hook 要在 `/hooks` 里信任。
+- 定性：
+  - name 列：个性（全仓只有这一张表用 `Column`），边界遗漏。
+  - `$`：边界遗漏；`End`、`C-e` 走同一段代码，一起改。`V`、跳转：缺功能。
+  - Cursor：缺功能。同类出现点：`setup::Agent::of_program`（create-pane 定工作模式、`send-message` 的提示）也补上 `agent`。
+- 改法：
+  - `Column` 加 `least`：放不下时先把列缩窄（最少 8 列，被截的名字以 `…` 结尾），再删。只给 name 用。
+  - `$` 停在这一行最后一个字符（宽字符停在它的第一列）。`V` 按整行选（折行的一行连同所有行），再按 `V` 取消，`v`/`C-v`/鼠标回到原来的选法。`f` `F` `t` `T` 加字符跳到本行的字符，带次数；`;` `,` 重复。`send-keys -X` 认 `select-line`、`jump-forward`/`jump-backward`/`jump-to-forward`/`jump-to-backward`（带字符）、`jump-again`、`jump-reverse`。选区的两端收进 `copy_ends`，渲染和复制共用。
+  - `Kind::Cursor`：程序名 `cursor-agent`；`agent`、`node`、`bun`、`deno` 的命令行含 `cursor-agent` 时。不读对话：费用 null，tokens/tools/turns 为空（list-agents 写 `-`，dashboard 和网页不写这几项），CPU 和内存照常。
+  - Codex：用户同意后运行 `keepane setup codex --install`，hook 和 MCP 变为 yes。代码不改。
+  - 同步对话：写设计稿 `docs/design/agent-sync.md`，等用户定第 8 节。
+- 新 bug 风险评估：`copy_sel_view` 改为接收两端，原有字符选和矩形选的结果不变（原测试 `a_selection_copies_the_columns_it_covers` 不改即通过）。`$` 的旧测试按旧行为（最右列）写，改为新行为。`0 v $` 仍复制整行。等待跳转字符时，数字算作字符，不算次数。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制存活 | 7 个变异全部由失败的测试抓到（0 个编译错误）；Windows 533 + 11 + 148 | 不计：`cargo fmt --check` 有 1 处未格式化 |
+| 1' | 边界 | 新增 13 个边界断言（第一列的目标、行两端、次数 10000 和 0、空屏、滚动区顶部的 `V`）；宽度 0–200；Windows 534 + 11 + 148 | 干净（1/3） |
+| 2' | 真实进程 | 临时服务器上用 `PING.EXE` 的副本：`cursor-agent.exe` 和 `cursor-agent\agent.exe` 认成 cursor，`other\agent.exe` 不认 | 不计：Cursor 显示 `cost $0.00`、`tokens 0`，应为未知 |
+
+- 改：`Kind::read()`；Cursor 的费用为 null，`Stats::counts()` 为空；dashboard 的详情行和网页不写空的计数（重建 web/dist，`npm run check` 通过）。重新计数：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 真实进程 | list-agents：`cost - tokens - … tools - turns -`；格式 `agent_cost`/`agent_tokens` 为空；JSON cost null；dashboard 在 150、100、80 列下都显示 4 个名字，长名字以 `…` 截断；Windows 534 + 11 + 148 | 干净（1/3） |
+| 2 | 静态一致 | 文档新增 15 行逐条对照代码：2 处不实（"Cursor 把对话存在数据库"未核实；设计稿说 Claude Code 每行都有 `cwd`，实测只有 user/assistant/attachment/system 行有） | 不计 |
+
+- 改：两处措辞改为核实过的事实（设计稿里 session id 的位置也实测后改写：Claude Code 400 行里 393 行有 `sessionId`，Codex 2 行）。重新计数：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致 | 文档新增 15 行逐条对照，0 处不符；README、man 新行 0 行超过 76 列；fmt 0、clippy 0；Windows 534 + 11 + 148 | 干净（1/3） |
+| 2 | 跨平台 + 重复 | Linux（WSL）fmt、clippy 干净，519 + 145；7 个新测试各跑 5 次，35 次 0 失败 | 干净（2/3） |
+| 3 | 机制存活 | 10 个变异（另加 Cursor 计数为 0、Cursor 当作读对话、dashboard 写空计数）全部由失败的测试抓到；Windows 534 + 11 + 148 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - Cursor 的识别靠命令行含 `cursor-agent`。在 cmd.exe 里只打 `agent`（命令行里没有路径）时认不出。本机没有 Cursor，没有用真的 Cursor 验证。
+  - `keepane setup | Select-Object -First 3` 截断输出时 keepane 会 panic（`failed printing to stdout`），本条未修。
+  - 同步对话：等用户定设计稿第 8 节。
