@@ -5262,3 +5262,9 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - Cursor 的识别靠命令行含 `cursor-agent`。在 cmd.exe 里只打 `agent`（命令行里没有路径）时认不出。本机没有 Cursor，没有用真的 Cursor 验证。
   - `keepane setup | Select-Object -First 3` 截断输出时 keepane 会 panic（`failed printing to stdout`），本条未修。
   - 同步对话：等用户定设计稿第 8 节。
+- CI 在 9cd07b8 上 macOS 失败（tag 未打）：新测试 `vi_keys_jump_and_select_lines_in_copy_mode` 的脚本部分得到 `alpha.beta.`，应为 `beta.`。原因：客户端的按键（`[`、`?gamma`、回车、`0`）和命令行的 `send-keys -X` 走两条连接，没有先后保证；macOS 上 `jump-forward b` 先于 `0` 执行，光标还在搜索命中的 `g`（第 11 列），后面没有 `b`。定性：个性，测试的先后遗漏，keepane 本身没错。改：脚本部分全部走命令行（`copy-mode`、`search-backward`、`start-of-line`、跳转、复制），一条连接，按顺序执行。重新验收：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 重复 + Windows | 该测试连跑 10 次 10 次通过；fmt 0、clippy 0；Windows 534 + 11 + 148 | 干净（1/3） |
+| 2 | 跨平台 + 重复 | Linux（WSL）该测试 10 次 10 次通过；fmt、clippy 干净；519 + 145 | 干净（2/3） |

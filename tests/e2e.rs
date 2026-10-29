@@ -4123,9 +4123,12 @@ async fn vi_keys_jump_and_select_lines_in_copy_mode() {
     c.type_str("a").await;
     c.enter().await;
     buffer_is("a.").await;
-    // From a script, by tmux's names.
-    to_output(&mut c).await;
+    // From a script, by tmux's names: every step through the command line,
+    // in order (keys from the client would race them).
     for argv in [
+        vec!["copy-mode", "-t", "v:0"],
+        vec!["send-keys", "-t", "v:0", "-X", "search-backward", "gamma"],
+        vec!["send-keys", "-t", "v:0", "-X", "start-of-line"],
         vec!["send-keys", "-t", "v:0", "-X", "jump-forward", "b"],
         vec!["send-keys", "-t", "v:0", "-X", "begin-selection"],
         vec!["send-keys", "-t", "v:0", "-X", "jump-to-forward", "g"],
