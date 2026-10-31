@@ -5317,3 +5317,40 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 一次一个包，不分批续传；中途失败整包重送。
   - Claude Code 在子目录启动的会话不送。
 - 发布：v0.50.0（tag 在 89c9de6，其 CI 通过）。Release 成功，13 个文件。Homebrew：macOS 测试在 Audit 一步失败，`Refusing to load formula newdee/tap/keepane from untrusted tap newdee/tap`。原因：macOS 上的 Homebrew 6 默认只加载信任过的第三方 tap 的 formula，而 Audit 不经安装就加载它。用户不受影响：README 和网站用的是完整名字 `brew install newdee/tap/keepane`，按 Homebrew 文档，这样安装只信任这一个 formula。修：tap 的 `formula.yml` 在 `brew tap` 后只信任被测的 formula（`brew trust --formula newdee/tap/keepane`，旧版 brew 没有这个命令时跳过；newdee/homebrew-tap 7a04080），检查运行两个系统都通过，再发布，3 个 sha256 与发布文件一致。manifests 已拉取（b50189c）；winget PR #441466 已更新为 0.50.0。
+
+## 172. `set-environment -u` 去不掉服务器启动时就带着的变量
+
+- 用户反馈："为什么更新完，里面的字都没有颜色了？"
+- 事实：我从 Claude Code 的 PowerShell 里运行了 `keepane update`。它的 `__update-scoop` 带着这个 shell 的环境重启了服务器，而这个环境里有 `NO_COLOR=1`、`CLAUDECODE=1`。新 pane 从服务器进程自己的环境开始，所以都带上了 `NO_COLOR=1`。用 `set-environment -g -u NO_COLOR` 去不掉：已经开着的 shell 在下一个提示符时会去掉（提示符钩子的脚本里有 unset），新 pane 不会。用户的服务器里只能退一步，把 `CLAUDECODE` 等设成空值。
+- 定性：
+  - 共性：给子进程拼环境的三个出口都只会"加"变量：启动 pane 的 `launch`（新 pane、`respawn-pane`、弹窗都走它）、`pipe-pane`、`run-shell`/`if-shell`。它们共用 `pane_env()` 的结果。
+  - 结构缺陷：`pane_env()` 的类型是"名字=值"的列表，表达不了"去掉"。另外 `-u` 不保存，服务器重启后又回来了。
+- 改法：
+  - `pane_env()` 改成"名字=值，或者去掉"（`EnvVar = (String, Option<String>)`），三个出口按顺序执行：值用 `env`，去掉用 `env_remove`（portable-pty 和 std 在 Windows 上都不分大小写）。同一个名字以最后一条为准。
+  - 去掉的名字记在 `EnvState::unset`，和表一起保存（`"unset"`），读回时配置文件里说过的名字（设或去掉）优先；旧版本存的文件没有 `"unset"`，照旧读。
+  - `prefix e` 的彩色界面列出去掉的名字；脚本用的 `show-environment` 不变（只列表里的 `名字=值`）。最初我也给它加了 `-NAME` 行，旧测试 `the_small_tmux_commands` 抓到这改了原行为，撤回。
+- 新 bug 风险评估：`pane_env` 的 6 个调用处都改了类型（加 `KEEPANE_PANE` 过滤、钩子变量、历史文件变量）；`WSLENV` 只列有值的名字；`Pane::spawn` 等签名改成 `&[EnvVar]`，测试里的 `&[]` 不受影响。保存格式多一个字段，旧版本读新文件时忽略它。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 实现中 | 全量 e2e 两个失败：`the_small_tmux_commands`（我加的 `-NAME` 改了脚本输出，撤回）；`the_history_log_is_searched_every_day`（见下） | 实现中，不计 |
+
+- `the_history_log_is_searched_every_day`：单独跑能过，全量跑失败两次。定性：测试工具早就有的问题，和这次改动无关。所有 e2e 测试共用 `%TEMP%\keepane-test-history`，从 10-17 起没清过，有 2,152 个文件，`find-text -H` 要全部读一遍，超过了测试的 10 秒等待。原注释说"服务器会清旧日期"，这个前提不成立：只清超过保留天数的。换干净目录后全量 e2e 149/149，用时 48 秒降到 37 秒。改：每个测试进程用自己的子目录，启动时删掉 1 小时前的旧子目录。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制存活 | 8 个变异全部由失败的测试抓到（pane_env 不带去掉的、run-shell 不去掉、pane 不去掉、不保存、不读回、配置不再优先、再设时仍算去掉、界面不列）；Windows 551 + 11 + 149 | 干净（1/3） |
+| 2 | 真实链路 | 临时服务器带着 `NO_COLOR=1` 启动：新 pane `[1]`；`-u` 后新 pane `[]`，开着的 shell 在下一个提示符 `[]`；重启（仍带着它）后新 pane `[]`；再设成 0 后 `[0]`；`show-environment` 仍是 `no variables set`；Windows 551 + 11 + 149 | 干净（2/3） |
+| 3 | 静态一致 | README（中英）说带着 `NO_COLOR` 时"每个程序都不显示颜色"，说过头了：只有遵守这个约定的程序 | 不计 |
+
+- 改：改成"遵守这个约定的程序"。重新计数：
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致 | README、man 新增 15 行，正文 0 行超过 76 列；每条说法都有实测或测试对应；`-r` 和 `-u` 同一分支；Windows 551 + 11 + 149 | 干净（1/3） |
+| 2 | 边界 | 新增断言：4 种损坏的保存文件读成空表、不 panic；去掉 keepane 自己的 `KEEPANE_PANE` 生效；去掉两次只记一次；设了再去掉仍是去掉；Windows 551 + 11 + 149 | 干净（2/3） |
+| 3 | 跨平台 + 可复现 | Linux（WSL）fmt、clippy 干净，536 + 146；复现脚本连跑两次，8 行输出逐行一致 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - 根因之一是从 agent 的 shell 启动了用户的服务器（`keepane update`）。这次修的是"去不掉"；要不要在更新重启服务器时自动去掉 `NO_COLOR`、`CLAUDECODE` 这类 agent 的变量，是设计问题，没有改。
+  - 用 `-u` 去掉 `WSLENV` 不生效：keepane 每次都会重新算出 `WSLENV`。
