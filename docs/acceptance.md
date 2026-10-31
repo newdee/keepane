@@ -5316,3 +5316,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 大对话整段读进内存：220 MB 的对话，发送端和接收端各要几百 MB。
   - 一次一个包，不分批续传；中途失败整包重送。
   - Claude Code 在子目录启动的会话不送。
+- 发布：v0.50.0（tag 在 89c9de6，其 CI 通过）。Release 成功，13 个文件。Homebrew：macOS 测试在 Audit 一步失败，`Refusing to load formula newdee/tap/keepane from untrusted tap newdee/tap`。原因：macOS 上的 Homebrew 6 默认只加载信任过的第三方 tap 的 formula，而 Audit 不经安装就加载它。用户不受影响：README 和网站用的是完整名字 `brew install newdee/tap/keepane`，按 Homebrew 文档，这样安装只信任这一个 formula。修：tap 的 `formula.yml` 在 `brew tap` 后只信任被测的 formula（`brew trust --formula newdee/tap/keepane`，旧版 brew 没有这个命令时跳过；newdee/homebrew-tap 7a04080），检查运行两个系统都通过，再发布，3 个 sha256 与发布文件一致。manifests 已拉取（b50189c）；winget PR #441466 已更新为 0.50.0。
