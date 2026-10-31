@@ -167,15 +167,21 @@ messages waiting blue, a context red as it fills); in a narrow window the
 least needed columns give way first; `[2]` the chosen pane's inbox; `[3]` the tasks. On the right,
 `[0]` the chosen pane: its address, directory, pid, how long it has run, what
 it says it is doing, and then its screen live (with its colours), its
-scrollback, its events, its agent's trace (below), or the message or task
-under the cursor: moving onto
+scrollback, its events, its agent's trace (below), its directory in git
+(the Git tab: the branch and its upstream, what is changed, the latest
+commits and branches; in a directory outside a repository, its files two
+levels down), or the message or task under the cursor: moving onto
 one in `[2]` or `[3]` shows it at once, laid out (its stage on its colour, who
 sent it to whom, when each step came, then its text and what it printed; a
 task, its messages joined down the left). Tab, `1 2 3 0` and `h`/`l` move
 between panels, `j`/`k` within one, `g`/`G` (or Home/End) to its first or
 last row (the top or bottom on the right), `[`/`]` change what the right
 side shows;
-the mouse clicks and scrolls; `?` lists every key.
+the mouse clicks and scrolls; `?` lists every key. From 150 columns wide, a
+column on the far left shows how the machine is doing, every second: CPU
+(a bar, its last 24 seconds, each core), memory, swap, disk and network
+a second, temperature, power, battery and processes, as far as the system
+says them.
 
 It also acts. On a pane: `s` sends it a message, `r` renames it, `m`
 changes its work mode, `R` marks it ready (unsticks it), `o` goes there

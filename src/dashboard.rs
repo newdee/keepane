@@ -19,6 +19,9 @@ use crate::keys::{Key, KeyCode};
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
+mod gitview;
+mod machine;
+
 /// The only server commands the dashboard sends to look.
 pub const QUERIES: &[&str] = &[
     "list-panes",
@@ -396,10 +399,13 @@ pub enum Tab {
     Events,
     /// The pane's agent, step by step: a waterfall of its turns.
     Trace,
+    /// Its directory: the repository's branch, changes and commits, or the
+    /// files of a directory that is in none.
+    Git,
     Detail,
 }
 
-const TABS: [Tab; 5] = [Tab::Screen, Tab::Scrollback, Tab::Events, Tab::Trace, Tab::Detail];
+const TABS: [Tab; 6] = [Tab::Screen, Tab::Scrollback, Tab::Events, Tab::Trace, Tab::Git, Tab::Detail];
 
 impl Tab {
     fn word(self) -> &'static str {
@@ -408,6 +414,7 @@ impl Tab {
             Tab::Scrollback => "Scrollback",
             Tab::Events => "Events",
             Tab::Trace => "Trace",
+            Tab::Git => "Git",
             Tab::Detail => "Detail",
         }
     }
@@ -419,6 +426,7 @@ impl Tab {
             Tab::Scrollback => "Back",
             Tab::Events => "Ev",
             Tab::Trace => "Trace",
+            Tab::Git => "Git",
             Tab::Detail => "Det",
         }
     }
@@ -426,7 +434,7 @@ impl Tab {
     /// Read from the bottom up (a screen, a log, the trace: the latest step
     /// stays in sight as more come) rather than from the top.
     fn read_up(self) -> bool {
-        !matches!(self, Tab::Detail)
+        !matches!(self, Tab::Detail | Tab::Git)
     }
 }
 
@@ -507,6 +515,9 @@ pub struct Board {
     /// How far the main panel scrolls: its lines beyond its rows, as the
     /// last frame drew it.
     scroll_most: std::cell::Cell<usize>,
+    /// How the machine is doing: the column on the left, when there is
+    /// room for it.
+    pub machine: machine::Machine,
 }
 
 /// Visible width of text that may hold SGR sequences.
@@ -678,6 +689,8 @@ impl Rect {
 }
 
 struct Layout {
+    /// How the machine is doing, leftmost, when there is room.
+    machine: Option<Rect>,
     panes: Option<Rect>,
     inbox: Option<Rect>,
     tasks: Option<Rect>,
@@ -686,6 +699,9 @@ struct Layout {
 
 /// Below this width, only the focused side is shown.
 const NARROW: usize = 70;
+/// From this width on, the machine's column is shown, this wide.
+const MACHINE_AT: usize = 150;
+const MACHINE_W: usize = 30;
 
 impl Board {
     pub fn new(cols: u16, height: u16) -> Board {
@@ -715,7 +731,24 @@ impl Board {
             web: None,
             trace_all: false,
             scroll_most: std::cell::Cell::new(0),
+            machine: machine::Machine::default(),
         }
+    }
+
+    /// Whether the machine's column is on screen (it is read only then).
+    pub fn shows_machine(&self) -> bool {
+        self.layout().machine.is_some()
+    }
+
+    /// The main panel's lines when the board reads them itself, not from
+    /// the server: the Git tab's (`git` the program to ask).
+    pub fn local_main(&self, git: Option<&std::path::Path>) -> Option<Vec<String>> {
+        if self.tab != Tab::Git {
+            return None;
+        }
+        let row = self.chosen_row()?;
+        let width = self.layout().main.map_or(80, |r| r.inner_w());
+        Some(gitview::view(&row.path, &row.command, git, width))
     }
 
     pub fn resize(&mut self, cols: u16, height: u16) {
@@ -800,6 +833,8 @@ impl Board {
             Tab::Screen => owned(&["capture-pane", "-p", "-e", "-t", &id]),
             Tab::Scrollback => owned(&["capture-pane", "-p", "-e", "-S", "-2000", "-t", &id]),
             Tab::Trace => owned(&["trace-pane", "-J", "-t", &id]),
+            // Read here, not asked of the server (`local_main`).
+            Tab::Git => return None,
             _ => owned(&["list-events", "-t", &id, "-n", "300"]),
         })
     }
@@ -1272,27 +1307,38 @@ impl Board {
         let (w, h) = (usize::from(self.cols), usize::from(self.height));
         let body = h.saturating_sub(1);
         if w < 12 || body < 6 {
-            return Layout { panes: None, inbox: None, tasks: None, main: None };
+            return Layout { machine: None, panes: None, inbox: None, tasks: None, main: None };
         }
+        // The machine's column first, when there is room: the rest is laid
+        // out beside it as it would be without.
+        let mx = if w >= MACHINE_AT { MACHINE_W } else { 0 };
+        let machine = (mx > 0).then_some(Rect { x: 0, y: 0, w: mx, h: body });
+        let w = w - mx;
         let narrow = w < NARROW;
         let (left_w, main) = if narrow {
-            (w, (self.focus == Panel::Main).then_some(Rect { x: 0, y: 0, w, h: body }))
+            (w, (self.focus == Panel::Main).then_some(Rect { x: mx, y: 0, w, h: body }))
         } else {
             // Half, up to 64: the pane list needs the room more than the
             // screen beside it, in a popup above all.
             let lw = (w / 2).clamp(30, 64).min(w - 20);
-            (lw, Some(Rect { x: lw, y: 0, w: w - lw, h: body }))
+            (lw, Some(Rect { x: mx + lw, y: 0, w: w - lw, h: body }))
         };
         if narrow && self.focus == Panel::Main {
-            return Layout { panes: None, inbox: None, tasks: None, main };
+            return Layout { machine, panes: None, inbox: None, tasks: None, main };
         }
         // Inbox and tasks a quarter each (3 rows at least), the panes the rest.
         let small = (body / 4).max(3);
         let panes_h = body.saturating_sub(2 * small).max(3);
         let inbox_h = small.min(body.saturating_sub(panes_h));
         let tasks_h = body.saturating_sub(panes_h + inbox_h);
-        let rect = |y, h| (h >= 3).then_some(Rect { x: 0, y, w: left_w, h });
-        Layout { panes: rect(0, panes_h), inbox: rect(panes_h, inbox_h), tasks: rect(panes_h + inbox_h, tasks_h), main }
+        let rect = |y, h| (h >= 3).then_some(Rect { x: mx, y, w: left_w, h });
+        Layout {
+            machine,
+            panes: rect(0, panes_h),
+            inbox: rect(panes_h, inbox_h),
+            tasks: rect(panes_h + inbox_h, tasks_h),
+            main,
+        }
     }
 
     /// The pane table in `width` columns: what each column is (a row that
@@ -1621,8 +1667,11 @@ impl Board {
                 }
             }
         };
-        // Left column first, then the main panel to its right.
+        // The machine's column, then the left one, then the main panel: each
+        // row is put together left to right.
         let (p, i, t, m) = (layout.panes, layout.inbox, layout.tasks, layout.main);
+        let mc = layout.machine;
+        place(mc, mc.map(|r| boxed("System", "", self.machine.lines(r.inner_w()), r, false)).unwrap_or_default());
         place(p, p.map(|r| self.panes_box(r)).unwrap_or_default());
         place(i, i.map(|r| self.inbox_box(r)).unwrap_or_default());
         place(t, t.map(|r| self.tasks_box(r)).unwrap_or_default());
@@ -1996,8 +2045,12 @@ fn help_lines() -> Vec<String> {
         "",
         "[3] Tasks    j / k pick (its steps shown right), Enter scroll them",
         "",
-        "[0] The chosen pane: Screen, Scrollback, Events, Detail",
+        "[0] The chosen pane: Screen, Scrollback, Events, Trace, Git, Detail",
         "  j / k      scroll                  g / G   top / bottom",
+        "  Git: its directory's branch, changes and commits; outside a repository, its files",
+        "",
+        "System (leftmost, from 150 columns): CPU, each core, memory, swap, disk, network,",
+        "  temperature, power, battery, processes: this machine, every second",
         "",
         "Asks first: deleting a message, closing a pane, switching a pane to shell.",
     ]
@@ -2307,6 +2360,8 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
     let (cols, rows) = console.size();
     let mut board = Board::new(cols, rows);
     board.chosen = here.map(|n| format!("%{n}"));
+    // The Git tab asks git on this machine, as the pane's shell would.
+    let git = crate::git::command("");
     let result = (|| -> anyhow::Result<()> {
         loop {
             let (code, out, err) = ask(&owned(&["list-panes", "-a", "-F", PANE_FORMAT]));
@@ -2328,9 +2383,15 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                 board.resize(cols, rows);
                 console.write_str("\x1b[2J");
             }
-            match board.main_query() {
-                Some(q) => board.set_main(lines(ask(&q))),
-                None => board.set_main(Vec::new()),
+            if board.shows_machine() {
+                let (now, system, host) =
+                    (crate::sysinfo::counters(), crate::sysinfo::system(), crate::sysinfo::hostname());
+                board.machine.sample(now, std::time::Instant::now(), system, host);
+            }
+            match (board.local_main(git.as_deref()), board.main_query()) {
+                (Some(l), _) => board.set_main(l),
+                (None, Some(q)) => board.set_main(lines(ask(&q))),
+                (None, None) => board.set_main(Vec::new()),
             }
             console.write_str(&board.frame());
             // A key, or a second without one: then the board is read again.
@@ -2902,7 +2963,7 @@ mod tests {
             "[2] Inbox %lead",
             "[3] Tasks",
             "[0] %1 lead · ai · busy",
-            "Screen  Scrollback  Events  Trace  Detail",
+            "Screen  Scrollback  Events  Trace  Git  Detail",
             "pid 4242 · up 16m · quiet 1m",
             "tester",
         ] {
@@ -2912,9 +2973,10 @@ mod tests {
         // under it, closer, then by short names.
         let at = |w: usize| b.main_box(Rect { x: 0, y: 0, w, h: 8 }).iter().map(|l| strip(l)).collect::<Vec<_>>();
         assert!(at(40)[0].contains("[0] %1 lead · ai · busy"), "{:?}", at(40));
-        assert!(at(120)[1].contains("Screen  Scrollback  Events  Trace  Detail"), "{:?}", at(120));
-        assert!(at(41)[1].contains("Screen Scrollback Events Trace Detail"), "{:?}", at(41));
-        assert!(at(30)[1].contains("Screen Back Ev Trace Det"), "{:?}", at(30));
+        assert!(at(120)[1].contains("Screen  Scrollback  Events  Trace  Git  Detail"), "{:?}", at(120));
+        assert!(at(43)[1].contains("Screen Scrollback Events Trace Git Detail"), "{:?}", at(43));
+        assert!(at(42)[1].contains("Screen Back Ev Trace Git Det"), "{:?}", at(42));
+        assert!(at(30)[1].contains("Screen Back Ev Trace Git Det"), "{:?}", at(30));
     }
 
     /// A pane's agent: its cost and context in the table, all of it over
@@ -2991,7 +3053,12 @@ mod tests {
         let text = screen(&b).join("\n");
         assert!(text.contains("pane   name   mode state inbox quiet  running"), "{text}");
         // The pane rows of the left panel (between its borders).
-        let rows: Vec<&str> = text.lines().filter_map(|l| l.split('│').nth(1)).filter(|l| l.contains(" %")).collect();
+        // (The machine's column is left of them at this width.)
+        let rows: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with('│'))
+            .filter_map(|l| l.split('│').find(|s| s.contains(" %") && !s.contains('─')))
+            .collect();
         assert_eq!(rows.len(), 3, "{text}");
         assert!(rows.iter().all(|l| !l.contains(" · ") && !l.contains(" - ")), "{rows:#?}");
         // The picked row is reversed, its colours gone: pick one that has none.
@@ -3064,6 +3131,65 @@ mod tests {
         assert!(text.contains("[0] %3 ─") && !text.contains("normal ·"), "{text}");
     }
 
+    /// From 150 columns the machine's column is leftmost, 30 wide, the rest
+    /// laid out beside it as it would be without; below, none. Its lines
+    /// once read; every row still the window's width.
+    #[test]
+    fn the_machine_column_is_leftmost_when_there_is_room() {
+        let mut b = board();
+        b.resize(149, 30);
+        assert!(b.layout().machine.is_none() && !b.shows_machine());
+        assert_eq!(b.layout().panes.map(|r| r.x), Some(0));
+        b.resize(150, 30);
+        let l = b.layout();
+        assert_eq!(l.machine, Some(Rect { x: 0, y: 0, w: 30, h: 29 }));
+        assert_eq!((l.panes.map(|r| r.x), l.main.map(|r| r.x)), (Some(30), Some(30 + 60)));
+        let t0 = std::time::Instant::now();
+        let reading = |busy: u64| crate::sysinfo::Counters {
+            cores: vec![(busy, busy * 2 + 1000)],
+            memory: Some((8 << 30, 2 << 30)),
+            ..Default::default()
+        };
+        let sys = crate::sysinfo::System { uptime: 3600, ..Default::default() };
+        b.machine.sample(reading(0), t0, sys.clone(), "box".into());
+        b.machine.sample(reading(500), t0 + Duration::from_secs(1), sys, "box".into());
+        let text = screen(&b).join("\n");
+        assert!(text.contains("╭─System") && text.contains("box up 1h") && text.contains("MEM"), "{text}");
+        for cols in [150u16, 151, 180, 240] {
+            b.resize(cols, 30);
+            assert!(screen(&b).iter().all(|l| width_of(l) == usize::from(cols)), "{cols}");
+        }
+        // Narrow and the main panel focused: the machine's column stays out
+        // of the way below 150, beside it from 150.
+        b.focus = Panel::Main;
+        b.resize(60, 20);
+        assert!(b.layout().machine.is_none());
+    }
+
+    /// The Git tab is read by the board itself, not asked of the server;
+    /// it is between Trace and Detail, read from the top.
+    #[test]
+    fn the_git_tab_is_read_here_from_the_top() {
+        let mut b = board();
+        b.tab = Tab::Trace;
+        b.switch_tab(1);
+        assert_eq!(b.tab, Tab::Git);
+        assert_eq!(b.main_query(), None, "nothing asked of the server");
+        assert!(!b.tab.read_up());
+        let dir = std::env::temp_dir().join(format!("keepane-board-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let mut rows = b.rows.clone();
+        rows[0].path = dir.to_string_lossy().into_owned();
+        b.set_rows(rows);
+        b.chosen = Some("%1".into());
+        let lines: Vec<String> = b.local_main(None).unwrap().iter().map(|l| strip(l)).collect();
+        assert!(lines[0].contains("not in a git repository") && lines.iter().any(|l| l.contains("sub/")), "{lines:?}");
+        b.switch_tab(1);
+        assert_eq!((b.tab, b.local_main(None)), (Tab::Detail, None), "another tab: the server's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// One pane with a long name, in a panel too narrow for it: the name
     /// column is cut (the long one ends in `…`), not dropped, so the other
     /// panes' names still show whole. The long name costs the names at
@@ -3082,7 +3208,7 @@ mod tests {
         // Wide: the whole name, nothing cut.
         b.resize(220, 30);
         let text = screen(&b).join("\n");
-        assert!(text.contains(long) && !text.contains('…'), "{text}");
+        assert!(text.contains(long) && !text.lines().any(|l| l.contains("a-very") && l.contains('…')), "{text}");
         // The narrowest table that still has the names, with the long name
         // and without it.
         let narrowest = |b: &Board| {
