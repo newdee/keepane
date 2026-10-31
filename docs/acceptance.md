@@ -5354,3 +5354,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 - 遗留：
   - 根因之一是从 agent 的 shell 启动了用户的服务器（`keepane update`）。这次修的是"去不掉"；要不要在更新重启服务器时自动去掉 `NO_COLOR`、`CLAUDECODE` 这类 agent 的变量，是设计问题，没有改。
   - 用 `-u` 去掉 `WSLENV` 不生效：keepane 每次都会重新算出 `WSLENV`。
+- 发布：v0.50.1（tag 在 a413106，其 CI 通过）。Release 成功，13 个文件；Homebrew 两个系统测试通过后发布，3 个 sha256 与发布文件一致；manifests 已拉取（5093b65）；winget PR #441466 已更新为 0.50.1。
