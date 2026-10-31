@@ -30,12 +30,22 @@ pub(super) struct EnvState {
     /// The saved table has been read back. Until then (the config at
     /// start) nothing is saved over it.
     loaded: bool,
+    /// The names `set-environment -u` took away: no new pane gets them,
+    /// even one the server itself was started with (its own environment
+    /// is what a new process starts from).
+    pub(super) unset: Vec<String>,
 }
 
 impl Default for EnvState {
     fn default() -> Self {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        EnvState { seq: now.as_millis() as u64, changes: Vec::new(), stems: RefCell::new(Vec::new()), loaded: false }
+        EnvState {
+            seq: now.as_millis() as u64,
+            changes: Vec::new(),
+            stems: RefCell::new(Vec::new()),
+            loaded: false,
+            unset: Vec::new(),
+        }
     }
 }
 
@@ -175,8 +185,10 @@ impl Server {
     /// `set-environment`: `value` none unsets the name.
     pub(super) fn set_environment(&mut self, name: String, value: Option<String>) {
         self.env.retain(|(k, _)| !same_name(k, &name));
-        if let Some(v) = &value {
-            self.env.push((name.clone(), v.clone()));
+        self.env_state.unset.retain(|k| !same_name(k, &name));
+        match &value {
+            Some(v) => self.env.push((name.clone(), v.clone())),
+            None => self.env_state.unset.push(name.clone()),
         }
         let st = &mut self.env_state;
         st.seq += 1;
@@ -231,7 +243,7 @@ impl Server {
             return;
         }
         let path = with_ext(&self.env_stem(), ".json");
-        let json = serde_json::json!({ "vars": self.env });
+        let json = serde_json::json!({ "vars": self.env, "unset": self.env_state.unset });
         let saved =
             path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| write_whole(&path, &json.to_string()));
         if let Err(e) = saved {
@@ -248,14 +260,23 @@ impl Server {
             let _ = std::fs::remove_file(with_ext(&self.env_stem(), ext));
         }
         let path = with_ext(&self.env_stem(), ".json");
-        let saved: Vec<(String, String)> = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .and_then(|v| serde_json::from_value(v["vars"].clone()).ok())
-            .unwrap_or_default();
+        let file: serde_json::Value =
+            std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let saved: Vec<(String, String)> = serde_json::from_value(file["vars"].clone()).unwrap_or_default();
+        // (A file of an older keepane has no "unset".)
+        let gone: Vec<String> = serde_json::from_value(file["unset"].clone()).unwrap_or_default();
+        // What the config said of a name, set or taken away, wins.
+        let config: Vec<String> =
+            self.env.iter().map(|(k, _)| k.clone()).chain(self.env_state.unset.iter().cloned()).collect();
+        let said = |k: &str| config.iter().any(|n| same_name(n, k));
         for (k, v) in saved {
-            if !self.env.iter().any(|(n, _)| same_name(n, &k)) {
+            if !said(&k) {
                 self.env.push((k, v));
+            }
+        }
+        for k in gone {
+            if !said(&k) && !self.env_state.unset.iter().any(|n| same_name(n, &k)) {
+                self.env_state.unset.push(k);
             }
         }
         self.env_state.loaded = true;
@@ -284,11 +305,14 @@ impl Server {
             "  every new pane gets these; a shell at its prompt takes a change at its next one",
             faint,
         )]);
-        if self.env.is_empty() {
+        if self.env.is_empty() && self.env_state.unset.is_empty() {
             lines.push(vec![seg("  (none: set-environment NAME value adds one)", faint)]);
         }
         for (k, v) in &self.env {
             lines.push(var(k, v, ""));
+        }
+        for k in &self.env_state.unset {
+            lines.push(vec![seg("  -", faint), seg(k, name), seg("   taken away (-u): no new pane gets it", faint)]);
         }
         lines.push(Vec::new());
         lines.push(vec![seg("keepane sets in every pane", head)]);
@@ -445,7 +469,7 @@ mod tests {
         let ps = std::fs::read_to_string(format!("{file}.ps1")).unwrap();
         assert!(ps.contains("${env:C} = 'three'"), "{ps}");
         let saved = std::fs::read_to_string(dir.join("environment").join("env.sock.json")).unwrap();
-        assert_eq!(saved, r#"{"vars":[["A","one"],["C","three"]]}"#);
+        assert_eq!(saved, r#"{"vars":[["A","one"],["C","three"]],"unset":["B"]}"#);
 
         // The next server: its config sets C, which wins, and adds D. The
         // scripts the last one left are gone once it has read the table.
@@ -468,6 +492,78 @@ mod tests {
         let mut u = server("other", &dir);
         u.load_environment();
         assert!(u.env.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name taken away (`-u`, as for `NO_COLOR` a server inherited from
+    /// an agent's shell) is a removal in every new pane's environment,
+    /// shown as `-NAME`, kept across servers unless the config says
+    /// otherwise; set again, it is a value again. A table saved by an
+    /// older keepane (no "unset") reads as before.
+    #[test]
+    fn a_name_taken_away_stays_away_in_new_panes_and_servers() {
+        let dir = std::env::temp_dir().join(format!("keepane-envunset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = server("unset.sock", &dir);
+        s.load_environment();
+        set(&mut s, "set-environment -u NO_COLOR");
+        set(&mut s, "set-environment KEPT yes");
+        let env = s.pane_env(3);
+        assert!(env.contains(&("NO_COLOR".into(), None)), "{env:?}");
+        assert!(env.contains(&("KEPT".into(), Some("yes".into()))), "{env:?}");
+        #[cfg(windows)]
+        {
+            let wslenv = env.iter().find(|(k, _)| k == "WSLENV").and_then(|(_, v)| v.clone()).unwrap();
+            assert!(wslenv.contains("KEPT") && !wslenv.contains("NO_COLOR"), "{wslenv}");
+        }
+        // A script's show-environment lists the table only, as before; the
+        // overlay (a person's) says what was taken away.
+        let text = |o: Outcome| match o {
+            Outcome::Text(t) => t,
+            _ => panic!("not text"),
+        };
+        assert_eq!(text(s.show_environment(None)), "KEPT=yes");
+        let (shown, _) = s.environment_overlay(3);
+        assert!(shown.iter().any(|l| l.contains("-NO_COLOR") && l.contains("taken away")), "{shown:?}");
+        // The next server keeps it away; its config may say otherwise.
+        let mut t = server("unset.sock", &dir);
+        t.load_environment();
+        assert_eq!(t.env_state.unset, ["NO_COLOR"]);
+        let mut c = server("unset.sock", &dir);
+        set(&mut c, "set-environment NO_COLOR 1");
+        c.load_environment();
+        assert!(c.env_state.unset.is_empty() && c.env.contains(&("NO_COLOR".into(), "1".into())), "the config wins");
+        // Set again: a value, no longer taken away.
+        set(&mut t, "set-environment NO_COLOR 0");
+        assert!(t.env_state.unset.is_empty() && t.pane_env(1).contains(&("NO_COLOR".into(), Some("0".into()))));
+        // An older keepane's table: no "unset", read as it was.
+        let old = server("old.sock", &dir);
+        std::fs::create_dir_all(dir.join("environment")).unwrap();
+        std::fs::write(dir.join("environment").join("old.sock.json"), r#"{"vars":[["A","1"]]}"#).unwrap();
+        let mut old = old;
+        old.load_environment();
+        assert!(old.env == [("A".to_string(), "1".to_string())] && old.env_state.unset.is_empty());
+        // A broken table, or one whose fields are not what they should be:
+        // read as empty, nothing kept from it, no panic.
+        for broken in ["not json at all", r#"{"vars":5,"unset":"NO_COLOR"}"#, r#"{"unset":[1,2]}"#, ""] {
+            std::fs::write(dir.join("environment").join("broken.sock.json"), broken).unwrap();
+            let mut b = server("broken.sock", &dir);
+            b.load_environment();
+            assert!(b.env.is_empty() && b.env_state.unset.is_empty(), "{broken}: {:?}", b.env_state.unset);
+        }
+        // One of keepane's own taken away goes too (the last word wins);
+        // taken away twice is once; set and taken away again, taken away.
+        let mut k = server("own.sock", &dir);
+        k.load_environment();
+        set(&mut k, "set-environment -u KEEPANE_PANE");
+        set(&mut k, "set-environment -u KEEPANE_PANE");
+        let env = k.pane_env(9);
+        let last = env.iter().rev().find(|(n, _)| n == "KEEPANE_PANE").unwrap();
+        assert_eq!(last.1, None, "{env:?}");
+        assert_eq!(k.env_state.unset, ["KEEPANE_PANE"]);
+        set(&mut k, "set-environment X 1");
+        set(&mut k, "set-environment -u X");
+        assert!(k.env.is_empty() && k.env_state.unset == ["KEEPANE_PANE", "X"], "{:?}", k.env_state.unset);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

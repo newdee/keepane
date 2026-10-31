@@ -143,8 +143,10 @@ Sessions save themselves to the data directory. `resume`, `list-saved`,
 (`show`), `show-window-options`, `bind-key` (`bind`), `unbind-key`
 (`unbind`), `list-keys`, `source-file`, `set-hook`, `show-hooks`,
 `set-environment` (every pane: a new one at its start, a shell already
-open at its next prompt; kept across restarts), `show-environment`
-(attached: in colour, with what keepane sets), `run-shell`, `if-shell`,
+open at its next prompt; kept across restarts; `-u` takes a name out of
+new panes even when the server was started with it), `show-environment`
+(attached: in colour, with what keepane sets and the names taken away),
+`run-shell`, `if-shell`,
 `wait-for`, `wait-output` (block until a pane prints one of some texts,
 and print that line; `-a` counts what it already holds, `-i` any case,
 `-w` a time limit), `command-prompt`, `confirm-before`, `display-message`,

@@ -832,12 +832,15 @@ keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时
 
 `set-environment 名字 值` 给每个 pane 拿到的环境变量加一个或改一个，`set-environment -u 名字` 去掉它。之后新开的 pane 一启动就有。已经开着的 shell 在下一次显示提示符时拿到这个变化（PowerShell、bash、zsh、fish 和 `wsl.exe` pane 里的 shell，通过 keepane 的提示符钩子），之后它运行的程序都有。已经在跑的程序还是启动时的环境：一个程序改不了另一个程序的环境，要新值就重启它（`respawn-pane -k`）。shell 自己在启动后（或这个名字上次变化后）设的值不会被覆盖。这张表和会话存在一起，服务器重启后还在；`~/.keepane.conf` 先读，它设的名字以它为准。
 
+服务器启动时就带着的变量，`-u` 也能去掉：新 pane 从服务器自己的环境开始，而服务器的环境来自启动它的那个 shell。比如从 agent 的 shell 启动的服务器带着它的 `NO_COLOR=1`，pane 里遵守这个约定的程序就不显示颜色；`set-environment -u NO_COLOR` 之后新开的 pane 就恢复颜色。去掉的名字在服务器重启后也保持去掉。
+
 ```tmux
 set-environment GOPROXY https://goproxy.cn    # 每个 pane 从下一次提示符起都有
 set-environment -u GOPROXY                    # 再去掉
+set-environment -u NO_COLOR                   # 服务器启动时就带着的，也能去掉
 ```
 
-`prefix e` 用彩色显示：先是 `set-environment` 设的变量，再是 keepane 自己在每个 pane 里设的（`KEEPANE`、这个 pane 自己的 `KEEPANE_PANE`、带 keepane 目录的 `PATH` 等）。脚本用 `keepane show-environment` 拿到普通的 `名字=值` 行。
+`prefix e` 用彩色显示：先是 `set-environment` 设的变量，再是 keepane 自己在每个 pane 里设的（`KEEPANE`、这个 pane 自己的 `KEEPANE_PANE`、带 keepane 目录的 `PATH` 等），以及去掉了哪些名字。脚本用 `keepane show-environment` 拿到普通的 `名字=值` 行。
 
 所有窗口和 pane 命令都支持 tmux 风格的 `-t`：`session`、`session:window`、`:window`、`session:window.pane`，窗口那一段可以是编号、名字、`+`、`-` 或 `!`。`%N` 是按编号指定 pane（`list-panes` 里显示的那个），别的 pane 增减时它指的还是同一个；`list-panes -F` 按格式串逐个 pane 输出。
 

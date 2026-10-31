@@ -754,13 +754,43 @@ fn replay_argv(id: PaneId, text: &str) -> Result<(Vec<String>, std::path::PathBu
 struct PendingStart {
     argv: Vec<String>,
     dir: Option<String>,
-    env: Vec<(String, String)>,
+    env: Vec<EnvVar>,
     /// The printer's file; removing it is what tells the printer to exit.
     path: std::path::PathBuf,
 }
 
 type Child = Box<dyn portable_pty::Child + Send + Sync>;
 type Killer = Box<dyn ChildKiller + Send + Sync>;
+
+/// A variable for a process keepane starts (a pane, `pipe-pane`,
+/// `run-shell`): its value, or None, taken away (`set-environment -u`),
+/// even one the server's own environment holds, which a new process
+/// starts from. Applied in order: the last word on a name wins.
+pub type EnvVar = (String, Option<String>);
+
+/// `env` onto a pane's command.
+fn env_onto_pty(cmd: &mut CommandBuilder, env: &[EnvVar]) {
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        }
+    }
+}
+
+/// `env` onto a command run outside a pane.
+pub fn env_onto(cmd: &mut std::process::Command, env: &[EnvVar]) {
+    for (k, v) in env {
+        match v {
+            Some(v) => {
+                cmd.env(k, v);
+            }
+            None => {
+                cmd.env_remove(k);
+            }
+        }
+    }
+}
 
 /// Start `run` in the pane's console: the process, its id, a way to kill
 /// it, and the job object that takes its process tree down with it.
@@ -769,16 +799,14 @@ fn launch(
     id: PaneId,
     run: &[String],
     dir: Option<&str>,
-    env: &[(String, String)],
+    env: &[EnvVar],
 ) -> Result<(Child, Option<u32>, Killer, Option<crate::platform::process::Tree>)> {
     let mut cmd = CommandBuilder::new(&run[0]);
     cmd.args(&run[1..]);
     if let Some(d) = dir {
         cmd.cwd(d);
     }
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+    env_onto_pty(&mut cmd, env);
     let child = slave.spawn_command(cmd).with_context(|| format!("spawn {:?}", run))?;
     let pid = child.process_id();
     let killer = child.clone_killer();
@@ -813,7 +841,7 @@ impl Pane {
         cols: u16,
         rows: u16,
         history: usize,
-        env: &[(String, String)],
+        env: &[EnvVar],
         tx: Sender<PaneEvent>,
     ) -> Result<Pane> {
         Pane::spawn_gen(id, 0, argv, cwd, cols, rows, history, env, tx, None)
@@ -829,7 +857,7 @@ impl Pane {
         cols: u16,
         rows: u16,
         history: usize,
-        env: &[(String, String)],
+        env: &[EnvVar],
         tx: Sender<PaneEvent>,
         replay: Option<String>,
     ) -> Result<Pane> {
@@ -845,7 +873,7 @@ impl Pane {
         cols: u16,
         rows: u16,
         history: usize,
-        env: &[(String, String)],
+        env: &[EnvVar],
         tx: Sender<PaneEvent>,
         replay: Option<String>,
     ) -> Result<Pane> {
@@ -1049,16 +1077,14 @@ impl Pane {
     ///
     /// `output` feeds the pane's output to the command (`-O`); `input`
     /// feeds what the command prints to the pane as if typed (`-I`).
-    pub fn pipe_to(&mut self, command: &str, env: &[(String, String)], input: bool, output: bool) -> Result<()> {
+    pub fn pipe_to(&mut self, command: &str, env: &[EnvVar], input: bool, output: bool) -> Result<()> {
         use std::process::Stdio;
         self.pipe = None;
         let (mut c, exe) = crate::platform::process::pipe_command(command);
         c.stdin(if output { Stdio::piped() } else { Stdio::null() })
             .stdout(if input { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::null());
-        for (k, v) in env {
-            c.env(k, v);
-        }
+        env_onto(&mut c, env);
         let mut child = c.spawn().with_context(|| format!("pipe-pane: {exe}"))?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -1143,7 +1169,7 @@ impl Pane {
         &mut self,
         argv: Option<&[String]>,
         history: usize,
-        env: &[(String, String)],
+        env: &[EnvVar],
         tx: Sender<PaneEvent>,
     ) -> Result<Option<super::actor::Message>> {
         let argv = argv.map(|a| a.to_vec()).unwrap_or_else(|| self.argv.clone());
@@ -2364,6 +2390,31 @@ mod tests {
         assert_eq!(path_from_announced(""), None);
         assert_eq!(path_from_announced("file://"), None);
         let _ = std::fs::remove_dir(&tmp);
+    }
+
+    /// A pane started with a name taken away has none of it, though the
+    /// server's own environment (this test's) holds it.
+    #[test]
+    fn a_pane_starts_without_a_name_taken_away() {
+        unsafe { std::env::set_var("KEEPANE_TEST_INHERITED_PANE", "from-the-server") };
+        let (tx, rx) = channel();
+        let argv: Vec<String> = if cfg!(windows) {
+            ["cmd.exe", "/c", "echo [%KEEPANE_TEST_INHERITED_PANE%] & ping -n 3 127.0.0.1 > nul"]
+                .map(String::from)
+                .to_vec()
+        } else {
+            ["/bin/sh", "-c", "echo \"[$KEEPANE_TEST_INHERITED_PANE]\"; sleep 2"].map(String::from).to_vec()
+        };
+        // On Windows in another case: the same variable there.
+        let name = if cfg!(windows) { "keepane_test_inherited_pane" } else { "KEEPANE_TEST_INHERITED_PANE" };
+        let env = [(name.to_string(), None)];
+        let mut p = Pane::spawn(15, &argv, None, 60, 4, 100, &env, tx).unwrap();
+        // cmd.exe leaves an unset %NAME% as it is; sh, empty.
+        let gone = if cfg!(windows) { "[%KEEPANE_TEST_INHERITED_PANE%]" } else { "[]" };
+        let found = pump(&mut p, &rx, |p| p.screen().contents().contains('['), Duration::from_secs(10));
+        let seen = p.screen().contents();
+        unsafe { std::env::remove_var("KEEPANE_TEST_INHERITED_PANE") };
+        assert!(found && seen.contains(gone) && !seen.contains("from-the-server"), "{seen:?}");
     }
 
     #[test]

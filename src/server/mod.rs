@@ -2235,7 +2235,7 @@ impl Server {
         if pane.is_none() {
             env.retain(|(k, _)| k != "KEEPANE_PANE");
         }
-        env.extend(self.hook_env.iter().cloned());
+        env.extend(self.hook_env.iter().map(|(k, v)| (k.clone(), Some(v.clone()))));
         let spawned = std::thread::Builder::new().name("run-shell".into()).spawn({
             let events = events.clone();
             let command = command.clone();
@@ -3254,18 +3254,21 @@ impl Server {
         self.buffers.truncate(50);
     }
 
-    fn pane_env(&self, pane_id: PaneId) -> Vec<(String, String)> {
-        let mut env = self.keepane_env(pane_id);
-        // `set-environment` entries last, so they can override even PATH.
-        env.extend(self.env.iter().cloned());
+    fn pane_env(&self, pane_id: PaneId) -> Vec<pane::EnvVar> {
+        let mut env: Vec<pane::EnvVar> = self.keepane_env(pane_id).into_iter().map(|(k, v)| (k, Some(v))).collect();
+        // `set-environment` entries last, so they can override even PATH;
+        // a name taken away (`-u`) goes, even one this server was started
+        // with (a new process starts from the server's own environment).
+        env.extend(self.env.iter().map(|(k, v)| (k.clone(), Some(v.clone()))));
+        env.extend(self.env_state.unset.iter().map(|k| (k.clone(), None)));
         // And into WSL too, for a `wsl.exe` the pane runs.
         #[cfg(windows)]
         {
-            let base = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("WSLENV")).map(|(_, v)| v.clone());
+            let base = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("WSLENV")).and_then(|(_, v)| v.clone());
             let base = base.or_else(|| std::env::var("WSLENV").ok()).unwrap_or_default();
-            let names: Vec<String> = env.iter().map(|(k, _)| k.clone()).collect();
+            let names: Vec<String> = env.iter().filter(|(_, v)| v.is_some()).map(|(k, _)| k.clone()).collect();
             env.retain(|(k, _)| !k.eq_ignore_ascii_case("WSLENV"));
-            env.push(("WSLENV".into(), envvars::wslenv(&base, &names)));
+            env.push(("WSLENV".into(), Some(envvars::wslenv(&base, &names))));
         }
         env
     }
@@ -3379,7 +3382,7 @@ impl Server {
         if let Some(n) = &name {
             env.push((
                 crate::platform::shell::HISTORY_VAR.into(),
-                self.shell_history_path(n).to_string_lossy().into_owned(),
+                Some(self.shell_history_path(n).to_string_lossy().into_owned()),
             ));
         }
         let mut pane = Pane::spawn_replaying(
@@ -4075,7 +4078,7 @@ impl Server {
                     if let Some(n) = self.pane_ref(id).and_then(|p| p.shell_history.clone()) {
                         env.push((
                             crate::platform::shell::HISTORY_VAR.into(),
-                            self.shell_history_path(&n).to_string_lossy().into_owned(),
+                            Some(self.shell_history_path(&n).to_string_lossy().into_owned()),
                         ));
                     }
                     let Some(p) = self.find_pane_mut(id) else { continue };
@@ -10210,12 +10213,10 @@ const ONE_SHOT_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 /// Run a shell command to completion, returning (stdout+stderr, exit code).
 /// Uses the platform's shell (`platform::process::shell_command`). With a
 /// `timeout` the process tree is killed when it expires (exit code 124).
-fn run_shell_blocking(command: &str, env: &[(String, String)], timeout: Option<Duration>) -> (String, i32) {
+fn run_shell_blocking(command: &str, env: &[pane::EnvVar], timeout: Option<Duration>) -> (String, i32) {
     let (mut c, exe) = crate::platform::process::shell_command(command);
     c.stdin(std::process::Stdio::null());
-    for (k, v) in env {
-        c.env(k, v);
-    }
+    pane::env_onto(&mut c, env);
     c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let child = match c.spawn() {
         Ok(ch) => ch,
@@ -11771,9 +11772,35 @@ mod tests {
         let (out, code) = run_shell_blocking(ok, &[], None);
         assert_eq!(code, 3);
         assert!(out.contains("中文-ok"), "{out:?}");
-        let (out, code) = run_shell_blocking(echo, &[("KEEPANE_TEST_VAR".into(), "v1".into())], None);
+        let (out, code) = run_shell_blocking(echo, &[("KEEPANE_TEST_VAR".into(), Some("v1".into()))], None);
         assert_eq!(code, 0);
         assert_eq!(out.trim(), "v1");
+    }
+
+    /// A name taken away (`set-environment -u`) is not in what keepane
+    /// starts, even when the server's own environment holds it (as one
+    /// started from an agent's shell holds `NO_COLOR`); on Windows in any
+    /// case. The last word on a name wins: taken away, then set, is set.
+    #[test]
+    fn a_name_taken_away_is_gone_from_what_starts_even_inherited() {
+        unsafe { std::env::set_var("KEEPANE_TEST_INHERITED", "from-the-server") };
+        let echo = if cfg!(windows) {
+            "Write-Output \"[$env:KEEPANE_TEST_INHERITED]\""
+        } else {
+            "echo \"[$KEEPANE_TEST_INHERITED]\""
+        };
+        let (out, _) = run_shell_blocking(echo, &[], None);
+        assert_eq!(out.trim(), "[from-the-server]", "inherited when nothing is said");
+        let (out, _) = run_shell_blocking(echo, &[("KEEPANE_TEST_INHERITED".into(), None)], None);
+        assert_eq!(out.trim(), "[]", "taken away");
+        if cfg!(windows) {
+            let (out, _) = run_shell_blocking(echo, &[("keepane_test_inherited".into(), None)], None);
+            assert_eq!(out.trim(), "[]", "Windows: any case");
+        }
+        let again = [("KEEPANE_TEST_INHERITED".into(), None), ("KEEPANE_TEST_INHERITED".into(), Some("set".into()))];
+        let (out, _) = run_shell_blocking(echo, &again, None);
+        assert_eq!(out.trim(), "[set]", "the last word wins");
+        unsafe { std::env::remove_var("KEEPANE_TEST_INHERITED") };
     }
 
     #[test]

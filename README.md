@@ -1648,15 +1648,25 @@ name) is not set over. The table is saved with the sessions and is there
 again after the server restarts; `~/.keepane.conf` is read first, and
 wins for the names it sets.
 
+`-u` takes a name out even when the server itself was started with it: a
+new pane starts from the server's own environment, which is whatever the
+shell that started the server had. A server started from an agent's
+shell, for example, has its `NO_COLOR=1`, and the programs in its panes
+that follow that convention draw without colour; `set-environment -u
+NO_COLOR` gives the colour back to the panes started after it. A name
+taken away stays away after a restart, too.
+
 ```tmux
 set-environment GOPROXY https://goproxy.cn    # in every pane, from its next prompt
 set-environment -u GOPROXY                    # and gone again
+set-environment -u NO_COLOR                   # gone, though the server was started with it
 ```
 
 `prefix e` shows it in colour: the variables `set-environment` set, then
 what keepane sets in every pane itself (`KEEPANE`, the pane's own
-`KEEPANE_PANE`, `PATH` with keepane's folder in it, ...). A script gets
-the plain `NAME=value` lines from `keepane show-environment`.
+`KEEPANE_PANE`, `PATH` with keepane's folder in it, ...), and the names
+taken away. A script gets the plain `NAME=value` lines from `keepane
+show-environment`.
 
 ### Themes
 
