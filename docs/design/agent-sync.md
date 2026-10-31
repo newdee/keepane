@@ -1,6 +1,6 @@
 # 把项目和它的 agent 对话一起送到另一台机器（设计稿）
 
-状态：草稿，等用户定第 8 节。
+状态：草稿，等用户定第 9 节。
 
 用户已定：
 - 2026-10-30：Claude Code、Codex 的对话只存在本机，要能带到另一台机器接着聊；手动按需送，不做后台同步；以后再送只送新增部分。
@@ -71,13 +71,30 @@ keepane send-agents <对方地址> [目录] [-s 对话id]… [-n]
 
 **警告：** link 的请求有签名，但不加密（[link.md](link.md) 第 32 行）。请在 Tailscale 上用，或只在可信的网络里用。
 
-## 7. 风险
+## 7. 实测（2026-10-31，WSL 当作另一台机器）
+
+WSL 里装了 Claude Code 2.1.314，不登录，用单独的配置目录（`CLAUDE_CONFIG_DIR=~/cc-test`）。把 Windows 上一段 44 KB、20 行的对话复制过去，只把 11 行的 `cwd` 从 `C:\Users\stebe\…\smoke1` 改成 `/home/dfine/keepane/from/desktop/smoke1`，放进 `projects/-home-dfine-keepane-from-desktop-smoke1/`（目录名按 `claude_folder` 的规则算）。
+
+| 试的 | 结果 |
+|---|---|
+| 新文件夹里 `claude -p --resume <id>` | 读进对话（这一轮输入 4002 个 token），停在"Not logged in" |
+| `/tmp` 里 `claude -p --resume <id>` | 同样读进：按 id 接着聊不看当前目录，在所有项目里找 |
+| 编一个 id | `No conversation found with session ID` |
+| 新文件夹里 `claude -p --continue` | 读进对话（4002）：按目录找，目录名对了 |
+| 空文件夹里 `claude -p --continue` | 没有可接的（0） |
+| 不带 id 的 `claude --resume`（列表） | 没测到：没登录时先出首次设置和登录界面 |
+
+结论：
+- 复制 + 只改 `cwd` + 按规则算目录名，Windows 的对话在 Linux 上能接着聊。
+- **打开一次就算续写**：每次 resume（连没登录失败的那几次）都往对话末尾追加行。实测 20 行变成 159 行（`user`、`assistant`、`api-request` 等）。所以对方只要打开过，再送同一段对话时它就不是"开头一致"了，按第 5 节另存一份新 id。送回来同理。
+
+## 8. 风险
 
 - **agent 改格式**：transcript 不是公开接口。Claude Code 2.1.3xx 只在 `user`、`assistant`、`attachment`、`system` 行写 `cwd`（2026-10-29 实测）；以后可能变。写入前用 `agents::feed` 读一遍改写后的文件，读不出轮次就拒绝写入。
 - **resume 找不到**：Claude Code 按目录名找对话，目录名由路径算出。用 `claude_folder` 同一个函数算，测试覆盖 Windows 和 Unix 路径。
 - **两边版本不同**：对方的 agent 比本机旧时可能读不懂新字段，没法提前检查。
 
-## 8. 要用户定的事
+## 9. 要用户定的事
 
 1. `.git` 带不带？
    - 带上（推荐）：对方得到完整的仓库，能提交、能 `push` 回来。本仓库第一次 250 MB，以后只送变化的部分。
