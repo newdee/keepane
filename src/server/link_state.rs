@@ -166,8 +166,8 @@ impl Server {
             Cmd::LinkTrust { addr, key, shell, screen, panes, push } => {
                 self.link_trust(cid, addr, key, [shell, screen, panes, push])
             }
-            Cmd::LinkAllow { addr, shell, screen, panes, push } => {
-                self.link_allow(cid, &addr, [shell, screen, panes, push])
+            Cmd::LinkAllow { addr, shell, screen, panes, push, agents } => {
+                self.link_allow(cid, &addr, [shell, screen, panes, push, agents])
             }
             Cmd::LinkRekey => self.link_rekey(),
             other => Outcome::Error(format!("not a link command: {other}")),
@@ -182,8 +182,9 @@ impl Server {
         if l.peers.is_empty() {
             return Outcome::Text("no machines paired: `keepane link add <its keepane web address>`".into());
         }
-        let mut rows =
-            vec![["MACHINE", "KEY", "SHELL", "SCREEN", "PANES", "PUSH", "LAST SEEN"].map(String::from).to_vec()];
+        let mut rows = vec![
+            ["MACHINE", "KEY", "SHELL", "SCREEN", "PANES", "PUSH", "AGENTS", "LAST SEEN"].map(String::from).to_vec(),
+        ];
         let yes = |b: bool| if b { "yes" } else { "no" }.to_string();
         for p in &l.peers {
             rows.push(vec![
@@ -193,6 +194,7 @@ impl Server {
                 yes(p.screen),
                 yes(p.panes),
                 yes(p.push),
+                yes(p.agents),
                 l.seen.get(&p.key).map_or("never".into(), |t| t.format("%H:%M:%S").to_string()),
             ]);
         }
@@ -236,7 +238,9 @@ impl Server {
                 p.panes = panes;
                 p.push = push;
             }
-            None => l.peers.push(Peer { key: key.clone(), addr: addr.clone(), shell, screen, panes, push }),
+            None => {
+                l.peers.push(Peer { key: key.clone(), addr: addr.clone(), shell, screen, panes, push, agents: false })
+            }
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
@@ -264,7 +268,7 @@ impl Server {
         &mut self,
         cid: Option<ClientId>,
         addr: &str,
-        [shell, screen, panes, push]: [Option<bool>; 4],
+        [shell, screen, panes, push, agents]: [Option<bool>; 5],
     ) -> Outcome {
         if self.caller_pane(cid).is_some() {
             return Outcome::Error(not_from_a_pane("link-allow"));
@@ -289,7 +293,11 @@ impl Server {
         if let Some(s) = push {
             p.push = s;
         }
-        let (key, now_shell, now_screen, now_panes, now_push) = (p.key.clone(), p.shell, p.screen, p.panes, p.push);
+        if let Some(s) = agents {
+            p.agents = s;
+        }
+        let (key, now_shell, now_screen, now_panes, now_push, now_agents) =
+            (p.key.clone(), p.shell, p.screen, p.panes, p.push, p.agents);
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
         }
@@ -306,6 +314,9 @@ impl Server {
         }
         if push.is_some() {
             said.push(format!("{addr} {} send commits into repositories here (clone, push)", may(now_push)));
+        }
+        if agents.is_some() {
+            said.push(format!("{addr} {} send projects and their agents' chats here (send-agents)", may(now_agents)));
         }
         let agent_commands = self.opts.agent_commands.clone();
         if panes == Some(true) {
@@ -331,7 +342,7 @@ impl Server {
             &format!("link: {text} (by {by})"),
             "allowed",
             &format!(
-                ",\"addr\":{},\"key\":{},\"shell\":{now_shell},\"screen\":{now_screen},\"panes\":{now_panes},\"push\":{now_push},\"by\":{}",
+                ",\"addr\":{},\"key\":{},\"shell\":{now_shell},\"screen\":{now_screen},\"panes\":{now_panes},\"push\":{now_push},\"agents\":{now_agents},\"by\":{}",
                 js(addr),
                 js(&key),
                 js(&by)
@@ -423,8 +434,14 @@ mod tests {
             "{list}"
         );
 
-        let allow =
-            |addr: &str, shell, screen| Cmd::LinkAllow { addr: addr.into(), shell, screen, panes: None, push: None };
+        let allow = |addr: &str, shell, screen| Cmd::LinkAllow {
+            addr: addr.into(),
+            shell,
+            screen,
+            panes: None,
+            push: None,
+            agents: None,
+        };
         assert!(text(b.exec_link_local(allow("10.0.0.9:1", Some(true), None), None)).contains("not paired"));
         assert_eq!(
             text(b.exec_link_local(allow("10.0.0.1:7681", Some(true), None), None)),
@@ -437,8 +454,14 @@ mod tests {
         );
         // Starting panes here, on its own too: what it may start said, and
         // that a shell on the list runs anything.
-        let panes =
-            Cmd::LinkAllow { addr: "10.0.0.1:7681".into(), shell: None, screen: None, panes: Some(true), push: None };
+        let panes = Cmd::LinkAllow {
+            addr: "10.0.0.1:7681".into(),
+            shell: None,
+            screen: None,
+            panes: Some(true),
+            push: None,
+            agents: None,
+        };
         b.opts.agent_commands = "claude C:\\bin\\bash.exe codex".into();
         let said = text(b.exec_link_local(panes.clone(), None));
         assert!(said.starts_with("10.0.0.1:7681 may start panes here; it may start: claude"), "{said}");
@@ -447,18 +470,43 @@ mod tests {
         assert!(!text(b.exec_link_local(panes, None)).contains("run any command"), "agents only");
         let list = text(b.exec_link_local(Cmd::LinkList, None));
         assert!(list.lines().next().unwrap().contains("PANES") && list.contains("yes    yes     yes    no"), "{list}");
-        let push =
-            Cmd::LinkAllow { addr: "10.0.0.1:7681".into(), shell: None, screen: None, panes: None, push: Some(true) };
+        let push = Cmd::LinkAllow {
+            addr: "10.0.0.1:7681".into(),
+            shell: None,
+            screen: None,
+            panes: None,
+            push: Some(true),
+            agents: None,
+        };
         assert_eq!(
             text(b.exec_link_local(push, None)),
             "10.0.0.1:7681 may send commits into repositories here (clone, push)"
         );
+        let agents = Cmd::LinkAllow {
+            addr: "10.0.0.1:7681".into(),
+            shell: None,
+            screen: None,
+            panes: None,
+            push: None,
+            agents: Some(true),
+        };
+        assert_eq!(
+            text(b.exec_link_local(agents, None)),
+            "10.0.0.1:7681 may send projects and their agents' chats here (send-agents)"
+        );
+        let list = text(b.exec_link_local(Cmd::LinkList, None));
+        assert!(list.lines().next().unwrap().contains("PUSH  AGENTS"), "{list}");
         let again = server("link-state-b");
         let mut again = again;
         let peers = &again.link().unwrap().peers;
         assert_eq!(peers.len(), 1);
         assert!(
-            peers[0].shell && peers[0].screen && peers[0].panes && peers[0].push && peers[0].key == ka,
+            peers[0].shell
+                && peers[0].screen
+                && peers[0].panes
+                && peers[0].push
+                && peers[0].agents
+                && peers[0].key == ka,
             "read back"
         );
 

@@ -72,8 +72,9 @@ Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
 Panes on other machines (both run `keepane web`; docs/design/link.md):
   link add <its keepane web address>   (pair, like SSH keys, once, both ways)   link list   link panes host:port
   send-message --to host:port/%name text   trace-message id (asks there too)   link info host:port
-  link capture [-S lines] host:port/%name   link allow host:port [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] [--push|--no-push]
+  link capture [-S lines] host:port/%name   link allow host:port [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] [--push|--no-push] [--agents|--no-agents]
   clone host:port [path] [--tell pane]   push [host:port [path]] [--tell pane]   push -l   (commits of this repository there; docs/design/link-push.md)
+  send-agents [host:port] [dir] [-s chat-id]... [-n]   send-agents -l   (this project and its agents' chats there; docs/design/agent-sync.md)
   link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane
   link id   link trust host:port key [--shell] [--screen] [--panes] [--push]   link remove host:port   link rekey
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)

@@ -1413,6 +1413,7 @@ keepane link allow 100.64.0.3:7681 --shell     # --no-shell takes it back
 keepane link allow 100.64.0.3:7681 --screen    # it may read the panes here; --no-screen takes it back
 keepane link allow 100.64.0.3:7681 --panes     # it may start panes here; --no-panes takes it back
 keepane link allow 100.64.0.3:7681 --push      # it may send commits here (clone, push); --no-push takes it back
+keepane link allow 100.64.0.3:7681 --agents    # it may send projects and chats here (send-agents); --no-agents
 keepane link remove 100.64.0.3:7681            # unpair, on both
 keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
 keepane link rekey                             # a new key: every pairing has to be made again
@@ -1489,6 +1490,47 @@ are counted in the answer and not sent. The status line there says what
 came, and the event log keeps it. `link-push-limit` (default 200M) bounds a
 bundle on both sides; both need git. Agents do it through MCP: `push_repo`.
 The design: [docs/design/link-push.md](docs/design/link-push.md).
+
+### Taking a project and its agents' chats to another machine
+
+Claude Code, Codex and pi keep their chats on the machine they ran on.
+`send-agents` takes a project to a paired machine that allowed this one to
+(`--agents`), with the chats, so that you go on with them there:
+
+```powershell
+keepane send-agents 100.64.0.3:7681 -n         # what would go (nothing is sent)
+keepane send-agents 100.64.0.3:7681            # this project and its chats
+keepane send-agents                            # later: what changed, to the same folder
+keepane send-agents 100.64.0.3:7681 -s 9516c53b   # only the chats whose id starts so
+keepane send-agents -l                         # what went where, and what came
+```
+
+Sent from a repository, its commits go as `push` sends them, with the
+files git lists as changed or new (ignored files stay); any other folder
+goes whole, without `node_modules`, `target` and the like. The chats go
+with their `cwd` set to the folder there. The first time, the project
+lands in `~/keepane/from/<this machine>/<name>` there (under its
+`link-clone-dir`), and the answer ends with how to go on there:
+
+```text
+go on there: cd /home/me/keepane/from/laptop/app
+  claude --resume 9516c53b-ede9-4566-9d6a-76117964e69b
+```
+
+Both sides keep where the folder is. Sending again goes to the same folder
+and only what changed goes: a chat the other side has the start of goes as
+its new end. Sent back from there, the project goes back where it came
+from. Nothing of the other side's is lost: a file changed there since the
+last send stays, and the one sent lands beside it as `<name>.from-<this
+machine>`; a chat that went on there too (even opening it to resume adds
+to it) comes as a new chat, under a new id. It all goes as one gzip
+stream, in pieces, checked whole; `link-agents-limit` (default 1G) bounds
+it on both sides.
+
+Chats can hold secrets: what the agent read, the commands it ran and
+their output. The link signs each request but does not encrypt it: use it
+over Tailscale, or on a network you trust. The design:
+[docs/design/agent-sync.md](docs/design/agent-sync.md).
 
 ## The manual
 

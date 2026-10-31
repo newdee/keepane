@@ -488,7 +488,7 @@ pub fn pi_folder(cwd: &str) -> String {
 
 /// A directory as compared with another: case matters only off Windows; a
 /// trailing separator never.
-fn dir_key(d: &str) -> String {
+pub(super) fn dir_key(d: &str) -> String {
     let d = d.trim_end_matches(['/', '\\']);
     if cfg!(windows) { d.to_ascii_lowercase() } else { d.to_string() }
 }
@@ -557,7 +557,7 @@ pub fn transcripts(
 }
 
 /// The directory a Codex session worked in: its first line, `session_meta`.
-fn codex_cwd(path: &Path) -> Option<String> {
+pub(super) fn codex_cwd(path: &Path) -> Option<String> {
     let f = std::fs::File::open(path).ok()?;
     let mut first = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(f), &mut first).ok()?;

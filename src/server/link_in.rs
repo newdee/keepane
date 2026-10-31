@@ -192,6 +192,9 @@ impl Server {
             ("POST", "/link/git/look") => self.link_git_look_in(cid, &req.body, &nonce, &peer),
             ("POST", "/link/git/chunk") => self.link_git_chunk_in(&req.body, &nonce, &peer),
             ("POST", "/link/git/apply") => self.link_git_apply_in(cid, &req.body, &nonce, &peer),
+            ("POST", "/link/agents/look") => self.link_agents_look_in(cid, &req.body, &nonce, &peer),
+            ("POST", "/link/agents/chunk") => self.link_agents_chunk_in(&req.body, &nonce, &peer),
+            ("POST", "/link/agents/apply") => self.link_agents_apply_in(cid, &req.body, &nonce, &peer),
             ("GET", "/link/panes") => {
                 let cmd = Cmd::ListPanes { target: None, all: true, session: false, format: Some(PANES.into()) };
                 match self.exec(cmd, None) {
@@ -281,6 +284,7 @@ impl Server {
                 screen: false,
                 panes: false,
                 push: false,
+                agents: false,
             }),
         }
         l.seen.insert(from.to_string(), chrono::Local::now());

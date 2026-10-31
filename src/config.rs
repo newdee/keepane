@@ -184,6 +184,8 @@ pub struct Options {
     pub link_clone_dir: String,
     /// The largest bundle of commits sent or taken (`clone`, `push`).
     pub link_push_limit: u64,
+    /// The most a `send-agents` pack may be, compressed (sent and taken in).
+    pub link_agents_limit: u64,
     /// Keep what happens to messages and panes in a JSON Lines file a day.
     pub event_log: bool,
     /// Days the event log keeps.
@@ -472,6 +474,7 @@ pub const SHOWABLE: &[&str] = &[
     "git-command",
     "link-clone-dir",
     "link-push-limit",
+    "link-agents-limit",
     "hint-open",
     "theme",
     "window-style",
@@ -578,6 +581,7 @@ impl Default for Options {
             git_command: String::new(),
             link_clone_dir: "~/keepane".into(),
             link_push_limit: 200 * 1024 * 1024,
+            link_agents_limit: 1024 * 1024 * 1024,
             event_log: true,
             event_log_days: 30,
             event_log_max: 20 * 1024 * 1024,
@@ -713,6 +717,7 @@ pub const KNOWN: &[&str] = &[
     "hint-open",
     "history-limit",
     "keep-zoom",
+    "link-agents-limit",
     "link-clone-dir",
     "link-push-limit",
     "log-history",
@@ -1102,6 +1107,9 @@ impl Options {
                 self.link_clone_dir = v.to_string();
             }
             "link-push-limit" => self.link_push_limit = parse_size(name, value, 1024 * 1024, 4096 * 1024 * 1024)?,
+            "link-agents-limit" => {
+                self.link_agents_limit = parse_size(name, value, 1024 * 1024, 16 * 1024 * 1024 * 1024)?
+            }
             "done-webhook" => {
                 let v = value.trim();
                 let ok = v.is_empty()
@@ -1265,6 +1273,7 @@ impl Options {
             "git-command" => self.git_command.clone(),
             "link-clone-dir" => self.link_clone_dir.clone(),
             "link-push-limit" => size_name(self.link_push_limit),
+            "link-agents-limit" => size_name(self.link_agents_limit),
             "done-webhook-format" => self.done_webhook_format.clone(),
             "event-log" => onoff(self.event_log),
             "event-log-days" => self.event_log_days.to_string(),

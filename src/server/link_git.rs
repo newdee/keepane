@@ -44,7 +44,21 @@ pub(super) struct Incoming {
     at: Instant,
 }
 
-/// The end of a `clone` or `push`, for the client that asked.
+impl Incoming {
+    pub(super) fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub(super) fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub(super) fn file(&self) -> &Path {
+        &self.file
+    }
+}
+
+/// The end of a `clone`, `push` or `send-agents`, for the client that asked.
 pub(super) struct GitDone {
     cid: Option<ClientId>,
     result: Result<String, String>,
@@ -87,8 +101,15 @@ struct Job {
 }
 
 /// A transfer's name as this side makes it: base64url, 16 to 64 long.
-fn transfer_ok(t: &str) -> bool {
+pub(super) fn transfer_ok(t: &str) -> bool {
     (16..=64).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+impl GitDone {
+    /// The end of a `send-agents`: only what to say.
+    pub(super) fn said(cid: Option<ClientId>, result: Result<String, String>) -> GitDone {
+        GitDone { cid, result, record: None, tell: None }
+    }
 }
 
 /// A path to keep in the records: one line, no tab.
@@ -221,7 +242,7 @@ impl Job {
 }
 
 /// The next piece of a bundle: up to `CHUNK` bytes, none at its end.
-fn read_piece(f: &mut std::fs::File) -> std::io::Result<Vec<u8>> {
+pub(super) fn read_piece(f: &mut std::fs::File) -> std::io::Result<Vec<u8>> {
     let mut buf = vec![0u8; gitsync::CHUNK];
     let mut n = 0;
     while n < buf.len() {
@@ -260,12 +281,12 @@ async fn finish(
 
 /// A path to put in a command to type: in single quotes when it has a space
 /// (PowerShell and POSIX shells read them alike), as it is otherwise.
-fn shell_word(p: &str) -> String {
+pub(super) fn shell_word(p: &str) -> String {
     if p.contains(char::is_whitespace) && !p.contains('\'') { format!("'{p}'") } else { p.to_string() }
 }
 
 /// A size as people read it.
-fn human(n: u64) -> String {
+pub(super) fn human(n: u64) -> String {
     if n >= 1024 * 1024 {
         format!("{:.1} MiB", n as f64 / (1024.0 * 1024.0))
     } else {
@@ -461,7 +482,9 @@ impl Server {
     pub(super) fn link_later(&mut self, l: Later) {
         let Later { cid, nonce, status, body, note } = l;
         if let Some((text, fields)) = note {
-            self.link_note(&text, "commits", &fields);
+            // What came: commits (`push`), or a project (`send-agents`).
+            let what = if text.starts_with("link: a project") { "project" } else { "commits" };
+            self.link_note(&text, what, &fields);
         }
         let out = self.link_answer(&nonce, status, body);
         if let Some(cid) = cid {
@@ -502,7 +525,7 @@ impl Server {
     }
 
     /// Run `work` on a thread; its answer goes to the request (`Later`).
-    fn later(
+    pub(super) fn later(
         &self,
         cid: Option<ClientId>,
         nonce: &str,
@@ -644,7 +667,7 @@ impl Server {
 /// A piece of a bundle from the machine `key`, kept in `dir`: the answer's
 /// status and words. What has stopped coming is let go first; a machine
 /// sends one bundle at a time (its first piece drops any other of its).
-fn take_piece(
+pub(super) fn take_piece(
     incoming: &mut std::collections::HashMap<String, Incoming>,
     dir: &Path,
     transfer: &str,

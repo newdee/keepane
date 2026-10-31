@@ -767,6 +767,19 @@ pub enum Cmd {
         screen: Option<bool>,
         panes: Option<bool>,
         push: Option<bool>,
+        /// It may send projects and their agents' chats here (`send-agents`).
+        agents: Option<bool>,
+    },
+    /// `link-send-agents [host:port] [dir] [-s id]... [-n]` (`send-agents`): the
+    /// project the client is in (its repository, or `dir`) and its agents'
+    /// chats, to a paired machine (docs/design/agent-sync.md); `-s` only the
+    /// chats named, `-n` only says what would go; `-l` what went where.
+    LinkSendAgents {
+        addr: Option<String>,
+        dir: Option<String>,
+        sessions: Vec<String>,
+        dry: bool,
+        list: bool,
     },
     /// `link-remove host:port`: unpair (both sides, when it can be reached).
     LinkRemove {
@@ -1793,7 +1806,23 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::LinkAllow { addr, shell, screen, panes, push } => {
+            Cmd::LinkSendAgents { addr, dir, sessions, dry, list } => {
+                f.write_str("link-send-agents")?;
+                if *list {
+                    f.write_str(" -l")?;
+                }
+                if *dry {
+                    f.write_str(" -n")?;
+                }
+                for s in sessions {
+                    write!(f, " -s {}", quote(s))?;
+                }
+                for w in [addr, dir].into_iter().flatten() {
+                    write!(f, " {}", quote(w))?;
+                }
+                Ok(())
+            }
+            Cmd::LinkAllow { addr, shell, screen, panes, push, agents } => {
                 write!(f, "link-allow {}", quote(addr))?;
                 if let Some(s) = shell {
                     f.write_str(if *s { " --shell" } else { " --no-shell" })?;
@@ -1806,6 +1835,9 @@ impl fmt::Display for Cmd {
                 }
                 if let Some(s) = push {
                     f.write_str(if *s { " --push" } else { " --no-push" })?;
+                }
+                if let Some(s) = agents {
+                    f.write_str(if *s { " --agents" } else { " --no-agents" })?;
                 }
                 Ok(())
             }
@@ -2320,6 +2352,7 @@ pub const COMMANDS: &[&str] = &[
     "link-clone",
     "link-kill",
     "link-push",
+    "link-send-agents",
     "link-start",
     "link-id",
     "link-inbound",
@@ -2578,7 +2611,18 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("link-add", &[]),
     (
         "link-allow",
-        &["--shell", "--no-shell", "--screen", "--no-screen", "--panes", "--no-panes", "--push", "--no-push"],
+        &[
+            "--shell",
+            "--no-shell",
+            "--screen",
+            "--no-screen",
+            "--panes",
+            "--no-panes",
+            "--push",
+            "--no-push",
+            "--agents",
+            "--no-agents",
+        ],
     ),
     ("link-capture", &["-S"]),
     ("link-id", &[]),
@@ -2593,6 +2637,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("link-kill", &[]),
     ("link-clone", &["--tell"]),
     ("link-push", &["-l", "--tell"]),
+    ("link-send-agents", &["-l", "-n", "-s"]),
 ];
 
 /// The flags of a command, for completion.
@@ -2677,6 +2722,7 @@ pub const ALIASES: &[(&str, &str)] = &[
     ("rename", "rename-session"),
     ("clone", "link-clone"),
     ("push", "link-push"),
+    ("send-agents", "link-send-agents"),
     ("neww", "new-window"),
     ("killw", "kill-window"),
     ("renamew", "rename-window"),
@@ -4217,7 +4263,8 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
         }
         "link-allow" => {
-            let (mut addr, mut shell, mut screen, mut panes, mut push) = (None, None, None, None, None);
+            let (mut addr, mut shell, mut screen, mut panes, mut push, mut agents) =
+                (None, None, None, None, None, None);
             while let Some(w) = a.next() {
                 match w {
                     "--shell" => shell = Some(true),
@@ -4228,6 +4275,8 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     "--no-panes" => panes = Some(false),
                     "--push" => push = Some(true),
                     "--no-push" => push = Some(false),
+                    "--agents" => agents = Some(true),
+                    "--no-agents" => agents = Some(false),
                     f if f.starts_with('-') => return Err(bad_flag(n, f)),
                     v if addr.is_none() => addr = Some(v.to_string()),
                     v => return Err(format!("{n}: what is '{v}'?")),
@@ -4237,12 +4286,36 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::link::valid_hostport(&addr) {
                 return Err(format!("{n}: '{addr}' is not host:port"));
             }
-            if shell.is_none() && screen.is_none() && panes.is_none() && push.is_none() {
+            if [shell, screen, panes, push, agents].iter().all(Option::is_none) {
                 return Err(format!(
-                    "{n}: --shell or --no-shell, --screen or --no-screen, --panes or --no-panes, --push or --no-push"
+                    "{n}: --shell or --no-shell, --screen or --no-screen, --panes or --no-panes, --push or --no-push, \
+                     --agents or --no-agents"
                 ));
             }
-            Cmd::LinkAllow { addr, shell, screen, panes, push }
+            Cmd::LinkAllow { addr, shell, screen, panes, push, agents }
+        }
+        "link-send-agents" => {
+            let (mut words, mut sessions, mut dry, mut list) = (Vec::new(), Vec::new(), false, false);
+            while let Some(w) = a.next() {
+                match w {
+                    "-s" => sessions.push(a.value("-s")?.to_string()),
+                    "-n" => dry = true,
+                    "-l" => list = true,
+                    f if f.starts_with('-') => return Err(bad_flag(n, f)),
+                    v => words.push(v.to_string()),
+                }
+            }
+            if list && (!words.is_empty() || !sessions.is_empty() || dry) {
+                return Err(format!("{n}: -l takes nothing else"));
+            }
+            // The machine first when it reads as one; a directory otherwise.
+            let mut words = words.into_iter().peekable();
+            let addr = words.next_if(|w| crate::link::valid_hostport(w));
+            let dir = words.next();
+            if let Some(w) = words.next() {
+                return Err(format!("{n}: what is '{w}'? (host:port, then a directory)"));
+            }
+            Cmd::LinkSendAgents { addr, dir, sessions, dry, list }
         }
         "link-trust" => {
             // `--shell` and `--screen` are the flags: a key is base64url, and

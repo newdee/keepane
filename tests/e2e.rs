@@ -3739,9 +3739,14 @@ async fn many_windows_leave_the_status_lines_right_side_whole() {
     let row = status(c.screen.screen());
     assert!(row.contains("<6:window-06*>") && row.contains(" …x") && row.ends_with("xEND"), "{row:?}");
     // A window left out that prints something: its side's mark reversed.
+    // Every shell at its prompt first: one still starting (twelve start at
+    // once, slowly on a busy machine) would print after activity is
+    // watched, and mark its side too.
     h.cli(&["set", "-g", "status-right", "RIGHT-END 12:34"]).await;
+    for i in 0..12 {
+        h.wait_capture(&format!("m:{i}"), "every window's shell", |t| t.contains("keepane>")).await;
+    }
     h.cli(&["set", "-g", "monitor-activity", "on"]).await;
-    h.wait_capture("m:11", "a shell in the last window", |t| t.contains("keepane>")).await;
     h.cli(&["send-keys", "-t", "m:11", "echo far-away", "Enter"]).await;
     let reversed = |s: &vt100::Screen, mark: char| {
         let row = status(s);
@@ -6815,6 +6820,102 @@ async fn a_machine_allowed_to_starts_panes_on_another_and_closes_only_those() {
     assert!(b.cli(&["display", "-p", "-t", &format!("%{pid}"), "#{pane_id}"]).await.0 != 0, "gone there");
     a.cli(&["kill-server"]).await;
     b.cli(&["kill-server"]).await;
+}
+
+/// A project goes to another machine with `send-agents`
+/// (docs/design/agent-sync.md): only from a machine allowed to
+/// (`--agents`); it lands in `from/<this machine>/<name>` under that
+/// side's `link-clone-dir`, its commits cloned and its files not
+/// committed with them; sent again, nothing new goes; `-n` says what would
+/// go and sends nothing; `-l` lists where it went. (Its folder has no
+/// chats: the servers here share the test's environment, and the agents'
+/// folders are the person's; chats are the unit tests' and the WSL run's.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_goes_to_another_machine_by_send_agents() {
+    let Some(git) = keepane::git::command("") else {
+        eprintln!("no git here: skipped");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("keepane-test-agents-send-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    link_test_dir();
+    let (here, there) = (root.join("proj"), root.join("there"));
+    std::fs::create_dir_all(&here).unwrap();
+    let g = |dir: &std::path::Path, args: &[&str]| {
+        let o = std::process::Command::new(&git)
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    g(&here, &["init", "-q", "-b", "main"]);
+    std::fs::write(here.join("a.txt"), "one\n").unwrap();
+    g(&here, &["add", "a.txt"]);
+    g(&here, &["commit", "-q", "-m", "a"]);
+    std::fs::write(here.join("a.txt"), "one, changed\n").unwrap();
+    std::fs::write(here.join("notes.md"), "not committed\n").unwrap();
+    let a = Harness::start("asa").await;
+    let b = Harness::start("asb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    b.cli(&["set", "-g", "link-clone-dir", &there.to_string_lossy()]).await;
+    // Not allowed yet: said how to allow it, nothing made there.
+    let (code, _, err) = a.cli_at(&here, &["send-agents", &addr_b]).await;
+    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --agents")), "{err}");
+    assert!(!there.exists());
+    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--agents"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("may send projects and their agents' chats here"), "{out}");
+    // -n: what would go, nothing sent.
+    let (code, out, err) = a.cli_at(&here, &["send-agents", "-n", &addr_b]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("would send to") && out.contains("1 commit(s), 2 file(s)"), "{out}");
+    assert!(!there.exists(), "-n sends nothing");
+    // Sent: cloned under from/<this machine>/proj, the changed and new files on it.
+    let (code, out, err) = a.cli_at(&here, &["send-agents", &addr_b]).await;
+    assert_eq!(code, 0, "{err}");
+    let hosts: Vec<_> = std::fs::read_dir(there.join("from")).unwrap().flatten().map(|e| e.path()).collect();
+    assert_eq!(hosts.len(), 1, "{hosts:?}");
+    let copy = hosts[0].join("proj");
+    assert!(out.contains("sent to") && out.contains("cloned") && out.contains("files: 2 written"), "{out}");
+    let read = |f: &str| std::fs::read_to_string(copy.join(f)).unwrap().replace("\r\n", "\n");
+    assert_eq!((read("a.txt"), read("notes.md")), ("one, changed\n".into(), "not committed\n".into()));
+    // Again: nothing new; to the same folder, found by what was kept.
+    let (code, out, err) = a.cli_at(&here, &["send-agents"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("nothing new") && out.contains("2 already here"), "{out}");
+    let (_, listed, _) = a.cli_at(&here, &["send-agents", "-l"]).await;
+    assert!(listed.contains(&addr_b) && listed.contains(&copy.to_string_lossy().to_string()), "{listed}");
+    let (_, listed, _) = b.cli(&["send-agents", "-l"]).await;
+    assert!(listed.contains(&here.to_string_lossy().to_string()), "kept there too: {listed}");
+    // Worked on there and sent back: it goes back where it came from, not
+    // to a new folder here; the file changed there lands here (unchanged
+    // here since the last send).
+    std::fs::write(copy.join("notes.md"), "changed there\n").unwrap();
+    a.cli(&["set", "-g", "link-clone-dir", &root.join("there-a").to_string_lossy()]).await;
+    assert_eq!(a.cli(&["link-allow", &addr_b, "--agents"]).await.0, 0);
+    let (code, out, err) = b.cli_at(&copy, &["send-agents"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(&format!("sent to {addr_a}:")) && out.contains("files: 1 written"), "{out}");
+    let back = std::fs::read_to_string(here.join("notes.md")).unwrap().replace("\r\n", "\n");
+    assert_eq!(back, "changed there\n", "{out}");
+    assert!(!root.join("there-a").exists() && !here.join("from").exists(), "no new folder here");
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Commits go to another machine (docs/design/link-push.md): only from a

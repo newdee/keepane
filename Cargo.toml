@@ -29,6 +29,9 @@ sha2 = "0.10"
 # `clock-mode-zones`: the time in other places. Windows has no IANA time
 # zone database of its own, so the zones are built in.
 chrono-tz = "0.10"
+# `send-agents`: a project and its agents' chats go to another machine as one
+# gzip stream (docs/design/agent-sync.md); chats shrink to about a quarter.
+flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 # WinRT toasts (the notification with a "Go to pane" button) and WMI (the

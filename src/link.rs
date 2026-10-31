@@ -101,16 +101,30 @@ pub fn listen_addrs(bind: &[IpAddr]) -> Vec<IpAddr> {
 /// `remove`, `rekey`).
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     const WORDS: &[&str] = &[
-        "id", "add", "trust", "list", "panes", "info", "capture", "start", "kill", "allow", "remove", "rekey", "clone",
+        "id",
+        "add",
+        "trust",
+        "list",
+        "panes",
+        "info",
+        "capture",
+        "start",
+        "kill",
+        "allow",
+        "remove",
+        "rekey",
+        "clone",
         "push",
+        "send-agents",
     ];
     const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
                          trust <host:port> <key> [--shell] [--screen] [--panes] [--push] | list | panes <host:port> | \
                          info <host:port> | capture [-S lines] <host:port/pane> | \
                          start <host:port> [-s session] [-n name] [-m mode] [-c dir] [-- program args] | \
                          kill <host:port/pane> | \
-                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] [--push|--no-push] | \
+                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] [--push|--no-push] [--agents|--no-agents] | \
                          clone <host:port> [path] [--tell pane] | push [<host:port> [path]] [--tell pane] | push -l | \
+                         send-agents [<host:port>] [dir] [-s chat-id]... [-n] | send-agents -l | \
                          remove <host:port> | rekey";
     let Some(what) = args.first().map(String::as_str).filter(|w| WORDS.contains(w)) else {
         bail!("{USAGE}");
@@ -310,7 +324,7 @@ pub fn fingerprint(public: &str) -> String {
 }
 
 /// A file only this user may read and write.
-fn write_private(path: &Path, text: &str) -> Result<()> {
+pub(crate) fn write_private(path: &Path, text: &str) -> Result<()> {
     std::fs::write(path, text).with_context(|| format!("write {}", path.display()))?;
     crate::platform::private::restrict(path).with_context(|| format!("keep {} to this user", path.display()))
 }
@@ -412,12 +426,15 @@ pub struct Peer {
     pub panes: bool,
     /// It may send commits into repositories here (`clone`, `push`).
     pub push: bool,
+    /// It may send projects and its agents' chats here (`send-agents`).
+    pub agents: bool,
 }
 
 const TABLE_HEAD: &str = "# keepane link: the machines allowed to send messages to this server's panes\n\
                           # (docs/design/link.md). One a line: public key, address, then `shell` when\n\
                           # its messages may run as commands, `screen` when it may read the panes,\n\
-                          # `panes` when it may start panes here, `push` when it may send commits.\n";
+                          # `panes` when it may start panes here, `push` when it may send commits,\n\
+                          # `agents` when it may send projects and their agents' chats.\n";
 
 /// The table's lines back; comments, blank and malformed lines skipped.
 pub fn parse_table(text: &str) -> Vec<Peer> {
@@ -434,8 +451,9 @@ pub fn parse_table(text: &str) -> Vec<Peer> {
         }
         let rest: Vec<&str> = f.collect();
         let has = |w: &str| rest.contains(&w);
-        let (shell, screen, panes, push) = (has("shell"), has("screen"), has("panes"), has("push"));
-        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell, screen, panes, push });
+        let (shell, screen, panes, push, agents) =
+            (has("shell"), has("screen"), has("panes"), has("push"), has("agents"));
+        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell, screen, panes, push, agents });
     }
     out
 }
@@ -447,7 +465,8 @@ pub fn format_table(peers: &[Peer]) -> String {
         let screen = if p.screen { " screen" } else { "" };
         let panes = if p.panes { " panes" } else { "" };
         let push = if p.push { " push" } else { "" };
-        s.push_str(&format!("{} {}{shell}{screen}{panes}{push}\n", p.key, p.addr));
+        let agents = if p.agents { " agents" } else { "" };
+        s.push_str(&format!("{} {}{shell}{screen}{panes}{push}{agents}\n", p.key, p.addr));
     }
     s
 }
@@ -804,6 +823,7 @@ mod tests {
                 screen: false,
                 panes: false,
                 push: true,
+                agents: true,
             },
             Peer {
                 key: k2.clone(),
@@ -812,6 +832,7 @@ mod tests {
                 screen: true,
                 panes: true,
                 push: false,
+                agents: false,
             },
         ];
         save_table(&dir, &peers).unwrap();
@@ -819,7 +840,15 @@ mod tests {
         let hand = format!("# mine\n\n{k1} 1.2.3.4:5 screen panes shell\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n");
         assert_eq!(
             parse_table(&hand),
-            vec![Peer { key: k1, addr: "1.2.3.4:5".into(), shell: true, screen: true, panes: true, push: false }]
+            vec![Peer {
+                key: k1,
+                addr: "1.2.3.4:5".into(),
+                shell: true,
+                screen: true,
+                panes: true,
+                push: false,
+                agents: false
+            }]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -673,6 +673,7 @@ keepane link allow 100.64.0.3:7681 --shell     # --no-shell 收回
 keepane link allow 100.64.0.3:7681 --screen    # 允许它读这边 pane 的屏幕；--no-screen 收回
 keepane link allow 100.64.0.3:7681 --panes     # 允许它在这边开 pane；--no-panes 收回
 keepane link allow 100.64.0.3:7681 --push      # 允许它往这边的仓库送提交（clone、push）；--no-push 收回
+keepane link allow 100.64.0.3:7681 --agents    # 允许它送项目和对话过来（send-agents）；--no-agents 收回
 keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
 keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
 keepane link rekey                             # 换一对新密钥：所有配对都要重做
@@ -712,6 +713,29 @@ keepane push -l                                # 本机各仓库送到了哪里
 ```
 
 本机按对方的公钥记下每个仓库送到了哪里，对方换了地址（换了网络）也照样找得到。`keepane push` 不写机器时，送到这个仓库去过的那台；去过多台时要写明哪台。只送对方没有的提交：打成 git bundle，分块传过去，对方核对整个文件的 SHA-256 后才交给 git。提交在对方放进 `<本机名>/<分支>`；不会丢掉对方任何东西时，分支也跟着前移：能快进，并且分支是当前检出的、已跟踪的文件没有改动时，文件一起更新。对方在这个分支上有自己的提交，或者有改动的文件时，分支保持不动，回复里说明原因，由那边自己合并或变基。路径按对方机器解释（`~` 是对方的家目录）。送到对方已有的仓库时，两边至少要有一个相同的根提交（第一个提交），否则拒绝；对方仓库还没有提交时不受这条限制。浅克隆的仓库不能送（它没有早期历史），会提示先 `git fetch --unshallow`；Git LFS 只送指针文件，不送内容。本机未提交的文件不会送，回复里会写出个数。对方的状态栏会提示收到了什么，事件日志也会记一笔。`link-push-limit`（默认 200M）限制一次的大小，两边各自检查；两边都要装 git。agent 可以通过 MCP 的 `push_repo` 做同样的事。设计见 [docs/design/link-push.md](docs/design/link-push.md)。
+
+### 把项目和 agent 的对话带到另一台电脑
+
+Claude Code、Codex、pi 的对话只存在它们运行的那台电脑上。`send-agents` 把一个项目连同它的对话送到配过对、并且允许本机这样做（`--agents`）的电脑上，到那边可以接着聊：
+
+```powershell
+keepane send-agents 100.64.0.3:7681 -n         # 只列出会送什么，不送
+keepane send-agents 100.64.0.3:7681            # 送这个项目和它的对话
+keepane send-agents                            # 以后再送：只送变了的，送到同一个文件夹
+keepane send-agents 100.64.0.3:7681 -s 9516c53b   # 只送 id 以此开头的对话
+keepane send-agents -l                         # 送出去和收进来的都有哪些
+```
+
+在仓库里运行时，提交按 `push` 的方式送，再加上 git 列出的改动过和新加的文件（被忽略的文件不送）；不是仓库的文件夹整个送，跳过 `node_modules`、`target` 这类生成目录。对话里的 `cwd` 改成对方的文件夹。第一次送到对方的 `~/keepane/from/<本机名>/<项目名>`（在它的 `link-clone-dir` 下），回复的最后写出在那边怎么接着聊：
+
+```text
+go on there: cd /home/me/keepane/from/laptop/app
+  claude --resume 9516c53b-ede9-4566-9d6a-76117964e69b
+```
+
+两边都记下这个文件夹在哪里。再送时送到同一个文件夹，只送变了的部分：对方已有开头的对话，只送新增的结尾。从那边送回来时，项目回到它原来的位置。对方的东西不会丢：上次送过之后对方改过的文件保留不动，送过去的那份放在旁边，叫 `<文件名>.from-<本机名>`；对方也接着聊过的对话（哪怕只是打开过一次，resume 也会往里写）作为一段新对话送过去，换一个新 id。全部内容打成一个 gzip 流，分块传过去，整体核对；`link-agents-limit`（默认 1G）限制大小，两边各自检查。
+
+对话里可能有密钥：agent 读过的文件、运行过的命令和输出。link 的请求有签名，但不加密：请在 Tailscale 上用，或只在可信的网络里用。设计见 [docs/design/agent-sync.md](docs/design/agent-sync.md)。
 
 ## 手册
 

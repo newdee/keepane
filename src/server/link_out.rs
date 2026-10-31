@@ -514,6 +514,7 @@ impl Server {
                 screen: false,
                 panes: false,
                 push: false,
+                agents: false,
             }),
         }
         if let Err(e) = self.save_peers() {

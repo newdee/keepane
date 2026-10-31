@@ -275,7 +275,9 @@ run as commands in `shell` panes here: `keepane link allow <host:port>
 --shell` (`link-allow`; `--no-shell` takes it back); to let it read what the
 panes here show: `--screen` (`--no-screen`); to let it start panes here:
 `--panes` (`--no-panes`); to let it send commits into repositories here:
-`--push` (`--no-push`). All are given from a terminal outside keepane or
+`--push` (`--no-push`); to let it send projects and their agents' chats
+here: `--agents` (`--no-agents`). All are given from a terminal outside
+keepane or
 the `C-b :` prompt, never from inside a pane (`link-trust` takes `--shell`,
 `--screen`, `--panes` and `--push` too). `keepane link start <host:port> [-s session]
 [-n name] [-m mode] [-c dir] [-- program args]` (`link-start`) starts a pane
@@ -328,6 +330,28 @@ may be, here when it is made and there as it arrives. Both machines need git
 (`git-command`). Git LFS contents are not sent (their pointer files are); a
 shallow clone is refused (its early history is not there to send: `git fetch
 --unshallow` first).
+
+`keepane send-agents [<host:port>] [dir] [-s chat-id]... [-n]`
+(`send-agents`, `link-send-agents`; docs/design/agent-sync.md) sends the
+project the client is in (its repository, or `dir`) with its agents'
+chats to a machine that allowed this one to (`--agents`, above). A
+repository's commits go as `push` sends them, and with them its files
+that git lists as changed or new (ignored ones stay); another folder goes
+whole, without `node_modules`, `target` and the like. The chats are those
+Claude Code, Codex and pi keep for the folder, their `cwd` set to the
+folder there, so `claude --resume`, `codex resume` and `pi --session` go
+on with them there. The first time it lands in
+`<link-clone-dir>/from/<this machine>/<name>` there; each side keeps where
+(`send-agents -l` lists it), so sending again goes to the same folder, a
+folder sent back goes back where it came from, and the machine can be
+left out. Sent again, only what changed goes: a chat the other side has
+the start of goes as its new end. Nothing of the other side's is lost: a
+file changed there since the last send is kept, and the one sent put
+beside it as `<name>.from-<this machine>`; a chat that went on there too
+comes as a new chat. `-s` sends only the chats whose id starts so; `-n`
+says what would go and sends nothing. It goes as one gzip stream, in
+pieces, checked whole; `link-agents-limit` (default 1G) is the most it may
+be, here and there.
 
 ## KEYS
 

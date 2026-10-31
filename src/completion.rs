@@ -33,6 +33,8 @@ const LOCAL_FLAGS: &[(&str, &[&str])] = &[
     (
         "link",
         &[
+            "--agents",
+            "--no-agents",
             "--no-panes",
             "--no-push",
             "--no-screen",
@@ -99,8 +101,21 @@ pub fn complete(
             owned(&["status", "stop"])
         } else if canon == "link" && rest.len() == 1 && !current.starts_with('-') {
             owned(&[
-                "add", "allow", "capture", "clone", "id", "info", "kill", "list", "panes", "push", "start", "rekey",
-                "remove", "trust",
+                "add",
+                "allow",
+                "capture",
+                "clone",
+                "id",
+                "info",
+                "kill",
+                "list",
+                "panes",
+                "push",
+                "send-agents",
+                "start",
+                "rekey",
+                "remove",
+                "trust",
             ])
         } else if canon == "setup" && rest.len() == 1 && !current.starts_with('-') {
             owned(&crate::setup::AGENTS.map(crate::setup::Agent::word))
@@ -337,7 +352,7 @@ Register-ArgumentCompleter -Native -CommandName keepane,tmux -ScriptBlock {{
   }} elseif ($canon -eq 'web' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('status', 'stop')
   }} elseif ($canon -eq 'link' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
-    $out = @('add', 'allow', 'capture', 'clone', 'id', 'info', 'kill', 'list', 'panes', 'push', 'start', 'rekey', 'remove', 'trust')
+    $out = @('add', 'allow', 'capture', 'clone', 'id', 'info', 'kill', 'list', 'panes', 'push', 'send-agents', 'start', 'rekey', 'remove', 'trust')
   }} elseif ($canon -eq 'setup' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('claude', 'codex', 'cursor', 'gemini', 'opencode')
   }} elseif ($canon -in @('set-option','show-options') -and $prev -ne '-t' -and $wordToComplete -notlike '-*') {{

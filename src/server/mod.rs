@@ -3,6 +3,7 @@
 
 pub mod actor;
 mod agents;
+mod agentsync;
 mod clock;
 pub(crate) mod clockanim;
 mod digits;
@@ -14,6 +15,7 @@ pub mod import;
 pub mod input;
 mod keyhint;
 pub mod layout;
+mod link_agents;
 mod link_git;
 mod link_in;
 mod link_out;
@@ -6155,6 +6157,7 @@ impl Server {
             | Cmd::LinkPane(_)
             | Cmd::LinkKill { .. }) => self.exec_link_out(c, cid),
             c @ (Cmd::LinkClone { .. } | Cmd::LinkPush { .. }) => self.exec_link_git(c, cid),
+            c @ Cmd::LinkSendAgents { .. } => self.exec_link_agents(c, cid),
             Cmd::LinkInbound { peer, request } => self.link_inbound(cid, &peer, &request),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 let Some(cid) = cid else { return Outcome::Error("wait-for: no client".into()) };
