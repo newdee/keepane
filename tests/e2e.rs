@@ -143,11 +143,24 @@ impl Drop for Harness {
 }
 
 /// The history log of every server in this process goes to a directory of
-/// the test run's own, never the real one (`KEEPANE_HISTORY_DIR` is read when
-/// a pane first logs, long after this). One directory for every run, not
-/// one per run: the servers' own clearing out of old days keeps it small.
+/// this run's own, never the real one (`KEEPANE_HISTORY_DIR` is read when a
+/// pane first logs, long after this). One a run: the servers clear out only
+/// days past `history-days`, so one shared by every run grew a file a test
+/// socket a day (2,152 by 2026-10-31) and `find-text -H`, which reads them
+/// all, ran past its tests' waits. What earlier runs left goes once it is an
+/// hour old (a run going on beside this one keeps its own).
 fn keep_history_out() {
-    let dir = std::env::temp_dir().join("keepane-test-history");
+    static SWEPT: std::sync::Once = std::sync::Once::new();
+    let root = std::env::temp_dir().join("keepane-test-history");
+    let dir = root.join(std::process::id().to_string());
+    SWEPT.call_once(|| {
+        for e in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+            let age = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+            if e.path() != dir && age.is_some_and(|a| a > Duration::from_secs(3600)) {
+                let _ = std::fs::remove_dir_all(e.path()).or_else(|_| std::fs::remove_file(e.path()));
+            }
+        }
+    });
     unsafe { std::env::set_var("KEEPANE_HISTORY_DIR", dir) };
 }
 
