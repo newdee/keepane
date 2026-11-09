@@ -707,9 +707,9 @@ pub enum Cmd {
     LinkAdd {
         url: String,
     },
-    /// `link-trust host:port key [--shell] [--screen] [--panes] [--push]`: let the
-    /// machine with that public key send messages here, by hand (no web key
-    /// needed).
+    /// `link-trust host:port key [--shell] [--screen] [--panes] [--push]
+    /// [--agents] [--all]`: let the machine with that public key send
+    /// messages here, by hand (no web key needed); `--all` is the five.
     LinkTrust {
         addr: String,
         key: String,
@@ -717,6 +717,7 @@ pub enum Cmd {
         screen: bool,
         panes: bool,
         push: bool,
+        agents: bool,
     },
     /// `link-list`: the machines paired with this server.
     LinkList,
@@ -765,10 +766,12 @@ pub enum Cmd {
         list: bool,
     },
     /// `link-allow host:port [--shell|--no-shell] [--screen|--no-screen]
-    /// [--panes|--no-panes] [--push|--no-push]`: whether that machine's messages may run as
-    /// commands in `shell` panes here, whether it may read what the panes
-    /// here show, whether it may start panes here, and whether it may send
-    /// commits into repositories here (`clone`, `push`).
+    /// [--panes|--no-panes] [--push|--no-push] [--agents|--no-agents]
+    /// [--all|--none]`: whether that machine's messages may run as commands
+    /// in `shell` panes here, whether it may read what the panes here show,
+    /// whether it may start panes here, whether it may send commits into
+    /// repositories here (`clone`, `push`), and projects with their agents'
+    /// chats (`send-agents`). `--all` and `--none` are the five, each set.
     LinkAllow {
         addr: String,
         shell: Option<bool>,
@@ -1776,8 +1779,11 @@ impl fmt::Display for Cmd {
             Cmd::WebTails { lines } => write!(f, "web-tails {lines}"),
             Cmd::LinkId => f.write_str("link-id"),
             Cmd::LinkAdd { url } => write!(f, "link-add {}", quote(url)),
-            Cmd::LinkTrust { addr, key, shell, screen, panes, push } => {
+            Cmd::LinkTrust { addr, key, shell, screen, panes, push, agents } => {
                 write!(f, "link-trust {} {}", quote(addr), quote(key))?;
+                if *agents {
+                    f.write_str(" --agents")?;
+                }
                 if *shell {
                     f.write_str(" --shell")?;
                 }
@@ -2674,6 +2680,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
             "--no-push",
             "--agents",
             "--no-agents",
+            "--all",
+            "--none",
         ],
     ),
     ("link-capture", &["-S"]),
@@ -2687,7 +2695,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("feishu-allow", &["--shell", "--no-shell", "--screen", "--no-screen"]),
     ("feishu-remove", &[]),
     ("link-remove", &[]),
-    ("link-trust", &["--shell", "--screen", "--panes", "--push"]),
+    ("link-trust", &["--shell", "--screen", "--panes", "--push", "--agents", "--all"]),
     ("link-start", &["-s", "-n", "-m", "-c"]),
     ("link-kill", &[]),
     ("link-clone", &["--tell"]),
@@ -4368,6 +4376,11 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     "--no-push" => push = Some(false),
                     "--agents" => agents = Some(true),
                     "--no-agents" => agents = Some(false),
+                    // The five as they are now, each set (a permission keepane
+                    // gains later is not in an `--all` given before it); a
+                    // flag after it changes its own.
+                    "--all" => [shell, screen, panes, push, agents] = [Some(true); 5],
+                    "--none" => [shell, screen, panes, push, agents] = [Some(false); 5],
                     f if f.starts_with('-') => return Err(bad_flag(n, f)),
                     v if addr.is_none() => addr = Some(v.to_string()),
                     v => return Err(format!("{n}: what is '{v}'?")),
@@ -4380,7 +4393,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if [shell, screen, panes, push, agents].iter().all(Option::is_none) {
                 return Err(format!(
                     "{n}: --shell or --no-shell, --screen or --no-screen, --panes or --no-panes, --push or --no-push, \
-                     --agents or --no-agents"
+                     --agents or --no-agents; or --all, --none"
                 ));
             }
             Cmd::LinkAllow { addr, shell, screen, panes, push, agents }
@@ -4412,13 +4425,18 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             // `--shell` and `--screen` are the flags: a key is base64url, and
             // one in 64 starts with `-`, so any other word is a word (and is
             // checked as a key or an address below).
-            let (mut words, mut shell, mut screen, mut panes, mut push) = (Vec::new(), false, false, false, false);
+            let (mut words, mut shell, mut screen, mut panes, mut push, mut agents) =
+                (Vec::new(), false, false, false, false, false);
             while let Some(w) = a.next() {
                 match w {
                     "--shell" => shell = true,
                     "--screen" => screen = true,
                     "--panes" => panes = true,
                     "--push" => push = true,
+                    "--agents" => agents = true,
+                    // The five, each set: a permission keepane gains later is
+                    // not in it.
+                    "--all" => (shell, screen, panes, push, agents) = (true, true, true, true, true),
                     v => words.push(v.to_string()),
                 }
             }
@@ -4430,7 +4448,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::link::valid_public(&key) {
                 return Err(format!("{n}: '{key}' is not a keepane link public key"));
             }
-            Cmd::LinkTrust { addr, key, shell, screen, panes, push }
+            Cmd::LinkTrust { addr, key, shell, screen, panes, push, agents }
         }
         "link-inbound" => {
             let peer = a.next().ok_or("link-inbound: peer address required")?.to_string();
@@ -5598,5 +5616,25 @@ mod tests {
     fn unknown_command() {
         assert!(parse_line("frobnicate").is_err());
         assert_eq!(parse_line("").unwrap(), None);
+    }
+
+    /// `link-allow --all` is the five permissions, each set; a flag after it
+    /// changes its own, one before it is overridden; `--none` is the five
+    /// taken back; written back, the five are spelled out.
+    #[test]
+    fn link_allow_all_is_the_five() {
+        let allow = |line: &str| match parse_line(line).unwrap().unwrap() {
+            Cmd::LinkAllow { shell, screen, panes, push, agents, .. } => [shell, screen, panes, push, agents],
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --all"), [Some(true); 5]);
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --none"), [Some(false); 5]);
+        let mut want = [Some(true); 5];
+        want[0] = Some(false);
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --all --no-shell"), want);
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --no-shell --all"), [Some(true); 5], "--all after it wins");
+        let shown = parse_line("link-allow 10.0.0.1:7681 --all --no-push").unwrap().unwrap().to_string();
+        assert_eq!(shown, "link-allow 10.0.0.1:7681 --shell --screen --panes --no-push --agents");
+        assert!(parse_line("link-allow 10.0.0.1:7681").unwrap_err().contains("--all, --none"));
     }
 }

@@ -3837,8 +3837,10 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
     c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
     // It moves: frame after frame while it lasts, not one now and then.
     c.prefix('h').await;
+    // Counted over 3 of its 4 seconds: a machine running two whole suites
+    // once drew fewer than 4 frames in the first second.
     let (t0, mut frames) = (Instant::now(), 0);
-    while t0.elapsed() < Duration::from_millis(1000) {
+    while t0.elapsed() < Duration::from_millis(3000) {
         if let Ok(Ok(Some(ServerMsg::Output(b)))) =
             tokio::time::timeout(Duration::from_millis(100), read_frame::<_, ServerMsg>(&mut c.rd)).await
         {
@@ -3848,7 +3850,7 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
     }
     // Several frames, not one jump: how many a busy machine (the whole
     // suite at once) draws is not what this is about.
-    assert!(frames >= 4, "a moving frame, {frames} frames in a second");
+    assert!(frames >= 4, "a moving frame, {frames} frames in 3 seconds");
     c.wait_for("gone again", |s| corners(s) == 0).await;
     c.prefix('l').await;
     c.wait_for("back right", |s| corners(s) == 0).await;
@@ -3878,7 +3880,9 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
     c.prefix('p').await;
     let t0 = Instant::now();
     let mut frames = 0;
-    while t0.elapsed() < Duration::from_millis(600) {
+    // Long enough for the new window to be drawn on a busy machine, shorter
+    // than the 4-second animation it would be if `off` were not heeded.
+    while t0.elapsed() < Duration::from_millis(2500) {
         if let Ok(Ok(Some(ServerMsg::Output(b)))) =
             tokio::time::timeout(Duration::from_millis(50), read_frame::<_, ServerMsg>(&mut c.rd)).await
         {
@@ -5465,9 +5469,21 @@ async fn one_shot_formats_run_their_shell_pieces() {
     h.cli(&["new", "-d", "-s", "os"]).await;
     // display-message -p is answered now: a #(command) nobody has run yet
     // runs here, not "next status-interval".
-    let (code, out, err) = h.cli(&["display-message", "-p", "#(echo one-shot-ok)|#{session_name}"]).await;
-    assert_eq!(code, 0, "{err}");
-    assert_eq!(out.trim(), "one-shot-ok|os");
+    // A command has 3 seconds (`ONE_SHOT_SHELL_TIMEOUT`): pwsh starting on a
+    // machine running two whole suites once took longer. A command that ran
+    // out answers empty and stays so until the status line runs it again,
+    // so each try asks for another.
+    let mut got = Vec::new();
+    for i in 1..=3 {
+        let (code, out, err) =
+            h.cli(&["display-message", "-p", &format!("#(echo one-shot-ok-{i})|#{{session_name}}")]).await;
+        assert_eq!(code, 0, "{err}");
+        got.push(out.trim().to_string());
+        if out.trim() == format!("one-shot-ok-{i}|os") {
+            break;
+        }
+    }
+    assert!(got.last().is_some_and(|l| l.starts_with("one-shot-ok-") && l.ends_with("|os")), "{got:?}");
     // ...with a leash: a command that hangs is given up on, and the
     // server answers anyway.
     let started = Instant::now();
@@ -5479,8 +5495,15 @@ async fn one_shot_formats_run_their_shell_pieces() {
     // The server is fine after that, and jobs -F runs its pieces the same way.
     let (_, out, _) = h.cli(&["display-message", "-p", "#{session_name}"]).await;
     assert_eq!(out.trim(), "os");
-    let (_, out, _) = h.cli(&["jobs", "-t", "os:0.0", "-F", "#(echo in-jobs) #{pane_index}"]).await;
-    assert_eq!(out.trim(), "in-jobs 0");
+    let mut got = Vec::new();
+    for i in 1..=3 {
+        let (_, out, _) = h.cli(&["jobs", "-t", "os:0.0", "-F", &format!("#(echo in-jobs-{i}) #{{pane_index}}")]).await;
+        got.push(out.trim().to_string());
+        if out.trim() == format!("in-jobs-{i} 0") {
+            break;
+        }
+    }
+    assert!(got.last().is_some_and(|l| l.starts_with("in-jobs-") && l.ends_with(" 0")), "{got:?}");
     h.cli(&["kill-server"]).await;
 }
 
@@ -7352,6 +7375,15 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --shell")), "{err}");
     let (code, _, err) = b.cli_in(Some(pb), &["link-allow", &addr_a, "--shell"]).await;
     assert!(code != 0 && err.contains("not run from inside a pane"), "{err}");
+    // The same through `keepane link allow` (the client's own words for it),
+    // the real binary run in that pane: refused too. (Up to 0.53 that way
+    // said no pane, and a program in a pane could allow itself.)
+    let (socket_b, addr) = (b.socket.clone(), addr_a.clone());
+    let (code, err) =
+        tokio::task::spawn_blocking(move || run_hook(&socket_b, Some(pb), &["link", "allow", &addr, "--shell"], ""))
+            .await
+            .unwrap();
+    assert!(code != 0 && err.contains("not run from inside a pane"), "keepane link allow from a pane: {err}");
     let (code, out, err) = b.cli(&["link-allow", &addr_a, "--shell"]).await;
     assert!(code == 0 && out.contains("may run commands"), "{out} {err}");
     // `-w` waits there until the shell is free and has it (a fresh shell may
@@ -7391,6 +7423,13 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let now = keepane::link::now();
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n1", "").await;
     assert!(status == 401 && body.contains("not paired"), "{status} {body}");
+    // Trusted with what it may do: only from outside the panes, the agents'
+    // and all five too.
+    for (flag, named) in [("--agents", "link-trust --agents"), ("--all", "link-trust --shell")] {
+        let (code, _, err) = b.cli_in(Some(pb), &["link-trust", "127.0.0.1:9", &stranger.public(), flag]).await;
+        assert!(code != 0 && err.contains(named), "{flag}: {err}");
+        assert!(err.contains("not run from inside a pane"), "{flag}: {err}");
+    }
     let (code, _, err) = b.cli(&["link-trust", "127.0.0.1:9", &stranger.public()]).await;
     assert_eq!(code, 0, "{err}");
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now - 300, "n2", "").await;
@@ -8330,11 +8369,21 @@ async fn a_shutdown_saves_every_session_first() {
     // Let the first autosave happen (the tick after the session was made,
     // history included): for the next 30 seconds the tick writes nothing
     // more unless the tree changes, so what the pane prints now can only
-    // reach the file through the shutdown path.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while file().is_empty() {
-        assert!(Instant::now() < deadline, "the session was never autosaved");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    // reach the file through the shutdown path. The tree settles a moment
+    // after the first save (a pane's directory, said by its shell): wait
+    // for the file to stay as it is through three ticks. (On a busy machine
+    // a save after the echo once came from the tree settling late.)
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (mut last, mut since) = (String::new(), Instant::now());
+    loop {
+        let now = file();
+        if now.is_empty() || now != last {
+            (last, since) = (now, Instant::now());
+        } else if since.elapsed() >= Duration::from_secs(3) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the session was never autosaved, or its save never settled");
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     h.cli(&["send-keys", "-t", "bye:0", "echo typed-just-before-shutdown", "Enter"]).await;
     h.wait_capture("bye:0", "the echo", |t| t.matches("typed-just-before-shutdown").count() >= 2).await;
@@ -12151,6 +12200,13 @@ async fn a_feishu_app_tells_the_panes_and_takes_answers() {
     let (code, _, err) = h.cli_in(Some(p), &["feishu-allow", me]).await;
     assert_ne!(code, 0);
     assert!(err.contains("not run from inside a pane"), "{err}");
+    // The same as typed, `keepane feishu allow`, by the real binary in it.
+    let socket = h.socket.clone();
+    let (code, err) =
+        tokio::task::spawn_blocking(move || run_hook(&socket, Some(p), &["feishu", "allow", "ou_me1"], ""))
+            .await
+            .unwrap();
+    assert!(code != 0 && err.contains("not run from inside a pane"), "keepane feishu allow from a pane: {err}");
     let (code, out, _) = h.cli(&["feishu-allow", me]).await;
     assert_eq!(code, 0);
     assert!(out.contains("may not run commands") && out.contains("may not read"), "{out}");

@@ -36,11 +36,13 @@ const LOCAL_FLAGS: &[(&str, &[&str])] = &[
         "link",
         &[
             "--agents",
+            "--all",
             "--no-agents",
             "--no-panes",
             "--no-push",
             "--no-screen",
             "--no-shell",
+            "--none",
             "--panes",
             "--push",
             "--screen",

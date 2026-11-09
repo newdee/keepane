@@ -118,11 +118,11 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
         "send-agents",
     ];
     const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
-                         trust <host:port> <key> [--shell] [--screen] [--panes] [--push] | list | panes <host:port> | \
+                         trust <host:port> <key> [--shell] [--screen] [--panes] [--push] [--agents] [--all] | list | panes <host:port> | \
                          info <host:port> | capture [-S lines] <host:port/pane> | \
                          start <host:port> [-s session] [-n name] [-m mode] [-c dir] [-- program args] | \
                          kill <host:port/pane> | \
-                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] [--push|--no-push] [--agents|--no-agents] | \
+                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] [--push|--no-push] [--agents|--no-agents] [--all|--none] | \
                          clone <host:port> [path] [--tell pane] | push [<host:port> [path]] [--tell pane] | push -l | \
                          send-agents [<host:port>] [dir] [-s chat-id]... [-n] | send-agents -l | \
                          remove <host:port> | rekey";
@@ -134,7 +134,10 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     }
     let argv: Vec<String> = std::iter::once(format!("link-{what}")).chain(args[1..].iter().cloned()).collect();
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let (code, out, mut err) = crate::client::query(socket, &argv).await?;
+    // As the pane it runs in, if it runs in one: what only a person outside
+    // every pane may do (`link allow`, `link trust --shell`) is refused to a
+    // program in a pane, and the event log says who paired.
+    let (code, out, mut err) = crate::client::query_as(socket, &argv, crate::client::own_pane(socket)).await?;
     // A server from before this (still running after an upgrade) does not
     // know these commands: say why, and what to do.
     if code != 0
@@ -821,6 +824,7 @@ mod tests {
             screen: false,
             panes: false,
             push: false,
+            agents: false,
         };
         assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key]), Ok(want(false)));
         assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--shell"]), Ok(want(true)));
@@ -832,6 +836,25 @@ mod tests {
         // Anything else is a word, checked as one: a flag mistyped is not a key.
         let e = parse(&["link-trust", "10.0.0.1:7681", &key, "--shel"]).unwrap_err();
         assert!(e.contains("host:port and the machine's public key"), "{e}");
+        // `--agents`, and `--all` as the five, written back as the five.
+        let all = crate::command::Cmd::LinkTrust {
+            addr: "10.0.0.1:7681".into(),
+            key: key.clone(),
+            shell: true,
+            screen: true,
+            panes: true,
+            push: true,
+            agents: true,
+        };
+        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--all"]), Ok(all.clone()));
+        let words = crate::command::tokenize(&all.to_string()).unwrap();
+        assert_eq!(crate::command::parse(&words), Ok(all), "written back");
+        let Ok(crate::command::Cmd::LinkTrust { agents, shell, .. }) =
+            parse(&["link-trust", "10.0.0.1:7681", &key, "--agents"])
+        else {
+            panic!("--agents")
+        };
+        assert!(agents && !shell);
     }
 
     #[test]

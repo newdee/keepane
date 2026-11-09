@@ -5461,3 +5461,44 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - `done-panes named` 的限制同样作用于飞书通知：没有名字、也不是 `ai`/`shell` 模式的 pane 不发。
   - 一台电脑一个应用；多台共用一个应用时消息随机落到其中一台。
   - `keepane.exe` 大 2.09 MB（17%）。
+- 发布：v0.53.0（tag 在 f929fe5，其 CI 四项全过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（d84e604）；winget 新开 PR #475313（0.52.0 的 #475184 仍开着，winget 可保留多个版本，没有关）。
+
+## 176. `link allow --all`、`--none`；`link trust --agents`、`--all`
+
+- 用户要求：问"是否应该加一个 `keepane link allow --all host:port`"。我按香农六法给了推荐（换说法：五项全给等于完全控制；相似问题：`ssh-copy-id`；逆向：以后新加的权限不能被以前的 `--all` 自动打开），用户说"link allow --all 按推荐来，改吧"。
+- 做法：
+  - `link-allow`：`--all` 在解析时展开成五个开关（`[Some(true); 5]`），`--none` 是五个 `Some(false)`；按顺序处理，写在后面的单项覆盖前面的。表里存的仍是五个开关，没有 `all`。五项全给时回答多一句 `has full control of this machine: it may run any command here (--none takes all of it back)`。
+  - `link-trust`：补上漏掉的 `--agents`，也接受 `--all`。
+  - 补全、USAGE、man、README（中英）、设计稿 `link.md` 第 13 条。
+- 新 bug 风险评估：
+  - `LinkTrust` 多一个字段，所有构造点由编译器强制改到（3 处测试）。
+  - 行为变化：以前对已信任的机器再 `link trust`，另外 4 项按命令设，`agents` 原样不动（漏改）；现在 5 项一样，不带 `--agents` 就是关。和另外 4 项规则一致，保留，有测试。
+  - 不带 `--all`、`--none` 时 `link-allow` 行为不变：原测试逐项断言的输出照旧通过。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 1 | 机制存活 | 6 个变异：`--all` 漏掉 shell、`--none` 什么都不做、trust 的 `--all` 漏掉 agents、trust 不写回 `--agents`、不说"full control"，都抓到；A6（再 trust 时不设 agents）漏网，补"再 trust"的测试后抓到 | 有发现，不计 |
+| 2 | 静态一致 | 文档和代码逐条对照：man、README（中英）、USAGE、补全、设计稿一致；`keepane link` 客户端自己的用法说明（`link.rs` 两行）和 `LinkAllow` 的文档注释没有新参数（注释连 `--agents` 都没有），补上 | 有发现，不计 |
+| 3 | 边界输入 | `--all --none` 同一条命令按顺序最后一个生效；公钥是 43 个 base64url 字符，不会等于 `--all`；未配对地址报 not paired；`link-allow` 在 pane 里不论参数都拒绝。发现：`link-trust` 带参数时在 pane 里被拒，没有任何测试（新的 `--agents` 分支也没有）。e2e 补 `--agents`、`--all` 两种，变异 A7（拒绝条件漏掉 agents）抓到 | 有发现，不计 |
+| 4 | 代码正确 | 复查 diff：数组解构赋值、警告只看本次命令的 5 个参数、trust 事件日志带 `agents`、Display 展开写回。Windows 577 + 11 + 151，Linux 562 + 148 | 干净（1/3） |
+| 5 | 真实环境 | release 二进制两个隔离的临时 server（`-L lpa`、`-L lpb`）走真命令行：`link trust ... --all` 后 5 项 yes；`--none` 全收回；`--all --no-shell` 只关 shell，仍提醒 agent-commands 里的 pwsh 能跑任意命令；`--all` 末尾多一句 full control；不带参数的错误提示有 `--all, --none`。Linux 562 + 148 全过；Windows 577 + 11 + 150，1 失败：`a_shutdown_saves_every_session_first` 关机前存档里已有 echo。原因：测试只等第一次自动保存，结构（pane 的目录）随后才定下来，结构一变又存一次。全仓只有这一处，改成等存档连续 3 秒不变；连跑 3 次全过（19.9 到 21.0 秒） | 有发现，不计 |
+| 6 | 可复现 | 双满载：Windows 577 + 11 + 151，Linux 562 + 148，全过；改过的 3 个测试（link e2e、关机 e2e、`--all` 单元）各连跑 3 次，9/9 过 | 干净（1/3） |
+| 7 | 不变量 | `Peer` 只有 5 个布尔字段，`authorized` 每行只写 5 个权限词，`--all` 只在解析器里；`link_allow` 第一行查 pane，`link_trust` 的 pane 检查覆盖 5 项。Windows 577 + 11 + 151，Linux 562 + 148 | 干净（2/3） |
+| 8 | 静态一致 | 提到新参数的地方：man 4、USAGE 2、`link.rs` 4、`command.rs` 21、补全 2、README 中英各 2、设计稿 1，说法一致。发现：man 第 294 行 106 列（规定 76），原来就有 87 列，改时没重折行反而拉长；重折行，man 测试过 | 有发现，不计 |
+| 9 | 代码正确 | 第 5 轮后只改了关机测试的"等存档稳定"循环（期限 30 秒，状态只在循环里更新）和 man 折行，复查无问题。Windows 577 + 11 + 151，Linux 562 + 148 | 干净（1/3） |
+| 10 | 机制存活 | 最终代码上 7 个变异（A1 到 A7）全部抓到，跑完确认源码还原后才启动 Linux。Windows 577 + 11 + 151，Linux 562 + 148 | 干净（2/3） |
+| 11 | 可复现 | release 二进制的 `link` 命令序列跑两遍，遮掉指纹后输出逐字相同（1478 字）；Linux 562 + 148 全过；Windows 577 + 11 + 150，1 失败：`one_shot_formats_run_their_shell_pieces` 的 `#(echo one-shot-ok)` 为空。原因：一次性 `#()` 限 3 秒（会阻塞 server，故意的），Windows 上用 pwsh，双满载下冷启动超过 3 秒；超时的空结果会缓存，所以同一条重试无用。全仓只有这个测试的两处，改成最多 3 次、每次不同的 marker；连跑 3 次全过（4.0 到 4.4 秒） | 有发现，不计 |
+| 12 | 可复现 | 双满载重跑：Windows 577 + 11 + 151，Linux 562 + 148，全过 | 干净（1/3） |
+| 13 | 代码正确 | 重试循环复查无问题；Linux 562 + 148 全过；Windows 577 + 11 + 150，1 失败：`a_focus_frame_flies_to_where_the_keys_go` 要求 1 秒内至少 4 帧，双满载下不到。第 6 轮把动画延长到 4 秒时没把计数窗口一起放宽，修得不彻底；改成在 4 秒动画里数 3 秒，仍要求至少 4 帧，连跑 3 次全过 | 有发现，不计 |
+| 14 | 可复现 | 第 13 轮修完后，同一测试里关掉动画那段的 600 毫秒窗口也是同类问题，一并放宽到 2.5 秒（仍短于 4 秒动画，检测能力不变），单独连跑 3 次全过。双满载：Linux 562 + 148 全过；Windows 577 + 11 + 149，2 失败：`display_panes_takes_numbers_past_nine`（靠固定 sleep 卡数字键超时，本来就重试 3 次）、`the_chart_shows_the_paired_machines`（某条命令 40 秒没回）。两个都单独跑 3/3 过（8.1 到 8.2 秒、6.1 到 7.9 秒）。判断：第 6、11、13、14 轮的 5 个失败都只在"Windows 全量和 WSL 的 Linux 全量同时跑在一台机器上"时出现，比 CI（每平台一台机器）严苛得多，且都在无关的测试里；之后改为两平台先后跑。已修的 3 处是确实不稳的写法，保留；这 2 个记入遗留 | 有发现，不计 |
+| 15 | 边界输入 | release 二进制实测：`--all --bogus` 报未知参数；`--all --all` 同 `--all`；未配对地址报 not paired。发现**安全漏洞**（0.53 及以前就有）：在 pane 里设 `KEEPANE_PANE` 运行 `keepane link allow ... --none` 被放行。原因：`keepane link` 子命令的分发器（`link.rs`）用 `client::query`，pane 固定传 `None`，server 当成 pane 外，pane 里的程序可以给配对机器开 `--shell`；`link add` 的事件日志也因此把配对者记成 `user`。全仓 `client::query` 12 处逐个看：`migrate`、dashboard（人的界面）、web 转发和 share（替手机上的人）传 `None` 是对的；`keepane web` 子命令（`web.rs:195`）同样丢 pane，无安全影响，一并改。两处改为 `query_as(socket, argv, own_pane(socket))`。e2e 用真二进制在 pane 里运行 `keepane link allow`：修前失败、修后拒绝；`keepane feishu allow` 走 `client::run`，本来就带 pane，补同样的真二进制测试 | 有发现，不计 |
+| 16 | 机制存活 | 最终代码 5 个变异（`--all` 漏 shell、`--none` 无效、再 trust 不设 agents、trust 的 pane 检查漏 agents、`keepane link` 不带 pane）全部抓到，源码还原后两平台先后跑：Windows 577 + 11 + 151，Linux 562 + 148 | 干净（1/3） |
+| 17 | 静态一致 | 文档里"只能在 pane 外运行"的每条说法都对上命令行入口：`link allow`、`link trust` 走 `link.rs`（现在带 pane），`feishu allow`、`set-work-mode` 走 `client::run`（本来就带），`C-b :` 没有 pane。Windows 577 + 11 + 151，Linux 562 + 148 | 干净（2/3） |
+| 18 | 真实环境 | release 二进制的临时 server，在真 pane 里让它的 shell 敲 `keepane link allow 127.0.0.1:9 --shell`：拒绝（`link-allow is not run from inside a pane`），退出码 1，授权表 shell 仍是 no。Windows 577 + 11 + 151，Linux 562 + 148 | 干净（3/3），验收通过 |
+
+- 顺带修的（都在验收中发现）：
+  - **安全**：`keepane link ...` 不报所在的 pane，pane 里的程序能用 `keepane link allow <机器> --shell` 给配对机器开执行权限（第 15 轮）。`link.rs` 和 `web.rs` 的子命令分发器改为带 pane。注意：在 keepane 的 pane 里**手动**运行 `keepane link allow` 的人，以后同样被拒，要到 keepane 外的终端或 `C-b :`（文档一直这样写，直接用 `link-allow` 本来就拒）。
+  - 测试在高负载下不稳的写法：动画测试两处（瞬间状态、帧数窗口、关动画后的窗口）、关机存档测试（等存档稳定）、一次性 `#()` 测试（每次重试换 marker）。
+- 遗留：
+  - 双满载（Windows 全量和 WSL 的 Linux 全量同时跑在一台机器上）下还会偶发：`display_panes_takes_numbers_past_nine`、`the_chart_shows_the_paired_machines`（某条命令 40 秒没回，原因未明）。两个单独跑 3/3 过，两平台先后跑也都过。
+  - 主题开关动效的问题还在等用户答复（演示页还是手机页）。

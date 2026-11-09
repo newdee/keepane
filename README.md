@@ -1504,6 +1504,8 @@ keepane link allow 100.64.0.3:7681 --panes     # it may start panes here; --no-p
 keepane link allow 100.64.0.3:7681 --push      # it may send commits here (clone, push); --no-push takes it back
 keepane link allow 100.64.0.3:7681 --agents    # it may send projects and chats here (send-agents); --no-agents
 keepane link remove 100.64.0.3:7681            # unpair, on both
+keepane link allow 100.64.0.3:7681 --all       # all five: full control of this machine; --none takes all back
+keepane link allow 100.64.0.3:7681 --all --no-shell   # all but the shell: a flag after --all changes its own
 keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
 keepane link rekey                             # a new key: every pairing has to be made again
 ```

@@ -163,8 +163,8 @@ impl Server {
                 Err(e) => Outcome::Error(e),
             },
             Cmd::LinkList => self.link_list(),
-            Cmd::LinkTrust { addr, key, shell, screen, panes, push } => {
-                self.link_trust(cid, addr, key, [shell, screen, panes, push])
+            Cmd::LinkTrust { addr, key, shell, screen, panes, push, agents } => {
+                self.link_trust(cid, addr, key, [shell, screen, panes, push, agents])
             }
             Cmd::LinkAllow { addr, shell, screen, panes, push, agents } => {
                 self.link_allow(cid, &addr, [shell, screen, panes, push, agents])
@@ -208,17 +208,19 @@ impl Server {
         cid: Option<ClientId>,
         addr: String,
         key: String,
-        [shell, screen, panes, push]: [bool; 4],
+        [shell, screen, panes, push, agents]: [bool; 5],
     ) -> Outcome {
-        if (shell || screen || panes || push) && self.caller_pane(cid).is_some() {
+        if (shell || screen || panes || push || agents) && self.caller_pane(cid).is_some() {
             let flag = if shell {
                 "--shell"
             } else if screen {
                 "--screen"
             } else if panes {
                 "--panes"
-            } else {
+            } else if push {
                 "--push"
+            } else {
+                "--agents"
             };
             return Outcome::Error(not_from_a_pane(&format!("link-trust {flag}")));
         }
@@ -237,10 +239,9 @@ impl Server {
                 p.screen = screen;
                 p.panes = panes;
                 p.push = push;
+                p.agents = agents;
             }
-            None => {
-                l.peers.push(Peer { key: key.clone(), addr: addr.clone(), shell, screen, panes, push, agents: false })
-            }
+            None => l.peers.push(Peer { key: key.clone(), addr: addr.clone(), shell, screen, panes, push, agents }),
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
@@ -250,7 +251,7 @@ impl Server {
             &format!("link: {addr} ({fp}) trusted by {by}"),
             "trusted",
             &format!(
-                ",\"addr\":{},\"key\":{},\"shell\":{shell},\"screen\":{screen},\"panes\":{panes},\"push\":{push},\"by\":{}",
+                ",\"addr\":{},\"key\":{},\"shell\":{shell},\"screen\":{screen},\"panes\":{panes},\"push\":{push},\"agents\":{agents},\"by\":{}",
                 js(&addr),
                 js(&key),
                 js(&by)
@@ -337,6 +338,12 @@ impl Server {
                 ));
             }
         }
+        // All of it (`--all`): said once more, in so many words.
+        if [shell, screen, panes, push, agents].iter().all(|s| *s == Some(true)) {
+            said.push(format!(
+                "{addr} has full control of this machine: it may run any command here (--none takes all of it back)"
+            ));
+        }
         let text = said.join("; ");
         self.link_note(
             &format!("link: {text} (by {by})"),
@@ -417,6 +424,7 @@ mod tests {
             screen: false,
             panes: false,
             push: false,
+            agents: false,
         };
         assert_eq!(text(b.exec_link_local(trust, None)), format!("trusted 10.0.0.1:7681  {fp}"));
         let own = Cmd::LinkTrust {
@@ -426,6 +434,7 @@ mod tests {
             screen: false,
             panes: false,
             push: false,
+            agents: false,
         };
         assert!(text(b.exec_link_local(own, None)).contains("own key"));
         let list = text(b.exec_link_local(Cmd::LinkList, None));
@@ -496,6 +505,35 @@ mod tests {
         );
         let list = text(b.exec_link_local(Cmd::LinkList, None));
         assert!(list.lines().next().unwrap().contains("PUSH  AGENTS"), "{list}");
+        // `--all` (as the parser gives it: the five set), each said and then
+        // the whole of it; a flag after it takes its own back; `--none` all.
+        let parsed = |line: &str| crate::command::parse(&crate::command::tokenize(line).unwrap()).unwrap();
+        let said = text(b.exec_link_local(parsed("link-allow 10.0.0.1:7681 --none"), None));
+        assert!(said.contains("may not run commands") && said.contains("may not send projects"), "{said}");
+        assert!(text(b.exec_link_local(Cmd::LinkList, None)).contains("no     no      no     no    no"));
+        let said = text(b.exec_link_local(parsed("link-allow 10.0.0.1:7681 --all"), None));
+        for each in ["may run commands", "may read", "may start panes", "may send commits", "may send projects"] {
+            assert!(said.contains(&format!("10.0.0.1:7681 {each}")), "{each}: {said}");
+        }
+        assert!(
+            said.ends_with(
+                "has full control of this machine: it may run any command here (--none takes all of it back)"
+            ),
+            "{said}"
+        );
+        let said = text(b.exec_link_local(parsed("link-allow 10.0.0.1:7681 --all --no-shell"), None));
+        assert!(said.contains("may not run commands") && !said.contains("full control"), "{said}");
+        let peer = b.link().unwrap().peers[0].clone();
+        assert!(!peer.shell && peer.screen && peer.panes && peer.push && peer.agents, "{peer:?}");
+        // Trusted again by hand: the five are what that command says, the
+        // agents' too (`--agents`), and `--all` is the five.
+        let trust = |flags: &str| parsed(&format!("link-trust 10.0.0.1:7681 {ka} {flags}"));
+        b.exec_link_local(trust("--agents"), None);
+        let peer = b.link().unwrap().peers[0].clone();
+        assert!(peer.agents && !peer.shell && !peer.screen, "{peer:?}");
+        b.exec_link_local(trust(""), None);
+        assert!(!b.link().unwrap().peers[0].agents, "not given: not allowed");
+        b.exec_link_local(trust("--all"), None);
         let again = server("link-state-b");
         let mut again = again;
         let peers = &again.link().unwrap().peers;

@@ -192,7 +192,8 @@ impl State {
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     let ask = |argv: Vec<String>| async move {
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let (code, out, mut err) = crate::client::query(socket, &argv).await?;
+        // As the pane it runs in, if it runs in one, as every command does.
+        let (code, out, mut err) = crate::client::query_as(socket, &argv, crate::client::own_pane(socket)).await?;
         // A server from before 0.20 (still running after an upgrade) does
         // not know these commands: say why, and what to do.
         if code != 0

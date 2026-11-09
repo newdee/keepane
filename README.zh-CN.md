@@ -713,6 +713,8 @@ keepane link allow 100.64.0.3:7681 --panes     # 允许它在这边开 pane；--
 keepane link allow 100.64.0.3:7681 --push      # 允许它往这边的仓库送提交（clone、push）；--no-push 收回
 keepane link allow 100.64.0.3:7681 --agents    # 允许它送项目和对话过来（send-agents）；--no-agents 收回
 keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
+keepane link allow 100.64.0.3:7681 --all       # 五项全给：等于完全控制这台电脑；--none 全部收回
+keepane link allow 100.64.0.3:7681 --all --no-shell   # 除了 shell 都给：写在 --all 后面的单项覆盖它
 keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
 keepane link rekey                             # 换一对新密钥：所有配对都要重做
 ```

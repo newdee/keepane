@@ -285,11 +285,15 @@ run as commands in `shell` panes here: `keepane link allow <host:port>
 panes here show: `--screen` (`--no-screen`); to let it start panes here:
 `--panes` (`--no-panes`); to let it send commits into repositories here:
 `--push` (`--no-push`); to let it send projects and their agents' chats
-here: `--agents` (`--no-agents`). All are given from a terminal outside
-keepane or
-the `C-b :` prompt, never from inside a pane (`link-trust` takes `--shell`,
-`--screen`, `--panes` and `--push` too). `keepane link start <host:port> [-s session]
-[-n name] [-m mode] [-c dir] [-- program args]` (`link-start`) starts a pane
+here: `--agents` (`--no-agents`). `--all` gives the five at once (full
+control of this machine: the answer says so), `--none` takes the five
+back; a flag after either changes its own (`--all --no-shell`). `--all` is
+the five as they are when it is given: a permission keepane gains later is
+not in it. All are given from a terminal outside keepane or the `C-b :`
+prompt, never from inside a pane (`link-trust` takes `--shell`,
+`--screen`, `--panes`, `--push`, `--agents` and `--all` too).
+`keepane link start <host:port> [-s session] [-n name] [-m mode]
+[-c dir] [-- program args]` (`link-start`) starts a pane
 on a machine that allowed this one to: one of its `agent-commands` (with any
 arguments, so a shell on that list makes `--panes` as much as `--shell`), within
 its `agent-pane-limit` counted for this machine alone, in a session named
