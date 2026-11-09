@@ -62,6 +62,7 @@ Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   set-work-mode [-t pane] normal|shell|ai   (shell: runs what it gets; ai: its agent says pane-ready; from a pane, only that pane)
   send-message [--to pane] [-r | --re id] [--task id] [-w secs] text   read-message [-w secs]   list-messages [-t pane] [-a]
   trace-message id [-w secs] [-J]   drop-message id | -u   move-message id up|down|top   pane-status [text]
+  pane-wait [-q] [-t pane] [text]   (the pane waits for you: done-events wait; an agent's hook gives it on standard input)
   list-tasks [-t session]   show-task id [-J]   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)
   create-pane   (what agents use: agent-commands, agent-pane-limit)   mcp   (MCP for an agent)
   list-agents [-J]   (the panes' Claude Code, Codex, pi and Cursor CLI: model, cost, tokens, context, CPU, memory; agent-cost)
@@ -222,6 +223,12 @@ fn main() {
             eprintln!("keepane: {line}");
         }
     }
+    // The hook an agent runs when it waits for the person: in a pane, what
+    // it waits for comes on standard input (the hook's JSON) when the
+    // command line says nothing.
+    if args[0] == "pane-wait" && std::env::var_os("KEEPANE_PANE").is_some() {
+        keepane::setup::pane_wait_args(&mut args);
+    }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     // Starting at logon is about the server, and the Windows Terminal
     // profile is a file of ours: both are settled without a server.
@@ -248,7 +255,9 @@ fn main() {
         "import-config" => Some(rt.block_on(async { keepane::server::import::run(&args[1..]) })),
         // The hook every Claude Code session runs: outside a pane there is
         // nothing to tell and no server to ask (or to start).
-        "pane-ready" if args.iter().any(|a| a == "-q") && std::env::var_os("KEEPANE_PANE").is_none() => Some(Ok(0)),
+        "pane-ready" | "pane-wait" if args.iter().any(|a| a == "-q") && std::env::var_os("KEEPANE_PANE").is_none() => {
+            Some(Ok(0))
+        }
         "version" | "restart-server" | "show-keys" if args.len() > 1 => {
             Some(Err(anyhow::anyhow!("{}: takes no arguments", args[0])))
         }

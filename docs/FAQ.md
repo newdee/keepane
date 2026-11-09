@@ -74,7 +74,7 @@ keepane setup codex --install    # or claude, gemini, cursor, opencode
 
 Every file is backed up first and only keepane's entries are added. Then
 start the agent again in the pane. Codex runs a new hook only once you trust
-it: in Codex, `/hooks`, and trust keepane's two. Another agent works if it
+it: in Codex, `/hooks`, and trust keepane's. Another agent works if it
 can run a command at the end of each turn: have it run `keepane pane-ready
 -q` there.
 
@@ -178,10 +178,12 @@ service that has an app:
 - **Anything else**: the `pane-done` hook runs a command of yours with the
   details in `KEEPANE_DONE_*` variables (see the README).
 
-What counts is `done-events` (`command agent` by default: a command that ran
-`done-after` seconds, 30 by default, and an agent's turn), for panes with a
-name or in `ai`/`shell` mode (`done-panes all` for every pane). Put the
-lines in your config file to keep them.
+What counts is `done-events` (`command agent wait` by default: a command
+that ran `done-after` seconds, 30 by default, an agent's turn, and an agent
+waiting for you: a permission or a question, once its waiting hook is set
+up with `keepane setup <agent> --install`), for panes with a name or in
+`ai`/`shell` mode (`done-panes all` for every pane). Put the lines in your
+config file to keep them.
 
 ## The Feishu or DingTalk bot refuses keepane's messages
 
@@ -191,10 +193,12 @@ answered. A bot's security setting decides:
 - **Keywords**: every message keepane sends a chat starts with `keepane`;
   add `keepane` as the bot's keyword.
 - **Signature** (Feishu's "signature verification", DingTalk's "sign"):
-  keepane does not sign; turn it off, or use keywords or an IP allow list
-  instead.
+  put the secret the bot shows in `set -g done-webhook-secret <secret>`,
+  and keepane signs each message. Feishu says `refused (19021)` for a
+  wrong secret, or a clock more than an hour off.
 - **IP allow list**: the address the computer reaches the internet from
   must be on it.
+
 ## Windows: a hook with a quoted keepane path fails
 
 An agent on Windows may run its hooks in PowerShell, where a quoted path

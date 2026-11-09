@@ -100,7 +100,10 @@ goes to one in copy mode, `y` copies what it printed, `r` runs it again),
 `shell-history` (a pane's own shell history, the messages delivered to it
 marked; `-c` the commands only, `-m` every message sent to it),
 `list-done` (when panes were done: `done-events`, told to the phone, `notify`,
-the `pane-done` hook and `done-webhook`),
+the `pane-done` hook and `done-webhook`, signed with `done-webhook-secret`
+for a Feishu or DingTalk bot that checks), `pane-wait` (the pane waits for
+you: `done-events` `wait`; an agent's hook gives what it asks on standard
+input),
 `show-messages`, `clock-mode`, `dashboard` (panes, inboxes, tasks and the
 chosen pane's screen, to act on; its Git tab, the pane's repository or
 files; from 150 columns, the machine's CPU, memory, disk and network on
@@ -127,8 +130,10 @@ window named after it; `s` connects in a split, `y` copies the command,
 `list-events`, `create-pane`, `mcp` (MCP for an agent in a pane), `setup`
 (`setup` alone lists the agents and what each lacks; `setup claude`, `codex`,
 `gemini`, `cursor` or `opencode` with `--install` adds the hook that says when
-the agent is free, and keepane's MCP server). Claude Code's, Codex's and pi's
-transcripts say it too, about 3 seconds late at the most, with no hook. A message to an
+the agent is free, the one that says when it waits for you (Claude Code,
+Codex, Gemini CLI: `pane-wait`), and keepane's MCP server). Claude
+Code's, Codex's and pi's transcripts say it too, about 3 seconds late at
+the most, with no hook. A message to an
 `ai` pane is pasted, and its Enter comes on its own once the paste has
 settled. What a pane is up to is `#{pane_state}`: idle, busy, typing (keys
 with no Enter), no-agent (an `ai` pane back at its shell), unknown (a shell

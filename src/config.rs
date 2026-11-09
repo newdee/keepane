@@ -165,7 +165,10 @@ pub struct Options {
     /// What counts as a pane being done, for the phone, `notify`, the
     /// `pane-done` hook and the webhook: any of `command` (a command that ran
     /// `done_after` seconds or more ended), `agent` (an agent's turn ended),
-    /// `task` (a message's task ended), `exit` (the pane's program exited).
+    /// `wait` (an agent waits for the person: a permission, a question;
+    /// its hook says so with `pane-wait`), `task` (a message's task ended),
+    /// `exit` (the pane's program exited), `bell` (a pane with no agent in
+    /// it rang the bell).
     pub done_events: String,
     /// The seconds a command must run to count as done.
     pub done_after: u64,
@@ -176,6 +179,9 @@ pub struct Options {
     /// An HTTP(S) address told each time, and how its body is written.
     pub done_webhook: String,
     pub done_webhook_format: String,
+    /// The secret a Feishu or DingTalk bot checks its messages are signed
+    /// with (its "signature" security setting); empty, not signed.
+    pub done_webhook_secret: String,
     /// The git to run for the panes' repositories (`crate::git::command`):
     /// a path or a name on the PATH; empty, the one found.
     pub git_command: String,
@@ -242,7 +248,7 @@ pub const CLOCK_LOOKS: &[&str] = &["binary", "blocks", "dots", "plain"];
 pub const PANE_BORDER_LINES: &[&str] = &["double", "heavy", "simple", "single"];
 
 /// What a pane can be done with (`done-events`).
-pub const DONE_EVENTS: &[&str] = &["command", "agent", "task", "exit"];
+pub const DONE_EVENTS: &[&str] = &["command", "agent", "wait", "task", "exit", "bell"];
 
 /// The bodies `done-webhook` can be sent: keepane's JSON, plain text (ntfy,
 /// Bark), or the shape a chat's incoming webhook takes.
@@ -468,6 +474,7 @@ pub const SHOWABLE: &[&str] = &[
     "done-panes",
     "done-webhook",
     "done-webhook-format",
+    "done-webhook-secret",
     "event-log",
     "event-log-days",
     "event-log-max",
@@ -572,12 +579,13 @@ impl Default for Options {
             message_wait_max: 600,
             agent_pane_limit: 8,
             agent_commands: crate::platform::shell::DEFAULT_AGENT_COMMANDS.into(),
-            done_events: "command agent".into(),
+            done_events: "command agent wait".into(),
             done_after: 30,
             done_lines: 5,
             done_panes: "named".into(),
             done_webhook: String::new(),
             done_webhook_format: "json".into(),
+            done_webhook_secret: String::new(),
             git_command: String::new(),
             link_clone_dir: "~/keepane".into(),
             link_push_limit: 200 * 1024 * 1024,
@@ -710,6 +718,7 @@ pub const KNOWN: &[&str] = &[
     "done-panes",
     "done-webhook",
     "done-webhook-format",
+    "done-webhook-secret",
     "event-log",
     "event-log-days",
     "event-log-max",
@@ -890,7 +899,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "clock-mode-animation" => CLOCK_ANIMATIONS,
         "clock-mode-look" => CLOCK_LOOKS,
         "pane-border-lines" => PANE_BORDER_LINES,
-        "done-events" => &["all", "none", "command agent"],
+        "done-events" => &["all", "none", "command agent wait"],
         _ => &[],
     }
 }
@@ -1125,6 +1134,7 @@ impl Options {
             "done-webhook-format" => {
                 self.done_webhook_format = one_of(name, value, DONE_WEBHOOK_FORMATS)?;
             }
+            "done-webhook-secret" => self.done_webhook_secret = value.trim().to_string(),
             "event-log" => self.event_log = parse_bool(value)?,
             "event-log-days" => self.event_log_days = ranged(name, value, 1, 3650, "days")?,
             "event-log-max" => self.event_log_max = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024)?,
@@ -1275,6 +1285,7 @@ impl Options {
             "link-push-limit" => size_name(self.link_push_limit),
             "link-agents-limit" => size_name(self.link_agents_limit),
             "done-webhook-format" => self.done_webhook_format.clone(),
+            "done-webhook-secret" => self.done_webhook_secret.clone(),
             "event-log" => onoff(self.event_log),
             "event-log-days" => self.event_log_days.to_string(),
             "event-log-max" => size_name(self.event_log_max),
@@ -1391,11 +1402,13 @@ mod tests {
     #[test]
     fn done_options_take_what_they_can_use() {
         let mut o = Options::default();
-        assert_eq!(o.get("done-events").unwrap(), "command agent");
+        assert_eq!(o.get("done-events").unwrap(), "command agent wait");
         o.set("done-events", "exit, command").unwrap();
         assert_eq!(o.get("done-events").unwrap(), "command exit");
         o.set("done-events", "all").unwrap();
-        assert_eq!(o.get("done-events").unwrap(), "command agent task exit");
+        assert_eq!(o.get("done-events").unwrap(), "command agent wait task exit bell");
+        o.set("done-events", "bell wait").unwrap();
+        assert_eq!(o.get("done-events").unwrap(), "wait bell");
         o.set("done-events", "none").unwrap();
         assert_eq!(o.get("done-events").unwrap(), "none");
         assert!(o.set("done-events", "command beep").unwrap_err().contains("'beep'"));
@@ -1407,6 +1420,8 @@ mod tests {
         }
         assert!(o.set("done-after", "86401").is_err());
         assert!(o.set("done-panes", "some").is_err());
+        o.set("done-webhook-secret", " SECabc123 ").unwrap();
+        assert_eq!(o.get("done-webhook-secret").unwrap(), "SECabc123");
     }
 
     /// What a Tab offers after `set`: the same names `resolve_name` picks

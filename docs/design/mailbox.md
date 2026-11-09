@@ -192,6 +192,7 @@ keepane 的这些规则防的是失误，不是恶意：同一 Windows 用户的
 - 创建工具可带 `message`：创建时即放入新窗格收件箱，就绪后投递，没有"发早了"的时序问题。
 - 默认模式：启动 agent 程序（`claude`、`codex`、`gemini`、`cursor-agent`、`opencode`）为 `ai`，启动 `pwsh`/`powershell`/`bash`/`zsh` 为 `shell`，其他为 `normal`；可用 `mode` 参数覆盖。
 - Claude Code 接入：SessionStart 与 Stop 两处 hook 调 `keepane pane-ready -q`，并注册 MCP。实测：Windows 上 Claude Code 用 PowerShell 执行 hook，`"C:/x/keepane.exe" pane-ready -q`（带引号的路径加参数）是语法错误，所以写入的命令不带引号。`keepane setup claude` 打印这些配置；`--install` 才写入 `~/.claude/settings.json`，写前备份。
+- 等待 hook（0.52.0）：agent 问人问题时调 `keepane pane-wait -q`，按 `done-events` 的 `wait` 通知（手机页、桌面、`pane-done` hook、webhook）。各家事件按官方文档（2026-11）：Claude Code `Notification`，matcher `permission_prompt|elicitation_dialog`（提示等了约 6 秒没人答才触发，人在屏幕前不打扰）；Codex `PermissionRequest`（hook 不输出，不替人做决定）；Gemini CLI `Notification`（`ToolPermission`）。Cursor CLI、opencode 没有对应事件。hook 的 JSON 从标准输入来，`pane-wait` 在客户端读（最多 2 秒、64 KB；控制台输入不读），取 `message`，Codex 取 `tool_input` 的 `description` 或 `command`，拼成一行再交给服务端。旧安装缺这个 hook 时 `setup` 显示"没装好"，再 `--install` 只补缺的。
 
 PowerShell 钩子：在现有提示符钩子末尾加 `OSC 7777;keepane-prompt`，每次显示提示符都发（不依赖是否有新历史）。bash 与 zsh 的钩子发 `OSC 7777;keepane-prompt;sh`（`;sh` 说明按 POSIX 写法投递），放在 PS1 末尾（bash 用 BEL 结尾：提示符解码会吃掉 ST 里的反斜杠）。
 

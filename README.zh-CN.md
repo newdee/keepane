@@ -513,15 +513,15 @@ pane 里的 agent 收发的是和别人一样的消息。要让它顺畅，需�
 
 `keepane setup` 列出它认识的每个 agent：本机装没装、hook 和 keepane 的 MCP 服务端配好没有。`keepane setup <agent>` 打印这个 agent 需要的配置；加 `--install` 就替你装上，每个文件改之前先备份，只加 keepane 自己的条目：
 
-| agent | `setup` 后面写 | hook（session 开始、每轮结束） | MCP 服务端 |
-|---|---|---|---|
-| Claude Code | `claude` | `~/.claude/settings.json` 里的 `SessionStart`、`Stop` | `claude mcp add --scope user` |
-| Codex | `codex` | `~/.codex/hooks.json` 里的 `SessionStart`、`Stop` | `codex mcp add` |
-| Gemini CLI | `gemini` | `~/.gemini/settings.json` 里的 `SessionStart`、`AfterAgent` | 同一个文件的 `mcpServers` |
-| Cursor CLI | `cursor` | `~/.cursor/hooks.json` 里的 `sessionStart`、`stop` | `~/.cursor/mcp.json` |
-| opencode | `opencode` | 一个插件 `~/.config/opencode/plugins/keepane.js`，启动时和 `session.idle` 时运行 | `opencode.json` 的 `mcp` |
+| agent | `setup` 后面写 | hook（session 开始、每轮结束） | 等待 hook | MCP 服务端 |
+|---|---|---|---|---|
+| Claude Code | `claude` | `~/.claude/settings.json` 里的 `SessionStart`、`Stop` | `Notification`（`permission_prompt\|elicitation_dialog`） | `claude mcp add --scope user` |
+| Codex | `codex` | `~/.codex/hooks.json` 里的 `SessionStart`、`Stop` | `PermissionRequest` | `codex mcp add` |
+| Gemini CLI | `gemini` | `~/.gemini/settings.json` 里的 `SessionStart`、`AfterAgent` | `Notification` | 同一个文件的 `mcpServers` |
+| Cursor CLI | `cursor` | `~/.cursor/hooks.json` 里的 `sessionStart`、`stop` | 没有 | `~/.cursor/mcp.json` |
+| opencode | `opencode` | 一个插件 `~/.config/opencode/plugins/keepane.js`，启动时和 `session.idle` 时运行 | 没有 | `opencode.json` 的 `mcp` |
 
-hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。Codex 的 `notify` 只能填一个程序，keepane 不碰它；Codex 的新 hook 要你在 Codex 里用 `/hooks` 确认信任一次才会运行。不是纯 JSON 的文件（比如带注释）不会被改，`setup` 会告诉你手工加什么。这些都按各家的文档写，端到端实测过的只有 Claude Code。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 agent 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。别的 agent 只要能在每轮结束时运行一条命令、能用 stdio 上的 MCP 服务端，也一样能接；启动它之前在它的 pane 里运行 `keepane set-work-mode ai`。
+hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。等待 hook 在 agent 问你问题时运行 `keepane pane-wait -q`：要权限，或者提了一个问题（Claude Code 在问题等了约 6 秒没人回答时才触发）。它按 `done-events` 的 `wait` 通知你（见下文）。0.52.0 之前装过的，再运行一次 `setup <agent> --install`，它只补缺的。Codex 的 `notify` 只能填一个程序，keepane 不碰它；Codex 的新 hook 要你在 Codex 里用 `/hooks` 确认信任一次才会运行。不是纯 JSON 的文件（比如带注释）不会被改，`setup` 会告诉你手工加什么。这些都按各家的文档写，端到端实测过的只有 Claude Code。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 agent 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。别的 agent 只要能在每轮结束时运行一条命令、能用 stdio 上的 MCP 服务端，也一样能接；启动它之前在它的 pane 里运行 `keepane set-work-mode ai`。
 
 Codex（0.160 起）和 pi（1.0 起）默认在备用屏幕里画界面，和 vim 一样：它们输出的内容不会进滚动历史，在 keepane、tmux 或任何终端里都一样，所以往上翻不到历史。滚轮（以及手机上的滑动）仍然能翻，翻的是它们自己的界面。想让历史留在 pane 里，就让它们用内联模式：Codex 在 `~/.codex/config.toml` 的 `[tui]` 下写 `alternate_screen = "never"`（或者用 `codex --no-alt-screen` 启动）；pi 在 `~/.pi/agent/settings.json` 里写 `"tuiMode": "regular"`。
 
@@ -603,16 +603,17 @@ keepane share stop 2                # 取消一个；--all 取消全部
 
 ## pane 完成时通知你
 
-keepane 知道 pane 什么时候"完成"了：一条跑了一段时间的命令结束（靠 shell 报告的命令记录，和命令时间是同一个来源）、agent 这一轮结束（它的 hook 运行了 `keepane pane-ready`）、一条消息的任务结束，或者程序退出。它会通过这几种方式告诉你：
+keepane 知道 pane 什么时候"完成"了：一条跑了一段时间的命令结束（靠 shell 报告的命令记录，和命令时间是同一个来源）、agent 这一轮结束（它的 hook 运行了 `keepane pane-ready`）、agent 在等你（要权限或提问题：它的 hook 运行了 `keepane pane-wait`）、一条消息的任务结束、程序退出，或者没有 agent 的 pane 响了铃。它会通过这几种方式告诉你：
 
 - **手机页**（页面开着的时候）：顶部弹出一条横幅（点一下就跳到那个 pane），响一声，安卓手机会震动，标签页标题上显示未读数。页面在后台时完成的，切回页面时会补告诉你。普通 HTTP 的页面没法弹系统通知，手机锁屏或切走后浏览器也会暂停页面，所以锁屏也要收到的话，用 hook 或 webhook。
 - **电脑桌面**：`set -g notify on`。
-- **webhook**：`set -g done-webhook <地址>`，keepane 每次都用 `curl` 往这个地址发一条，格式由 `done-webhook-format` 决定：`json`（keepane 自己的格式）、`text`（只有那一行文字：ntfy、Bark）、`feishu`（飞书）、`wecom`（企业微信）、`dingtalk`（钉钉）、`slack`、`discord`（聊天工具的群机器人 webhook）。发到聊天工具的消息以 `keepane` 开头，飞书、钉钉机器人的"关键词"安全设置可以填它；对方拒收的话，`show-messages` 里能看到原因。
-- **`pane-done` hook**：想接别的服务就用它。这次完成的信息在环境变量里：`KEEPANE_DONE_KIND`（`command`、`agent`、`task`、`exit`）、`KEEPANE_DONE_TEXT`（那一行文字）、`KEEPANE_DONE_OUTPUT`（pane 最后输出的几行）、`KEEPANE_DONE_PANE`、`KEEPANE_DONE_NAME`、`KEEPANE_DONE_OK`（成功 1、失败 0，知道时才有）、`KEEPANE_DONE_EXIT`（退出码，shell 报告了才有：PowerShell 只说成功还是失败）、`KEEPANE_DONE_SECONDS`、`KEEPANE_DONE_GIT`（agent 这次工作在仓库里做了什么，一行，见下文），以及 `KEEPANE_DONE_JSON`。
+- **webhook**：`set -g done-webhook <地址>`，keepane 每次都用 `curl` 往这个地址发一条，格式由 `done-webhook-format` 决定：`json`（keepane 自己的格式）、`text`（只有那一行文字：ntfy、Bark）、`feishu`（飞书）、`wecom`（企业微信）、`dingtalk`（钉钉）、`slack`、`discord`（聊天工具的群机器人 webhook）。发到聊天工具的消息以 `keepane` 开头，飞书、钉钉机器人的"关键词"安全设置可以填它；对方拒收的话，`show-messages` 里能看到原因。飞书、钉钉机器人开了"签名校验"的，把它的密钥填进 `done-webhook-secret`，keepane 就按机器人要求给每条消息签名。
+- **`pane-done` hook**：想接别的服务就用它。这次完成的信息在环境变量里：`KEEPANE_DONE_KIND`（`command`、`agent`、`wait`、`task`、`exit`、`bell`）、`KEEPANE_DONE_TEXT`（那一行文字）、`KEEPANE_DONE_OUTPUT`（pane 最后输出的几行）、`KEEPANE_DONE_PANE`、`KEEPANE_DONE_NAME`、`KEEPANE_DONE_OK`（成功 1、失败 0，知道时才有）、`KEEPANE_DONE_EXIT`（退出码，shell 报告了才有：PowerShell 只说成功还是失败）、`KEEPANE_DONE_SECONDS`、`KEEPANE_DONE_GIT`（agent 这次工作在仓库里做了什么，一行，见下文），以及 `KEEPANE_DONE_JSON`。
 
 ```sh
 set -g done-webhook https://open.feishu.cn/open-apis/bot/v2/hook/<token>
 set -g done-webhook-format feishu
+set -g done-webhook-secret <密钥>   # 机器人开了签名校验时
 # ntfy（iOS、安卓都有 App），用 hook：Linux、macOS 上是 sh
 set-hook -g pane-done run-shell 'curl -s -d "$KEEPANE_DONE_TEXT" ntfy.sh/<你的频道>'
 # Windows 上是 PowerShell
@@ -622,7 +623,7 @@ set-hook -g pane-done run-shell 'curl.exe -s -d $env:KEEPANE_DONE_TEXT ntfy.sh/<
 哪些算"完成"、对哪些 pane：
 
 ```sh
-set -g done-events command agent  # command agent task exit 任选；all 全部；none 都不要
+set -g done-events command agent wait  # command agent wait task exit bell 任选；all 全部；none 都不要
 set -g done-after 30              # 命令至少跑多少秒才算
 set -g done-panes named           # 有名字或 ai/shell 模式的 pane；all 是所有 pane
 set -g done-lines 5               # 一起带上 pane 最后输出的几行（0 不带）
@@ -631,6 +632,8 @@ set -g done-lines 5               # 一起带上 pane 最后输出的几行（0 
 每条通知都带上 pane 最后输出的几行（命令自己的输出；agent 则是它最后一次 `pane-status` 说的话），聊天工具和桌面通知里写在那一行下面，keepane 的 JSON 里是 `output`。
 
 同一个 pane 三秒内只通知一次：agent 这一轮结束和它完成的任务算一次。`keepane list-done` 列出最近 100 条。
+
+`wait` 来自 agent 的等待 hook（`keepane setup`，见上文），带着它说的话：`waits for you: Claude needs your permission`。pane 最后几行一起带上（`done-lines`）：要权限时是问题和几个选项，命令本身就在选项里。别的程序也可以发：`keepane pane-wait "要部署到生产环境吗？"`。`bell` 默认不开，只管没有 agent 的 pane：agent 响铃表示它这一轮结束了或者有问题，`agent` 和 `wait` 说得更清楚。同一个 pane 的响铃一分钟最多通知一次。
 
 ## pane 所在仓库的 git 信息
 

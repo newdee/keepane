@@ -2321,6 +2321,7 @@ impl Server {
                     let prompted = std::mem::take(&mut p.prompted);
                     // Commands that ended; not those a resumed pane prints back.
                     let finished = std::mem::take(&mut p.finished);
+                    let rang = std::mem::take(&mut p.rang);
                     let replaying = p.is_pending();
                     // A resumed pane: its saved output has all been printed
                     // (the printer's marker arrived); its program starts now,
@@ -2351,6 +2352,12 @@ impl Server {
                         let text = done::command_text(&f.command, f.secs, f.failed, f.exit);
                         let ended = done::Ended { ok: Some(!f.failed), exit: f.exit, secs: Some(f.secs), git: None };
                         self.pane_done(id, done::Kind::Command, text, ended);
+                    }
+                    // An agent's bell is its turn ending or a question: its
+                    // own `agent` and `wait` say that better, and would be
+                    // held back by a bell told a moment before.
+                    if rang && !replaying && !self.agents.stats.contains_key(&id) {
+                        self.pane_done(id, done::Kind::Bell, "rang the bell".into(), done::Ended::default());
                     }
                     if prompted {
                         self.pane_prompt_seen(id);
@@ -3906,6 +3913,7 @@ impl Server {
             | Cmd::ShowTask { .. }
             | Cmd::ListEvents { .. }
             | Cmd::CreatePane(_)) => self.exec_mail(c, cid),
+            Cmd::PaneWait { quiet, target, text } => self.pane_wait(cid, quiet, target.as_ref(), &text),
             Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing, size } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive);

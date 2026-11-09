@@ -202,16 +202,31 @@ fn is_b64url(b: u8) -> bool {
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-/// Base64, URL-safe alphabet, no padding.
-pub fn b64(bytes: &[u8]) -> String {
+const ALPHABET_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn encode(bytes: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
         for i in 0..=chunk.len() {
-            out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            out.push(alphabet[((n >> (18 - 6 * i)) & 63) as usize] as char);
+        }
+        if pad {
+            out.extend(std::iter::repeat_n('=', 3 - chunk.len()));
         }
     }
     out
+}
+
+/// Base64, URL-safe alphabet, no padding.
+pub fn b64(bytes: &[u8]) -> String {
+    encode(bytes, ALPHABET, false)
+}
+
+/// Base64 as RFC 4648 writes it: `+` and `/`, padded with `=` (what a
+/// chat's signature check takes).
+pub fn b64_std(bytes: &[u8]) -> String {
+    encode(bytes, ALPHABET_STD, true)
 }
 
 /// `b64` back; None for anything it would not have written.
@@ -717,6 +732,16 @@ mod tests {
         assert_eq!(unb64("A*=="), None);
         // Stray bits past the last byte: not what b64 writes.
         assert_eq!(unb64("-_9"), None);
+    }
+
+    /// RFC 4648 §10's vectors, and the two alphabets' last letters.
+    #[test]
+    fn standard_base64_is_rfc_4648() {
+        let want = ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"];
+        for (n, w) in want.iter().enumerate() {
+            assert_eq!(b64_std(&b"foobar"[..n]), *w);
+        }
+        assert_eq!(b64_std(b"\xfb\xff"), "+/8=");
     }
 
     /// RFC 4231 test cases 1 and 6 (a key longer than a block).

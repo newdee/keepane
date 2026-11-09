@@ -615,6 +615,10 @@ pub struct Pane {
     pub output_bytes: u64,
     pub copy: Option<CopyMode>,
     pub bell: bool,
+    /// It rang the bell since the server last looked, for `done-events`
+    /// `bell` (`bell` itself is taken by whoever shows it, or never, with
+    /// nobody attached).
+    pub rang: bool,
     pub cols: u16,
     pub rows: u16,
     /// `pipe-pane`: everything this pane writes is copied here as well.
@@ -973,6 +977,7 @@ impl Pane {
             output_bytes: 0,
             copy: None,
             bell: false,
+            rang: false,
             cols,
             rows,
             pipe: None,
@@ -1222,6 +1227,7 @@ impl Pane {
         if cb.bell {
             cb.bell = false;
             self.bell = true;
+            self.rang = true;
         }
         let marks = std::mem::take(&mut cb.marks);
         if let Some(syntax) = cb.prompted.take() {

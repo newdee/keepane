@@ -52,7 +52,7 @@ keepane setup                    # 每个 agent：本机装没装、hook 配没�
 keepane setup codex --install    # 或 claude、gemini、cursor、opencode
 ```
 
-改每个文件之前都会先备份，只加 keepane 自己的条目。装好后在 pane 里重新启动 agent。Codex 的新 hook 要你信任一次才会运行：在 Codex 里输入 `/hooks`，信任 keepane 的那两条。其他 agent 只要能在每轮结束时运行一条命令，让它运行 `keepane pane-ready -q` 就行。
+改每个文件之前都会先备份，只加 keepane 自己的条目。装好后在 pane 里重新启动 agent。Codex 的新 hook 要你信任一次才会运行：在 Codex 里输入 `/hooks`，信任 keepane 的那几条。其他 agent 只要能在每轮结束时运行一条命令，让它运行 `keepane pane-ready -q` 就行。
 
 ## pane 一直显示忙，消息投递不进去
 
@@ -115,14 +115,14 @@ keepane link allow 192.168.1.20:7681 --shell
   ```
 - **其他服务**：`pane-done` hook 会运行你指定的命令，这次完成的信息在 `KEEPANE_DONE_*` 环境变量里（见说明文档）。
 
-哪些算"完成"由 `done-events` 决定（默认 `command agent`：跑满 `done-after` 秒（默认 30）的命令，以及 agent 这一轮结束），只对有名字或 `ai`/`shell` 模式的 pane 生效（`done-panes all` 是所有 pane）。想长期生效，把这几行写进配置文件。
+哪些算"完成"由 `done-events` 决定（默认 `command agent wait`：跑满 `done-after` 秒（默认 30）的命令、agent 这一轮结束，以及 agent 在等你：要权限或提问题，需要先用 `keepane setup <agent> --install` 装好等待 hook），只对有名字或 `ai`/`shell` 模式的 pane 生效（`done-panes all` 是所有 pane）。想长期生效，把这几行写进配置文件。
 
 ## 飞书或钉钉机器人拒收 keepane 的消息
 
 `show-messages` 里会看到 `done-webhook: refused (...)`，后面是对方的回复。取决于机器人的安全设置：
 
 - **自定义关键词**：keepane 发到聊天工具的每条消息都以 `keepane` 开头，把 `keepane` 加为机器人的关键词即可。
-- **签名校验**（飞书的"签名校验"、钉钉的"加签"）：keepane 不做签名，请关掉，改用关键词或 IP 白名单。
+- **签名校验**（飞书的"签名校验"、钉钉的"加签"）：把机器人显示的密钥填进 `set -g done-webhook-secret <密钥>`，keepane 会给每条消息签名。密钥不对，或者电脑时钟偏差超过一小时，飞书会回 `refused (19021)`。
 - **IP 白名单**：电脑访问外网用的那个地址要在白名单里。
 ## Windows：hook 里的 keepane 路径加了引号就报错
 

@@ -1,7 +1,9 @@
 //! `keepane setup [agent] [--install]`: what a coding agent needs to work
 //! in a pane that takes messages (docs/design/mailbox.md §9): a hook that
 //! says when the agent is free (at the start of a session and at the end of
-//! each turn it runs `keepane pane-ready -q`), and keepane's MCP server.
+//! each turn it runs `keepane pane-ready -q`), one that says when it waits
+//! for the person (`keepane pane-wait -q`, where the agent has such a hook:
+//! `done-events` `wait`), and keepane's MCP server.
 //!
 //! Without an agent it says, for each agent it knows, whether it is on this
 //! machine and whether both are set up. With one it prints what that agent
@@ -16,6 +18,13 @@
 //! `AfterAgent`/`SessionStart` in `~/.gemini/settings.json`; Cursor CLI
 //! `stop`/`sessionStart` in `~/.cursor/hooks.json`; opencode has no such
 //! hook but plugins, and a small one runs the command on `session.idle`.
+//!
+//! The waiting hook (2026-11): Claude Code's `Notification` for a
+//! permission prompt or a question left unanswered about six seconds
+//! (`permission_prompt|elicitation_dialog`); Codex's `PermissionRequest`;
+//! Gemini CLI's `Notification` (a tool's permission). Each gives its JSON
+//! on standard input, which `pane-wait` reads (`waiting_for`). Cursor CLI
+//! and opencode have no such hook.
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -27,6 +36,11 @@ pub const HOOK_COMMAND: &str = "keepane pane-ready -q";
 
 /// How a hook is recognised as keepane's, whatever path it was written with.
 const HOOK_MARK: &str = "keepane pane-ready";
+
+/// What the waiting hook runs: quiet outside a pane, like `HOOK_COMMAND`.
+pub const WAIT_COMMAND: &str = "keepane pane-wait -q";
+
+const WAIT_MARK: &str = "keepane pane-wait";
 
 /// The agents `setup` knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +106,9 @@ struct Places {
     hooks: PathBuf,
     /// The file its MCP servers are listed in.
     mcp: PathBuf,
+    /// What its own CLI needs in its environment to write there too
+    /// (`claude mcp add` knows `CLAUDE_CONFIG_DIR`, not keepane's name).
+    cli_env: Option<(&'static str, PathBuf)>,
 }
 
 fn places(agent: Agent, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Places {
@@ -99,28 +116,37 @@ fn places(agent: Agent, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Pl
     match agent {
         Agent::Claude => match set("KEEPANE_CLAUDE_DIR").or_else(|| set("CLAUDE_CONFIG_DIR")) {
             // A directory of its own holds both.
-            Some(dir) => Places { hooks: dir.join("settings.json"), mcp: dir.join(".claude.json") },
+            Some(dir) => Places {
+                hooks: dir.join("settings.json"),
+                mcp: dir.join(".claude.json"),
+                cli_env: Some(("CLAUDE_CONFIG_DIR", dir)),
+            },
             // Its user-scope MCP servers are in ~/.claude.json, beside ~/.claude.
-            None => Places { hooks: home.join(".claude").join("settings.json"), mcp: home.join(".claude.json") },
+            None => Places {
+                hooks: home.join(".claude").join("settings.json"),
+                mcp: home.join(".claude.json"),
+                cli_env: None,
+            },
         },
         Agent::Codex => {
             let dir = set("CODEX_HOME").unwrap_or_else(|| home.join(".codex"));
-            Places { hooks: dir.join("hooks.json"), mcp: dir.join("config.toml") }
+            // `codex mcp add` reads `CODEX_HOME` itself.
+            Places { hooks: dir.join("hooks.json"), mcp: dir.join("config.toml"), cli_env: None }
         }
         Agent::Gemini => {
             let file = home.join(".gemini").join("settings.json");
-            Places { hooks: file.clone(), mcp: file }
+            Places { hooks: file.clone(), mcp: file, cli_env: None }
         }
         Agent::Cursor => {
             let dir = home.join(".cursor");
-            Places { hooks: dir.join("hooks.json"), mcp: dir.join("mcp.json") }
+            Places { hooks: dir.join("hooks.json"), mcp: dir.join("mcp.json"), cli_env: None }
         }
         Agent::Opencode => {
             let dir = set("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")).join("opencode");
             // Its config may be JSONC instead: that one, when it is the only one.
             let (json, jsonc) = (dir.join("opencode.json"), dir.join("opencode.jsonc"));
             let mcp = if !json.exists() && jsonc.exists() { jsonc } else { json };
-            Places { hooks: dir.join("plugins").join("keepane.js"), mcp }
+            Places { hooks: dir.join("plugins").join("keepane.js"), mcp, cli_env: None }
         }
     }
 }
@@ -133,6 +159,83 @@ fn events(agent: Agent) -> [&'static str; 2] {
         Agent::Gemini => ["SessionStart", "AfterAgent"],
         Agent::Cursor => ["sessionStart", "stop"],
         Agent::Opencode => ["plugin start", "session.idle"],
+    }
+}
+
+/// The event an agent says it waits for the person on, and the matcher its
+/// group takes (Claude Code: which notifications); None, it has none.
+fn wait_event(agent: Agent) -> Option<(&'static str, Option<&'static str>)> {
+    match agent {
+        Agent::Claude => Some(("Notification", Some("permission_prompt|elicitation_dialog"))),
+        Agent::Codex => Some(("PermissionRequest", None)),
+        Agent::Gemini => Some(("Notification", None)),
+        Agent::Cursor | Agent::Opencode => None,
+    }
+}
+
+/// What an agent's waiting hook gives on standard input, as a line for
+/// `pane-wait`: the notification's `message` (Claude Code, Gemini CLI), or
+/// the tool and what it would run (Codex: `approve Bash: cargo publish`);
+/// not JSON, its first line. At most 200 characters, one line.
+pub fn waiting_for(input: &str) -> String {
+    let line = |s: &str| -> String {
+        let first = s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+        first.chars().take(200).collect()
+    };
+    let Ok(Value::Object(v)) = serde_json::from_str::<Value>(input.trim()) else { return line(input) };
+    if let Some(m) = v.get("message").and_then(Value::as_str).filter(|m| !m.trim().is_empty()) {
+        return line(m);
+    }
+    let tool = v.get("tool_name").and_then(Value::as_str).unwrap_or("");
+    let given = v.get("tool_input");
+    let what = |k: &str| match given.and_then(|i| i.get(k)) {
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(line(s)),
+        Some(Value::Array(a)) if !a.is_empty() => {
+            Some(line(&a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")))
+        }
+        _ => None,
+    };
+    match (tool, what("description").or_else(|| what("command"))) {
+        ("", None) => String::new(),
+        ("", Some(w)) => w,
+        (t, None) => format!("approve {t}"),
+        (t, Some(w)) => line(&format!("approve {t}: {w}")),
+    }
+}
+
+/// `pane-wait` run with nothing to say (a hook): what is on standard input,
+/// read for at most two seconds and 64 KB, becomes its words. A console's
+/// input is never read: a person typing it gives the words themselves.
+pub fn pane_wait_args(args: &mut Vec<String>) {
+    use std::io::{IsTerminal, Read};
+    let mut words = args.iter().skip(1);
+    let mut said = false;
+    while let Some(w) = words.next() {
+        match w.as_str() {
+            "-q" => {}
+            "-t" => {
+                words.next();
+            }
+            "--" => said = words.next().is_some(),
+            _ => said = true,
+        }
+        if said {
+            return;
+        }
+    }
+    if std::io::stdin().is_terminal() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = std::io::stdin().lock().take(64 * 1024).read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    let Ok(bytes) = rx.recv_timeout(std::time::Duration::from_secs(2)) else { return };
+    let text = waiting_for(&String::from_utf8_lossy(&bytes));
+    if !text.is_empty() {
+        args.extend(["--".to_string(), text]);
     }
 }
 
@@ -159,23 +262,30 @@ fn obj<'a>(v: &'a mut Value, what: &str) -> Result<&'a mut serde_json::Map<Strin
 
 /// Settings with keepane's hooks added where they are missing, in the shape
 /// Claude Code, Codex and Gemini CLI share (`hooks.<event>` a list of
-/// groups, each with its `hooks`); and whether anything was added.
+/// groups, each with its `hooks`): `pane-ready` on the agent's two events,
+/// `pane-wait` on its waiting one; and whether anything was added.
 /// Everything else is left as it was, in its order.
-pub fn with_hooks(mut settings: Value, names: [&str; 2]) -> Result<(Value, bool)> {
+pub fn with_hooks(mut settings: Value, agent: Agent) -> Result<(Value, bool)> {
     let root = obj(&mut settings, "the settings")?;
     let hooks = root.entry("hooks").or_insert_with(|| json!({}));
     let hooks = obj(hooks, "\"hooks\"")?;
+    let ready = events(agent).map(|e| (e, None, HOOK_MARK, HOOK_COMMAND));
+    let wait = wait_event(agent).map(|(e, matcher)| (e, matcher, WAIT_MARK, WAIT_COMMAND));
     let mut changed = false;
-    for event in names {
+    for (event, matcher, mark, command) in ready.into_iter().chain(wait) {
         let list = hooks.entry(event).or_insert_with(|| json!([]));
         let Some(list) = list.as_array_mut() else { bail!("\"hooks\".\"{event}\" is not a list") };
         let there = list.iter().any(|group| {
             group["hooks"]
                 .as_array()
-                .is_some_and(|hs| hs.iter().any(|h| h["command"].as_str().is_some_and(|c| c.contains(HOOK_MARK))))
+                .is_some_and(|hs| hs.iter().any(|h| h["command"].as_str().is_some_and(|c| c.contains(mark))))
         });
         if !there {
-            list.push(json!({ "hooks": [{ "type": "command", "command": HOOK_COMMAND }] }));
+            let mut group = json!({ "hooks": [{ "type": "command", "command": command }] });
+            if let Some(m) = matcher {
+                group = json!({ "matcher": m, "hooks": group["hooks"].take() });
+            }
+            list.push(group);
             changed = true;
         }
     }
@@ -282,10 +392,7 @@ fn hooked(agent: Agent, p: &Places) -> bool {
         Agent::Cursor => {
             serde_json::from_str(&t).ok().and_then(|v| with_cursor_hooks(v).ok()).is_some_and(|(_, changed)| !changed)
         }
-        _ => serde_json::from_str(&t)
-            .ok()
-            .and_then(|v| with_hooks(v, events(agent)).ok())
-            .is_some_and(|(_, changed)| !changed),
+        _ => serde_json::from_str(&t).ok().and_then(|v| with_hooks(v, agent).ok()).is_some_and(|(_, changed)| !changed),
     }
 }
 
@@ -307,17 +414,27 @@ fn registered(agent: Agent, p: &Places) -> bool {
 }
 
 /// An agent's own CLI, run the way Windows runs a `.cmd` shim.
-fn run_cli(program: &str, args: &[&str]) -> Result<std::process::ExitStatus> {
+fn run_cli(program: &str, args: &[&str], env: Option<&(&str, PathBuf)>) -> Result<std::process::ExitStatus> {
     let exe = crate::config::which(program).with_context(|| format!("`{program}` is not on PATH"))?;
+    Ok(cli_command(&exe, args, env).status()?)
+}
+
+/// The command `run_cli` runs: `exe` (a `.cmd` or `.bat` through cmd.exe)
+/// with `args`, and `env` set.
+fn cli_command(exe: &Path, args: &[&str], env: Option<&(&str, PathBuf)>) -> std::process::Command {
     let is_script = exe.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
     let mut c = if is_script {
         let mut c = std::process::Command::new("cmd.exe");
-        c.arg("/c").arg(&exe);
+        c.arg("/c").arg(exe);
         c
     } else {
-        std::process::Command::new(&exe)
+        std::process::Command::new(exe)
     };
-    Ok(c.args(args).status()?)
+    if let Some((k, v)) = env {
+        c.env(k, v);
+    }
+    c.args(args);
+    c
 }
 
 /// What registers the MCP server for an agent that does it with its own
@@ -341,7 +458,7 @@ fn hooks_snippet(agent: Agent) -> String {
     let v = match agent {
         Agent::Opencode => return OPENCODE_PLUGIN.to_string(),
         Agent::Cursor => with_cursor_hooks(json!({})).map(|(v, _)| v),
-        _ => with_hooks(json!({}), events(agent)).map(|(v, _)| v),
+        _ => with_hooks(json!({}), agent).map(|(v, _)| v),
     };
     v.map(|v| serde_json::to_string_pretty(&v).unwrap_or_default()).unwrap_or_default()
 }
@@ -351,14 +468,20 @@ fn print_plan(agent: Agent, p: &Places) {
     let [start, end] = events(agent);
     println!("{} in a keepane pane (work mode ai) needs:", agent.label());
     println!();
-    println!("1. A hook that says when it is free ({start} and {end}), in {}:", p.hooks.display());
+    match wait_event(agent) {
+        Some((wait, _)) => println!(
+            "1. A hook that says when it is free ({start} and {end}), and one that says when it waits for you ({wait}), in {}:",
+            p.hooks.display()
+        ),
+        None => println!("1. A hook that says when it is free ({start} and {end}), in {}:", p.hooks.display()),
+    }
     println!("{}", hooks_snippet(agent));
     println!();
     println!("2. keepane's MCP server:");
     println!("   {}", mcp_by_hand(agent, p));
     println!();
     if agent == Agent::Codex {
-        println!("Codex runs a new hook only once you trust it: in Codex, /hooks, and trust keepane's two.");
+        println!("Codex runs a new hook only once you trust it: in Codex, /hooks, and trust keepane's.");
     }
     println!("`keepane setup {} --install` does both (each file is backed up first).", agent.word());
 }
@@ -384,7 +507,7 @@ fn install(agent: Agent, p: &Places) -> Result<()> {
         _ if p.hooks == p.mcp => {
             let (mut hooks, mut mcp) = (false, false);
             edit_json(&p.hooks, |v| {
-                let (v, h) = with_hooks(v, events(agent))?;
+                let (v, h) = with_hooks(v, agent)?;
                 let (v, m) = with_mcp(v, agent)?;
                 (hooks, mcp) = (h, m);
                 Ok((v, h || m))
@@ -392,10 +515,16 @@ fn install(agent: Agent, p: &Places) -> Result<()> {
             together = Some(mcp);
             hooks
         }
-        _ => edit_json(&p.hooks, |v| with_hooks(v, events(agent)))?,
+        _ => edit_json(&p.hooks, |v| with_hooks(v, agent))?,
     };
     if hooks_changed {
-        println!("added the {start} and {end} hooks ({HOOK_COMMAND}) to {}", p.hooks.display());
+        match wait_event(agent) {
+            Some((wait, _)) => println!(
+                "added the {start} and {end} hooks ({HOOK_COMMAND}) and the {wait} hook ({WAIT_COMMAND}) where missing, to {}",
+                p.hooks.display()
+            ),
+            None => println!("added the {start} and {end} hooks ({HOOK_COMMAND}) to {}", p.hooks.display()),
+        }
     } else {
         println!("the hooks are already in {}", p.hooks.display());
     }
@@ -414,7 +543,7 @@ fn install(agent: Agent, p: &Places) -> Result<()> {
                     Agent::Claude => &["mcp", "add", "--scope", "user", "keepane", "--", "keepane", "mcp"],
                     _ => &["mcp", "add", "keepane", "--", "keepane", "mcp"],
                 };
-                match run_cli(agent.program(), args) {
+                match run_cli(agent.program(), args, p.cli_env.as_ref()) {
                     Ok(s) if s.success() => println!("registered the keepane MCP server"),
                     Ok(_) => bail!("`{} mcp add` failed; add it yourself: {}", agent.program(), mcp_by_hand(agent, p)),
                     Err(e) => println!("{e:#}; add the MCP server yourself: {}", mcp_by_hand(agent, p)),
@@ -430,7 +559,7 @@ fn install(agent: Agent, p: &Places) -> Result<()> {
         }
     }
     if agent == Agent::Codex {
-        println!("Codex runs a new hook only once you trust it: in Codex, /hooks, and trust keepane's two.");
+        println!("Codex runs a new hook only once you trust it: in Codex, /hooks, and trust keepane's.");
     }
     Ok(())
 }
@@ -520,24 +649,24 @@ mod tests {
             "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "notify-me" }] }] },
             "env": { "A": "1" },
         });
-        let (after, changed) = with_hooks(before.clone(), events(Agent::Claude)).unwrap();
+        let (after, changed) = with_hooks(before.clone(), Agent::Claude).unwrap();
         assert!(changed);
         let keys: Vec<&String> = after.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["model", "hooks", "env"], "the user's order stays");
         assert_eq!(after["hooks"]["Stop"][0], before["hooks"]["Stop"][0], "their hook stays first");
         assert_eq!(after["hooks"]["Stop"][1]["hooks"][0]["command"], HOOK_COMMAND);
         assert_eq!(after["hooks"]["SessionStart"][0]["hooks"][0]["command"], HOOK_COMMAND);
-        let (again, changed) = with_hooks(after.clone(), events(Agent::Claude)).unwrap();
+        let (again, changed) = with_hooks(after.clone(), Agent::Claude).unwrap();
         assert!(!changed, "a second run adds nothing");
         assert_eq!(again, after);
-        assert!(with_hooks(json!([]), events(Agent::Claude)).is_err());
+        assert!(with_hooks(json!([]), Agent::Claude).is_err());
         assert!(
-            with_hooks(json!({"hooks": {"Stop": {}}}), events(Agent::Claude)).is_err(),
+            with_hooks(json!({"hooks": {"Stop": {}}}), Agent::Claude).is_err(),
             "a shape it does not know is left alone"
         );
         // A hook written with a full path is keepane's too.
         let full = json!({"hooks": {"AfterAgent": [{"hooks": [{"type": "command", "command": "C:/k/keepane pane-ready -q"}]}]}});
-        let (g, _) = with_hooks(full, events(Agent::Gemini)).unwrap();
+        let (g, _) = with_hooks(full, Agent::Gemini).unwrap();
         assert_eq!(g["hooks"]["AfterAgent"].as_array().unwrap().len(), 1);
         assert_eq!(g["hooks"]["SessionStart"][0]["hooks"][0]["command"], HOOK_COMMAND);
     }
@@ -594,14 +723,14 @@ mod tests {
         let dir = temp("claude");
         let settings = dir.join("settings.json");
         std::fs::write(&settings, "{\"model\": \"opus\"}").unwrap();
-        assert!(edit_json(&settings, |v| with_hooks(v, events(Agent::Claude))).unwrap());
+        assert!(edit_json(&settings, |v| with_hooks(v, Agent::Claude)).unwrap());
         let written: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         assert_eq!(written["model"], "opus");
         assert_eq!(written["hooks"]["Stop"][0]["hooks"][0]["command"], HOOK_COMMAND);
         let b = backups(&dir);
         assert_eq!(b.len(), 1);
         assert_eq!(std::fs::read_to_string(&b[0]).unwrap(), "{\"model\": \"opus\"}");
-        assert!(!edit_json(&settings, |v| with_hooks(v, events(Agent::Claude))).unwrap(), "nothing new");
+        assert!(!edit_json(&settings, |v| with_hooks(v, Agent::Claude)).unwrap(), "nothing new");
         assert_eq!(backups(&dir).len(), 1, "and no second backup");
         // Two backups within a second: the first is kept, the second numbered.
         write_backed_up(&settings, Some("one"), "x").unwrap();
@@ -611,7 +740,7 @@ mod tests {
         assert!(kept.len() == 3 && kept.contains(&"one".to_string()) && kept.contains(&"two".to_string()), "{kept:?}");
         // Broken JSON (or JSON with comments) is never overwritten.
         std::fs::write(&settings, "{ // mine\n}").unwrap();
-        assert!(edit_json(&settings, |v| with_hooks(v, events(Agent::Claude))).is_err());
+        assert!(edit_json(&settings, |v| with_hooks(v, Agent::Claude)).is_err());
         assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{ // mine\n}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -690,9 +819,107 @@ mod tests {
         assert!(registered(Agent::Codex, &p));
         // Its hooks go in hooks.json; config.toml (and its notify) untouched.
         let toml = std::fs::read_to_string(&p.mcp).unwrap();
-        edit_json(&p.hooks, |v| with_hooks(v, events(Agent::Codex))).unwrap();
+        edit_json(&p.hooks, |v| with_hooks(v, Agent::Codex)).unwrap();
         assert!(hooked(Agent::Codex, &p));
         assert_eq!(std::fs::read_to_string(&p.mcp).unwrap(), toml);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The waiting hook goes on each agent's own event (Claude Code's with
+    /// its matcher), once; a setup from before it had only the two ready
+    /// hooks: it is not set up any more, and installing adds the waiting one
+    /// alone. Cursor CLI and opencode get none.
+    #[test]
+    fn the_waiting_hook_goes_where_each_agent_has_one() {
+        let wait_cmds = |v: &Value, event: &str| -> Vec<String> {
+            v["hooks"][event]
+                .as_array()
+                .map(|l| l.iter().filter_map(|g| g["hooks"][0]["command"].as_str().map(String::from)).collect())
+                .unwrap_or_default()
+        };
+        let (claude, _) = with_hooks(json!({}), Agent::Claude).unwrap();
+        assert_eq!(claude["hooks"]["Notification"][0]["matcher"], "permission_prompt|elicitation_dialog");
+        assert_eq!(wait_cmds(&claude, "Notification"), [WAIT_COMMAND]);
+        let (codex, _) = with_hooks(json!({}), Agent::Codex).unwrap();
+        assert_eq!(wait_cmds(&codex, "PermissionRequest"), [WAIT_COMMAND]);
+        assert!(codex["hooks"]["PermissionRequest"][0].get("matcher").is_none(), "every tool");
+        let (gemini, _) = with_hooks(json!({}), Agent::Gemini).unwrap();
+        assert_eq!(wait_cmds(&gemini, "Notification"), [WAIT_COMMAND]);
+        assert_eq!(wait_event(Agent::Cursor), None);
+        assert_eq!(wait_event(Agent::Opencode), None);
+        // A setup from before: the ready hooks only, and a Notification of the user's.
+        let old = json!({ "hooks": {
+            "SessionStart": [{ "hooks": [{ "type": "command", "command": HOOK_COMMAND }] }],
+            "Stop": [{ "hooks": [{ "type": "command", "command": HOOK_COMMAND }] }],
+            "Notification": [{ "hooks": [{ "type": "command", "command": "notify-send hi" }] }],
+        }});
+        let (new, changed) = with_hooks(old.clone(), Agent::Claude).unwrap();
+        assert!(changed, "the waiting hook is missing");
+        assert_eq!(
+            (new["hooks"]["Stop"].clone(), new["hooks"]["SessionStart"].clone()),
+            (old["hooks"]["Stop"].clone(), old["hooks"]["SessionStart"].clone())
+        );
+        assert_eq!(wait_cmds(&new, "Notification"), ["notify-send hi", WAIT_COMMAND], "theirs first, kept");
+        assert!(!with_hooks(new, Agent::Claude).unwrap().1, "then nothing more");
+        let dir = temp("wait");
+        let p = places(Agent::Claude, &dir, &no_env);
+        std::fs::create_dir_all(p.hooks.parent().unwrap()).unwrap();
+        std::fs::write(&p.hooks, old.to_string()).unwrap();
+        assert!(!hooked(Agent::Claude, &p), "set up before the waiting hook: not set up");
+        assert!(edit_json(&p.hooks, |v| with_hooks(v, Agent::Claude)).unwrap());
+        assert!(hooked(Agent::Claude, &p));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory of Claude Code's own (keepane's name for it, or its own)
+    /// goes to `claude mcp add` as `CLAUDE_CONFIG_DIR`, which is all it
+    /// knows: the server is registered where keepane looks, not in the
+    /// user's ~/.claude.json. Without one, and for the others, nothing.
+    #[test]
+    fn claudes_own_cli_writes_where_keepane_looks() {
+        let home = Path::new("/h");
+        let keepane_dir = |k: &str| (k == "KEEPANE_CLAUDE_DIR").then(|| "/cc".to_string());
+        let p = places(Agent::Claude, home, &keepane_dir);
+        assert_eq!(p.cli_env, Some(("CLAUDE_CONFIG_DIR", PathBuf::from("/cc"))));
+        assert_eq!(p.mcp, Path::new("/cc").join(".claude.json"));
+        let own = |k: &str| (k == "CLAUDE_CONFIG_DIR").then(|| "/c2".to_string());
+        assert_eq!(places(Agent::Claude, home, &own).cli_env, Some(("CLAUDE_CONFIG_DIR", PathBuf::from("/c2"))));
+        assert_eq!(places(Agent::Claude, home, &no_env).cli_env, None);
+        for a in [Agent::Codex, Agent::Gemini, Agent::Cursor, Agent::Opencode] {
+            assert_eq!(places(a, home, &keepane_dir).cli_env, None, "{a:?}");
+        }
+        // And the command run has it, a `.cmd` shim through cmd.exe.
+        let c = cli_command(Path::new("claude.cmd"), &["mcp", "add"], p.cli_env.as_ref());
+        let envs: Vec<_> = c.get_envs().collect();
+        assert_eq!(envs, [(std::ffi::OsStr::new("CLAUDE_CONFIG_DIR"), Some(Path::new("/cc").as_os_str()))]);
+        assert_eq!(c.get_program(), "cmd.exe");
+        assert_eq!(c.get_args().collect::<Vec<_>>(), ["/c", "claude.cmd", "mcp", "add"]);
+        assert_eq!(cli_command(Path::new("claude"), &[], None).get_envs().count(), 0);
+    }
+
+    /// What each agent's hook gives on standard input, as `pane-wait`'s line.
+    #[test]
+    fn waiting_for_reads_each_agents_hook() {
+        let claude = r#"{"session_id":"a","hook_event_name":"Notification","message":"Claude needs your permission to use Bash","title":"Permission needed","notification_type":"permission_prompt"}"#;
+        assert_eq!(waiting_for(claude), "Claude needs your permission to use Bash");
+        let gemini = r#"{"hook_event_name":"Notification","notification_type":"ToolPermission","message":"Allow run_shell_command?","details":{"tool":"x"}}"#;
+        assert_eq!(waiting_for(gemini), "Allow run_shell_command?");
+        let codex = r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"cargo publish","description":null}}"#;
+        assert_eq!(waiting_for(codex), "approve Bash: cargo publish");
+        let described = r#"{"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules","description":"Remove node_modules"}}"#;
+        assert_eq!(waiting_for(described), "approve Bash: Remove node_modules");
+        assert_eq!(
+            waiting_for(r#"{"tool_name":"Bash","tool_input":{"command":["git","push"]}}"#),
+            "approve Bash: git push"
+        );
+        assert_eq!(waiting_for(r#"{"tool_name":"apply_patch","tool_input":{}}"#), "approve apply_patch");
+        assert_eq!(waiting_for(r#"{"message":"  ","session_id":"a"}"#), "", "nothing to say");
+        assert_eq!(waiting_for("\n  deploy to prod?\nsecond line"), "deploy to prod?", "not JSON: its first line");
+        assert_eq!(waiting_for("[1,2]"), "[1,2]");
+        assert_eq!(waiting_for(""), "");
+        let long = format!(r#"{{"message":"{}"}}"#, "x".repeat(500));
+        assert_eq!(waiting_for(&long).chars().count(), 200);
+        let multi = r#"{"tool_name":"Bash","tool_input":{"command":"echo a\necho b"}}"#;
+        assert_eq!(waiting_for(multi), "approve Bash: echo a", "one line");
     }
 }

@@ -296,6 +296,14 @@ pub enum Cmd {
         quiet: bool,
         target: Option<Target>,
     },
+    /// `pane-wait [-q] [-t pane] [text]`: the program in the pane (an
+    /// agent, through its hook) waits for the person: a permission, a
+    /// question. Told as `done-events` `wait`.
+    PaneWait {
+        quiet: bool,
+        target: Option<Target>,
+        text: String,
+    },
     /// `pane-status [text]`: what the calling pane says it is doing.
     PaneStatus {
         text: String,
@@ -1196,6 +1204,17 @@ impl fmt::Display for Cmd {
                     f.write_str(" -q")?;
                 }
                 fmt_target(f, target)
+            }
+            Cmd::PaneWait { quiet, target, text } => {
+                f.write_str("pane-wait")?;
+                if *quiet {
+                    f.write_str(" -q")?;
+                }
+                fmt_target(f, target)?;
+                if !text.is_empty() {
+                    write!(f, " -- {}", quote(text))?;
+                }
+                Ok(())
             }
             Cmd::PaneStatus { text } => write!(f, "pane-status -- {}", quote(text)),
             Cmd::SetWorkMode { target, mode } => {
@@ -2382,6 +2401,7 @@ pub const COMMANDS: &[&str] = &[
     "drop-message",
     "move-message",
     "pane-ready",
+    "pane-wait",
     "pane-status",
     "set-work-mode",
     "rename-pane",
@@ -2528,6 +2548,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("drop-message", &["-u"]),
     ("move-message", &[]),
     ("pane-ready", &["-q", "-t"]),
+    ("pane-wait", &["-q", "-t"]),
     ("pane-status", &[]),
     ("set-work-mode", &["-t"]),
     ("rename-pane", &["-t"]),
@@ -3184,6 +3205,17 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::PaneReady { quiet, target }
+        }
+        "pane-wait" => {
+            let (mut quiet, mut target) = (false, None);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-q" => quiet = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            Cmd::PaneWait { quiet, target, text: a.rest().join(" ") }
         }
         "pane-status" => {
             a.none_flags(n)?;
@@ -5296,6 +5328,8 @@ mod tests {
             "kill-session -a -t x",
             "capture-pane -p -S -100 -t w:1",
             "web-tails 4",
+            "pane-wait -q",
+            "pane-wait -t %3 -- \"Claude needs your permission to use Bash\"",
             "run-shell -b -t w:1 \"pwsh -c Get-Date\"",
             "set-hook -g after-new-window \"rename-window hooked\"",
             "set-hook -gu after-new-window",

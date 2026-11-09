@@ -1044,17 +1044,22 @@ machine and whether its hook and keepane's MCP server are set up.
 `keepane setup <agent>` prints what that agent needs; `--install` does it,
 each file backed up first and only keepane's entries added:
 
-| Agent | `setup` word | Hook (session start, turn end) | MCP server |
-|---|---|---|---|
-| Claude Code | `claude` | `SessionStart`, `Stop` in `~/.claude/settings.json` | `claude mcp add --scope user` |
-| Codex | `codex` | `SessionStart`, `Stop` in `~/.codex/hooks.json` | `codex mcp add` |
-| Gemini CLI | `gemini` | `SessionStart`, `AfterAgent` in `~/.gemini/settings.json` | `mcpServers` there |
-| Cursor CLI | `cursor` | `sessionStart`, `stop` in `~/.cursor/hooks.json` | `~/.cursor/mcp.json` |
-| opencode | `opencode` | a plugin, `~/.config/opencode/plugins/keepane.js`, on start and `session.idle` | `mcp` in `opencode.json` |
+| Agent | `setup` word | Hook (session start, turn end) | Waiting hook | MCP server |
+|---|---|---|---|---|
+| Claude Code | `claude` | `SessionStart`, `Stop` in `~/.claude/settings.json` | `Notification` (`permission_prompt\|elicitation_dialog`) | `claude mcp add --scope user` |
+| Codex | `codex` | `SessionStart`, `Stop` in `~/.codex/hooks.json` | `PermissionRequest` | `codex mcp add` |
+| Gemini CLI | `gemini` | `SessionStart`, `AfterAgent` in `~/.gemini/settings.json` | `Notification` | `mcpServers` there |
+| Cursor CLI | `cursor` | `sessionStart`, `stop` in `~/.cursor/hooks.json` | none | `~/.cursor/mcp.json` |
+| opencode | `opencode` | a plugin, `~/.config/opencode/plugins/keepane.js`, on start and `session.idle` | none | `mcp` in `opencode.json` |
 
 Each runs `keepane pane-ready -q`, which is quiet outside keepane and
-ignored in panes not in `ai` mode. Codex's `notify` holds one program only
-and is left alone; Codex runs a new hook once you trust it (`/hooks` in
+ignored in panes not in `ai` mode. The waiting hook runs `keepane
+pane-wait -q` when the agent asks you something: a permission, or a
+question (Claude Code tells it once the question has waited about six
+seconds). It is told as `done-events` `wait` (below). Set up before
+0.52.0? Run `setup <agent> --install` again: it adds what is missing.
+Codex's `notify` holds one program only and is left alone; Codex runs a
+new hook once you trust it (`/hooks` in
 Codex). A file that is not plain JSON (comments, say) is left alone, and
 `setup` says what to add by hand. These follow each agent's documentation;
 Claude Code is the one checked end to end. Writing the hook yourself, leave
@@ -1276,8 +1281,10 @@ across a network you do not trust, use Tailscale. The design:
 
 keepane knows when a pane is done: a command that ran a while ended (its
 shell reports its commands, as for the command times), an agent finished
-its turn (its hook ran `keepane pane-ready`), a message's task ended, or a
-program exited. It tells you where you are:
+its turn (its hook ran `keepane pane-ready`), an agent waits for you (it
+asks a permission or a question: its hook ran `keepane pane-wait`), a
+message's task ended, a program exited, or a pane with no agent in it
+rang the bell. It tells you where you are:
 
 - **The phone's page**, while it is open: a banner across the top (tap it
   to go to the pane), a short sound, a buzz on Android, and the count in the
@@ -1291,9 +1298,13 @@ program exited. It tells you where you are:
   (keepane's own), `text` (the line alone: ntfy, Bark), `feishu`, `wecom`,
   `dingtalk`, `slack` or `discord` (a chat's incoming webhook). A chat's
   message starts with `keepane`, which a Feishu or DingTalk bot's keyword
-  check can be set to; a chat that refuses shows in `show-messages`.
+  check can be set to; a chat that refuses shows in `show-messages`. A
+  Feishu or DingTalk bot set to check signatures needs its secret in
+  `done-webhook-secret`; keepane then signs each message as the bot
+  expects.
 - **The `pane-done` hook**, for anything else. What it is about is in its
-  environment: `KEEPANE_DONE_KIND` (`command`, `agent`, `task`, `exit`),
+  environment: `KEEPANE_DONE_KIND` (`command`, `agent`, `wait`, `task`,
+  `exit`, `bell`),
   `KEEPANE_DONE_TEXT` (the line), `KEEPANE_DONE_OUTPUT` (what the pane printed
   last, a line each), `KEEPANE_DONE_PANE`, `KEEPANE_DONE_NAME`,
   `KEEPANE_DONE_OK` (1 or 0, when known), `KEEPANE_DONE_EXIT` (the exit code,
@@ -1304,6 +1315,7 @@ program exited. It tells you where you are:
 ```sh
 set -g done-webhook https://open.feishu.cn/open-apis/bot/v2/hook/<token>
 set -g done-webhook-format feishu
+set -g done-webhook-secret <secret>  # if the bot checks signatures
 # ntfy (an app on iOS and Android), from the hook: sh on Linux and macOS
 set-hook -g pane-done run-shell 'curl -s -d "$KEEPANE_DONE_TEXT" ntfy.sh/<your-topic>'
 # ... and PowerShell on Windows
@@ -1313,7 +1325,7 @@ set-hook -g pane-done run-shell 'curl.exe -s -d $env:KEEPANE_DONE_TEXT ntfy.sh/<
 What counts, and for which panes:
 
 ```sh
-set -g done-events command agent  # any of command agent task exit; all; none
+set -g done-events command agent wait  # any of command agent wait task exit bell; all; none
 set -g done-after 30              # seconds a command must run to count
 set -g done-panes named           # panes with a name or in ai/shell mode; all for every pane
 set -g done-lines 5               # the last lines the pane printed go with it (0: none)
@@ -1325,6 +1337,15 @@ as `output` in keepane's JSON.
 
 A pane is told of once in three seconds: an agent's turn and the task it
 finished are one telling. `keepane list-done` lists the last hundred.
+
+`wait` comes from an agent's waiting hook (`keepane setup`, above), with
+what it says: `waits for you: Claude needs your permission`. The pane's
+last lines go with it (`done-lines`): for a permission, the question and
+its choices, the command among them. Any program can say it too:
+`keepane pane-wait "deploy to production?"`.
+`bell` is off by default. It covers panes with no agent in them: an
+agent's bell means its turn ended or it has a question, and `agent` and
+`wait` tell that better. A pane's bell is told once a minute at most.
 
 ## What a pane's repository says
 

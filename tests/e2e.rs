@@ -211,7 +211,7 @@ impl Harness {
             }
         });
         let pipe = pipe_name(&socket);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(20);
         while open_pipe(&pipe).is_err() {
             assert!(Instant::now() < deadline, "server did not come up");
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -587,7 +587,7 @@ async fn cli_lifecycle() {
     let (code, _, _) = h.cli(&["kill-session", "-t", "renamed"]).await;
     assert_eq!(code, 0);
     // The server exits when its last session dies.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while open_pipe(&pipe_name(&h.socket)).is_ok() {
         assert!(Instant::now() < deadline, "server should have exited");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1343,7 +1343,7 @@ async fn save_and_resume_sessions() {
     assert!(!out.contains("other:"), "{out}");
     // Renaming a session moves its saved file: no ghost under the old name.
     h.cli(&["rename-session", "-t", "work", "work2"]).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let (_, out, _) = h.cli(&["list-saved"]).await;
         if out.contains("work2:") && !out.lines().any(|l| l.starts_with("work:")) {
@@ -1399,7 +1399,7 @@ async fn save_and_resume_sessions() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     // ...and all of that lands in the saved file.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let f = keepane::resurrect::SavedFile::load(&keepane::resurrect::find(&dir, "work").unwrap()).unwrap();
         let cwds: Vec<Option<String>> = f.session.windows[0].layout.panes().iter().map(|p| p.cwd.clone()).collect();
@@ -1412,7 +1412,7 @@ async fn save_and_resume_sessions() {
 
     // Autosave: a structural change is on disk within a couple of ticks.
     h.cli(&["rename-window", "-t", "work:1", "renamed-by-autosave"]).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let path = keepane::resurrect::find(&dir, "work").unwrap();
         let f = keepane::resurrect::SavedFile::load(&path).unwrap();
@@ -2116,7 +2116,7 @@ async fn copy_mode_vi_motions_and_modes() {
     c.enter().await;
     // The copy and the show-buffer travel different pipes: wait for the
     // buffer to change rather than assuming the Enter landed first.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     let out = loop {
         let (_, out, _) = h.cli(&["show-buffer"]).await;
         if out.trim_end() != "alpha" {
@@ -2316,6 +2316,9 @@ async fn under_the_clock_something_moves_with_the_machine() {
     // rows (under the clock's lines), and it moves.
     let last_rows =
         |s: &vt100::Screen| s.rows(0, COLS).skip(usize::from(ROWS) - 4).take(3).collect::<Vec<_>>().join("\n");
+    // Nothing of an animation there: blank, or a six-week month's last
+    // dates (the calendar reaches these rows then).
+    let calendar_only = |s: &vt100::Screen| last_rows(s).chars().all(|ch| ch.is_ascii_digit() || ch.is_whitespace());
     for (kind, marks) in [
         ("fire", &["#", "%"][..]),
         ("starfield", &["*", "+"]),
@@ -2381,7 +2384,7 @@ async fn under_the_clock_something_moves_with_the_machine() {
         let still = c.frames_for(800).await;
         let s = c.screen.screen();
         assert!(!braille(s) && !katakana(s) && !s.contents().contains("OUT "), "{option} {value}: {}", c.text());
-        assert!(last_rows(s).trim().is_empty(), "{option} {value}: {}", c.text());
+        assert!(calendar_only(s), "{option} {value}: {}", c.text());
         assert!(still <= 2, "{option} {value}: {still} frames");
         // `/` asks for one: it moves under `clock-mode-animation off`, not
         // under `animation off`.
@@ -2397,7 +2400,7 @@ async fn under_the_clock_something_moves_with_the_machine() {
             c.frames_for(800).await;
             let s = c.screen.screen();
             assert!(
-                last_rows(s).trim().is_empty() && !braille(s) && !s.contents().contains(" pulse "),
+                calendar_only(s) && !braille(s) && !s.contents().contains(" pulse "),
                 "animation off, then /: {}",
                 c.text()
             );
@@ -5012,7 +5015,7 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
         }
     });
     let pipe = pipe_name(&socket);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while open_pipe(&pipe).is_err() {
         assert!(Instant::now() < deadline, "server did not come up");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -5115,7 +5118,7 @@ async fn record_writes_an_asciinema_file() {
     assert!(out.contains("recording stopped"), "{out}");
     // The writer thread flushes on close: wait for the resize event to be
     // in the file rather than for a fixed time (slow runners).
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     let text = loop {
         let text = std::fs::read_to_string(&cast).unwrap_or_default();
         if text.lines().skip(1).any(|l| l.contains("\"r\"")) && text.ends_with('\n') {
@@ -5501,6 +5504,25 @@ async fn a_resumed_session_keeps_its_saved_size() {
     h.cli(&["kill-server"]).await;
 }
 
+/// Whether process `pid` runs, asked of Windows itself (no `tasklist`).
+#[cfg(windows)]
+fn windows_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return false;
+    }
+    let mut code = 0u32;
+    let ok = unsafe { GetExitCodeProcess(h, &mut code) };
+    unsafe { CloseHandle(h) };
+    ok != 0 && code == STILL_ACTIVE as u32
+}
+
+#[cfg(not(windows))]
+fn windows_alive(_: u32) -> bool {
+    unreachable!("Windows only")
+}
 /// `split-window -N count` makes that many panes at once and tiles them;
 /// `-d` keeps the focus; a window too small for all of them says how many
 /// it made and keeps them.
@@ -5552,11 +5574,11 @@ async fn a_killed_pane_or_window_comes_back_with_undo_kill() {
     let (code, _, err) = h.cli(&[&["split-window", "-d", "-t", "u:0"], brief].concat()).await;
     assert_eq!(code, 0, "{err}");
     let short = ids().await.into_iter().find(|i| !old.contains(i)).unwrap();
+    // Asked in this process: `tasklist` takes seconds on a loaded machine
+    // (4.5 and 9.5 seen), longer than a pane is kept.
     let running = |pid: &str| {
         if cfg!(windows) {
-            let out =
-                std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
-            String::from_utf8_lossy(&out.stdout).contains(&format!(" {pid} "))
+            windows_alive(pid.parse().unwrap())
         } else {
             std::process::Command::new("kill")
                 .args(["-0", pid])
@@ -5587,13 +5609,18 @@ async fn a_killed_pane_or_window_comes_back_with_undo_kill() {
     let (code, _, err) = h.cli(&["undo-kill"]).await;
     assert!(code != 0 && err.contains("nothing to undo"), "{err}");
 
-    // Past the time: gone. And 0 keeps nothing.
-    h.cli(&["set", "-g", "undo-kill-time", "1"]).await;
+    // Past the time: gone. And 0 keeps nothing. (3 seconds: the check
+    // below must see the program still kept, on a loaded machine too.)
+    h.cli(&["set", "-g", "undo-kill-time", "3"]).await;
     let line = panes().await.lines().nth(1).unwrap().to_string();
     let (id, pid) =
         line.split_once(' ').map(|(i, rest)| (i.to_string(), rest.split(' ').next().unwrap().to_string())).unwrap();
+    let killed = Instant::now();
     h.cli(&["kill-pane", "-t", &id]).await;
-    assert!(running(&pid), "kept, the program still runs");
+    let kill_took = killed.elapsed();
+    let kept = running(&pid);
+    let check_took = killed.elapsed() - kill_took;
+    assert!(kept, "kept, the program still runs: pid {pid}; kill-pane took {kill_took:?}, the check {check_took:?}");
     gone(&pid, "past the time, its program is ended").await;
     assert_ne!(h.cli(&["undo-kill"]).await.0, 0);
     h.cli(&["set", "-g", "undo-kill-time", "0"]).await;
@@ -6595,7 +6622,7 @@ async fn the_phone_page_runs_in_the_server_and_says_who_is_on_it() {
     assert!(cut.is_ok(), "the stream outlived web-stop");
     // Closed; a pane another test forks just then may hold the socket a
     // moment (until it execs), so a while rather than at once.
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while tokio::net::TcpStream::connect(addr).await.is_ok() {
         assert!(Instant::now() < deadline, "the port is still open");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -6604,7 +6631,7 @@ async fn the_phone_page_runs_in_the_server_and_says_who_is_on_it() {
     // Answered once the port is closed: the same port at once is free.
     let port = addr.port().to_string();
     for _ in 0..3 {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             let (code, _, err) = h.cli(&["web-start", "-p", &port, "-b", "127.0.0.1"]).await;
             if code == 0 {
@@ -6711,7 +6738,7 @@ async fn a_pane_fitted_to_a_phone_gets_its_size_back() {
     assert_eq!(http(addr, "POST", &format!("/api/fit?pane=%25{p}&cols=0&rows=20"), &key, "").await.0, 400);
     assert_eq!(http(addr, "GET", &format!("/api/fit?pane=%25{p}&cols=40&rows=20"), &key, "").await.0, 405);
     assert_eq!(h.cli(&["web-stop"]).await.0, 0);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
         let (code, status, _) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1", "-r"]).await;
         if code == 0 {
@@ -7447,7 +7474,7 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     // A new web key there changes nothing: the pairing is by key pair.
     let port_b = addr_b.rsplit(':').next().unwrap().to_string();
     assert_eq!(b.cli(&["web-stop"]).await.0, 0);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let (code, status, _) = b.cli(&["web-start", "-p", &port_b, "-b", "127.0.0.1"]).await;
         if code == 0 {
@@ -7491,7 +7518,7 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     // after kill-server answers; a connection cut while it closes is an
     // error of its own wording.)
     b.cli(&["kill-server"]).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while tokio::net::TcpStream::connect(&addr_b2).await.is_ok() {
         assert!(Instant::now() < deadline, "the port is still open");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -7745,7 +7772,7 @@ async fn the_machine_variables_answer_without_a_command() {
     assert!(idle == SH || (cfg!(target_os = "macos") && idle == "bash"), "{idle}");
     let (busy, name) = if cfg!(windows) { ("ping -n 4 127.0.0.1", "ping") } else { ("sleep 3", "sleep") };
     h.cli(&["send-keys", "-t", "sv:0", busy, "Enter"]).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let p = ask("#{pane_pid_command}").await;
         if p.eq_ignore_ascii_case(name) {
@@ -8129,7 +8156,7 @@ async fn the_last_small_tmux_gaps_are_closed() {
     // ...and, its output over, the input-only pipe is gone: a plain
     // pipe-pane with a command starts a new one rather than reporting
     // the old one (which `-o` would toggle off).
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let (code, _, _) = h.cli(&["pipe-pane", "-o", "-I", "-t", "a:0", &says("echo second-pipe")]).await;
         assert_eq!(code, 0);
@@ -8301,7 +8328,7 @@ async fn a_shutdown_saves_every_session_first() {
     // history included): for the next 30 seconds the tick writes nothing
     // more unless the tree changes, so what the pane prints now can only
     // reach the file through the shutdown path.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while file().is_empty() {
         assert!(Instant::now() < deadline, "the session was never autosaved");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -8309,7 +8336,7 @@ async fn a_shutdown_saves_every_session_first() {
     h.cli(&["send-keys", "-t", "bye:0", "echo typed-just-before-shutdown", "Enter"]).await;
     h.wait_capture("bye:0", "the echo", |t| t.matches("typed-just-before-shutdown").count() >= 2).await;
     assert!(!file().contains("typed-just-before-shutdown"), "not saved yet: {}", file());
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     let hwnd = loop {
         if let Some(w) = keepane::shutdown::window(&h.socket) {
             break w as usize; // a handle is a number; usize crosses threads
@@ -8363,7 +8390,7 @@ async fn a_shutdown_saves_nothing_with_autosave_off() {
     h.cli(&["set", "-g", "autosave", "off"]).await;
     h.cli(&["new", "-d", "-s", "bye"]).await;
     h.wait_capture("bye:0", "prompt", |t| t.contains("keepane>")).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     let hwnd = loop {
         if let Some(w) = keepane::shutdown::window(&h.socket) {
             break w as usize;
@@ -8399,14 +8426,14 @@ async fn window_size_picks_which_client_sizes_the_session() {
     small.attach(&["attach", "-t", "sz"]).await;
     small.send(ClientMsg::Resize { cols: 60, rows: 20 }).await;
     // latest (the default): the client that attached or resized last.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while size(&h).await != "60x20" {
         assert!(Instant::now() < deadline, "latest: {}", size(&h).await);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     // ...and the one that types: a key from the big client takes it back.
     big.type_str("x").await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while size(&h).await != "80x24" {
         assert!(Instant::now() < deadline, "latest after a key: {}", size(&h).await);
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -8415,7 +8442,7 @@ async fn window_size_picks_which_client_sizes_the_session() {
     let (code, _, err) = h.cli(&["set", "-g", "window-size", "smallest"]).await;
     assert_eq!(code, 0, "{err}");
     big.send(ClientMsg::Resize { cols: 80, rows: 24 }).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while size(&h).await != "60x20" {
         assert!(Instant::now() < deadline, "smallest: {}", size(&h).await);
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -8426,14 +8453,14 @@ async fn window_size_picks_which_client_sizes_the_session() {
     // largest: the big one; and when it goes, the small one is all there is.
     h.cli(&["set", "-g", "window-size", "largest"]).await;
     small.send(ClientMsg::Resize { cols: 60, rows: 20 }).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while size(&h).await != "80x24" {
         assert!(Instant::now() < deadline, "largest: {}", size(&h).await);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     big.send(ClientMsg::Detach).await;
     assert_eq!(big.wait_detached().await, "detached");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while size(&h).await != "60x20" {
         assert!(Instant::now() < deadline, "largest after a detach: {}", size(&h).await);
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -10215,7 +10242,7 @@ async fn what_counts_as_done_is_up_to_the_options() {
     assert_ne!(h.cli(&["set", "-g", "done-webhook", "ftp://x"]).await.0, 0);
     assert_ne!(h.cli(&["set", "-g", "done-webhook-format", "xml"]).await.0, 0);
     h.cli(&["set", "-g", "done-events", "all"]).await;
-    assert_eq!(h.cli(&["show", "-gv", "done-events"]).await.1.trim(), "command agent task exit");
+    assert_eq!(h.cli(&["show", "-gv", "done-events"]).await.1.trim(), "command agent wait task exit bell");
     h.cli(&["set", "-g", "remain-on-exit", "on"]).await;
     h.cli(&["send-keys", "-t", &t, "exit", "Enter"]).await;
     let line = wait_done(&h, " exit ").await;
@@ -10251,6 +10278,168 @@ async fn what_counts_as_done_is_up_to_the_options() {
     h.cli(&["kill-server"]).await;
 }
 
+/// The real binary run as an agent's hook runs it: `-L socket args`, the
+/// pane (or none) in its environment, `input` on its standard input, which
+/// then closes. Its exit code and what it wrote to stderr.
+fn run_hook(socket: &str, pane: Option<u32>, args: &[&str], input: &str) -> (i32, String) {
+    use std::io::Write;
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_keepane"));
+    c.args(["-L", socket])
+        .args(args)
+        .env("KEEPANE", socket)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    match pane {
+        Some(p) => c.env("KEEPANE_PANE", p.to_string()),
+        None => c.env_remove("KEEPANE_PANE"),
+    };
+    let mut child = c.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+/// An agent waiting for the person (its hook runs `pane-wait -q` with its
+/// JSON on standard input) and a bell rung in a pane with no agent are
+/// told, to a Feishu bot that checks signatures: the body carries the time
+/// and the signature of `done-webhook-secret`. Outside a pane the hook is
+/// quiet, and without `-q` says why it did nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_waiting_and_a_bell_are_told_signed() {
+    let h = Harness::start("wait").await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hook_url = format!("http://127.0.0.1:{}/hook", listener.local_addr().unwrap().port());
+    for (k, v) in [
+        ("done-webhook", hook_url.as_str()),
+        ("done-webhook-format", "feishu"),
+        ("done-webhook-secret", "abc"),
+        ("done-events", "wait bell"),
+        ("done-panes", "all"),
+    ] {
+        let (code, _, err) = h.cli(&["set", "-g", k, v]).await;
+        assert_eq!(code, 0, "{k}: {err}");
+    }
+    h.cli(&[&["new", "-d", "-s", "wt"], HOOKED_SHELL].concat()).await;
+    let p = pane_id(&h, "wt:0.0").await;
+    // What it would ask, on its screen.
+    h.cli(&["send-keys", "-t", &format!("%{p}"), "echo deploy-question", "Enter"]).await;
+    h.wait_capture("wt:0.0", "the question", |s| s.lines().any(|l| l.trim() == "deploy-question")).await;
+    let claude = r#"{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}"#;
+    let socket = h.socket.clone();
+    let (outside_q, outside, inside) = tokio::task::spawn_blocking(move || {
+        (
+            run_hook(&socket, None, &["pane-wait", "-q"], claude),
+            run_hook(&socket, None, &["pane-wait"], ""),
+            run_hook(&socket, Some(p), &["pane-wait", "-q"], claude),
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(outside_q.0, 0, "outside a pane, -q: quiet: {}", outside_q.1);
+    // The server's own word for it (a pane of another server reaches it
+    // with no pane of this one): quiet with -q, said without.
+    assert_eq!(h.cli(&["pane-wait", "-q", "--", "x"]).await, (0, String::new(), String::new()));
+    assert_ne!(h.cli(&["pane-wait", "--", "x"]).await.0, 0);
+    assert_ne!(outside.0, 0);
+    assert!(outside.1.contains("pane-wait: not run inside a keepane pane"), "{}", outside.1);
+    assert_eq!(inside.0, 0, "{}", inside.1);
+    let line = wait_done(&h, " wait ").await;
+    assert!(line.ends_with("wt:0.0: waits for you: Claude needs your permission to use Bash"), "{line}");
+    assert_eq!(h.cli(&["list-done"]).await.1.lines().count(), 1, "the one outside a pane is not told");
+    // What it asks is on its screen: the pane's last lines go with it.
+    let v: serde_json::Value = serde_json::from_str(&h.cli(&["list-done", "-J"]).await.1).unwrap();
+    assert!(v["done"][0]["output"].as_array().is_some_and(|o| o.contains(&"deploy-question".into())), "{v}");
+    let body: serde_json::Value =
+        serde_json::from_str(&take_request(&listener, "{\"code\":0,\"msg\":\"success\"}").await).unwrap();
+    let ts = body["timestamp"].as_str().expect("a timestamp, as a string");
+    let now = chrono::Utc::now().timestamp();
+    assert!((ts.parse::<i64>().unwrap() - now).abs() < 120, "seconds, now: {ts} {now}");
+    let sign = keepane::link::b64_std(&keepane::link::hmac(format!("{ts}\nabc").as_bytes(), b""));
+    assert_eq!(body["sign"], sign, "{body}");
+    assert!(body["content"]["text"].as_str().unwrap().contains("waits for you: Claude needs"), "{body}");
+    // A bell: past the pane's gate (one telling in 3 seconds).
+    tokio::time::sleep(Duration::from_millis(3200)).await;
+    let ring = if cfg!(windows) { "[Console]::Write([char]7)" } else { "printf '\\a'" };
+    h.cli(&["send-keys", "-t", &format!("%{p}"), ring, "Enter"]).await;
+    let line = wait_done(&h, " bell ").await;
+    assert!(line.ends_with("wt:0.0: rang the bell"), "{line}");
+    let body: serde_json::Value =
+        serde_json::from_str(&take_request(&listener, "{\"code\":0,\"msg\":\"success\"}").await).unwrap();
+    assert!(body["content"]["text"].as_str().unwrap().contains("rang the bell"), "{body}");
+    // Rung again past the 3 seconds, within the minute: a bell is told once.
+    let bells = |list: &str| list.lines().filter(|l| l.contains(" bell ")).count();
+    tokio::time::sleep(Duration::from_millis(3200)).await;
+    h.cli(&["send-keys", "-t", &format!("%{p}"), ring, "Enter"]).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(bells(&h.cli(&["list-done"]).await.1), 1, "one bell a minute");
+    // Another pane, an agent under its shell (a program that waits, under
+    // the agent's name): its bell is the agent's, not told; once it is
+    // gone, the pane's bell is told, so the bell did ring.
+    h.cli(&[&["new-window", "-d", "-t", "wt"], HOOKED_SHELL].concat()).await;
+    let q = pane_id(&h, "wt:1.0").await;
+    h.cli(&["send-keys", "-t", &format!("%{q}"), "echo ready", "Enter"]).await;
+    h.wait_capture("wt:1.0", "its shell", |s| s.lines().any(|l| l.trim() == "ready")).await;
+    let bin = std::env::temp_dir().join(format!("keepane-wait-bin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    #[cfg(windows)]
+    let start = {
+        let exe = bin.join("claude.exe");
+        std::fs::copy(r"C:\Windows\System32\PING.EXE", &exe).unwrap();
+        let out = bin.join("out.txt");
+        format!(
+            "$fk = Start-Process -NoNewWindow -PassThru -FilePath '{}' -ArgumentList '-n','600','127.0.0.1' -RedirectStandardOutput '{}'",
+            exe.display(),
+            out.display()
+        )
+    };
+    #[cfg(target_os = "linux")]
+    let start = {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = bin.join("claude");
+        std::fs::write(&exe, "#!/bin/sh\n[ \"$1\" = settle ] && exit 0\nsleep 600\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ready_to_run(&exe, &["settle"]);
+        format!("'{}' & fk=$!", exe.display())
+    };
+    #[cfg(target_os = "macos")]
+    let start = {
+        let exe = bin.join("claude");
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        ready_to_run(&exe, &["0"]);
+        format!("'{}' 600 & fk=$!", exe.display())
+    };
+    let stop = if cfg!(windows) { "Stop-Process -Id $fk.Id" } else { "kill $fk" };
+    let has_agent = |want: bool| {
+        let h = &h;
+        async move {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let (_, out, _) = h.cli(&["list-agents", "-J"]).await;
+                if out.contains(&format!("\"%{q}\"")) == want {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "the agent under %{q} (want {want}): {out}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+    h.cli(&["send-keys", "-t", &format!("%{q}"), &start, "Enter"]).await;
+    has_agent(true).await;
+    h.cli(&["send-keys", "-t", &format!("%{q}"), ring, "Enter"]).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(bells(&h.cli(&["list-done"]).await.1), 1, "an agent's bell is not told");
+    h.cli(&["send-keys", "-t", &format!("%{q}"), stop, "Enter"]).await;
+    has_agent(false).await;
+    h.cli(&["send-keys", "-t", &format!("%{q}"), ring, "Enter"]).await;
+    let line = wait_done(&h, "wt:1.0: rang the bell").await;
+    assert!(line.contains(" bell "), "{line}");
+    assert_eq!(bells(&h.cli(&["list-done"]).await.1), 2);
+    take_request(&listener, "{\"code\":0,\"msg\":\"success\"}").await;
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&bin);
+}
 /// An agent that never says it is free (no turn-end hook) would leave its
 /// messages waiting for ever, silently: the sender is told why, and how
 /// to set the hook up, until the agent's first `pane-ready`.

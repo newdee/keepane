@@ -1,10 +1,12 @@
 //! When a pane is done, and who is told (`done-events`): a command that ran
-//! `done-after` seconds or more ended, an agent's turn ended, a message's
-//! task ended, or the pane's program exited. Kept for the phone's page
+//! `done-after` seconds or more ended, an agent's turn ended, an agent waits
+//! for the person (its hook ran `pane-wait`), a message's task ended, the
+//! pane's program exited, or a pane with no agent in it rang the bell. Kept for the phone's page
 //! (`list-done`), raised on the desktop with `notify`, handed to the
 //! `pane-done` hook (in `KEEPANE_DONE_*` variables) and sent to
 //! `done-webhook`, as keepane's JSON, plain text, or the body a chat's
-//! incoming webhook takes (Feishu, WeCom, DingTalk, Slack, Discord).
+//! incoming webhook takes (Feishu, WeCom, DingTalk, Slack, Discord), signed
+//! with `done-webhook-secret` for a Feishu or DingTalk bot that checks.
 //!
 //! The webhook goes out through `curl`, as `update` and `public_ip` do: its
 //! address and body on curl's standard input (`-K -`), so neither shows in
@@ -18,7 +20,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::actor::WorkMode;
-use super::{Event, PaneId, Server};
+use super::{ClientId, Event, Outcome, PaneId, Server};
+use crate::command::Target;
 
 /// How many are kept for `list-done` and the phone.
 pub const KEPT: usize = 100;
@@ -27,12 +30,19 @@ pub const KEPT: usize = 100;
 /// finished end together, and are one thing to the person told.
 const GATE: Duration = Duration::from_secs(3);
 
+/// One bell per pane in this long: a program can ring on and on (a binary
+/// file printed, a completion that keeps failing), and a bell asks for the
+/// person once.
+const BELL_GATE: Duration = Duration::from_secs(60);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Command,
     Agent,
+    Wait,
     Task,
     Exit,
+    Bell,
 }
 
 impl Kind {
@@ -40,8 +50,10 @@ impl Kind {
         match self {
             Kind::Command => "command",
             Kind::Agent => "agent",
+            Kind::Wait => "wait",
             Kind::Task => "task",
             Kind::Exit => "exit",
+            Kind::Bell => "bell",
         }
     }
 }
@@ -138,12 +150,13 @@ pub struct Ended {
 }
 
 /// What is kept: the latest ones, the next number, when each pane was last
-/// told of.
+/// told of, and when its bell was.
 #[derive(Default)]
 pub struct DoneLog {
     pub list: VecDeque<Done>,
     next: u64,
     last: HashMap<PaneId, Instant>,
+    bells: HashMap<PaneId, Instant>,
 }
 
 /// A span as a person reads it: `45s`, `5m 12s`, `1h 3m`.
@@ -198,20 +211,55 @@ pub fn gist(text: &str) -> String {
     out
 }
 
-/// The webhook's body, and its content type, in the shape `format` names.
-/// A chat's message starts `keepane`, which a Feishu or DingTalk bot's
-/// keyword check can be set to.
-pub fn webhook_body(format: &str, d: &Done, host: &str) -> (&'static str, String) {
+/// A request for the webhook: where it goes, its content type, its body.
+pub struct Request {
+    pub url: String,
+    pub content_type: &'static str,
+    pub body: String,
+}
+
+/// The webhook's request, in the shape `format` names. A chat's message
+/// starts `keepane`, which a Feishu or DingTalk bot's keyword check can be
+/// set to. With a `secret`, a Feishu or DingTalk message is signed as its
+/// bot's signature check wants (Feishu: in the body, the time in seconds;
+/// DingTalk: in the address, in milliseconds); `now_ms` is the Unix time in
+/// milliseconds. Other shapes have no signature and go as they are.
+pub fn webhook_request(url: &str, format: &str, secret: &str, d: &Done, host: &str, now_ms: i64) -> Request {
+    let json_type = "application/json; charset=utf-8";
     let text = format!("keepane · {host}\n{}", d.full());
-    let body = match format {
-        "text" => return ("text/plain; charset=utf-8", d.full()),
+    let mut url = url.to_string();
+    let mut body = match format {
+        "text" => return Request { url, content_type: "text/plain; charset=utf-8", body: d.full() },
         "feishu" => json!({ "msg_type": "text", "content": { "text": text } }),
         "wecom" | "dingtalk" => json!({ "msgtype": "text", "text": { "content": text } }),
         "slack" => json!({ "text": text }),
         "discord" => json!({ "content": text }),
         _ => d.json(host),
     };
-    ("application/json; charset=utf-8", body.to_string())
+    if !secret.is_empty() {
+        match format {
+            "feishu" => {
+                let ts = now_ms.div_euclid(1000).to_string();
+                let sign = crate::link::b64_std(&crate::link::hmac(format!("{ts}\n{secret}").as_bytes(), b""));
+                body["timestamp"] = json!(ts);
+                body["sign"] = json!(sign);
+            }
+            "dingtalk" => {
+                let ts = now_ms.to_string();
+                let sign =
+                    crate::link::b64_std(&crate::link::hmac(secret.as_bytes(), format!("{ts}\n{secret}").as_bytes()));
+                let join = if url.contains('?') { '&' } else { '?' };
+                url = format!("{url}{join}timestamp={ts}&sign={}", url_escape(&sign));
+            }
+            _ => {}
+        }
+    }
+    Request { url, content_type: json_type, body: body.to_string() }
+}
+
+/// Base64's `+`, `/` and `=` as an address's query writes them.
+fn url_escape(s: &str) -> String {
+    s.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D")
 }
 
 /// A string as curl's config file quotes it.
@@ -287,7 +335,8 @@ impl Server {
     }
 
     /// A pane is done: kept and told, if `done-events` has this kind, the
-    /// pane is one `done-panes` covers, and it was not told of a moment ago.
+    /// pane is one `done-panes` covers, and it was not told of a moment ago
+    /// (nor, for a bell, its bell in the last minute).
     pub(super) fn pane_done(&mut self, pane: PaneId, kind: Kind, text: String, ended: Ended) {
         let Ended { ok, exit, secs, git } = ended;
         if !self.opts.done_events.split_whitespace().any(|e| e == kind.as_str()) {
@@ -301,7 +350,8 @@ impl Server {
         let output = match kind {
             _ if n == 0 => Vec::new(),
             Kind::Agent => p.actor.status.as_ref().map(|(s, _)| vec![s.clone()]).unwrap_or_default(),
-            Kind::Exit => p.last_lines(n, false),
+            // What it asks is on its screen; a bell's cause is what came last.
+            Kind::Exit | Kind::Wait | Kind::Bell => p.last_lines(n, false),
             Kind::Command | Kind::Task => p.last_lines(n, true),
         };
         let output = trim_output(output);
@@ -311,10 +361,14 @@ impl Server {
         let now = Instant::now();
         // Only the last few seconds matter: the table stays as small as that.
         self.done.last.retain(|_, t| now.duration_since(*t) < GATE);
-        if self.done.last.contains_key(&pane) {
+        self.done.bells.retain(|_, t| now.duration_since(*t) < BELL_GATE);
+        if self.done.last.contains_key(&pane) || (kind == Kind::Bell && self.done.bells.contains_key(&pane)) {
             return;
         }
         self.done.last.insert(pane, now);
+        if kind == Kind::Bell {
+            self.done.bells.insert(pane, now);
+        }
         self.done.next += 1;
         let d = Done {
             id: self.done.next,
@@ -363,8 +417,10 @@ impl Server {
             crate::notify::notify_with(&format!("keepane: {}", d.who()), &body, Some(&go));
         }
         if !self.opts.done_webhook.is_empty() {
-            let (content_type, body) = webhook_body(&self.opts.done_webhook_format, &d, &host);
-            let config = curl_config(&self.opts.done_webhook, content_type, &body);
+            let o = &self.opts;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let r = webhook_request(&o.done_webhook, &o.done_webhook_format, &o.done_webhook_secret, &d, &host, now_ms);
+            let config = curl_config(&r.url, r.content_type, &r.body);
             let events = self.events.clone();
             let spawned = std::thread::Builder::new().name("done-webhook".into()).spawn(move || {
                 if let Err(why) = run_curl(&config) {
@@ -375,6 +431,36 @@ impl Server {
                 log::warn!("done-webhook: {e}");
             }
         }
+    }
+
+    /// `pane-wait`: the program in a pane waits for the person. The pane
+    /// is `-t`'s, else the one it runs in (`-q`: outside a pane, nothing,
+    /// quietly: the hook runs in every session of the agent).
+    pub(super) fn pane_wait(
+        &mut self,
+        cid: Option<ClientId>,
+        quiet: bool,
+        target: Option<&Target>,
+        text: &str,
+    ) -> Outcome {
+        let pid = match target {
+            Some(t) => match self.resolve(Some(t), cid) {
+                Ok((_, _, p)) => p,
+                Err(e) => return Outcome::Error(e),
+            },
+            None => match self.caller_pane(cid) {
+                Some(p) => p,
+                None if quiet => return Outcome::Ok,
+                None => return Outcome::Error("pane-wait: not run inside a keepane pane".into()),
+            },
+        };
+        let text = if text.trim().is_empty() {
+            "waits for you".to_string()
+        } else {
+            format!("waits for you: {}", text.trim())
+        };
+        self.pane_done(pid, Kind::Wait, text, Ended::default());
+        Outcome::Ok
     }
 
     /// `list-done`: the ones after number `after`, a line each, or JSON
@@ -397,6 +483,11 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The body `format` gives, unsigned.
+    fn webhook_body(format: &str, d: &Done) -> String {
+        webhook_request("https://x/hook", format, "", d, "desk", 0).body
+    }
 
     fn done(kind: Kind, name: &str, text: &str) -> Done {
         Done {
@@ -424,10 +515,10 @@ mod tests {
         assert_eq!(d.full(), d.line(), "no lines: the line alone");
         d.output = vec!["test a ... FAILED".into(), "error: 1 failed".into()];
         assert_eq!(d.full(), "build (work:0.1): cargo test failed after 40s\ntest a ... FAILED\nerror: 1 failed");
-        assert_eq!(webhook_body("text", &d, "desk").1, d.full());
-        let feishu: Value = serde_json::from_str(&webhook_body("feishu", &d, "desk").1).unwrap();
+        assert_eq!(webhook_body("text", &d), d.full());
+        let feishu: Value = serde_json::from_str(&webhook_body("feishu", &d)).unwrap();
         assert!(feishu["content"]["text"].as_str().unwrap().ends_with("error: 1 failed"));
-        let j: Value = serde_json::from_str(&webhook_body("json", &d, "desk").1).unwrap();
+        let j: Value = serde_json::from_str(&webhook_body("json", &d)).unwrap();
         assert_eq!(j["output"], json!(["test a ... FAILED", "error: 1 failed"]));
         assert_eq!(j["text"], d.line(), "the line stays one line");
         let long: Vec<String> = (0..40).map(|i| format!("{i:02} {}", "x".repeat(97))).collect();
@@ -460,8 +551,8 @@ mod tests {
             d.full(),
             "agent (work:0.1): the agent finished #4: fix the parser\nfixed\ngit: main 5d6e7f8: 1 file +3 -1\n  src/a.rs +3 -1"
         );
-        assert_eq!(webhook_body("text", &d, "desk").1, d.full());
-        let j: Value = serde_json::from_str(&webhook_body("json", &d, "desk").1).unwrap();
+        assert_eq!(webhook_body("text", &d), d.full());
+        let j: Value = serde_json::from_str(&webhook_body("json", &d)).unwrap();
         assert_eq!((j["git"]["branch"].as_str(), j["git"]["file_count"].as_u64()), (Some("main"), Some(1)));
         assert_eq!(j["text"], d.line(), "the line stays one line");
     }
@@ -491,7 +582,7 @@ mod tests {
     #[test]
     fn each_chat_gets_its_own_body() {
         let d = done(Kind::Command, "build", "cargo test finished in 5m 12s");
-        let body = |f| serde_json::from_str::<Value>(&webhook_body(f, &d, "desk").1).unwrap();
+        let body = |f| serde_json::from_str::<Value>(&webhook_body(f, &d)).unwrap();
         let said = "keepane · desk\nbuild (work:0.1): cargo test finished in 5m 12s";
         assert_eq!(body("feishu"), json!({"msg_type": "text", "content": {"text": said}}));
         assert_eq!(body("wecom"), json!({"msgtype": "text", "text": {"content": said}}));
@@ -504,11 +595,43 @@ mod tests {
             (Some("command"), Some("%4"), Some(312))
         );
         assert_eq!(j["text"], "build (work:0.1): cargo test finished in 5m 12s");
-        let (ct, text) = webhook_body("text", &d, "desk");
+        let r = webhook_request("https://x/hook", "text", "s", &d, "desk", 0);
         assert_eq!(
-            (ct, text.as_str()),
-            ("text/plain; charset=utf-8", "build (work:0.1): cargo test finished in 5m 12s")
+            (r.content_type, r.body.as_str(), r.url.as_str()),
+            ("text/plain; charset=utf-8", "build (work:0.1): cargo test finished in 5m 12s", "https://x/hook"),
+            "plain text: a secret changes nothing"
         );
+    }
+
+    /// With a secret, Feishu's body and DingTalk's address carry the time
+    /// and the signature their docs give (the values from .NET's
+    /// HMACSHA256, not from this code); without one, nothing is added; the
+    /// other chats are never signed.
+    #[test]
+    fn a_secret_signs_feishu_and_dingtalk() {
+        let d = done(Kind::Wait, "agent", "waits for you");
+        let feishu = webhook_request("https://f/hook", "feishu", "abc", &d, "desk", 1_599_360_473_999);
+        let body: Value = serde_json::from_str(&feishu.body).unwrap();
+        assert_eq!(body["timestamp"], "1599360473", "seconds, as a string");
+        assert_eq!(body["sign"], "cgtpJzI2j6bUDggbdGYjskCK3FPgKpTkwosfWsMzKqM=");
+        assert_eq!(body["msg_type"], "text");
+        assert_eq!(feishu.url, "https://f/hook");
+        let ding =
+            webhook_request("https://d/robot/send?access_token=t", "dingtalk", "SEC123", &d, "desk", 1_599_360_473_000);
+        assert_eq!(
+            ding.url,
+            "https://d/robot/send?access_token=t&timestamp=1599360473000&sign=CJZXDPkcvkc8JitAy5%2Fib6OAhntAOvAnBpnQsV7QhAU%3D"
+        );
+        assert!(!ding.body.contains("sign"), "DingTalk's goes in the address only");
+        let bare = webhook_request("https://d/send", "dingtalk", "SEC123", &d, "desk", 1);
+        assert!(bare.url.starts_with("https://d/send?timestamp=1&sign="));
+        let unsigned = webhook_request("https://f/hook", "feishu", "", &d, "desk", 1_599_360_473_999);
+        assert_eq!(unsigned.body, webhook_body("feishu", &d));
+        assert!(!unsigned.body.contains("sign"));
+        for f in ["wecom", "slack", "discord", "json"] {
+            let r = webhook_request("https://x/hook", f, "abc", &d, "desk", 5);
+            assert_eq!((r.url.as_str(), r.body), ("https://x/hook", webhook_body(f, &d)), "{f}");
+        }
     }
 
     /// curl reads its config quoted: a quote, a backslash or a line break
