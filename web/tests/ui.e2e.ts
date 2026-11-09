@@ -46,6 +46,26 @@ test("desktop: send, menus, themes, rename, switch, fold, history, inbox, done",
   await screen.getByRole("button", "外观").tap();
   await entry(screen, "夜间").tap();
   await expect.poll(() => browser.evaluate(() => document.documentElement.classList.contains("dark") && localStorage.getItem("keepane-mode") === "dark")).toBe(true);
+  // The switch beside it says so, and turns the page back and forth; its
+  // knob has its specks drawn (a moon now).
+  const switched = () => browser.evaluate(() => document.getElementById("page-mode")!.getAttribute("aria-checked"));
+  const specks = () =>
+    browser.evaluate(() => {
+      const c = document.querySelector<HTMLCanvasElement>("#page-mode canvas")!;
+      const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+      let lit = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 40) lit++;
+      return lit;
+    });
+  await expect.poll(switched).toBe("true");
+  await expect.poll(specks, { message: "the moon's specks are drawn" }).toBeGreaterThan(10);
+  await screen.getByRole("switch", "夜间模式").tap();
+  await expect.poll(() => browser.evaluate(() => document.documentElement.dataset.theme === "light" && localStorage.getItem("keepane-mode") === "light")).toBe(true);
+  await expect.poll(switched).toBe("false");
+  await expect.poll(specks, { message: "the sun's specks are drawn" }).toBeGreaterThan(10);
+  await screen.getByRole("switch", "夜间模式").tap();
+  await expect.poll(() => browser.evaluate(() => document.documentElement.dataset.theme === "dark" && localStorage.getItem("keepane-mode") === "dark")).toBe(true);
+  await expect.poll(switched).toBe("true");
   await withOption("theme", undefined, async () => {
     await screen.getByRole("button", "外观").tap();
     await entry(screen, "Tokyo Day").tap();
@@ -179,5 +199,20 @@ test("phone: a card opens its pane, Back the list", async ({ app, browser, scree
   await finger.tap(screen.getByRole("button", "返回"));
   await expect.poll(() => pageText(browser)).toContain("0: editor");
   await expect(browser.locator("pre.term")).toHaveCount(0);
+  // The light/dark switch in the bar: tapped nine times, faster than its
+  // specks settle, it ends where nine taps put it, the page and what is
+  // kept agreeing; a 320-pixel screen holds the bar with no sideways scroll.
+  const mode = () =>
+    browser.evaluate(() => [
+      document.getElementById("page-mode")!.getAttribute("aria-checked"),
+      document.documentElement.dataset.theme ?? null,
+      localStorage.getItem("keepane-mode"),
+    ]);
+  await expect.poll(mode).toEqual(["true", "dark", "dark"]);
+  for (let i = 0; i < 9; i++) await finger.tap(screen.getByRole("switch", "夜间模式"));
+  await expect.poll(mode, { message: "nine taps from dark: light" }).toEqual(["false", "light", "light"]);
+  await browser.setViewport({ width: 320, height: 640 });
+  await expect.poll(() => browser.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect.poll(() => browser.evaluate(() => document.getElementById("page-mode")!.getBoundingClientRect().right <= innerWidth)).toBe(true);
   await finger.close();
 });

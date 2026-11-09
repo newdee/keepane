@@ -299,15 +299,18 @@ mod tests {
             p
         };
         #[cfg(windows)]
-        let pause = "ping -n 4 127.0.0.1 >nul";
+        let pause = "ping -n 11 127.0.0.1 >nul";
         #[cfg(not(windows))]
-        let pause = "sleep 3";
+        let pause = "sleep 10";
         assert_eq!(version_of(&script("says", "echo keepane 0.1.2")), Some((0, 1, 2)));
         assert_eq!(version_of(&script("other", "echo something else")), None);
         let slow = script("slow", &format!("{pause}\necho keepane 0.1.2"));
         let t = std::time::Instant::now();
         assert_eq!(version_within(&slow, Duration::from_millis(300)), None);
-        assert!(t.elapsed() < Duration::from_secs(2), "not waited out: {:?}", t.elapsed());
+        // Starting the script is in the time too, and takes seconds on a busy
+        // machine (the whole suite at once: over 2 s once); not killed, it
+        // would take its 10.
+        assert!(t.elapsed() < Duration::from_secs(5), "not waited out: {:?}", t.elapsed());
         assert_eq!(version_of(&dir.join("nothing.exe")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -10229,60 +10229,94 @@ const STATUS_SHELL_TIMEOUT: Duration = Duration::from_secs(30);
 /// line's background ones.
 const ONE_SHOT_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Run a shell command to completion, returning (stdout+stderr, exit code).
-/// Uses the platform's shell (`platform::process::shell_command`). With a
-/// `timeout` the process tree is killed when it expires (exit code 124).
+/// Run a shell command until its process ends, returning (stdout+stderr,
+/// exit code): what it printed by then and a moment after (2 s, 0.2 s after
+/// a time-out), not until its pipes close. Uses the platform's shell
+/// (`platform::process::shell_command`). With a `timeout` the process tree
+/// is killed when it expires (exit code 124).
 fn run_shell_blocking(command: &str, env: &[pane::EnvVar], timeout: Option<Duration>) -> (String, i32) {
     let (mut c, exe) = crate::platform::process::shell_command(command);
     c.stdin(std::process::Stdio::null());
     pane::env_onto(&mut c, env);
     c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    let child = match c.spawn() {
+    let mut child = match c.spawn() {
         Ok(ch) => ch,
         Err(e) => return (format!("{exe}: {e}"), 127),
     };
-    // Killing the tree takes grandchildren too.
-    let mut job = crate::platform::process::Tree::of(&child).ok();
-    // Watchdog: close the job (killing the tree) when the timeout expires.
-    // Without a timeout the job simply lives until the command is done.
-    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    if let Some(t) = timeout
-        && let Some(j) = job.take()
-    {
-        let (timed_out, done) = (timed_out.clone(), done.clone());
+    // Killing the tree takes grandchildren too; without one, the child
+    // itself is killed on time-out.
+    let mut job = match crate::platform::process::Tree::of(&child) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            log::warn!("{exe}: no process tree to end on time-out, only the process: {e:#}");
+            None
+        }
+    };
+    // What it prints, read on threads of their own and handed over as it
+    // comes. Its end is the process's end, not its pipes' closing: a pipe
+    // stays open while any process holds it (one that took the handle by
+    // inheritance, a console host outside the tree), and the server, which
+    // waits here, would wait as long (seen: 19 s for a 3-second leash).
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
+    let readers: [(bool, Option<Box<dyn std::io::Read + Send>>); 2] = [
+        (false, child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>)),
+        (true, child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>)),
+    ];
+    for (is_err, pipe) in readers {
+        let Some(mut pipe) = pipe else { continue };
+        let tx = tx.clone();
         std::thread::spawn(move || {
-            let deadline = Instant::now() + t;
-            while Instant::now() < deadline {
-                if done.load(std::sync::atomic::Ordering::SeqCst) {
-                    return;
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 || tx.send((is_err, buf[..n].to_vec())).is_err() {
+                    break;
                 }
-                std::thread::sleep(Duration::from_millis(50));
             }
-            timed_out.store(true, std::sync::atomic::Ordering::SeqCst);
-            drop(j);
         });
     }
-    let out = child.wait_with_output();
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
-    drop(job);
-    match out {
-        Ok(o) => {
-            let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
-            let err = String::from_utf8_lossy(&o.stderr);
-            if !err.trim().is_empty() {
-                if !text.is_empty() && !text.ends_with('\n') {
-                    text.push('\n');
-                }
-                text.push_str(&err);
-            }
-            if timed_out.load(std::sync::atomic::Ordering::SeqCst) {
-                return (format!("{text}\n[timed out after {}s]", timeout.map_or(0, |t| t.as_secs())), 124);
-            }
-            (text, o.status.code().unwrap_or(1))
+    drop(tx);
+    let deadline = timeout.map(|t| Instant::now() + t);
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) => {}
+            Err(_) => break None,
         }
-        Err(e) => (format!("{exe}: {e}"), 127),
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            timed_out = true;
+            drop(job.take());
+            let _ = child.kill();
+            break child.wait().ok();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    drop(job);
+    // The rest of what it printed: until both pipes close, or a moment
+    // after the process ended (a little longer when it ended by itself, for
+    // what something it started is still writing).
+    let until = Instant::now() + if timed_out { Duration::from_millis(200) } else { Duration::from_secs(2) };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok((false, b)) => out.extend(b),
+            Ok((true, b)) => err.extend(b),
+            Err(_) => break,
+        }
     }
+    let Some(status) = status else { return (format!("{exe}: its end could not be told"), 127) };
+    let mut text = String::from_utf8_lossy(&out).into_owned();
+    let err = String::from_utf8_lossy(&err);
+    if !err.trim().is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&err);
+    }
+    if timed_out {
+        return (format!("{text}\n[timed out after {}s]", timeout.map_or(0, |t| t.as_secs())), 124);
+    }
+    (text, status.code().unwrap_or(1))
 }
 
 fn char_index(s: &str, chars: usize) -> usize {
@@ -11820,6 +11854,45 @@ mod tests {
         let (out, _) = run_shell_blocking(echo, &again, None);
         assert_eq!(out.trim(), "[set]", "the last word wins");
         unsafe { std::env::remove_var("KEEPANE_TEST_INHERITED") };
+    }
+
+    /// A command is over when its process is, though something it started
+    /// still holds its output pipe (a program left running in the
+    /// background): what it printed is taken, and nothing waits for the
+    /// pipe to close. (Before 0.54.1 the server waited for the pipe: 19 s
+    /// for a one-shot `#()` with a 3-second leash, once.) The holder: `sleep
+    /// &` on Unix, `start /b ping` on Windows, each keeping the shell's
+    /// stdout for 15 seconds; waiting for the pipe took 15.0 s and 14.7 s.
+    #[test]
+    fn run_shell_ends_with_its_process_not_its_pipes() {
+        let command = if cfg!(windows) {
+            "cmd /c \"start /b ping -n 15 127.0.0.1 & echo ended-here\""
+        } else {
+            "sleep 15 & echo ended-here"
+        };
+        let start = Instant::now();
+        let (out, code) = run_shell_blocking(command, &[], Some(Duration::from_secs(30)));
+        assert!(start.elapsed() < Duration::from_secs(8), "waited {:?}: {out:?}", start.elapsed());
+        assert!(out.contains("ended-here"), "{out:?}");
+        assert_eq!(code, 0, "{out:?}");
+    }
+
+    /// Everything printed comes back, however much (read in pieces as it
+    /// comes); nothing at all is nothing; stderr alone is the text.
+    #[test]
+    fn run_shell_takes_all_it_prints() {
+        let (many, none, err_only) = if cfg!(windows) {
+            ("1..20000 | ForEach-Object { \"line$_\" }", "exit 0", "[Console]::Error.WriteLine('only-err'); exit 2")
+        } else {
+            ("seq 1 20000 | sed 's/^/line/'", "exit 0", "echo only-err >&2; exit 2")
+        };
+        let (out, code) = run_shell_blocking(many, &[], Some(Duration::from_secs(30)));
+        let lines: Vec<&str> = out.lines().map(str::trim_end).collect();
+        assert_eq!((code, lines.len()), (0, 20000), "{}", &out[out.len().saturating_sub(200)..]);
+        assert_eq!((lines[0], lines[19999]), ("line1", "line20000"));
+        assert_eq!(run_shell_blocking(none, &[], None), (String::new(), 0));
+        let (out, code) = run_shell_blocking(err_only, &[], None);
+        assert_eq!((out.trim(), code), ("only-err", 2));
     }
 
     #[test]

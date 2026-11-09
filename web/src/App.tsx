@@ -1,5 +1,5 @@
 import { Button, Chip, Dropdown, Header, Label, Separator, Toast, toast } from "@heroui/react";
-import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Plus, Sun, Terminal } from "lucide-react";
+import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Plus, SlidersHorizontal, Sun, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, keptPane, post, q, startPane, type DoneItem, type Info, type Pane, type Renamed } from "./api";
 import {
@@ -18,6 +18,7 @@ import { dropDrafts } from "./draft";
 import { headOf, where } from "./format";
 import { lang as currentLang, setLang, t, type Lang } from "./i18n";
 import { Latency } from "./components/Status";
+import { MoonToggle } from "./components/MoonToggle";
 import { PaneList, PaneRail } from "./components/PaneList";
 import { PaneView } from "./components/PaneView";
 import { ConfirmClose, InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
@@ -318,6 +319,7 @@ export default function App() {
             </Button>
           ) : null}
           {status}
+          <MoonToggle dark={page.dark} onToggle={() => page.setMode(page.dark ? "light" : "dark")} />
           <Settings
             lang={lang}
             setLang={(l) => {
@@ -469,11 +471,12 @@ function Settings({
   setTheme: (n: string) => void;
   readOnly: boolean;
 }) {
-  const Icon = mode === "light" ? Sun : mode === "dark" ? Moon : Laptop;
+  // Light or dark is the switch beside it; here also "like the system", the
+  // language and the terminal's theme.
   return (
     <Dropdown>
       <Button isIconOnly variant="ghost" size="sm" className="pointer-coarse:size-11" aria-label={t("Appearance", "外观")}>
-        <Icon className="size-4.5" />
+        <SlidersHorizontal className="size-4.5" />
       </Button>
       <Dropdown.Popover placement="bottom end" className="min-w-56">
         <Dropdown.Menu

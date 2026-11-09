@@ -5487,11 +5487,14 @@ async fn one_shot_formats_run_their_shell_pieces() {
     // ...with a leash: a command that hangs is given up on, and the
     // server answers anyway.
     let started = Instant::now();
-    let hang = if cfg!(windows) { "[#(Start-Sleep 20; echo late)]" } else { "[#(sleep 20; echo late)]" };
+    // The leash bounds the run, not the start: on a machine running the whole
+    // suite a process can take seconds to start (seen: answers in 12.5 s,
+    // twice in ten runs). A leash not kept waits for the whole minute.
+    let hang = if cfg!(windows) { "[#(Start-Sleep 60; echo late)]" } else { "[#(sleep 60; echo late)]" };
     let (code, out, _) = h.cli(&["display-message", "-p", hang]).await;
     assert_eq!(code, 0);
     assert_eq!(out.trim(), "[]");
-    assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_secs(30), "took {:?}", started.elapsed());
     // The server is fine after that, and jobs -F runs its pieces the same way.
     let (_, out, _) = h.cli(&["display-message", "-p", "#{session_name}"]).await;
     assert_eq!(out.trim(), "os");
@@ -11934,6 +11937,28 @@ async fn last_feishu_message(h: &Harness) -> String {
     line.split_whitespace().find_map(|w| w.strip_prefix('#')).unwrap_or_else(|| panic!("no number: {line}")).to_string()
 }
 
+/// `pane-wait` in pane `p`, as an agent's hook runs it, until the page is
+/// told of it. A pane is told of once in 3 seconds (`done.rs`'s gate), and on
+/// a busy machine the telling before may have been taken in later than it
+/// was sent: a wait 3.2 s after it can still fall within the gate.
+async fn wait_told(h: &Harness, p: u32, hook_input: &'static str) {
+    let count = |s: String| s.lines().filter(|l| l.contains("waits for you")).count();
+    let before = count(h.cli(&["list-done"]).await.1);
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(3200)).await;
+        let socket = h.socket.clone();
+        let (code, err) =
+            tokio::task::spawn_blocking(move || run_hook(&socket, Some(p), &["pane-wait", "-q"], hook_input))
+                .await
+                .unwrap();
+        assert_eq!(code, 0, "{err}");
+        if count(h.cli(&["list-done"]).await.1) > before {
+            return;
+        }
+    }
+    panic!("pane-wait in %{p} was never told");
+}
+
 /// What the fake Feishu was asked over HTTP: the path, the Authorization
 /// header, the JSON body, and the id it gave a message it was asked to send.
 struct FeishuCall {
@@ -12266,12 +12291,7 @@ async fn a_feishu_app_tells_the_panes_and_takes_answers() {
     // presses nothing either.
     let mut asked = Vec::new();
     for _ in 0..2 {
-        tokio::time::sleep(Duration::from_millis(3200)).await; // past the pane's gate
-        let socket = h.socket.clone();
-        let (code, err) = tokio::task::spawn_blocking(move || run_hook(&socket, Some(p), &["pane-wait", "-q"], claude))
-            .await
-            .unwrap();
-        assert_eq!(code, 0, "{err}");
+        wait_told(&h, p, claude).await;
         let t = f.call("/open-apis/im/v1/messages?receive_id_type=open_id").await;
         let deadline = Instant::now() + Duration::from_secs(20);
         while !h.cli(&["list-events", "-n", "200"]).await.1.contains(&format!("\"message\":\"{}\"", t.id)) {
@@ -12334,11 +12354,7 @@ async fn a_feishu_app_tells_the_panes_and_takes_answers() {
     // feishu-notify off: a pane that waits is not told by the app (the
     // reply to the next message is all that is sent).
     h.cli(&["set", "-g", "feishu-notify", "off"]).await;
-    tokio::time::sleep(Duration::from_millis(3200)).await; // past the pane's gate
-    let socket = h.socket.clone();
-    let (code, err) =
-        tokio::task::spawn_blocking(move || run_hook(&socket, Some(p), &["pane-wait", "-q"], claude)).await.unwrap();
-    assert_eq!(code, 0, "{err}");
+    wait_told(&h, p, claude).await;
     let waits = h.cli(&["list-done"]).await.1.lines().filter(|l| l.contains("waits for you")).count();
     assert_eq!(waits, 4, "told to the page all the same");
     // One sender, in order: a telling would go out before this reply.

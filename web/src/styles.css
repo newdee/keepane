@@ -107,3 +107,207 @@ input {
 .drop-in {
   animation: drop-in 0.22s ease-out;
 }
+
+/* The page's light and dark switch (MoonToggle): a glass knob over a little
+   sky, specks inside it gathering into a sun or a moon, a highlight running
+   round the edge. Its colours are its own state's (aria-checked), whatever
+   the page's are at the moment it turns. */
+@property --mt-a {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+.mt {
+  --w: 60px;
+  --h: 26px;
+  --pad: 2.5px;
+  --k: calc(var(--h) - 2 * var(--pad));
+  --glass: rgba(255, 255, 255, 0.3);
+  --glass-edge: rgba(255, 255, 255, 0.8);
+  --knob-shadow: rgba(70, 90, 130, 0.3);
+  --track-edge: rgba(40, 60, 100, 0.16);
+  --streak: rgba(255, 255, 255, 0.95);
+  --streak-2: rgba(255, 180, 90, 0.9);
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  height: 32px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+}
+.mt[aria-checked="true"] {
+  --glass: rgba(170, 190, 255, 0.14);
+  --glass-edge: rgba(200, 215, 255, 0.45);
+  --knob-shadow: rgba(0, 0, 0, 0.5);
+  --track-edge: rgba(150, 175, 255, 0.3);
+  --streak: rgba(205, 222, 255, 0.95);
+  --streak-2: rgba(150, 120, 255, 0.85);
+}
+/* As tall as the bar's other buttons on a touch screen. */
+@media (pointer: coarse) {
+  .mt {
+    height: 44px;
+    padding: 0 4px;
+  }
+}
+.mt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.mt-body {
+  position: relative;
+  display: block;
+  width: var(--w);
+  height: var(--h);
+  border-radius: 999px;
+}
+.mt-track {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  border: 1px solid var(--track-edge);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+.mt-scene {
+  position: absolute;
+  inset: 0;
+  transition:
+    opacity 0.6s ease,
+    transform 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.mt-scene.day {
+  background:
+    radial-gradient(circle at 70% 62%, rgba(255, 255, 255, 0.95) 0 11%, transparent 12%),
+    radial-gradient(circle at 80% 55%, rgba(255, 255, 255, 0.9) 0 14%, transparent 15%),
+    radial-gradient(circle at 90% 66%, rgba(255, 255, 255, 0.85) 0 10%, transparent 11%),
+    linear-gradient(90deg, #ffd59a, #b9d4ff);
+}
+.mt-scene.night {
+  opacity: 0;
+  transform: translateX(-12%);
+  background:
+    radial-gradient(circle at 18% 30%, #fff 0 2.5%, transparent 3.5%),
+    radial-gradient(circle at 32% 70%, #cfe0ff 0 2%, transparent 3%),
+    radial-gradient(circle at 46% 38%, #fff 0 1.6%, transparent 2.6%),
+    radial-gradient(circle at 12% 64%, #aac4ff 0 1.8%, transparent 2.8%),
+    linear-gradient(90deg, #2a2770, #13204a);
+}
+.mt[aria-checked="true"] .mt-scene.day {
+  opacity: 0;
+  transform: translateX(12%);
+}
+.mt[aria-checked="true"] .mt-scene.night {
+  opacity: 1;
+  transform: none;
+}
+.mt-rim {
+  position: absolute;
+  inset: -1px;
+  padding: 1.2px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--mt-a),
+    transparent 0deg 200deg,
+    var(--streak-2) 250deg,
+    var(--streak) 290deg,
+    transparent 330deg 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0.85;
+  animation: mt-spin 4.5s linear infinite;
+}
+.mt:hover .mt-rim {
+  opacity: 1;
+  animation-duration: 1.8s;
+}
+.mt.flash .mt-rim {
+  opacity: 1;
+  filter: brightness(1.4);
+  animation:
+    mt-spin 0.7s cubic-bezier(0.3, 0.7, 0.3, 1) 1,
+    mt-spin 4.5s linear 0.7s infinite;
+}
+@keyframes mt-spin {
+  to {
+    --mt-a: 360deg;
+  }
+}
+.mt-knob {
+  position: absolute;
+  top: var(--pad);
+  left: var(--pad);
+  width: var(--k);
+  height: var(--k);
+  overflow: hidden;
+  border-radius: 50%;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass);
+  backdrop-filter: blur(6px) saturate(180%);
+  -webkit-backdrop-filter: blur(6px) saturate(180%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.6),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.1),
+    0 3px 8px var(--knob-shadow);
+  transition: transform 0.62s cubic-bezier(0.34, 1.45, 0.5, 1);
+}
+.mt[aria-checked="true"] .mt-knob {
+  transform: translateX(calc(var(--w) - var(--h)));
+}
+.mt.moving .mt-knob {
+  animation: mt-squash 0.62s ease-out;
+}
+@keyframes mt-squash {
+  0% {
+    scale: 1 1;
+  }
+  25% {
+    scale: 1.16 0.9;
+  }
+  55% {
+    scale: 0.96 1.04;
+  }
+  100% {
+    scale: 1 1;
+  }
+}
+.mt-knob canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.mt-gloss {
+  position: absolute;
+  top: 6%;
+  left: 14%;
+  width: 72%;
+  height: 38%;
+  border-radius: 50%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0));
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mt-rim {
+    animation-duration: 20s;
+  }
+  .mt.moving .mt-knob {
+    animation: none;
+  }
+  .mt-knob {
+    transition-duration: 0.2s;
+    transition-timing-function: ease;
+  }
+}

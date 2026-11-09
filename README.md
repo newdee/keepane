@@ -1190,11 +1190,13 @@ The same page works in a computer's browser: on a wide screen the list stays
 on the left and the pane fills the right. The button at the top left folds the
 list down to a strip of one button per pane (and back); on a touch screen a
 swipe left on the list folds it, a swipe right on the strip opens it. The
-button at the top right picks the page's own look, light, dark or the system's
-(each device keeps its own), and the terminal's theme (`theme`, see Themes):
-that one is the computer's, so its terminal changes too, and every page shows
-the panes in it. The same menu picks the page's language: the system's
-(Chinese on a Chinese system, else English), Chinese or English. Beside it,
+switch at the top right turns the page light or dark: its glass knob slides
+across, and the specks of light in it gather into a sun or a moon. The menu
+beside it also has "like the system" (each device keeps its choice), and
+the terminal's theme (`theme`, see Themes): that one is the computer's, so
+its terminal changes too, and every page shows the panes in it. The same
+menu picks the page's language: the system's (Chinese on a Chinese system,
+else English), Chinese or English. Left of the switch,
 the time a request takes to the computer and back (`23 ms`, a green dot under
 100 ms, yellow under 300, red above or `offline`). The full-screen button in a
 pane's bar leaves only its screen and the input box, over the whole screen
