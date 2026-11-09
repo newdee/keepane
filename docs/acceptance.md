@@ -5502,3 +5502,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 - 遗留：
   - 双满载（Windows 全量和 WSL 的 Linux 全量同时跑在一台机器上）下还会偶发：`display_panes_takes_numbers_past_nine`、`the_chart_shows_the_paired_machines`（某条命令 40 秒没回，原因未明）。两个单独跑 3/3 过，两平台先后跑也都过。
   - 主题开关动效的问题还在等用户答复（演示页还是手机页）。
+- 发布：v0.54.0（tag 在 a790267，其 CI 四项全过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取；winget 新开 PR #475336。
