@@ -1495,7 +1495,9 @@ machine. The two clocks must agree to within two minutes.
 
 A paired machine's messages reach `ai` and `normal` panes only. To let them
 run as commands in `shell` panes, allow that machine, from a terminal outside
-keepane (never from inside a pane, where an agent could):
+keepane or at the `C-b :` prompt (as `link-allow`). Never from inside a
+pane, where an agent could: since 0.54 `keepane link allow` typed in a pane
+is refused too.
 
 ```powershell
 keepane link allow 100.64.0.3:7681 --shell     # --no-shell takes it back
@@ -1503,9 +1505,9 @@ keepane link allow 100.64.0.3:7681 --screen    # it may read the panes here; --n
 keepane link allow 100.64.0.3:7681 --panes     # it may start panes here; --no-panes takes it back
 keepane link allow 100.64.0.3:7681 --push      # it may send commits here (clone, push); --no-push takes it back
 keepane link allow 100.64.0.3:7681 --agents    # it may send projects and chats here (send-agents); --no-agents
-keepane link remove 100.64.0.3:7681            # unpair, on both
 keepane link allow 100.64.0.3:7681 --all       # all five: full control of this machine; --none takes all back
 keepane link allow 100.64.0.3:7681 --all --no-shell   # all but the shell: a flag after --all changes its own
+keepane link remove 100.64.0.3:7681            # unpair, on both
 keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
 keepane link rekey                             # a new key: every pairing has to be made again
 ```

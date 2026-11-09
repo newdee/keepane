@@ -704,7 +704,7 @@ keepane send-message --to 100.64.0.3:7681/%worker "run the tests"
 
 对方的 pane 写成 `主机:端口/` 加上它在那台机器上的名字（`%worker`、`$1:@3.%7`）。消息到了那边，信封里的 `from=` 是这台机器和发送的 pane，所以那边用 `send-message -r` 回信就直接回到这里，并且归到同一个任务里。两边都要开着 `keepane web`；web 密钥只在配对那一次用到，之后每个请求都用 server 自己的密钥签名，所以 web 换了密钥也不影响。认的是公钥，不是地址：对方换个网络出现（从局域网换到 Tailscale），还是同一台机器。两边的时钟相差不能超过两分钟。
 
-配过对的机器发来的消息只进 `ai` 和 `normal` 模式的 pane。要让它们在 `shell` 模式的 pane 里当命令执行，得在 keepane 之外的终端里给那台机器授权（不能在 pane 里面做，否则 agent 就能自己开权限）：
+配过对的机器发来的消息只进 `ai` 和 `normal` 模式的 pane。要让它们在 `shell` 模式的 pane 里当命令执行，得在 keepane 之外的终端里、或者 `C-b :` 提示符里（命令名是 `link-allow`）给那台机器授权。不能在 pane 里面做，否则 agent 就能自己开权限：从 0.54 起，在 pane 里敲 `keepane link allow` 也会被拒绝。
 
 ```powershell
 keepane link allow 100.64.0.3:7681 --shell     # --no-shell 收回
@@ -712,9 +712,9 @@ keepane link allow 100.64.0.3:7681 --screen    # 允许它读这边 pane 的屏�
 keepane link allow 100.64.0.3:7681 --panes     # 允许它在这边开 pane；--no-panes 收回
 keepane link allow 100.64.0.3:7681 --push      # 允许它往这边的仓库送提交（clone、push）；--no-push 收回
 keepane link allow 100.64.0.3:7681 --agents    # 允许它送项目和对话过来（send-agents）；--no-agents 收回
-keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
 keepane link allow 100.64.0.3:7681 --all       # 五项全给：等于完全控制这台电脑；--none 全部收回
 keepane link allow 100.64.0.3:7681 --all --no-shell   # 除了 shell 都给：写在 --all 后面的单项覆盖它
+keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
 keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
 keepane link rekey                             # 换一对新密钥：所有配对都要重做
 ```

@@ -130,7 +130,28 @@ keepane link allow 192.168.1.20:7681 --shell
 
 `--screen` lets that machine read a pane's screen (`keepane link capture`);
 `--panes` lets it start panes here; `--push` lets it send commits into
-repositories here (`keepane clone`, `keepane push`).
+repositories here (`keepane clone`, `keepane push`); `--agents` lets it
+send projects and their agents' chats here (`keepane send-agents`).
+`--all` gives all five, `--none` takes all five back.
+
+## `keepane link allow` says it is "not run from inside a pane"
+
+**Why.** Since 0.54 keepane checks where `keepane link allow` (and
+`keepane link trust` with a permission, and `keepane feishu allow`) runs.
+In a keepane pane it is refused, because an agent in that pane could
+otherwise give another machine the right to run commands here. Before
+0.54, `keepane link allow` typed in a pane was let through by mistake.
+
+**What to do.** Run it in one of two places:
+
+- A terminal that is not a keepane pane (a plain Windows Terminal tab,
+  another terminal app).
+- The `C-b :` prompt of any keepane client. There the command has its
+  server name, `link-allow`:
+
+```sh
+link-allow 192.168.1.20:7681 --shell
+```
 
 ## The phone can't open the page
 

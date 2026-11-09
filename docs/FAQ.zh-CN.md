@@ -84,7 +84,20 @@ pane 的编号（`%7`）和名字（`%builder`）跟着 pane 走，不管它被�
 keepane link allow 192.168.1.20:7681 --shell
 ```
 
-加 `--screen` 则允许那台机器读取 pane 的屏幕（`keepane link capture`）；加 `--panes` 允许它在这边开 pane；加 `--push` 允许它往这边的仓库送提交（`keepane clone`、`keepane push`）。
+加 `--screen` 则允许那台机器读取 pane 的屏幕（`keepane link capture`）；加 `--panes` 允许它在这边开 pane；加 `--push` 允许它往这边的仓库送提交（`keepane clone`、`keepane push`）；加 `--agents` 允许它送项目和 agent 对话过来（`keepane send-agents`）。`--all` 五项全给，`--none` 五项全收回。
+
+## `keepane link allow` 提示 "not run from inside a pane"
+
+**为什么。** 从 0.54 起，keepane 会检查 `keepane link allow`（以及带权限的 `keepane link trust`、`keepane feishu allow`）是在哪里运行的。在 keepane 的 pane 里运行会被拒绝，否则那个 pane 里的 agent 就能让别的机器在这台电脑上执行命令。0.54 之前，在 pane 里敲 `keepane link allow` 会被误放行。
+
+**怎么办。** 在下面两个地方之一运行：
+
+- 不是 keepane pane 的终端（Windows Terminal 里单独开的标签页，或者别的终端程序）。
+- 任意 keepane 客户端的 `C-b :` 提示符。在这里命令要写 server 端的名字 `link-allow`：
+
+```sh
+link-allow 192.168.1.20:7681 --shell
+```
 
 ## 手机打不开页面
 

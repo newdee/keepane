@@ -105,7 +105,7 @@ keepane link remove <主机:端口>              # 删本机这一条，并通�
 - 配对后默认只能把消息投进 `ai`、`normal` 窗格。
 - 发往 `shell` 窗格（收到就执行）要求这台机器对发件机器执行过 `link allow <发件机器> --shell`。未授权时**拒收**，发件方立刻收到错误：`100.64.0.3:7681 may not run commands here (%7 is in shell mode): on this machine, keepane link allow 100.64.0.3:7681 --shell`。（选项里写的是"排队不执行"；改成拒收，因为排着的消息永远不会执行，发件方也不知道。用户已确认。）
 - 被拒的请求（未配对、签名不对、时钟差、重放、未授权的 shell）在状态栏提示并记入事件日志，同一地址 60 秒内只记一次：否则局域网上有人大量乱发，会刷屏，还会写满当天的事件日志配额（`event-log-max`），挤掉真正的消息事件。
-- `link allow --shell` 与 `set-work-mode` 同一条规则：在窗格里运行时拒绝，只能在 keepane 之外的终端或 `C-b :` 里运行。否则窗格里的 agent 可以自己给远程机器开执行权限。
+- `link allow --shell` 与 `set-work-mode` 同一条规则：在窗格里运行时拒绝，只能在 keepane 之外的终端或 `C-b :` 里运行。否则窗格里的 agent 可以自己给远程机器开执行权限。（0.54 修正：`keepane link ...` 客户端以前发命令时不带所在的窗格，所以在窗格里敲 `keepane link allow` 会被当成窗格外而放行；现在和其他命令一样带上窗格，同样被拒。）
 - 投递时已有的规则照旧：写给 agent 的消息不会因为窗格中途改成 `shell` 而被执行。
 - 开窗格（`/link/pane`）要 `--panes`；程序取 `agent-commands` 白名单（与本机 agent 开窗格同一份），数量按发起机器单独计 `agent-pane-limit`；关窗格（`/link/kill`）只认发起机器自己开的（`made` 表，按公钥，只在内存里）。未授权 403，并告诉对方怎么授权。
 
