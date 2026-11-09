@@ -5378,3 +5378,42 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 温度只在有真实传感器时显示（本机没有）。
 - 发布：v0.51.0（tag 在 9179105，其 CI 通过）。Release 成功，13 个文件；Homebrew 两个系统测试通过后发布，3 个 sha256 与发布文件一致；manifests 已拉取（3db7b0c）。
 - winget 更正：PR #441466 已于 2026-10-29 以 0.49.0 合并。之后 0.50.0、0.50.1 被推到已合并 PR 的旧分支，没有进入 winget。0.51.0 改为新开 PR #466770（只加 0.51.0 的 3 个文件，`winget validate` 通过）；#441466 的标题改回 0.49.0。
+
+## 174. 等你批准时通知你（`wait`）、响铃（`bell`）、飞书和钉钉签名
+
+- 用户要求：加 webhook 功能，比如通知发到飞书机器人；按讨论里的推荐，先做第 1 期（纯出站）："agent 等你批准"的通知、响铃、飞书签名校验。第 2 期（从飞书给 pane 发消息）以后做。
+- 做法：
+  - `done-events` 多两种：`wait`（agent 在等你：要权限或提问题）和 `bell`（没有 agent 的 pane 响了铃）。默认值从 `command agent` 改成 `command agent wait`；`bell` 默认不开。两种事件走原来的同一条路：手机页、桌面通知、`pane-done` hook、`done-webhook`、`list-done`。
+  - `pane-wait [-q] [-t pane] [text]`：新命令。命令行没有文字时，客户端从标准输入读 hook 的 JSON（最多 2 秒、64 KB；控制台输入不读），取 `message`（Claude Code、Gemini CLI），或 Codex 的 `tool_input`（`approve Bash: cargo publish`），一行、最多 200 字。pane 外加 `-q` 什么也不做（客户端就返回 0，不连服务器）。`wait` 带上 pane 最后几行（`done-lines`），能看到问题和选项。
+  - `keepane setup` 多装一个等待 hook（按各家 2026-11 的官方文档）：Claude Code `Notification`，matcher `permission_prompt|elicitation_dialog`（提示等了约 6 秒没人答才触发）；Codex `PermissionRequest`；Gemini CLI `Notification`。Cursor CLI、opencode 没有对应事件。以前装过的：`setup` 显示没装好，再 `--install` 只补缺的。
+  - 响铃：pane 上加 `rang` 标志，只给完成事件用（`bell` 标志由渲染器取走，没有人 attach 时永远不取，不能用）。有 agent 的 pane 不报（它的 `agent`、`wait` 说得更清楚，而且铃声比转录读到的轮次结束早到，会把 `agent` 挡在 3 秒闸门外）。恢复时重放的输出不报。同一个 pane 的铃一分钟最多报一次。
+  - `done-webhook-secret`：飞书（秒级时间戳，`timestamp+"\n"+secret` 作 HMAC 密钥签空消息，放进请求体）和钉钉（毫秒级时间戳，secret 作密钥签 `timestamp+"\n"+secret`，URL 编码后拼进地址）。签名值和 .NET `HMACSHA256` 独立算出的值逐字相同。别的格式不签。`link.rs` 加了标准 base64（带填充），和原来的 URL-safe 版本共用编码函数。
+  - 文档：README（中英）、man、FAQ（中英）、`docs/design/mailbox.md`、网站一句话。
+- 新 bug 风险评估：`webhook_body` 改成 `webhook_request`（多返回地址），只有一个调用方；不设密钥时请求和以前逐字相同（有测试）。`with_hooks` 的参数从事件名改成 agent，所有调用方一起改；只加缺的，用户自己的 hook 原样保留、排在前面（有测试）。新增两张表（每个 pane 最后一次报铃的时间、最后一次报的时间）都按时间清理，大小有上限。
+- 顺带修的（都在验收中发现）：
+  - setup：`KEEPANE_CLAUDE_DIR` 只有 keepane 认识，`setup claude --install` 调 `claude mcp add` 时它写进了默认的 `~/.claude.json`。现在把这个目录作为 `CLAUDE_CONFIG_DIR` 传给它（Codex 的 `CODEX_HOME` 两边都认，本来就对）。测试时这一步改了用户真实的 `~/.claude.json`（加了一项用户级 MCP），已用 `claude mcp remove keepane --scope user` 撤销，前后用 `claude mcp get keepane` 核对。
+  - 时钟 e2e：断言时钟下面三行为空，但 6 周的月份（2026 年 11 月）日历会伸到这三行。两处都改成"只有日历数字和空格"。
+  - undo-kill e2e：用 `tasklist` 看进程，高负载下它要 4.5 到 9.5 秒（kill-pane 本身 0.43 毫秒），超过保留期。改成本进程里 `OpenProcess` + `GetExitCodeProcess`。
+  - e2e 里 23 处 2 到 5 秒的等待期限（都是"条件满足就跳出"）统一放宽到 20 秒（和已有的 27 处一样）；改后 e2e 总时长不变。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 实现中 | 全量：时钟 e2e 两处按日期失败（见上）；新 e2e 断言 shell pane 的 `wait` 带输出，提示符行会被跳过，改成先输出一行再断言 | 实现中，不计 |
+| 1 | 机制存活 | 14 个变异：12 个由失败的测试抓到；W6 变异写法编译不过，换写法后抓到；W13（服务器端 pane 外 `-q` 静默）漏网，补了测试后抓到 | 有发现，不计 |
+| 2 | 静态一致 | FAQ 中英三处过时：说 keepane 不签名、默认 `command agent`、Codex"那两条"hook；网站一句话补上 | 有发现，不计 |
+| 3 | 边界输入 | 程序不停输出 BEL 时每 3 秒报一次（每分钟最多 20 条到飞书），加每个 pane 每分钟一次的闸门，变异 W15 抓到 | 有发现，不计 |
+| 4 | 不变量 | 审查：hook 不会拉起服务器（`pane-wait` 不在 `needs_server`），重放不报铃（Unix 重放来自 `rows_formatted`，不含 BEL），两张表有上限，密钥不进进程列表；测试：Windows undo-kill e2e 失败 | 有发现，不计 |
+| 5 | 可复现 | 新 e2e 连跑 5 次全过（12.5 到 14.5 秒）；Windows 和 Linux 全量同时跑（高负载）：Windows 562 + 11 + 150，Linux 547 + 147 | 干净（1/3） |
+| 6 | 代码正确 | 错误路径、资源、并发审查无问题；Windows 562 + 11 + 150，Linux 547 + 147 | 干净（2/3） |
+| 7 | 真实环境 | 真实 Claude Code（haiku，`--permission-mode manual`，`setup` 生成的 settings）：提示后 12 秒报出 `wait`，带问题和选项；同时发现 setup 改了用户 `~/.claude.json`（见上） | 有发现，不计 |
+| 8 | 机制存活 | setup 修复的 3 个变异（不传环境变量、传错名字、命令上不设）全部抓到，第 3 个先漏网，把构造命令拆成 `cli_command` 后可测 | 有发现，不计 |
+| 9 | 静态一致 | 通读整份 diff 无问题；Windows 全量偶发失败：undo-kill（`tasklist` 4.5、9.5 秒，见上）、pipe-pane 5 秒期限；修后连跑 6 次全量 e2e 全过（修前约 14 次失败 3 次） | 有发现，不计 |
+| 10 | 可复现 | Windows 全量连跑两次，两次都是 563 + 11 + 150；Linux 548 + 147 | 干净（1/3） |
+| 11 | 代码正确 | 审查 `windows_alive`（句柄都关闭；退出码 259 的进程会误判为在跑，这里不涉及）和 23 处期限（都是满足即跳出，e2e 用时 67.9、72.0 秒，没变长）；Windows 563 + 11 + 150，Linux 548 + 147 | 干净（2/3） |
+| 12 | 真实环境 | 最终构建上的真实 Claude Code：16 秒报出 `wait`；`claude mcp get keepane` 前后都是"没有"，MCP 写进临时目录；Windows 563 + 11 + 150，Linux 548 + 147 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - `done-panes` 默认 `named`：没有名字、也不是 `ai`/`shell` 模式的 pane（在 shell 里手敲 `claude` 就是这样），`wait` 和 `agent` 都不报。要报：给 pane 起名、`set-work-mode ai`，或 `set -g done-panes all`。
+  - 真实测试在 `~/.claude/projects` 的本仓库目录里留下 3 个 Claude Code 会话记录（每个一句话），没有删（那是 Claude Code 自己的数据）。
+  - Codex、Gemini CLI 的等待 hook 按文档写，没有端到端实测；Cursor CLI、opencode 没有等待 hook。
+  - 第 2 期（从飞书给 pane 发消息）没做，需要飞书企业自建应用。
