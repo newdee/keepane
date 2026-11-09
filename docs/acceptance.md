@@ -5417,3 +5417,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 真实测试在 `~/.claude/projects` 的本仓库目录里留下 3 个 Claude Code 会话记录（每个一句话），没有删（那是 Claude Code 自己的数据）。
   - Codex、Gemini CLI 的等待 hook 按文档写，没有端到端实测；Cursor CLI、opencode 没有等待 hook。
   - 第 2 期（从飞书给 pane 发消息）没做，需要飞书企业自建应用。
+- 发布：v0.52.0（tag 在 ba26720，其 CI 四项全过）。Release 成功，13 个文件；Homebrew 两个系统测试通过后发布，3 个 sha256 与发布文件一致；manifests 已拉取（c113c5d）；winget 0.51.0 的 PR #466770 已于 10-31 合并，0.52.0 新开 PR #475184（只加 0.52.0 的 3 个文件；第一次 `gh pr create` TLS 超时，分支已建，单独补建 PR）。
