@@ -1347,6 +1347,68 @@ its choices, the command among them. Any program can say it too:
 agent's bell means its turn ended or it has a question, and `agent` and
 `wait` tell that better. A pane's bell is told once a minute at most.
 
+## Answer the panes from Feishu
+
+With a Feishu (Lark) app of your own, the tellings come from the app, and
+you answer them in the chat. keepane opens the app's long connection
+itself: nothing on this machine is reachable from outside, and no public
+address is needed.
+
+- **Reply to a pane that waits for you** (`wait`): your reply goes in at
+  once. One key is pressed as it is: `1`, `2`, `y`, `n`, `esc`, `enter`,
+  `up`, `down`, `tab`. Other text is typed, then Enter.
+- **Reply to any other telling**: your reply goes to that pane as a
+  message, as `send-message` sends one. An agent's pane gets it when the
+  agent is free; a `normal` pane keeps it for `read-message`. When the
+  agent answers it (`send-message -r`), the answer comes back to the chat.
+- **Commands**: `/panes` (the panes, and which wait for you),
+  `/to <pane> <text>` (a message), `/key <pane> <keys>` (keys now),
+  `/screen <pane>` (what the pane shows) and `/help`.
+
+Only the people you let in are heard, only in a chat with the bot alone.
+Messages go to agents' panes and `normal` ones, and keys to agents. Keys
+where no agent runs, and messages to `shell` panes, run commands: they
+need `--shell`. `/screen` sends what a pane shows to Feishu's servers: it
+needs `--screen`. Letting in works only outside the panes, so an agent
+cannot let anyone in. A reply to a question that is over presses nothing.
+Each telling carries the pane's last lines, as the webhook's do
+(`done-lines`; 0 sends none).
+Everything that came in, and what was done, is in the event log
+(`list-events`).
+
+To set it up:
+
+1. On the Feishu open platform (open.feishu.cn, or open.larksuite.com for
+   Lark), create an enterprise self-built app and turn on its bot.
+2. Give it two permissions: read the messages users send the bot in
+   private chats, and send messages as the app.
+3. Put its App ID and App Secret in `keepane.conf` (below), and wait for
+   `keepane feishu` to say `connected`.
+4. In the app's event settings, choose to receive events through the long
+   connection, and save (Feishu saves it only while keepane is connected).
+   Add the event `im.message.receive_v1`. Leave the Encrypt Key empty.
+5. Publish a version of the app.
+6. Send the bot a message. It answers with your open_id and the command
+   that lets you in: run it in a terminal outside keepane.
+
+```sh
+set -g feishu-app-id cli_xxxxxxxx
+set -g feishu-app-secret <secret>     # show-options prints (set)
+set -g feishu-domain feishu           # lark for Lark
+set -g feishu-notify on               # the tellings come from the app
+```
+
+```sh
+keepane feishu                        # connected or not, and who is let in
+keepane feishu allow ou_xxxx          # let an account in
+keepane feishu allow ou_xxxx --shell --screen
+keepane feishu remove ou_xxxx
+```
+
+Feishu gives each event to one connection of an app. Use one app per
+machine: two machines on one app get the messages at random. The design:
+[docs/design/feishu.md](docs/design/feishu.md).
+
 ## What a pane's repository says
 
 When a pane's directory is in a git repository, keepane reads it for two

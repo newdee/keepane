@@ -12,6 +12,7 @@ use anyhow::{Result, bail};
 /// Commands the client handles itself, which `list-commands` does not show.
 pub(crate) const LOCAL: &[&str] = &[
     "completion",
+    "feishu",
     "import-config",
     "link",
     "man",
@@ -29,6 +30,7 @@ pub(crate) const LOCAL: &[&str] = &[
 
 /// The flags of the commands the client handles itself.
 const LOCAL_FLAGS: &[(&str, &[&str])] = &[
+    ("feishu", &["--no-screen", "--no-shell", "--screen", "--shell"]),
     ("import-config", &["-n", "-o"]),
     (
         "link",
@@ -117,6 +119,8 @@ pub fn complete(
                 "remove",
                 "trust",
             ])
+        } else if canon == "feishu" && rest.len() == 1 && !current.starts_with('-') {
+            owned(&["allow", "remove", "status"])
         } else if canon == "setup" && rest.len() == 1 && !current.starts_with('-') {
             owned(&crate::setup::AGENTS.map(crate::setup::Agent::word))
         } else if (canon == "set-option" || canon == "show-options") && prev != "-t" && !current.starts_with('-') {
@@ -353,6 +357,8 @@ Register-ArgumentCompleter -Native -CommandName keepane,tmux -ScriptBlock {{
     $out = @('status', 'stop')
   }} elseif ($canon -eq 'link' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('add', 'allow', 'capture', 'clone', 'id', 'info', 'kill', 'list', 'panes', 'push', 'send-agents', 'start', 'rekey', 'remove', 'trust')
+  }} elseif ($canon -eq 'feishu' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
+    $out = @('allow', 'remove', 'status')
   }} elseif ($canon -eq 'setup' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('claude', 'codex', 'cursor', 'gemini', 'opencode')
   }} elseif ($canon -in @('set-option','show-options') -and $prev -ne '-t' -and $wordToComplete -notlike '-*') {{

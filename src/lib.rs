@@ -5,6 +5,7 @@ pub mod command;
 pub mod completion;
 pub mod config;
 pub mod dashboard;
+pub mod feishu;
 pub mod format;
 pub mod git;
 pub mod gitsync;

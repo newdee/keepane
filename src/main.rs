@@ -78,6 +78,8 @@ Panes on other machines (both run `keepane web`; docs/design/link.md):
   send-agents [host:port] [dir] [-s chat-id]... [-n]   send-agents -l   (this project and its agents' chats there; docs/design/agent-sync.md)
   link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane
   link id   link trust host:port key [--shell] [--screen] [--panes] [--push]   link remove host:port   link rekey
+Panes from a Feishu (Lark) app of your own (set -g feishu-app-id / feishu-app-secret; docs/design/feishu.md):
+  feishu   (connection and who is let in)   feishu allow ou_... [--shell|--no-shell] [--screen|--no-screen]   feishu remove ou_...
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)
 Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
@@ -228,6 +230,10 @@ fn main() {
     // command line says nothing.
     if args[0] == "pane-wait" && std::env::var_os("KEEPANE_PANE").is_some() {
         keepane::setup::pane_wait_args(&mut args);
+    }
+    // `keepane feishu [status|allow|remove]`: the server's feishu-* commands.
+    if args[0] == "feishu" {
+        args = keepane::feishu::command_args(&args[1..]);
     }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     // Starting at logon is about the server, and the Windows Terminal

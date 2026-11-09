@@ -297,6 +297,10 @@ impl Server {
             && let Sender::Remote { addr, address, .. } = &cur.from
         {
             let (how, cur_id) = (if re.is_some() { "--re" } else { "-r" }, cur.id);
+            // From a person on Feishu: back to them, under what they sent.
+            if addr == super::feishu::ADDR {
+                return self.feishu_answer_message(cid, cur_id, text);
+            }
             let Some(origin) = self.link.as_ref().and_then(|l| l.origin.get(&cur_id)).cloned() else {
                 return Outcome::Error(format!(
                     "send-message {how}: #{cur_id} came from {addr}, and the way back is gone (the server restarted since)"

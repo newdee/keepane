@@ -182,6 +182,14 @@ pub struct Options {
     /// The secret a Feishu or DingTalk bot checks its messages are signed
     /// with (its "signature" security setting); empty, not signed.
     pub done_webhook_secret: String,
+    /// A Feishu (Lark) app of one's own (docs/design/feishu.md): its id and
+    /// secret, and which open platform (`feishu`, `lark`, or an address).
+    /// With both set, keepane keeps its long connection: messages come in,
+    /// and the tellings go out through it (`feishu-notify`).
+    pub feishu_app_id: String,
+    pub feishu_app_secret: String,
+    pub feishu_domain: String,
+    pub feishu_notify: bool,
     /// The git to run for the panes' repositories (`crate::git::command`):
     /// a path or a name on the PATH; empty, the one found.
     pub git_command: String,
@@ -398,6 +406,15 @@ fn size_name(n: u64) -> String {
     }
 }
 
+/// What `show-options` prints for a secret that is set (`done-webhook-secret`,
+/// `feishu-app-secret`): a program in a pane can ask for every option, and a
+/// secret on a screen or in a log is a secret given away.
+pub const SECRET_SHOWN: &str = "(set)";
+
+fn secret_shown(s: &str) -> String {
+    if s.is_empty() { String::new() } else { SECRET_SHOWN.into() }
+}
+
 /// Options `show-options` can print, in display order.
 pub const SHOWABLE: &[&str] = &[
     "prefix",
@@ -475,6 +492,10 @@ pub const SHOWABLE: &[&str] = &[
     "done-webhook",
     "done-webhook-format",
     "done-webhook-secret",
+    "feishu-app-id",
+    "feishu-app-secret",
+    "feishu-domain",
+    "feishu-notify",
     "event-log",
     "event-log-days",
     "event-log-max",
@@ -586,6 +607,10 @@ impl Default for Options {
             done_webhook: String::new(),
             done_webhook_format: "json".into(),
             done_webhook_secret: String::new(),
+            feishu_app_id: String::new(),
+            feishu_app_secret: String::new(),
+            feishu_domain: "feishu".into(),
+            feishu_notify: true,
             git_command: String::new(),
             link_clone_dir: "~/keepane".into(),
             link_push_limit: 200 * 1024 * 1024,
@@ -722,6 +747,10 @@ pub const KNOWN: &[&str] = &[
     "event-log",
     "event-log-days",
     "event-log-max",
+    "feishu-app-id",
+    "feishu-app-secret",
+    "feishu-domain",
+    "feishu-notify",
     "git-command",
     "hint-open",
     "history-limit",
@@ -812,6 +841,7 @@ const BOOLEAN: &[&str] = &[
     "clock-mode-info",
     "autosave",
     "event-log",
+    "feishu-notify",
     "keep-zoom",
     "log-history",
     "notify",
@@ -893,6 +923,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "window-size" => &["largest", "latest", "manual", "smallest"],
         "done-panes" => &["all", "named"],
         "done-webhook-format" => DONE_WEBHOOK_FORMATS,
+        "feishu-domain" => &["feishu", "lark"],
         "theme" => THEME_NAMES,
         "choose-tree-style" => &["chart", "list", "tree"],
         "clock-mode-style" => &["12", "24"],
@@ -1134,7 +1165,27 @@ impl Options {
             "done-webhook-format" => {
                 self.done_webhook_format = one_of(name, value, DONE_WEBHOOK_FORMATS)?;
             }
+            // What `show-options` prints for a secret that is set, set back,
+            // keeps it: the listing still reads back as a config.
+            "done-webhook-secret" | "feishu-app-secret" if value.trim() == SECRET_SHOWN => {}
             "done-webhook-secret" => self.done_webhook_secret = value.trim().to_string(),
+            "feishu-app-secret" => self.feishu_app_secret = value.trim().to_string(),
+            "feishu-app-id" => {
+                let v = value.trim();
+                if v.contains(|c: char| c.is_whitespace() || c == '"' || c == '\\') {
+                    return Err(format!("bad feishu-app-id '{value}' (the app's id, cli_…)"));
+                }
+                self.feishu_app_id = v.to_string();
+            }
+            "feishu-domain" => {
+                if !crate::feishu::valid_domain(value) {
+                    return Err(format!(
+                        "bad feishu-domain '{value}' (feishu, lark, or an http:// or https:// address)"
+                    ));
+                }
+                self.feishu_domain = value.trim().to_string();
+            }
+            "feishu-notify" => self.feishu_notify = parse_bool(value)?,
             "event-log" => self.event_log = parse_bool(value)?,
             "event-log-days" => self.event_log_days = ranged(name, value, 1, 3650, "days")?,
             "event-log-max" => self.event_log_max = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024)?,
@@ -1285,7 +1336,12 @@ impl Options {
             "link-push-limit" => size_name(self.link_push_limit),
             "link-agents-limit" => size_name(self.link_agents_limit),
             "done-webhook-format" => self.done_webhook_format.clone(),
-            "done-webhook-secret" => self.done_webhook_secret.clone(),
+            // A secret is not shown: only whether it is set.
+            "done-webhook-secret" => secret_shown(&self.done_webhook_secret),
+            "feishu-app-secret" => secret_shown(&self.feishu_app_secret),
+            "feishu-app-id" => self.feishu_app_id.clone(),
+            "feishu-domain" => self.feishu_domain.clone(),
+            "feishu-notify" => onoff(self.feishu_notify),
             "event-log" => onoff(self.event_log),
             "event-log-days" => self.event_log_days.to_string(),
             "event-log-max" => size_name(self.event_log_max),
@@ -1421,7 +1477,21 @@ mod tests {
         assert!(o.set("done-after", "86401").is_err());
         assert!(o.set("done-panes", "some").is_err());
         o.set("done-webhook-secret", " SECabc123 ").unwrap();
-        assert_eq!(o.get("done-webhook-secret").unwrap(), "SECabc123");
+        assert_eq!(o.done_webhook_secret, "SECabc123");
+        assert_eq!(o.get("done-webhook-secret").unwrap(), SECRET_SHOWN, "not shown");
+        o.set("done-webhook-secret", SECRET_SHOWN).unwrap();
+        assert_eq!(o.done_webhook_secret, "SECabc123", "what show printed, set back, keeps it");
+        o.set("done-webhook-secret", "").unwrap();
+        assert_eq!(o.get("done-webhook-secret").unwrap(), "", "none: nothing shown");
+        o.set("feishu-app-secret", "abc").unwrap();
+        assert_eq!((o.feishu_app_secret.as_str(), o.get("feishu-app-secret").unwrap().as_str()), ("abc", SECRET_SHOWN));
+        o.set("feishu-app-id", "cli_a1").unwrap();
+        assert!(o.set("feishu-app-id", "cli a1").is_err());
+        assert_eq!(o.get("feishu-domain").unwrap(), "feishu", "the default");
+        o.set("feishu-domain", "lark").unwrap();
+        o.set("feishu-domain", "http://127.0.0.1:9000").unwrap();
+        assert!(o.set("feishu-domain", "larks").is_err());
+        assert_eq!(o.get("feishu-notify").unwrap(), "on");
     }
 
     /// What a Tab offers after `set`: the same names `resolve_name` picks

@@ -3828,8 +3828,10 @@ async fn a_focus_frame_flies_to_where_the_keys_go() {
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "a"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
-    // Slow enough to be caught between two looks at the screen.
-    h.cli(&["set", "-g", "animation-time", "1500"]).await;
+    // Slow enough to be caught between two looks at the screen, also on a
+    // machine running the whole suite twice (Windows and Linux at once:
+    // 1.5 seconds once went by unseen).
+    h.cli(&["set", "-g", "animation-time", "4000"]).await;
     let corners = |s: &vt100::Screen| s.contents().matches(['╭', '╮', '╰', '╯']).count();
     c.prefix('%').await;
     c.wait_for("split", |s| s.contents().matches("keepane>").count() >= 2).await;
@@ -3900,7 +3902,8 @@ async fn a_zoom_in_motion_survives_what_happens_meanwhile() {
     let mut c = h.connect().await;
     c.attach(&["new", "-s", "e"]).await;
     c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
-    h.cli(&["set", "-g", "animation-time", "2000"]).await;
+    // Long enough to be caught in motion on a busy machine (see above).
+    h.cli(&["set", "-g", "animation-time", "4000"]).await;
     h.cli(&["set", "-g", "pane-border-status", "top"]).await;
     h.cli(&["split-window", "-h", "-t", "e"]).await;
     h.cli(&["split-window", "-v", "-t", "e"]).await;
@@ -10295,7 +10298,12 @@ fn run_hook(socket: &str, pane: Option<u32>, args: &[&str], input: &str) -> (i32
         None => c.env_remove("KEEPANE_PANE"),
     };
     let mut child = c.spawn().unwrap();
-    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    // A hook may end without reading its input (`pane-wait -q` outside a
+    // pane does): on Linux the write then finds the pipe closed.
+    match child.stdin.take().unwrap().write_all(input.as_bytes()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => panic!("the hook's input: {e}"),
+        _ => {}
+    }
     let out = child.wait_with_output().unwrap();
     (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr).into_owned())
 }
@@ -11016,7 +11024,9 @@ async fn the_history_log_is_searched_every_day() {
     c.wait_for("the search prompt", |s| s.contents().contains("(look through every day)")).await;
     c.type_str(&marker).await;
     c.enter().await;
-    c.wait_for("the hits", |s| s.contents().contains("Enter open there") && s.contents().contains(&marker)).await;
+    // The hint's start: its end gives way to the count beside it, which
+    // holds the marker, whose process id can be 6 digits long.
+    c.wait_for("the hits", |s| s.contents().contains("j/k move") && s.contents().contains(&marker)).await;
     c.enter().await;
     c.wait_for("the viewer at the hit", |s| {
         let t = s.contents();
@@ -11866,4 +11876,453 @@ fn startup_registers_the_stable_name_and_follows_the_installed_keepane() {
     assert_eq!(code, Some(1));
     assert!(out.contains("not installed"), "{out}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The number of the last message that came from Feishu.
+async fn last_feishu_message(h: &Harness) -> String {
+    let (_, out, _) = h.cli(&["list-messages", "-a"]).await;
+    let line = out.lines().rfind(|l| l.contains("feishu/user")).unwrap_or_else(|| panic!("none: {out}"));
+    line.split_whitespace().find_map(|w| w.strip_prefix('#')).unwrap_or_else(|| panic!("no number: {line}")).to_string()
+}
+
+/// What the fake Feishu was asked over HTTP: the path, the Authorization
+/// header, the JSON body, and the id it gave a message it was asked to send.
+struct FeishuCall {
+    path: String,
+    auth: String,
+    body: serde_json::Value,
+    id: String,
+}
+
+impl FeishuCall {
+    /// The text of a message keepane sent.
+    fn text(&self) -> String {
+        let content: serde_json::Value =
+            serde_json::from_str(self.body["content"].as_str().unwrap_or("{}")).unwrap_or_default();
+        content["text"].as_str().unwrap_or_default().to_string()
+    }
+}
+
+/// A fake of Feishu's open platform for an app's long connection: HTTP for
+/// the endpoint, the token and the messages sent (each call handed to the
+/// test), and the WebSocket the endpoint points at (its frames both ways).
+struct FakeFeishu {
+    base: String,
+    calls: tokio::sync::mpsc::UnboundedReceiver<FeishuCall>,
+    /// The calls `call` passed over, by path.
+    skipped: Vec<String>,
+    to_keepane: tokio::sync::mpsc::UnboundedSender<keepane::feishu::Frame>,
+    from_keepane: tokio::sync::mpsc::UnboundedReceiver<keepane::feishu::Frame>,
+}
+
+/// An HTTP request off a connection: its head (lower case) and body. A
+/// `100-continue` curl asks for is given.
+async fn read_http(s: &mut tokio::net::TcpStream) -> Option<(String, Vec<u8>)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let body_at = loop {
+        let n = s.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..body_at]).to_string();
+    let lower = head.to_lowercase();
+    if lower.contains("expect: 100-continue") {
+        s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await.ok()?;
+    }
+    let len: usize =
+        lower.lines().find_map(|l| l.strip_prefix("content-length:")).map(|v| v.trim().parse().unwrap()).unwrap_or(0);
+    while buf.len() < body_at + len {
+        let n = s.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Some((head, buf[body_at..body_at + len].to_vec()))
+}
+
+impl FakeFeishu {
+    async fn start() -> FakeFeishu {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::io::AsyncWriteExt;
+        use tokio_tungstenite::tungstenite::Message as Ws;
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", http.local_addr().unwrap().port());
+        let ws_url = format!("ws://127.0.0.1:{}/ws/v2?device_id=1&service_id=7", ws.local_addr().unwrap().port());
+        let (calls_tx, calls) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut sent = 0;
+            loop {
+                let Ok((mut s, _)) = http.accept().await else { return };
+                let Some((head, body)) = read_http(&mut s).await else { continue };
+                let path = head.split_whitespace().nth(1).unwrap_or_default().to_string();
+                let auth = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Authorization: ").or_else(|| l.strip_prefix("authorization: ")))
+                    .unwrap_or_default()
+                    .to_string();
+                let mut id = String::new();
+                let answer = if path == "/callback/ws/endpoint" {
+                    serde_json::json!({"code": 0, "msg": "ok", "data": {"URL": ws_url, "ClientConfig":
+                        {"ReconnectCount": -1, "ReconnectInterval": 120, "ReconnectNonce": 30, "PingInterval": 120}}})
+                } else if path == "/open-apis/auth/v3/tenant_access_token/internal" {
+                    serde_json::json!({"code": 0, "msg": "ok", "tenant_access_token": "t-1", "expire": 7200})
+                } else if path.starts_with("/open-apis/im/v1/messages") {
+                    sent += 1;
+                    id = format!("om_k{sent}");
+                    serde_json::json!({"code": 0, "msg": "success", "data": {"message_id": id}})
+                } else {
+                    serde_json::json!({"code": 404, "msg": "no such path"})
+                }
+                .to_string();
+                let reply =
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len());
+                let _ = s.write_all(reply.as_bytes()).await;
+                let body = serde_json::from_slice(&body).unwrap_or_default();
+                let _ = calls_tx.send(FeishuCall { path, auth, body, id });
+            }
+        });
+        let (to_keepane, mut to_rx) = tokio::sync::mpsc::unbounded_channel::<keepane::feishu::Frame>();
+        let (from_tx, from_keepane) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let Ok((s, _)) = ws.accept().await else { return };
+            let mut w = tokio_tungstenite::accept_async(s).await.unwrap();
+            loop {
+                tokio::select! {
+                    f = to_rx.recv() => match f {
+                        Some(f) => {
+                            if w.send(Ws::Binary(f.encode().into())).await.is_err() {
+                                return;
+                            }
+                        }
+                        None => return,
+                    },
+                    m = w.next() => match m {
+                        Some(Ok(Ws::Binary(b))) => {
+                            let _ = from_tx.send(keepane::feishu::Frame::decode(&b).unwrap());
+                        }
+                        Some(Ok(_)) => {}
+                        _ => return,
+                    },
+                }
+            }
+        });
+        FakeFeishu { base, calls, skipped: Vec::new(), to_keepane, from_keepane }
+    }
+
+    /// The next HTTP call whose path starts with `prefix`; the others
+    /// before it are kept in `skipped`.
+    async fn call(&mut self, prefix: &str) -> FeishuCall {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let c = tokio::time::timeout(left, self.calls.recv())
+                .await
+                .unwrap_or_else(|_| panic!("no call to {prefix}; others: {:?}", self.skipped))
+                .expect("the fake is gone");
+            if c.path.starts_with(prefix) {
+                return c;
+            }
+            self.skipped.push(c.path);
+        }
+    }
+
+    /// The next reply keepane sent, to whichever message.
+    async fn reply(&mut self) -> FeishuCall {
+        loop {
+            let c = self.call("/open-apis/im/v1/messages/").await;
+            if c.path.ends_with("/reply") {
+                return c;
+            }
+            self.skipped.push(c.path);
+        }
+    }
+
+    /// The next frame keepane wrote with header `type` = `kind`.
+    async fn frame(&mut self, kind: &str) -> keepane::feishu::Frame {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let f = tokio::time::timeout(left, self.from_keepane.recv())
+                .await
+                .unwrap_or_else(|_| panic!("no {kind} frame from keepane"))
+                .expect("the connection is gone");
+            if f.header("type") == Some(kind) {
+                return f;
+            }
+        }
+    }
+
+    /// A message event, as Feishu pushes one: from `user`, answering
+    /// `parent` (none: ""), sent `age_ms` ago.
+    #[allow(clippy::too_many_arguments)]
+    fn push(&self, seq: u64, id: &str, user: &str, parent: &str, text: &str, chat: &str, kind: &str, age_ms: i64) {
+        let content = serde_json::json!({ "text": text }).to_string();
+        let sent = chrono::Utc::now().timestamp_millis() - age_ms;
+        let payload = serde_json::json!({
+            "schema": "2.0",
+            "header": {"event_id": format!("ev-{seq}"), "event_type": "im.message.receive_v1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": user}, "sender_type": "user"},
+                "message": {"message_id": id, "parent_id": parent, "root_id": parent, "create_time": sent.to_string(),
+                    "chat_id": "oc_1", "chat_type": chat, "message_type": kind, "content": content}
+            }
+        });
+        let f = keepane::feishu::Frame {
+            seq_id: seq,
+            service: 7,
+            method: keepane::feishu::METHOD_DATA,
+            headers: [("type", "event"), ("message_id", &format!("f-{seq}")), ("sum", "1"), ("seq", "0")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .to_vec(),
+            payload: payload.to_string().into_bytes(),
+            ..Default::default()
+        };
+        self.to_keepane.send(f).unwrap();
+    }
+
+    /// A text in the chat with the bot alone, sent now.
+    fn say(&self, seq: u64, id: &str, user: &str, parent: &str, text: &str) {
+        self.push(seq, id, user, parent, text, "p2p", "text", 0);
+    }
+}
+
+/// A Feishu app of one's own (docs/design/feishu.md), against a fake of
+/// Feishu: the long connection made with the app's id and secret (the
+/// secret not shown), each event answered within the frame, a stranger told
+/// how to be let in, letting in refused from a pane; a pane that waits told
+/// to the person, and their answer typed there at once; a key for a
+/// question already answered pressing nothing; an event sent twice acted on
+/// once; `/panes`; a message refused to a shell pane without `--shell`,
+/// delivered to an agent, and the agent's answer back under it; `/screen`
+/// only with `--screen`; a group chat, a message from long ago and a
+/// picture not acted on; everything in the event log; the connection gone
+/// with the secret.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_feishu_app_tells_the_panes_and_takes_answers() {
+    let h = Harness::start("feishu").await;
+    let mut f = FakeFeishu::start().await;
+    let me = "ou_me1";
+    assert!(h.cli(&["feishu-status"]).await.1.starts_with("feishu: off"));
+    h.cli(&[&["new", "-d", "-s", "fs"], HOOKED_SHELL].concat()).await;
+    let p = pane_id(&h, "fs:0.0").await;
+    let pt = format!("%{p}");
+    for (k, v) in [
+        ("feishu-domain", f.base.as_str()),
+        ("feishu-app-id", "cli_test"),
+        ("feishu-app-secret", "s3cret"),
+        ("done-events", "wait"),
+        ("done-panes", "all"),
+    ] {
+        let (code, _, err) = h.cli(&["set", "-g", k, v]).await;
+        assert_eq!(code, 0, "{k}: {err}");
+    }
+    assert_eq!(h.cli(&["show", "-gv", "feishu-app-secret"]).await.1.trim(), "(set)");
+    let c = f.call("/callback/ws/endpoint").await;
+    assert_eq!((c.body["AppID"].as_str(), c.body["AppSecret"].as_str()), (Some("cli_test"), Some("s3cret")));
+    assert_eq!(f.frame("ping").await.service, 7, "the service in the address");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !h.cli(&["feishu-status"]).await.1.contains("connected since") {
+        assert!(Instant::now() < deadline, "not connected: {}", h.cli(&["feishu-status"]).await.1);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // A stranger: the event answered in its frame, then told how to be let in.
+    f.say(1, "om_u1", "ou_stranger9", "", "hello");
+    let ack = f.frame("event").await;
+    assert_eq!(ack.seq_id, 1);
+    assert!(ack.header("biz_rt").is_some());
+    let answer: serde_json::Value = serde_json::from_slice(&ack.payload).unwrap();
+    assert_eq!(answer["code"], 200);
+    let c = f.call("/open-apis/im/v1/messages/om_u1/reply").await;
+    assert!(c.text().contains("keepane feishu allow ou_stranger9"), "{}", c.text());
+    assert_eq!(c.auth, "Bearer t-1");
+    assert!(f.skipped.iter().any(|s| s == "/open-apis/auth/v3/tenant_access_token/internal"), "{:?}", f.skipped);
+
+    // Let in only from outside the panes.
+    let (code, _, err) = h.cli_in(Some(p), &["feishu-allow", me]).await;
+    assert_ne!(code, 0);
+    assert!(err.contains("not run from inside a pane"), "{err}");
+    let (code, out, _) = h.cli(&["feishu-allow", me]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("may not run commands") && out.contains("may not read"), "{out}");
+
+    // A pane waits: told to the person, by the app.
+    h.cli(&["send-keys", "-t", &pt, "echo the-question", "Enter"]).await;
+    h.wait_capture("fs:0.0", "the question", |s| s.lines().any(|l| l.trim() == "the-question")).await;
+    let claude = r#"{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash"}"#;
+    let socket = h.socket.clone();
+    let (code, err) =
+        tokio::task::spawn_blocking(move || run_hook(&socket, Some(p), &["pane-wait", "-q"], claude)).await.unwrap();
+    assert_eq!(code, 0, "{err}");
+    let told = f.call("/open-apis/im/v1/messages?receive_id_type=open_id").await;
+    assert_eq!(told.body["receive_id"], me);
+    assert!(told.text().contains("waits for you: Claude needs your permission"), "{}", told.text());
+    assert!(told.text().contains("Reply to answer it"), "{}", told.text());
+    // Kept as about the pane once sent (a person answers later than that).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !h.cli(&["list-events", "-n", "200"]).await.1.contains(&format!("\"message\":\"{}\"", told.id)) {
+        assert!(Instant::now() < deadline, "{} not kept", told.id);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // No agent runs there (a shell at its prompt plays the waiting one):
+    // keys would run commands, so they need --shell.
+    f.say(20, "om_u20", me, "", &format!("/key {pt} 1"));
+    let c = f.reply().await;
+    assert!(c.text().starts_with("No agent runs in") && c.text().contains("--shell"), "{}", c.text());
+    assert_eq!(h.cli(&["feishu-allow", me, "--shell"]).await.0, 0);
+    // The answer to it goes in now: text typed, then Enter (the shell runs it).
+    f.say(2, "om_u2", me, &told.id, "echo from-feishu-ok");
+    let c = f.reply().await;
+    assert!(c.path.contains("om_u2") && c.text().starts_with("Typed into"), "{} {}", c.path, c.text());
+    h.wait_capture("fs:0.0", "the answer run", |s| s.lines().any(|l| l.trim() == "from-feishu-ok")).await;
+    // Answered: a key for it presses nothing.
+    f.say(3, "om_u3", me, &told.id, "1");
+    let c = f.reply().await;
+    assert!(c.text().contains("no longer waits") && c.text().contains("nothing was pressed"), "{}", c.text());
+    // The same message again (Feishu sends again what it thinks unanswered):
+    // acted on once; the next reply is to the next message.
+    f.say(4, "om_u3", me, &told.id, "1");
+    f.say(5, "om_u4", me, "", "/help");
+    let c = f.reply().await;
+    assert!(c.path.contains("om_u4") && c.text().contains("/panes"), "{} {}", c.path, c.text());
+
+    // A mention alone (nothing once it is taken out): nothing is typed,
+    // not even the Enter that would take a question's first choice.
+    f.say(17, "om_u17", me, &told.id, "@_user_1");
+    let c = f.reply().await;
+    assert!(c.text().starts_with("Nothing to send"), "{}", c.text());
+    // Keys as big as a message may be, at most.
+    f.say(18, "om_u18", me, "", &format!("/key {pt} {}", "x".repeat(70 * 1024)));
+    let c = f.reply().await;
+    assert!(c.text().contains("message-max-size"), "{}", c.text());
+    // Two questions: an answer to the older one presses nothing; someone
+    // typing at the computer answers the newer, and then an answer to it
+    // presses nothing either.
+    let mut asked = Vec::new();
+    for _ in 0..2 {
+        tokio::time::sleep(Duration::from_millis(3200)).await; // past the pane's gate
+        let socket = h.socket.clone();
+        let (code, err) = tokio::task::spawn_blocking(move || run_hook(&socket, Some(p), &["pane-wait", "-q"], claude))
+            .await
+            .unwrap();
+        assert_eq!(code, 0, "{err}");
+        let t = f.call("/open-apis/im/v1/messages?receive_id_type=open_id").await;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !h.cli(&["list-events", "-n", "200"]).await.1.contains(&format!("\"message\":\"{}\"", t.id)) {
+            assert!(Instant::now() < deadline, "{} not kept", t.id);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        asked.push(t.id);
+    }
+    f.say(15, "om_u15", me, &asked[0], "1");
+    let c = f.reply().await;
+    assert!(c.text().contains("waits on a newer question") && c.text().contains("Nothing was pressed"), "{}", c.text());
+    h.cli(&["send-keys", "-t", &pt, "echo typed-here", "Enter"]).await;
+    h.wait_capture("fs:0.0", "the typing", |s| s.lines().any(|l| l.trim() == "typed-here")).await;
+    f.say(16, "om_u16", me, &asked[1], "1");
+    let c = f.reply().await;
+    assert!(c.text().contains("no longer waits") && c.text().contains("nothing was pressed"), "{}", c.text());
+
+    // The panes.
+    f.say(6, "om_u5", me, "", "/panes");
+    let c = f.reply().await;
+    assert!(c.text().lines().any(|l| l.starts_with(&format!("{pt} fs:0.0 "))), "{}", c.text());
+
+    // A message to a shell pane runs there: refused without --shell.
+    assert_eq!(h.cli(&["feishu-allow", me, "--no-shell"]).await.0, 0);
+    h.cli(&["set-work-mode", "-t", &pt, "shell"]).await;
+    f.say(7, "om_u6", me, "", &format!("/to {pt} ls"));
+    let c = f.reply().await;
+    assert!(c.text().contains(&format!("keepane feishu allow {me} --shell")), "{}", c.text());
+    h.cli(&["set-work-mode", "-t", &pt, "normal"]).await;
+    // To an agent's pane: delivered, and the agent's answer comes back under it.
+    h.cli(&["new-window", "-d", "-t", "fs"]).await;
+    let a = pane_id(&h, "fs:1.0").await;
+    h.cli(&["set-work-mode", "-t", &format!("%{a}"), "ai"]).await;
+    assert_eq!(h.cli_in(Some(a), &["pane-ready"]).await.0, 0);
+    f.say(8, "om_u7", me, "", &format!("/to %{a} check the build"));
+    let c = f.reply().await;
+    assert!(c.path.contains("om_u7") && c.text().contains("delivered"), "{}", c.text());
+    let (code, out, err) = h.cli_in(Some(a), &["send-message", "-r", "the build is green"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("sent to Feishu"), "{out}");
+    let c = f.reply().await;
+    assert!(c.path.contains("om_u7") && c.text().ends_with(": the build is green"), "{} {}", c.path, c.text());
+
+    // The screen only with --screen.
+    f.say(9, "om_u8", me, "", &format!("/screen {pt}"));
+    assert!(f.reply().await.text().contains("Reading the panes is off"));
+    assert_eq!(h.cli(&["feishu-allow", me, "--screen"]).await.0, 0);
+    f.say(10, "om_u9", me, "", &format!("/screen {pt}"));
+    let c = f.reply().await;
+    assert!(c.text().contains("from-feishu-ok"), "{}", c.text());
+
+    // Not acted on: a group chat, a message from an hour ago; a picture is
+    // answered that only text goes.
+    f.push(11, "om_g1", me, "", "/panes", "group", "text", 0);
+    f.push(12, "om_old", me, "", "/panes", "p2p", "text", 3_600_000);
+    f.push(13, "om_pic", me, "", "", "p2p", "image", 0);
+    let c = f.reply().await;
+    assert!(c.path.contains("om_pic") && c.text().starts_with("Only text"), "{} {}", c.path, c.text());
+
+    // feishu-notify off: a pane that waits is not told by the app (the
+    // reply to the next message is all that is sent).
+    h.cli(&["set", "-g", "feishu-notify", "off"]).await;
+    tokio::time::sleep(Duration::from_millis(3200)).await; // past the pane's gate
+    let socket = h.socket.clone();
+    let (code, err) =
+        tokio::task::spawn_blocking(move || run_hook(&socket, Some(p), &["pane-wait", "-q"], claude)).await.unwrap();
+    assert_eq!(code, 0, "{err}");
+    let waits = h.cli(&["list-done"]).await.1.lines().filter(|l| l.contains("waits for you")).count();
+    assert_eq!(waits, 4, "told to the page all the same");
+    // One sender, in order: a telling would go out before this reply.
+    let before = f.skipped.len();
+    f.say(14, "om_u14", me, "", "/help");
+    let c = f.reply().await;
+    assert!(c.path.contains("om_u14"), "{}", c.path);
+    let told: Vec<&String> = f.skipped[before..].iter().filter(|s| s.contains("receive_id_type")).collect();
+    assert!(told.is_empty(), "told with feishu-notify off: {told:?}");
+
+    // Who is let in, and what came through, in the event log.
+    let st = h.cli(&["feishu-status"]).await.1;
+    assert!(st.contains("connected since") && st.contains(&format!("{me}  shell: no  screen: yes")), "{st}");
+    let (_, log, _) = h.cli(&["list-events", "-n", "500"]).await;
+    for what in [
+        "\"refused\"",
+        "\"allowed\"",
+        "\"keys\"",
+        "\"not-pressed\"",
+        "\"message\"",
+        "\"answer\"",
+        "\"screen\"",
+        "\"group\"",
+        "\"stale\"",
+    ] {
+        assert!(log.lines().any(|l| l.contains("\"feishu\"") && l.contains(what)), "{what}: {log}");
+    }
+    // Let in no more: an agent's answer to what they sent does not go.
+    f.say(19, "om_u19", me, "", &format!("/to %{a} one more"));
+    assert!(f.reply().await.text().contains("#"));
+    assert_eq!(h.cli(&["feishu-remove", me]).await.0, 0);
+    let (code, _, err) = h.cli_in(Some(a), &["send-message", "--re", &last_feishu_message(&h).await, "late"]).await;
+    assert_ne!(code, 0);
+    assert!(err.contains("no longer let in"), "{err}");
+    // The event log's own fields (`at`, `ev`, `what`) are not given twice.
+    let started = log.lines().find(|l| l.contains("\"feishu\"") && l.contains("\"started\"")).expect("started");
+    assert_eq!(started.matches("\"at\":").count(), 1, "{started}");
+    assert!(started.contains(&format!("\"domain\":\"{}\"", f.base)), "{started}");
+    // The secret cleared: the connection stops.
+    h.cli(&["set", "-g", "feishu-app-secret", ""]).await;
+    assert!(h.cli(&["feishu-status"]).await.1.starts_with("feishu: off"));
+    h.cli(&["kill-server"]).await;
 }

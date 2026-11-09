@@ -263,7 +263,7 @@ fn url_escape(s: &str) -> String {
 }
 
 /// A string as curl's config file quotes it.
-fn curl_quote(s: &str) -> String {
+pub(super) fn curl_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -327,7 +327,7 @@ fn run_curl(config: &str) -> Result<(), String> {
 
 impl Server {
     /// Where a pane is, as a person names it: `session:window.pane`.
-    fn place_text(&self, pid: PaneId) -> String {
+    pub(super) fn place_text(&self, pid: PaneId) -> String {
         let Some((sid, widx)) = self.place_of(pid) else { return format!("%{pid}") };
         let Some(s) = self.session(sid) else { return format!("%{pid}") };
         let pidx = s.windows[widx].layout.panes().iter().position(|p| *p == pid).unwrap_or(0);
@@ -339,6 +339,10 @@ impl Server {
     /// (nor, for a bell, its bell in the last minute).
     pub(super) fn pane_done(&mut self, pane: PaneId, kind: Kind, text: String, ended: Ended) {
         let Ended { ok, exit, secs, git } = ended;
+        // An agent's turn over, or the program: whatever it waited on is.
+        if matches!(kind, Kind::Agent | Kind::Task | Kind::Exit) {
+            self.feishu_wait_over(pane);
+        }
         if !self.opts.done_events.split_whitespace().any(|e| e == kind.as_str()) {
             return;
         }
@@ -431,6 +435,7 @@ impl Server {
                 log::warn!("done-webhook: {e}");
             }
         }
+        self.feishu_tell(&d, &host);
     }
 
     /// `pane-wait`: the program in a pane waits for the person. The pane

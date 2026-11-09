@@ -635,6 +635,41 @@ set -g done-lines 5               # 一起带上 pane 最后输出的几行（0 
 
 `wait` 来自 agent 的等待 hook（`keepane setup`，见上文），带着它说的话：`waits for you: Claude needs your permission`。pane 最后几行一起带上（`done-lines`）：要权限时是问题和几个选项，命令本身就在选项里。别的程序也可以发：`keepane pane-wait "要部署到生产环境吗？"`。`bell` 默认不开，只管没有 agent 的 pane：agent 响铃表示它这一轮结束了或者有问题，`agent` 和 `wait` 说得更清楚。同一个 pane 的响铃一分钟最多通知一次。
 
+## 在飞书里回复 pane
+
+用你自己的飞书应用（国际版 Lark 也行），通知由应用私聊发给你，你在聊天里直接回复。长连接由 keepane 主动连向飞书：这台电脑不对外开任何端口，也不需要公网地址。
+
+- **回复"在等你"的通知**（`wait`）：回复立刻送进 pane。单个键按原样按下：`1`、`2`、`y`、`n`、`esc`、`enter`、`up`、`down`、`tab`。其他文字先打进去，再按回车。
+- **回复其他通知**：回复作为一条消息发给那个 pane，和 `send-message` 一样。agent 的 pane 等 agent 空闲时收到；`normal` 模式的 pane 留着等 `read-message`。agent 用 `send-message -r` 回答时，回答会回到飞书聊天里。
+- **命令**：`/panes`（列出 pane，以及哪些在等你）、`/to <pane> <文字>`（发消息）、`/key <pane> <按键>`（立刻按键）、`/screen <pane>`（看屏幕）、`/help`。
+
+只认你放进白名单的人，只收和机器人的单聊。消息能发给 agent 的 pane 和 `normal` 模式的 pane，按键能发给 agent。没有 agent 的 pane 收到按键、`shell` 模式的 pane 收到消息，都会执行命令，所以要加 `--shell` 授权。`/screen` 会把屏幕内容传到飞书的服务器，所以要加 `--screen` 授权。授权只能在 pane 外面运行，agent 不能给别人开权限。已经结束的提问，再回复按键也不会按下去。每条通知都带着 pane 最后几行，和 webhook 一样（`done-lines`；设成 0 就一行都不带）。收到的每条消息、做了什么，都写进事件日志（`list-events`）。
+
+配置步骤：
+
+1. 在飞书开放平台（open.feishu.cn；Lark 是 open.larksuite.com）创建企业自建应用，打开"机器人"能力。
+2. 开两个权限：读取用户发给机器人的单聊消息、以应用的身份发消息。
+3. 把应用的 App ID 和 App Secret 写进 `keepane.conf`（见下），等 `keepane feishu` 显示 `connected`。
+4. 在应用的"事件与回调"里选"使用长连接接收事件"并保存（keepane 连着的时候飞书才让保存），再添加事件 `im.message.receive_v1`。Encrypt Key 留空。
+5. 发布应用版本。
+6. 给机器人发一条消息。它会回复你的 open_id 和授权命令：在 keepane 外面的终端里运行这条命令。
+
+```sh
+set -g feishu-app-id cli_xxxxxxxx
+set -g feishu-app-secret <密钥>       # show-options 只显示 (set)
+set -g feishu-domain feishu           # Lark 填 lark
+set -g feishu-notify on               # 通知由应用发出
+```
+
+```sh
+keepane feishu                        # 连上没有，白名单里有谁
+keepane feishu allow ou_xxxx          # 放一个账号进来
+keepane feishu allow ou_xxxx --shell --screen
+keepane feishu remove ou_xxxx
+```
+
+同一个应用有多个连接时，飞书把每个事件只随机发给其中一个。所以一台电脑用一个应用：两台电脑共用一个应用，消息会随机落到其中一台。设计稿：[docs/design/feishu.md](docs/design/feishu.md)。
+
 ## pane 所在仓库的 git 信息
 
 pane 的目录在 git 仓库里时，keepane 读两样东西：仓库现在的状态，以及 agent 这次工作做了什么。

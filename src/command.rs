@@ -795,6 +795,22 @@ pub enum Cmd {
     },
     /// `link-rekey`: a new key pair; every pairing has to be made again.
     LinkRekey,
+    /// `feishu-status` (`keepane feishu`): the Feishu app's connection and
+    /// the people let in (docs/design/feishu.md).
+    FeishuStatus,
+    /// `feishu-allow ou_… [--shell|--no-shell] [--screen|--no-screen]`
+    /// (`keepane feishu allow`): a Feishu account let in; whether its keys
+    /// and messages may go to panes with no agent (commands run there), and
+    /// whether it may read what the panes show.
+    FeishuAllow {
+        user: String,
+        shell: Option<bool>,
+        screen: Option<bool>,
+    },
+    /// `feishu-remove ou_…` (`keepane feishu remove`): no longer let in.
+    FeishuRemove {
+        user: String,
+    },
     /// `link-inbound peer-ip request`: a request another machine made to
     /// the `/link/` paths of `keepane web`, which forwards it whole (as
     /// JSON) since the keys are the server's. The answer is JSON too:
@@ -1862,6 +1878,18 @@ impl fmt::Display for Cmd {
             }
             Cmd::LinkRemove { addr } => write!(f, "link-remove {}", quote(addr)),
             Cmd::LinkRekey => f.write_str("link-rekey"),
+            Cmd::FeishuStatus => f.write_str("feishu-status"),
+            Cmd::FeishuAllow { user, shell, screen } => {
+                write!(f, "feishu-allow {}", quote(user))?;
+                if let Some(s) = shell {
+                    f.write_str(if *s { " --shell" } else { " --no-shell" })?;
+                }
+                if let Some(s) = screen {
+                    f.write_str(if *s { " --screen" } else { " --no-screen" })?;
+                }
+                Ok(())
+            }
+            Cmd::FeishuRemove { user } => write!(f, "feishu-remove {}", quote(user)),
             Cmd::LinkInbound { peer, request } => write!(f, "link-inbound {} {}", quote(peer), quote(request)),
             Cmd::WaitFor { channel, lock, unlock, signal } => {
                 f.write_str("wait-for")?;
@@ -2379,6 +2407,9 @@ pub const COMMANDS: &[&str] = &[
     "link-list",
     "link-panes",
     "link-rekey",
+    "feishu-status",
+    "feishu-allow",
+    "feishu-remove",
     "link-remove",
     "link-trust",
     "list-buffers",
@@ -2652,6 +2683,9 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("link-list", &[]),
     ("link-panes", &[]),
     ("link-rekey", &[]),
+    ("feishu-status", &[]),
+    ("feishu-allow", &["--shell", "--no-shell", "--screen", "--no-screen"]),
+    ("feishu-remove", &[]),
     ("link-remove", &[]),
     ("link-trust", &["--shell", "--screen", "--panes", "--push"]),
     ("link-start", &["-s", "-n", "-m", "-c"]),
@@ -4190,6 +4224,31 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 _ => Cmd::LinkRekey,
             }
         }
+        "feishu-status" => {
+            a.none_left(n)?;
+            Cmd::FeishuStatus
+        }
+        "feishu-allow" | "feishu-remove" => {
+            let (mut user, mut shell, mut screen) = (None, None, None);
+            while let Some(w) = a.next() {
+                match w {
+                    "--shell" if n == "feishu-allow" => shell = Some(true),
+                    "--no-shell" if n == "feishu-allow" => shell = Some(false),
+                    "--screen" if n == "feishu-allow" => screen = Some(true),
+                    "--no-screen" if n == "feishu-allow" => screen = Some(false),
+                    f if f.starts_with('-') => return Err(bad_flag(n, f)),
+                    v if user.is_none() => user = Some(v.to_string()),
+                    v => return Err(format!("{n}: what is '{v}'?")),
+                }
+            }
+            let Some(user) = user else {
+                return Err(format!("{n}: the account's open_id (ou_…, what the bot answers a stranger)"));
+            };
+            if !crate::feishu::valid_open_id(&user) {
+                return Err(format!("{n}: '{user}' is not an open_id (ou_…)"));
+            }
+            if n == "feishu-allow" { Cmd::FeishuAllow { user, shell, screen } } else { Cmd::FeishuRemove { user } }
+        }
         "link-add" => {
             let url =
                 a.next().ok_or("link-add: the other machine's `keepane web` address (http://host:port/#k=...)")?;
@@ -5329,6 +5388,10 @@ mod tests {
             "capture-pane -p -S -100 -t w:1",
             "web-tails 4",
             "pane-wait -q",
+            "feishu-status",
+            "feishu-allow ou_ab12",
+            "feishu-allow ou_ab12 --shell --no-screen",
+            "feishu-remove ou_ab12",
             "pane-wait -t %3 -- \"Claude needs your permission to use Bash\"",
             "run-shell -b -t w:1 \"pwsh -c Get-Date\"",
             "set-hook -g after-new-window \"rename-window hooked\"",

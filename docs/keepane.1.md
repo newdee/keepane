@@ -362,6 +362,32 @@ says what would go and sends nothing. It goes as one gzip stream, in
 pieces, checked whole; `link-agents-limit` (default 1G) is the most it may
 be, here and there.
 
+### Panes from Feishu
+
+With `feishu-app-id` and `feishu-app-secret` set (a Feishu or Lark
+enterprise self-built app with its bot on; docs/design/feishu.md), the
+server keeps the app's long connection, a WebSocket it opens itself, and
+the tellings of `done-events` also come from the app, to the people let
+in (`feishu-notify`). A reply to a pane that waits for you (`wait`) goes
+in at once: one key name or character is pressed (`1`, `y`, `esc`,
+`enter`, `up`...), other text typed and then Enter; a reply to a question
+that is over presses nothing. A reply to any other telling is a message
+to that pane, as `send-message` sends one, from `feishu/user`; an agent's
+`send-message -r` to it goes back to the chat, under what was sent. In
+the chat: `/panes`, `/to <pane> <text>`, `/key <pane> <keys>`, `/screen
+<pane>` and `/help`. `keepane feishu` (`feishu`, `feishu-status`) says
+whether the app is connected and who is let in. `keepane feishu allow ou_...`
+(`feishu-allow`) lets an account in; the bot tells a stranger its open_id
+and this command. It is given from a terminal outside keepane or the `C-b
+:` prompt, never from inside a pane. `--shell` (`--no-shell`) lets the
+account's keys go where no agent runs and its messages to `shell` panes,
+which both run commands; `--screen` (`--no-screen`) lets it read what a
+pane shows. `keepane feishu remove ou_...` (`feishu-remove`) lets it in
+no more. Only a chat with the bot alone is heard, a message sent more than
+10 minutes before it arrives is passed over, and each request is kept in
+the event log. Feishu gives each event to one connection of an app: one
+app for one machine.
+
 ## KEYS
 
 Keys are pressed after the prefix, `C-b` (`set -g prefix C-a` changes it).
@@ -615,7 +641,9 @@ off. No password or key is read or kept.
   log, `prices.json` (the agents' price list, as last fetched), `web.key` (the phone's code kept by `keepane web --keep-key`), and
   `link/`*socket*`/`: a server's key pair (`key`, readable by its user alone)
   and the machines it lets in (`authorized`: a public key, an address, and
-  `shell` and `screen` for what they may do, one machine a line). Beside
+  `shell` and `screen` for what they may do, one machine a line), and the
+  Feishu accounts let in (`feishu-users`: an open_id, `shell=` and
+  `screen=`, one account a line, readable by its user alone). Beside
   the saved sessions, `environment/`*socket*`.json` keeps
   `set-environment`'s table, and `.ps1`, `.sh` and `.fish` beside it its
   changes for the shells' prompt hook. `shell/` holds the start files that

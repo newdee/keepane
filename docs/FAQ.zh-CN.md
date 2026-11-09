@@ -124,6 +124,18 @@ keepane link allow 192.168.1.20:7681 --shell
 - **自定义关键词**：keepane 发到聊天工具的每条消息都以 `keepane` 开头，把 `keepane` 加为机器人的关键词即可。
 - **签名校验**（飞书的"签名校验"、钉钉的"加签"）：把机器人显示的密钥填进 `set -g done-webhook-secret <密钥>`，keepane 会给每条消息签名。密钥不对，或者电脑时钟偏差超过一小时，飞书会回 `refused (19021)`。
 - **IP 白名单**：电脑访问外网用的那个地址要在白名单里。
+
+## 飞书：应用连不上，或者机器人不回话
+
+运行 `keepane feishu` 看状态：
+
+- **`off`**：`feishu-app-id` 或 `feishu-app-secret` 没设。两个都写进 `keepane.conf`：只用 `set -g` 设的，server 重启后就没了。
+- **`Feishu refused (1000040346): app_id is invalid`**，或别的错误码：App ID 或 App Secret 不对，或者应用不是企业自建应用。Lark 的应用要加 `set -g feishu-domain lark`。
+- **显示 `connected`，机器人不回话**：应用的事件没选"长连接"、没添加 `im.message.receive_v1`，或者改完没发布版本。飞书只在 keepane 连着的时候才让保存长连接设置。
+- **机器人回复你的 open_id**：你还不在白名单里。在 keepane 外面的终端里运行它给的命令（`keepane feishu allow ou_...`）；在 pane 里运行会被拒绝。
+- **状态栏提示 `events come encrypted`**：去应用的事件设置里清掉 Encrypt Key。
+- **消息跑到另一台电脑上**：同一个应用有多个连接时，飞书把每个事件只发给其中一个。每台电脑用自己的应用。
+
 ## Windows：hook 里的 keepane 路径加了引号就报错
 
 Windows 上 agent 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。程序名不要加引号（`keepane pane-ready -q`，keepane 在 PATH 上），或者用调用运算符：`& "C:\路径\keepane.exe" pane-ready -q`。`keepane setup` 写的就是不带引号的写法。

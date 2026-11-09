@@ -32,6 +32,12 @@ chrono-tz = "0.10"
 # `send-agents`: a project and its agents' chats go to another machine as one
 # gzip stream (docs/design/agent-sync.md); chats shrink to about a quarter.
 flate2 = "1"
+# Feishu (Lark) messages in (docs/design/feishu.md): its long connection is a
+# WebSocket over TLS. rustls with ring (no OpenSSL, builds for musl too) and
+# Mozilla's roots built in; HTTP requests still go through curl.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 [target.'cfg(windows)'.dependencies]
 # WinRT toasts (the notification with a "Go to pane" button) and WMI (the

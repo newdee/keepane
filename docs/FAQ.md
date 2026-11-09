@@ -199,6 +199,27 @@ answered. A bot's security setting decides:
 - **IP allow list**: the address the computer reaches the internet from
   must be on it.
 
+## Feishu: the app does not connect, or does not answer
+
+`keepane feishu` says where it stands:
+
+- **`off`**: `feishu-app-id` or `feishu-app-secret` is not set. Set both
+  in `keepane.conf`: `set -g` alone is gone when the server restarts.
+- **`Feishu refused (1000040346): app_id is invalid`**, or another code:
+  the App ID or App Secret is wrong, or the app is not an enterprise
+  self-built one. Lark's apps need `set -g feishu-domain lark`.
+- **`connected`, and the bot says nothing**: the app's events are not set
+  to the long connection, `im.message.receive_v1` is not added, or the
+  version with them is not published. Feishu saves the long connection
+  only while keepane is connected.
+- **The bot answers with your open_id**: you are not let in yet. Run the
+  command it gives in a terminal outside keepane (`keepane feishu allow
+  ou_...`); from inside a pane it is refused.
+- **`events come encrypted`** on the status line: clear the Encrypt Key
+  in the app's event settings.
+- **Messages land on another machine**: Feishu gives each event to one
+  connection of an app. Use one app for each machine.
+
 ## Windows: a hook with a quoted keepane path fails
 
 An agent on Windows may run its hooks in PowerShell, where a quoted path

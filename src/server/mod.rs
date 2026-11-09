@@ -9,6 +9,7 @@ pub(crate) mod clockanim;
 mod digits;
 mod done;
 mod envvars;
+mod feishu;
 mod gitstate;
 mod hints;
 pub mod import;
@@ -160,6 +161,8 @@ enum Event {
     GitWork(u64, Option<Box<crate::git::Work>>),
     /// The Enter of a message typed into an agent is due (`enter_step`).
     EnterDue(PaneId),
+    /// The Feishu app's connection or sender heard something (`feishu`).
+    Feishu(Box<feishu::FromChat>),
 }
 
 /// Runs `ask` on a thread of its own and sends its answer as `answer`. A
@@ -1279,6 +1282,8 @@ pub struct Server {
     web_generation: u64,
     /// The links to other machines (docs/design/link.md), once first used.
     link: Option<link_state::LinkHost>,
+    /// The Feishu app's connection and the people let in (`feishu`).
+    feishu: feishu::FeishuHost,
     /// The paired machines' panes, by address, for the chart of `choose-tree`.
     remote_views: HashMap<String, link_tree::RemoteView>,
     /// Sessions sized to a phone (`web-fit`), by session.
@@ -1387,6 +1392,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     srv.force_restore = options.force_restore;
     srv.config_override = options.config;
     srv.load_config();
+    srv.feishu_sync();
     srv.mail_start();
     srv.newer_start();
     // A persistent interval: a fresh `sleep` per iteration would never fire
@@ -1686,6 +1692,7 @@ impl Server {
             web_on,
             web_generation: 0,
             link: None,
+            feishu: feishu::FeishuHost::default(),
             remote_views: HashMap::new(),
             web_fits: HashMap::new(),
         }
@@ -2590,6 +2597,7 @@ impl Server {
             Event::GitStatus(generation, root, status) => self.git_status_heard(generation, root, status),
             Event::GitWork(token, work) => self.git_work_measured(token, work),
             Event::EnterDue(pid) => self.enter_step(pid),
+            Event::Feishu(e) => self.feishu_event(*e),
             // The frame after every event draws it.
             Event::PrefixHintDue => {}
             Event::DragScroll(cid) => {
@@ -5804,6 +5812,8 @@ impl Server {
                     // The event log follows its options at once, not at the
                     // next tick: `event-log off` means nothing more is written.
                     self.sync_event_log();
+                    // So does the Feishu app's connection.
+                    self.feishu_sync();
                     // Status line toggles change the window area.
                     let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
                     for sid in ids {
@@ -6157,6 +6167,7 @@ impl Server {
             Cmd::ShareSent { token, peer, note } => self.share_sent(&token, &peer, &note),
             Cmd::WebFit { target, size } => self.web_fit(cid, target.as_ref(), size),
             Cmd::WebTails { lines } => Outcome::Text(self.web_tails(lines)),
+            c @ (Cmd::FeishuStatus | Cmd::FeishuAllow { .. } | Cmd::FeishuRemove { .. }) => self.exec_feishu(c, cid),
             c @ (Cmd::LinkId | Cmd::LinkTrust { .. } | Cmd::LinkList | Cmd::LinkAllow { .. } | Cmd::LinkRekey) => {
                 self.exec_link_local(c, cid)
             }

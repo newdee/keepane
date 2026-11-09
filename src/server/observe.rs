@@ -281,6 +281,12 @@ impl Store {
         });
     }
 
+    /// The Feishu app (`feishu`): its connection, who was let in, and every
+    /// request that came through it and what was done.
+    pub fn feishu(&mut self, what: &str, fields: &str) {
+        self.write(now(), "feishu", &format!(",\"what\":\"{what}\"{fields}"));
+    }
+
     /// Something about the links to other machines: `what` it was (paired,
     /// removed, allowed, refused) and its fields, already JSON.
     pub fn link(&mut self, what: &str, fields: &str) {

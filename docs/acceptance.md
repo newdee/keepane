@@ -5418,3 +5418,46 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - Codex、Gemini CLI 的等待 hook 按文档写，没有端到端实测；Cursor CLI、opencode 没有等待 hook。
   - 第 2 期（从飞书给 pane 发消息）没做，需要飞书企业自建应用。
 - 发布：v0.52.0（tag 在 ba26720，其 CI 四项全过）。Release 成功，13 个文件；Homebrew 两个系统测试通过后发布，3 个 sha256 与发布文件一致；manifests 已拉取（c113c5d）；winget 0.51.0 的 PR #466770 已于 10-31 合并，0.52.0 新开 PR #475184（只加 0.52.0 的 3 个文件；第一次 `gh pr create` TLS 超时，分支已建，单独补建 PR）。
+## 175. 在飞书里回复 pane（第 2 期：飞书收消息）
+
+- 用户要求：开始做第 2 期飞书收消息，先规划。规划给出后用户说"按推荐来，改吧"：回复 `wait` 通知立刻按键，回复其他通知走消息排队；内置 `rustls` 和 `tokio-tungstenite`；只做文字和固定命令，卡片按钮下一版。
+- 做法（详见 `docs/design/feishu.md`）：
+  - `src/feishu.rs`（不依赖 server）：飞书长连接的 protobuf 帧手写编解码、分片重组、事件解析、聊天命令、按键别名、endpoint/token/发消息的请求和应答。
+  - `src/server/feishu.rs`：连接任务（endpoint、WebSocket、ping、每个事件先回 200 再交给 server、断线重连、握手 30 秒超时、静默断线检测）和发送任务（token 缓存，失效重取一次）；白名单（`link` 目录下的 `feishu-users`）、去重、过期、回复找 pane、`/panes` `/to` `/key` `/screen` `/help`、agent 的 `send-message -r` 回到飞书、事件日志。HTTP 走 curl，密钥和 token 写在 curl 的标准输入上。
+  - 选项 `feishu-app-id`、`feishu-app-secret`、`feishu-domain`、`feishu-notify`；命令 `feishu-status`、`feishu-allow`、`feishu-remove`（`keepane feishu [allow|remove]`），补全中加 `feishu`。`show-options` 对 `feishu-app-secret` 和 `done-webhook-secret` 只显示 `(set)`，`(set)` 设回去原值不变（输出仍能当配置读回）。
+  - 安全规则和 `link` 一致：只认白名单、只收单聊；`shell` pane 的消息、没有 agent 的 pane 的按键要 `--shell`；`/screen` 要 `--screen`；授权只能在 pane 外运行。
+  - 文档：README（中英）、man、FAQ（中英）、设计稿、网站一句话。
+- 新 bug 风险评估：
+  - `done.rs` 只在末尾加一次 `feishu_tell`、开头加一次 `feishu_wait_over`，没配置应用时什么都不发（`conn` 为空）；`place_text`、`curl_quote` 只改可见性。
+  - `mail.rs` 的 `-r` 分支只在发送者是 `feishu` 时转走；`link` 来的发送者地址是 `host:port`，不会是 `feishu`。
+  - 选项 `set` 之后多调一次 `feishu_sync`，比较 (域名, id, secret)，没变就返回；没有 tokio 运行时（单元测试）什么都不做。
+  - 二进制变大：Windows release `keepane.exe` 11,985,408 → 14,075,904 字节（+2.09 MB，+17%），在规划估的 1 到 2 MB 上限。
+- 真实飞书（手动，`real_feishu_refuses_a_made_up_app`）：编造的 app 去 endpoint，飞书回 `1000040346 app_id is invalid`；rustls 连 `msg-frontier.feishu.cn`，握手被拒，读到 `411 invalid app id`。第一次运行 curl 连接超时（16 秒），之后 `curl` 探测 0.02 秒连上，重跑通过：网络瞬断。
+- 顺带修的：`run_hook`（e2e）写 hook 的标准输入时，hook 可能不读就退出（pane 外 `pane-wait -q`），Linux 上 EPIPE 让测试 panic。全仓只有这一处，改成容忍 `BrokenPipe`。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 实现中 | e2e 第一次：回复通知时 keepane 还没记下通知的消息 ID（测试回得比发送任务的应答快），改成发送成功写一条 `sent` 事件，测试等它再回；审查发现 agent 退出后残留的等待会让按键进 shell，`has_agent` 改成等待仍开着且 shell 不在提示符 | 实现中，不计 |
+| 1 | 代码正确 | Windows 574 + 11 + 151 全过；Linux 559 + 147，1 失败（`run_hook` EPIPE，见上）；审查：连接没有握手超时、不检测静默断线（R1），坏帧每次都上状态栏 | 有发现，不计 |
+| 2 | 静态一致 | 设计稿缺 `bad-frame` 事件和两个超时 | 有发现，不计 |
+| 3 | 机制存活 | 6 个变异：5 个抓到；M1（`waiting_on` 永远为真）漏网：测试只覆盖飞书自己按键后关闭等待。补"更新的提问""有人在终端输入过"两段后抓到；补 `feishu-notify off` 的测试（M4 抓到） | 有发现，不计 |
+| 4 | 边界输入 | 只发 @ 的回复去掉 @ 后为空，会按下回车（Claude 权限框的默认项）；按键文字没有大小上限；`keep_connected` 注释说按飞书间隔、代码固定 120 秒。在入口统一拒绝空输入，按键限 `message-max-size`，改注释，各补 e2e | 有发现，不计 |
+| 5 | 不变量 | 逐条核对入口：白名单在一切动作之前；`--shell` 在消息和按键两个入口都查；授权只在 pane 外；服务器不记命令参数（密钥不落盘）。发现：通知本来就带 `done-lines` 行屏幕内容，文档却让人以为不开 `--screen` 就不出机器（中英 README、设计稿写明）；移出白名单后 agent 的 `-r` 回答仍发给他（回答前再查白名单，补 e2e） | 有发现，不计 |
+| 6 | 可复现 | Windows 和 Linux 全量同时跑：Linux 560 + 148 全过；Windows 575 + 11 + 150，1 失败：`a_focus_frame_flies_to_where_the_keys_go` 等动画中间的 4 个圆角时超时（单独跑 5/5 过）。双满载下 1.5 秒的动画整段被跳过，瞬间状态没画出来。同一根因的还有 `a_zoom_in_motion_survives_what_happens_meanwhile`（2 秒）：两处都改成 4 秒，两测试连跑 3 次全过（21.3 到 21.8 秒） | 有发现，不计 |
+| 7 | 可复现 | 双满载重跑：Windows 575 + 11 + 151，Linux 560 + 148，全过；飞书 e2e 连跑 5 次全过（12.8、13.5、13.5、13.6、15.9 秒） | 干净（1/3） |
+| 8 | 代码正确 | 通读 diff：`observe.rs` 新函数插在 `link()` 的注释和函数之间，注释挂错了；换配置时旧连接中止前已排队的 `State("connected")` 会把还在连的新连接标成已连接。连接带代号，旧代号的状态不理，补单元测试（`only_the_current_connection_says_how_it_stands`）；协议层 varint、未知字段、截断、分片、@ 去除无问题 | 有发现，不计 |
+| 9 | 静态一致 | README（中英）、man、FAQ（中英）、USAGE 和代码逐条对照一致；设计稿第 8 节的测试清单没有第 3 到 8 轮补的测试，补上 | 有发现，不计 |
+| 10 | 真实环境 | Windows 576 + 11 + 151，Linux 561 + 148，全过；真实飞书手动测试过（`1000040346`、`411`）；release 二进制起隔离的临时 server（`-L fsprobe`、临时 `KEEPANE_SESSIONS_DIR`、去掉 agent 环境变量），配置文件里写编造的应用：状态是 `Feishu refused (1000040346): app_id is invalid; trying again in 5s`，密钥显示 `(set)`，`feishu allow` 写出 `feishu-users`。发现：事件日志 `started` 行有两个 `"at"`（我加的域名字段和事件时间重名，解析时时间被盖掉）。全仓只有这一处，改名 `domain`，e2e 断言只有一个 `"at"` | 有发现，不计 |
+| 11 | 机制存活 | 最终代码上 12 个变异全部抓到：`waiting_on`、`has_agent`、去重、`feishu-notify`、过期、群聊、空回复、按键大小、移出白名单后的回答、连接代号（单元测试）、`--screen`、shell pane 的 `--shell`。Windows 576 + 11 + 151，Linux 561 + 148。（同时启动的第一次 Linux 运行作废：rsync 复制时变异 M1 正写在文件里，它跑的是改坏的代码，e2e 正好抓到 M1；还原后重跑全过） | 干净（1/3） |
+| 12 | 不变量 | 最终代码的调用图：发消息、按键、看屏幕 3 个动作函数的 6 个调用点都在白名单检查之后（`feishu_message` 第 624、625 行），`--shell`、`--screen` 的检查在动作函数内部；对外发送 3 处（通知给白名单、回复只在对方消息下、agent 回答重查白名单）。Windows 576 + 11 + 151，Linux 561 + 148 | 干净（2/3） |
+| 13 | 可复现 | 双满载：Windows 576 + 11 + 151 全过；飞书 e2e 连跑 5 次全过（12.6 到 15.2 秒）；release 二进制跑临时 server 两遍，`keepane feishu` 输出相同（重试秒数除外）。Linux 1 失败：`the_history_log_is_searched_every_day`，单独跑 3/3 失败。原因：底栏右边的计数带着含 PID 的 marker，WSL 的 PID 涨到 6 位（113142），把左边提示挤成 `Enter open ther`，测试找 `Enter open there` 找不到。全仓只有这一处，改成断言提示开头 `j/k move`；Linux 单独两次、Windows 一次都过 | 有发现，不计 |
+| 14 | 可复现 | 双满载重跑：Windows 576 + 11 + 151，Linux 561 + 148，全过；飞书 e2e 再连跑 3 次：ok 15.38s、ok 13.23s、ok 16.28s | 干净（1/3） |
+| 15 | 代码正确 | 第 8 轮后改过的代码：代号比较、任务中止、`keep_connected` 参数顺序、字段改名、3 处测试改动；新单元测试直接改字段、不走 `set`，`observe.dir` 为空，不写真实数据目录。Windows 576 + 11 + 151，Linux 561 + 148 | 干净（2/3） |
+| 16 | 边界输入 | release 二进制实测损坏的 `feishu-users`：二进制乱码、空文件，都按"没人放行"处理（读不出就拒绝一切，和 `link` 的 `authorized` 一样；文件只由 keepane 写，全 ASCII），`feishu allow` 写出干净文件，移除不存在的账号报错说明；已有测试覆盖空回复、70 KB、过期、群聊、图片、截断帧、越界分片。Windows 576 + 11 + 151，Linux 561 + 148 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - 用真实飞书应用收发消息没有测过：需要用户建企业自建应用，自己在终端填 id 和 secret。已用真实飞书验证 endpoint 路径和应答、TLS 栈、握手错误头（编造的 app）。用户建好应用后再测：私聊机器人、回复 `wait` 通知按 `1`、Claude 权限框对单键的反应。
+  - 卡片按钮（批准、拒绝、看屏幕）没做，按约定下一版。
+  - `done-panes named` 的限制同样作用于飞书通知：没有名字、也不是 `ai`/`shell` 模式的 pane 不发。
+  - 一台电脑一个应用；多台共用一个应用时消息随机落到其中一台。
+  - `keepane.exe` 大 2.09 MB（17%）。
