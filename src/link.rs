@@ -7,8 +7,8 @@
 //!
 //! Like SSH: each server has an Ed25519 key pair that never leaves it, and
 //! a table of the machines it lets send messages in (their public keys, the
-//! address they were last reached at, and whether their messages may run as
-//! commands). Pairing puts each side's key in the other's table, once, with
+//! address they were last reached at, and whether they have all of this
+//! machine or only what is shared with them). Pairing puts each side's key in the other's table, once, with
 //! the other side's web key as the proof; from then on every request is
 //! signed by its sender and every answer by the one answering.
 
@@ -98,7 +98,7 @@ pub fn listen_addrs(bind: &[IpAddr]) -> Vec<IpAddr> {
 
 /// `keepane link <what> ...`: each is the server command `link-<what>`
 /// with the same words (`id`, `add`, `trust`, `list`, `panes`, `allow`,
-/// `remove`, `rekey`).
+/// `share`, `unshare`, `remove`, `rekey`, and the rest of `WORDS`).
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     const WORDS: &[&str] = &[
         "id",
@@ -111,6 +111,8 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
         "start",
         "kill",
         "allow",
+        "share",
+        "unshare",
         "remove",
         "rekey",
         "clone",
@@ -118,11 +120,13 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
         "send-agents",
     ];
     const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
-                         trust <host:port> <key> [--shell] [--screen] [--panes] [--push] [--agents] [--all] | list | panes <host:port> | \
+                         trust <host:port> <key> [--full [--lan]] | list | panes <host:port> | \
                          info <host:port> | capture [-S lines] <host:port/pane> | \
                          start <host:port> [-s session] [-n name] [-m mode] [-c dir] [-- program args] | \
                          kill <host:port/pane> | \
-                         allow <host:port> [--shell|--no-shell] [--screen|--no-screen] [--panes|--no-panes] [--push|--no-push] [--agents|--no-agents] [--all|--none] | \
+                         allow <host:port> --full [--lan] | allow <host:port> --none | \
+                         share <host:port> <session|session:window|pane>... | \
+                         unshare <host:port> <session|session:window|pane>... | unshare <host:port> --all | \
                          clone <host:port> [path] [--tell pane] | push [<host:port> [path]] [--tell pane] | push -l | \
                          send-agents [<host:port>] [dir] [-s chat-id]... [-n] | send-agents -l | \
                          remove <host:port> | rekey";
@@ -429,34 +433,45 @@ impl Nonces {
     }
 }
 
-/// A machine allowed to send messages here, and where it was last reached.
+/// A machine paired with this one, and where it was last reached. What it
+/// is given here is one of two levels: all of this machine (`full`), or
+/// the sessions, windows and panes shared with it (`link share`, kept on
+/// them, not here); nothing until one is chosen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peer {
     pub key: String,
     /// `host:port`: where its answers and replies go. Updated whenever a
     /// request of its comes from somewhere else (its key says who it is).
     pub addr: String,
-    /// Its messages may run in `shell` panes here.
-    pub shell: bool,
-    /// It may read what panes here show (`link capture`).
-    pub screen: bool,
-    /// It may start panes here (`link start`), and close those it started.
-    pub panes: bool,
-    /// It may send commits into repositories here (`clone`, `push`).
-    pub push: bool,
-    /// It may send projects and its agents' chats here (`send-agents`).
-    pub agents: bool,
+    /// All of this machine, as if it sat here: every pane seen, any
+    /// message taken (one to a `shell` pane runs), panes started here,
+    /// commits and projects sent here.
+    pub full: bool,
+    /// `full` taken from any network: without it, only from a Tailscale
+    /// address (or this machine itself), since plain HTTP on a LAN can be
+    /// read by anyone on it (`full_network`).
+    pub lan: bool,
 }
 
-const TABLE_HEAD: &str = "# keepane link: the machines allowed to send messages to this server's panes\n\
-                          # (docs/design/link.md). One a line: public key, address, then `shell` when\n\
-                          # its messages may run as commands, `screen` when it may read the panes,\n\
-                          # `panes` when it may start panes here, `push` when it may send commits,\n\
-                          # `agents` when it may send projects and their agents' chats.\n";
+const TABLE_HEAD: &str = "# keepane link: the machines paired with this server (docs/design/link.md).\n\
+                          # One a line: public key, address, then `full` when it has all of this\n\
+                          # machine, and `lan` when it has that from any network, not only Tailscale.\n\
+                          # Without `full` it sees what is shared with it (`keepane link share`).\n";
+
+/// The permissions of keepane 0.55 and before, each on its own.
+const OLD_WORDS: [&str; 5] = ["shell", "screen", "panes", "push", "agents"];
 
 /// The table's lines back; comments, blank and malformed lines skipped.
 pub fn parse_table(text: &str) -> Vec<Peer> {
+    parse_table_noting(text).0
+}
+
+/// The table's lines back, and the machines a table of keepane 0.55 or
+/// before gave some of the five old permissions but not all: those are no
+/// level of now, and are left with nothing (what had all five is `full`).
+pub fn parse_table_noting(text: &str) -> (Vec<Peer>, Vec<String>) {
     let mut out: Vec<Peer> = Vec::new();
+    let mut dropped = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -469,28 +484,40 @@ pub fn parse_table(text: &str) -> Vec<Peer> {
         }
         let rest: Vec<&str> = f.collect();
         let has = |w: &str| rest.contains(&w);
-        let (shell, screen, panes, push, agents) =
-            (has("shell"), has("screen"), has("panes"), has("push"), has("agents"));
-        out.push(Peer { key: key.to_string(), addr: addr.to_string(), shell, screen, panes, push, agents });
+        let old = OLD_WORDS.iter().filter(|w| has(w)).count();
+        let full = has("full") || old == OLD_WORDS.len();
+        if old > 0 && !full {
+            dropped.push(addr.to_string());
+        }
+        out.push(Peer { key: key.to_string(), addr: addr.to_string(), full, lan: full && has("lan") });
     }
-    out
+    (out, dropped)
 }
 
 pub fn format_table(peers: &[Peer]) -> String {
     let mut s = TABLE_HEAD.to_string();
     for p in peers {
-        let shell = if p.shell { " shell" } else { "" };
-        let screen = if p.screen { " screen" } else { "" };
-        let panes = if p.panes { " panes" } else { "" };
-        let push = if p.push { " push" } else { "" };
-        let agents = if p.agents { " agents" } else { "" };
-        s.push_str(&format!("{} {}{shell}{screen}{panes}{push}{agents}\n", p.key, p.addr));
+        let full = if p.full { " full" } else { "" };
+        let lan = if p.full && p.lan { " lan" } else { "" };
+        s.push_str(&format!("{} {}{full}{lan}\n", p.key, p.addr));
     }
     s
 }
 
+/// Where `full` is taken from without `lan`: a Tailscale address (its
+/// traffic is WireGuard, so nobody on the way reads it) or this machine
+/// itself. An IPv4 address written as IPv6 is the IPv4 one.
+pub fn full_network(ip: IpAddr) -> bool {
+    let ip = ip.to_canonical();
+    ip.is_loopback() || tailscale(ip)
+}
+
 pub fn load_table(dir: &Path) -> Vec<Peer> {
-    std::fs::read_to_string(dir.join("authorized")).map(|t| parse_table(&t)).unwrap_or_default()
+    load_table_noting(dir).0
+}
+
+pub fn load_table_noting(dir: &Path) -> (Vec<Peer>, Vec<String>) {
+    std::fs::read_to_string(dir.join("authorized")).map(|t| parse_table_noting(&t)).unwrap_or_default()
 }
 
 pub fn save_table(dir: &Path, peers: &[Peer]) -> Result<()> {
@@ -817,44 +844,29 @@ mod tests {
             .find(|k| k.starts_with('-'))
             .expect("one in 64 keys starts with -");
         let parse = |w: &[&str]| crate::command::parse(&w.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        let want = |shell| crate::command::Cmd::LinkTrust {
-            addr: "10.0.0.1:7681".into(),
-            key: key.clone(),
-            shell,
-            screen: false,
-            panes: false,
-            push: false,
-            agents: false,
-        };
-        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key]), Ok(want(false)));
-        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--shell"]), Ok(want(true)));
-        assert_eq!(parse(&["link-trust", "--shell", "10.0.0.1:7681", &key]), Ok(want(true)));
+        let want =
+            |full, lan| crate::command::Cmd::LinkTrust { addr: "10.0.0.1:7681".into(), key: key.clone(), full, lan };
+        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key]), Ok(want(false, false)));
+        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--full"]), Ok(want(true, false)));
+        assert_eq!(parse(&["link-trust", "--full", "10.0.0.1:7681", &key]), Ok(want(true, false)));
+        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--full", "--lan"]), Ok(want(true, true)));
         // Written back, it reads the same.
-        let line = want(true).to_string();
-        let words = crate::command::tokenize(&line).unwrap();
-        assert_eq!(crate::command::parse(&words), Ok(want(true)), "{line}");
+        for w in [want(true, false), want(true, true), want(false, false)] {
+            let line = w.to_string();
+            let words = crate::command::tokenize(&line).unwrap();
+            assert_eq!(crate::command::parse(&words), Ok(w), "{line}");
+        }
         // Anything else is a word, checked as one: a flag mistyped is not a key.
-        let e = parse(&["link-trust", "10.0.0.1:7681", &key, "--shel"]).unwrap_err();
+        let e = parse(&["link-trust", "10.0.0.1:7681", &key, "--ful"]).unwrap_err();
         assert!(e.contains("host:port and the machine's public key"), "{e}");
-        // `--agents`, and `--all` as the five, written back as the five.
-        let all = crate::command::Cmd::LinkTrust {
-            addr: "10.0.0.1:7681".into(),
-            key: key.clone(),
-            shell: true,
-            screen: true,
-            panes: true,
-            push: true,
-            agents: true,
-        };
-        assert_eq!(parse(&["link-trust", "10.0.0.1:7681", &key, "--all"]), Ok(all.clone()));
-        let words = crate::command::tokenize(&all.to_string()).unwrap();
-        assert_eq!(crate::command::parse(&words), Ok(all), "written back");
-        let Ok(crate::command::Cmd::LinkTrust { agents, shell, .. }) =
-            parse(&["link-trust", "10.0.0.1:7681", &key, "--agents"])
-        else {
-            panic!("--agents")
-        };
-        assert!(agents && !shell);
+        // `--lan` is a network for `--full`, nothing alone; the permissions of
+        // 0.55 say what took their place.
+        let e = parse(&["link-trust", "10.0.0.1:7681", &key, "--lan"]).unwrap_err();
+        assert!(e.contains("--lan goes with --full"), "{e}");
+        for old in ["--shell", "--screen", "--panes", "--push", "--agents", "--all"] {
+            let e = parse(&["link-trust", "10.0.0.1:7681", &key, old]).unwrap_err();
+            assert!(e.contains("--full") && e.contains("link share"), "{old}: {e}");
+        }
     }
 
     #[test]
@@ -863,42 +875,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let k1 = Identity::make(&dir.join("1")).unwrap().public();
         let k2 = Identity::make(&dir.join("2")).unwrap().public();
+        let k3 = Identity::make(&dir.join("3")).unwrap().public();
         let peers = vec![
-            Peer {
-                key: k1.clone(),
-                addr: "100.64.0.3:7681".into(),
-                shell: true,
-                screen: false,
-                panes: false,
-                push: true,
-                agents: true,
-            },
-            Peer {
-                key: k2.clone(),
-                addr: "[fd7a::1]:7681".into(),
-                shell: false,
-                screen: true,
-                panes: true,
-                push: false,
-                agents: false,
-            },
+            Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), full: true, lan: false },
+            Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), full: false, lan: false },
+            Peer { key: k3.clone(), addr: "10.0.0.3:7681".into(), full: true, lan: true },
         ];
         save_table(&dir, &peers).unwrap();
         assert_eq!(load_table(&dir), peers);
-        let hand = format!("# mine\n\n{k1} 1.2.3.4:5 screen panes shell\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n");
+        let hand =
+            format!("# mine\n\n{k1} 1.2.3.4:5 full\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n{k2} 5.6.7.8:9 lan\n");
         assert_eq!(
             parse_table(&hand),
-            vec![Peer {
-                key: k1,
-                addr: "1.2.3.4:5".into(),
-                shell: true,
-                screen: true,
-                panes: true,
-                push: false,
-                agents: false
-            }]
+            vec![
+                Peer { key: k1.clone(), addr: "1.2.3.4:5".into(), full: true, lan: false },
+                Peer { key: k2.clone(), addr: "5.6.7.8:9".into(), full: false, lan: false },
+            ],
+            "lan is nothing without full"
         );
+        // A table of keepane 0.55: all five old permissions are `full`; some
+        // of them are no level of now, so nothing, and said; none is none.
+        let old =
+            format!("{k1} 1.1.1.1:1 shell screen panes push agents\n{k2} 2.2.2.2:2 screen shell\n{k3} 3.3.3.3:3\n");
+        let (peers, dropped) = parse_table_noting(&old);
+        assert_eq!(peers.iter().map(|p| p.full).collect::<Vec<_>>(), [true, false, false]);
+        assert_eq!(dropped, ["2.2.2.2:2"]);
+        // Written in the words of now, it reads back the same, and is no
+        // longer the old table.
+        let (again, dropped) = parse_table_noting(&format_table(&peers));
+        assert_eq!((again, dropped.len()), (peers, 0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `full` without `lan` is taken over Tailscale and from this machine:
+    /// not from a LAN address, nor a LAN address written as IPv6.
+    #[test]
+    fn full_control_comes_over_tailscale_or_from_here() {
+        for (ip, yes) in [
+            ("100.64.0.1", true),
+            ("100.127.255.254", true),
+            ("100.128.0.1", false),
+            ("127.0.0.1", true),
+            ("::1", true),
+            ("fd7a:115c:a1e0::3", true),
+            ("::ffff:100.89.165.28", true),
+            ("::ffff:192.168.1.2", false),
+            ("192.168.1.2", false),
+            ("10.0.0.5", false),
+            ("fe80::1", false),
+        ] {
+            assert_eq!(full_network(ip.parse().unwrap()), yes, "{ip}");
+        }
     }
 
     /// Where repositories went: read back as written, one per repository

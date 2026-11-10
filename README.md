@@ -33,8 +33,8 @@ have paired. The usual tmux keys, commands and config file keep working.
   next message when a turn ends.
 - Two computers on one network or on Tailscale pair once, the way
   `ssh-copy-id` works, and from then on panes on one send messages and
-  commands to panes on the other (`keepane link`). What comes from another
-  machine reaches agents only, unless you allow shells on this one.
+  commands to panes on the other (`keepane link`). Each machine shares the
+  sessions, windows or panes it chooses, or gives all of itself.
 - On your phone, over Wi-Fi or Tailscale, `keepane web` shows every window
   and pane, whether each is busy or free and what waits in its inbox; what
   you type there runs on the computer.
@@ -496,7 +496,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `d` | detach |
 | `?` | list key bindings. This and other output of more lines than the window (`:show-messages`, `:show-prompt-history`) opens at its end, as tmux's view mode does, and scrolls: ↑ ↓ or `j` `k`, PgUp PgDn, `g` `G`, the wheel; `/` `?` search it (the hit in inverse), `n` `N` go on; any other key closes it |
 | (wait) | after the prefix, a key not pressed within half a second brings up a panel of what the keys do, by group (panes, windows, sessions, tools, and keys you bound yourself); the key then works as ever (`prefix-hint`, `prefix-hint-delay`) |
-| `s` / `w` | pick a session / a window, `w` down to every pane. By default a chart: `keepane` centred on top, the sessions on the row under it, then the windows of the session you are on, then that window's panes, each row spread across (a row wider than the screen scrolls, `‹` `›` at its ends), each an open box in its kind's colour (a session blue, a window purple, a pane green, the selected one yellow; its name in the text's colour, the rest faint) with what it is in its top border (`host`, `session`, `window`, `pane`); `h` `l` or ← → move along a row and the rows under it follow, `k` or ↑ goes to the parent, `j` or ↓ to the current window or the active pane. `a` opens every node at once, each parent over its own; when that does not fit the boxes get narrower, then become one line each, then just their numbers, and what is still too wide scrolls to the selection (`a` again: only the branch). Paired with other machines (`keepane link`, below), a row of machines comes under `keepane`, this one first: ← → on it shows another machine's sessions, windows and panes (asked of it every 5 seconds while the chart is open; `offline` when it does not answer), and Enter on one of its panes shows that pane's screen (it needs `link allow <this machine> --screen` there). `v` turns it into a tree of blocks, one a line (↑ ↓ the parent and the first child, ← → along the same level, `-` / `+` fold and unfold a session or a window), then the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold), then the chart again. In the tree and the list `j` `k` go line by line; in all three `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `D` (or Delete) kills them and also forgets a session's save, so that `resume` does not bring it back. On a session both ask first (y/n). `set -g choose-tree-style tree` (or `list`) opens it that way |
+| `s` / `w` | pick a session / a window, `w` down to every pane. By default a chart: `keepane` centred on top, the sessions on the row under it, then the windows of the session you are on, then that window's panes, each row spread across (a row wider than the screen scrolls, `‹` `›` at its ends), each an open box in its kind's colour (a session blue, a window purple, a pane green, the selected one yellow; its name in the text's colour, the rest faint) with what it is in its top border (`host`, `session`, `window`, `pane`); `h` `l` or ← → move along a row and the rows under it follow, `k` or ↑ goes to the parent, `j` or ↓ to the current window or the active pane. `a` opens every node at once, each parent over its own; when that does not fit the boxes get narrower, then become one line each, then just their numbers, and what is still too wide scrolls to the selection (`a` again: only the branch). Paired with other machines (`keepane link`, below), a row of machines comes under `keepane`, this one first: ← → on it shows another machine's sessions, windows and panes (asked of it every 5 seconds while the chart is open; `offline` when it does not answer), and Enter on one of its panes shows that pane's screen; only what that machine shares with this one is there (`link share`, below). `s` shares a session, window or pane of this machine with the paired machine (a menu asks which when there are several), or takes it back; shared ones read `shared`. `v` turns it into a tree of blocks, one a line (↑ ↓ the parent and the first child, ← → along the same level, `-` / `+` fold and unfold a session or a window), then the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold), then the chart again. In the tree and the list `j` `k` go line by line; in all three `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `D` (or Delete) kills them and also forgets a session's save, so that `resume` does not bring it back. On a session both ask first (y/n). `set -g choose-tree-style tree` (or `list`) opens it that way |
 | `(` / `)` | switch the client to the previous / next session |
 | `D` | pick a client from a list and detach it |
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
@@ -1481,8 +1481,8 @@ one:
 
 ```powershell
 keepane link add http://100.64.0.3:7681/#k=...     # pairs both ways, once
-keepane link list                                  # the machines paired
-keepane link panes 100.64.0.3:7681                 # their panes
+keepane link list                                  # the machines paired, and what each has of the other
+keepane link panes 100.64.0.3:7681                 # its panes that this machine may reach
 keepane send-message --to 100.64.0.3:7681/%worker "run the tests"
 ```
 
@@ -1495,34 +1495,59 @@ key changes nothing. A machine is known by its key, not its address: turning
 up from another network (Tailscale instead of the LAN), it is the same
 machine. The two clocks must agree to within two minutes.
 
-A paired machine's messages reach `ai` and `normal` panes only. To let them
-run as commands in `shell` panes, allow that machine, from a terminal outside
-keepane or at the `C-b :` prompt (as `link-allow`). Never from inside a
-pane, where an agent could: since 0.54 `keepane link allow` typed in a pane
-is refused too.
+Pairing gives nothing yet. One rule decides what a machine has: the machine
+being reached decides, so run these on the machine whose panes are to be
+seen. There are two levels:
 
 ```powershell
-keepane link allow 100.64.0.3:7681 --shell     # --no-shell takes it back
-keepane link allow 100.64.0.3:7681 --screen    # it may read the panes here; --no-screen takes it back
-keepane link allow 100.64.0.3:7681 --panes     # it may start panes here; --no-panes takes it back
-keepane link allow 100.64.0.3:7681 --push      # it may send commits here (clone, push); --no-push takes it back
-keepane link allow 100.64.0.3:7681 --agents    # it may send projects and chats here (send-agents); --no-agents
-keepane link allow 100.64.0.3:7681 --all       # all five: full control of this machine; --none takes all back
-keepane link allow 100.64.0.3:7681 --all --no-shell   # all but the shell: a flag after --all changes its own
-keepane link remove 100.64.0.3:7681            # unpair, on both
-keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there
+keepane link share 100.64.0.3:7681 work          # a session: it sees it and may message its panes
+keepane link share 100.64.0.3:7681 work:logs     # a window
+keepane link share 100.64.0.3:7681 %worker       # a pane
+keepane link unshare 100.64.0.3:7681 work        # no longer; --all for everything
+keepane link allow 100.64.0.3:7681 --full        # all of this machine, as if it sat here
+keepane link allow 100.64.0.3:7681 --none        # nothing, what was shared too
+```
+
+What is shared, the other machine sees (its chart in `C-b w`, `link panes`,
+`link capture`) and may send messages to; the rest of this machine does not
+exist for it. A session or window shared covers what comes to be in it
+later. A message goes by the pane's work mode: one to a `shell` pane runs
+as a command, and `link share` names such panes when it shares them. In the
+tree (`C-b w`), `s` shares what is under the cursor with the paired machine
+(a menu asks which when there are several), and `s` again takes it back;
+shared things read `shared` there. The marks are on the sessions, windows
+and panes themselves, so a name used again by something new is not shared;
+they go into the saves and come back with `resume`.
+
+`--full` is all of it: every pane, its messages run in `shell` panes, and it
+may start panes and send commits and projects here. Plain HTTP can be read
+by anyone on the network, so `--full` is taken only over Tailscale (or from
+this machine); from a LAN address the machine has only what is shared, and
+is told why. `--full --lan` takes it from any network.
+
+Sharing and `--full` are given from a terminal outside keepane or at the
+`C-b :` prompt, never from inside a pane, where an agent could let another
+machine in. An answer to a message a pane here sent comes back to that pane
+whether it is shared or not. Up to 0.55 there were five permissions
+(`--shell`, `--screen`, `--panes`, `--push`, `--agents`); a machine that
+had all five has `--full` now, one that had some has nothing, and the
+status line names it once.
+
+```powershell
+keepane link remove 100.64.0.3:7681            # unpair, on both; what was shared goes too
+keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there (--full too)
 keepane link rekey                             # a new key: every pairing has to be made again
 ```
 
 What the other machine can be asked, beyond its panes:
 
 ```powershell
-keepane link info 100.64.0.3:7681              # its name, system, keepane, uptime, CPU, memory, panes
+keepane link info 100.64.0.3:7681              # its name, system, keepane, uptime, CPU, memory, the panes it shares
 keepane trace-message 12 -w 60                 # a message sent there: what became of it there (and a command's output)
-keepane link capture -S 100 100.64.0.3:7681/%worker   # what a pane there shows (it must allow it: --screen)
+keepane link capture -S 100 100.64.0.3:7681/%worker   # what a pane there shows (shared with this machine)
 ```
 
-A machine that allowed this one to (`--panes`) runs panes for it:
+A machine that gave this one `--full` runs panes for it:
 
 ```powershell
 keepane link start 100.64.0.3:7681 -n helper -- claude   # its address there comes back
@@ -1531,23 +1556,21 @@ keepane link kill 100.64.0.3:7681/%helper               # only a pane this machi
 ```
 
 The program must be one of that machine's `agent-commands`, with any
-arguments: a shell on that list (`pwsh`, `bash`, ...) runs whatever it is
-given, so there `--panes` allows as much as `--shell`, and
-`set -g agent-commands "claude codex"` allows agents only (`link allow
---panes` says what the list holds). A pane counts toward that machine's
+arguments. A pane counts toward that machine's
 `agent-pane-limit`, for this machine alone. The pane goes in a
 session named after this machine (`-s` names another), with its work mode
-from its program as for a pane an agent makes (`-m` gives one); a message to
-a `shell` pane there still needs `--shell` as well. That machine keeps which
-panes this one started only while its server runs. Agents do the same
-through MCP: `create_remote_pane`, and `kill_pane` with the address.
+from its program as for a pane an agent makes (`-m` gives one). That machine
+keeps which panes this one started only while its server runs. Agents do the
+same through MCP: `create_remote_pane`, and `kill_pane` with the address.
 
-A message for a `shell` pane from a machine not allowed is refused, and the
-sender told how to allow it. `keepane web --read-only` takes nothing from
-other machines either. When the other machine cannot be reached, the message
-fails at once (nothing is queued to be sent later); with `-w`, the other
-machine waits for it to be delivered, and one still queued when the time runs
-out is a time-out here, as it is for a pane on this machine. Pairing and
+A message for a pane not shared with the sender is answered as one for a
+pane that is not there, and the sender told how it could be shared, so a
+name says nothing of what is not shared. `keepane web --read-only` takes
+nothing from other machines either. When the other machine cannot be
+reached, the message fails at once (nothing is queued to be sent later);
+with `-w`, the other machine waits for it to be delivered, and one still
+queued when the time runs out is a time-out here, as it is for a pane on
+this machine. Pairing and
 unpairing are said on the status line and kept in the event log, and so are
 refused requests, once a minute for each address that sends them (a flood of
 bad requests fills neither). The design and every decision:
@@ -1555,8 +1578,8 @@ bad requests fills neither). The design and every decision:
 
 ### Sending commits to another machine
 
-A repository's commits go to a paired machine that allowed this one to
-(`--push`), one way, committed work only. Run these in the repository:
+A repository's commits go to a paired machine that gave this one
+`--full`, one way, committed work only. Run these in the repository:
 
 ```powershell
 keepane clone 100.64.0.3:7681                  # a copy there, in its link-clone-dir (~/keepane/<this repository's name>)
@@ -1589,8 +1612,8 @@ The design: [docs/design/link-push.md](docs/design/link-push.md).
 ### Taking a project and its agents' chats to another machine
 
 Claude Code, Codex and pi keep their chats on the machine they ran on.
-`send-agents` takes a project to a paired machine that allowed this one to
-(`--agents`), with the chats, so that you go on with them there:
+`send-agents` takes a project to a paired machine that gave this one
+`--full`, with the chats, so that you go on with them there:
 
 ```powershell
 keepane send-agents 100.64.0.3:7681 -n         # what would go (nothing is sent)

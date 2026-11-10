@@ -38,6 +38,8 @@ pub(super) enum LinkOp {
     Tree { addr: String, key: String },
     /// Enter on a pane of theirs in the chart: its screen, shown over it.
     Peek { addr: String, key: String, title: String },
+    /// `link-list`: what this machine has there, row `row` of table `list`.
+    Access { addr: String, key: String, list: u64, row: usize },
 }
 
 /// How a message handed to another machine is known there, for asking
@@ -234,6 +236,7 @@ impl Server {
         if let Ok(l) = self.link() {
             l.peers.retain(|p| p.key != key);
         }
+        self.unshare_everything(&key);
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
         }
@@ -335,6 +338,10 @@ impl Server {
             LinkOp::Tree { addr, key } => {
                 let result = Self::checked(&addr, &key, &nonce, result);
                 return self.remote_tree_answered(&addr, result);
+            }
+            LinkOp::Access { addr, key, list, row } => {
+                let result = Self::checked(&addr, &key, &nonce, result);
+                return self.link_list_answered(list, row, result);
             }
             LinkOp::Peek { addr, key, title } => {
                 let Some(cid) = cid else { return };
@@ -442,7 +449,7 @@ impl Server {
                 Ok(ans) => Outcome::Text(format!("{here}\non {addr}: {}", ans.text())),
                 Err(e) => Outcome::Text(format!("{here}\non {addr}: not asked ({e})")),
             },
-            LinkOp::Tree { .. } | LinkOp::Peek { .. } => unreachable!("answered above"),
+            LinkOp::Tree { .. } | LinkOp::Peek { .. } | LinkOp::Access { .. } => unreachable!("answered above"),
         };
         if let Some(cid) = cid {
             self.reply(cid, out);
@@ -501,21 +508,13 @@ impl Server {
         if l.id.public() == key {
             return Outcome::Error(format!("link-add: {addr} is this server itself"));
         }
-        let mut shell = false;
+        let mut full = false;
         match l.peers.iter_mut().find(|p| p.key == key) {
             Some(p) => {
                 p.addr = addr.to_string();
-                shell = p.shell;
+                full = p.full;
             }
-            None => l.peers.push(link::Peer {
-                key: key.to_string(),
-                addr: addr.to_string(),
-                shell: false,
-                screen: false,
-                panes: false,
-                push: false,
-                agents: false,
-            }),
+            None => l.peers.push(link::Peer { key: key.to_string(), addr: addr.to_string(), full: false, lan: false }),
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
@@ -524,11 +523,12 @@ impl Server {
         self.link_note(
             &format!("link: paired with {addr} ({fp})"),
             "paired",
-            &format!(",\"addr\":{},\"key\":{},\"shell\":{shell},\"how\":\"added\"", js(addr), js(key)),
+            &format!(",\"addr\":{},\"key\":{},\"full\":{full},\"how\":\"added\"", js(addr), js(key)),
         );
         Outcome::Text(format!(
             "paired with {addr}  {fp}\nits panes: keepane link panes {addr}; a message: send-message --to {addr}/%name ...\n\
-             its messages run as commands in shell panes here only after: keepane link allow {addr} --shell"
+             it sees nothing here until you share some (keepane link share {addr} <session|window|pane>) or all \
+             (keepane link allow {addr} --full); the same goes for this machine there"
         ))
     }
 }

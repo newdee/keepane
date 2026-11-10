@@ -74,30 +74,39 @@ keepane pane-ready -t %agent
 
 pane 的编号（`%7`）和名字（`%builder`）跟着 pane 走，不管它被移动还是交换（`C-b {`、`C-b }`、`swap-pane`）。发给 `%7` 或 `%builder` 的消息，还是到原来那个 pane。位置写法（`work:0.1`）指的是现在在那个位置上的 pane。完整地址（`$1:@2.%7`）还写明了 pane 在哪：pane 被挪到别的窗口后，消息会被拒收，而不是发错地方。
 
-## 别的机器发来的消息被 shell 模式的 pane 拒收
+## 别的机器提示 "no pane by that name is shared"
 
-**为什么。** 配过对的机器发来的消息，默认只进 `ai` 和 `normal` 模式的 pane。shell 模式的 pane 会把消息当命令执行，所以要你为那台机器单独打开。
+**为什么。** 配对本身不给任何东西。配过对的机器只能看到、只能发消息给对方共享给它的部分；没共享的 pane，回答和“没有这个 pane”一样。由被访问的那台机器决定。
 
-**怎么办。** 在接收消息的那台电脑上，在 keepane 外面的终端里运行（不能在 pane 里做，否则 agent 就能自己给自己开权限）：
+**怎么办。** 在 pane 所在的那台电脑上，在 keepane 外面的终端里运行（不能在 pane 里做，否则 agent 就能自己把别的机器放进来）：
 
 ```sh
-keepane link allow 192.168.1.20:7681 --shell
+keepane link share 192.168.1.20:7681 %worker   # 也可以是 session（work）、窗口（work:logs）
+keepane link allow 192.168.1.20:7681 --full    # 或者整台电脑都给它
 ```
 
-加 `--screen` 则允许那台机器读取 pane 的屏幕（`keepane link capture`）；加 `--panes` 允许它在这边开 pane；加 `--push` 允许它往这边的仓库送提交（`keepane clone`、`keepane push`）；加 `--agents` 允许它送项目和 agent 对话过来（`keepane send-agents`）。`--all` 五项全给，`--none` 五项全收回。
+也可以在 `C-b w` 里选中它按 `s`。发给共享的 `shell` 模式 pane 的消息会当命令执行。`--full` 还允许那台机器在这边开 pane、送提交和项目；它只对 Tailscale 地址生效，除非加 `--full --lan`。`keepane link list` 会双向列出每台机器各有对方的什么。
 
-## `keepane link allow` 提示 "not run from inside a pane"
+## `keepane link allow --shell` 提示权限改成了两档
 
-**为什么。** 从 0.54 起，keepane 会检查 `keepane link allow`（以及带权限的 `keepane link trust`、`keepane feishu allow`）是在哪里运行的。在 keepane 的 pane 里运行会被拒绝，否则那个 pane 里的 agent 就能让别的机器在这台电脑上执行命令。0.54 之前，在 pane 里敲 `keepane link allow` 会被误放行。
+**为什么。** 0.55 及以前，`link allow` 有五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`，以及 `--all`）。从 0.56 起只有两档：共享的部分（`keepane link share`），或者整台电脑（`--full`）。升级后，五个全开的机器算 `--full`；只开了部分的算什么都不给，状态栏会提示一次是哪几台。
+
+**怎么办。** 把它需要的部分共享出去（`keepane link share <主机:端口> <session|窗口|pane>`），或者给 `--full`。
+
+## `keepane link share` 提示 "not run from inside a pane"
+
+**为什么。** 从 0.54 起，keepane 会检查 `keepane link share`、`keepane link allow`（以及 `keepane link trust --full`、`keepane feishu allow`）是在哪里运行的。在 keepane 的 pane 里运行会被拒绝，否则那个 pane 里的 agent 就能把别的机器放进来。0.54 之前，在 pane 里敲 `keepane link allow` 会被误放行。收回（`keepane link unshare`）在哪里都能运行。
 
 **怎么办。** 在下面两个地方之一运行：
 
 - 不是 keepane pane 的终端（Windows Terminal 里单独开的标签页，或者别的终端程序）。
-- 任意 keepane 客户端的 `C-b :` 提示符。在这里命令要写 server 端的名字 `link-allow`：
+- 任意 keepane 客户端的 `C-b :` 提示符。在这里命令要写 server 端的名字 `link-share` 或 `link-allow`：
 
 ```sh
-link-allow 192.168.1.20:7681 --shell
+link-share 192.168.1.20:7681 %worker
 ```
+
+也可以在 `C-b w` 里按 `s`：你按的键不是 pane 里的程序。
 
 ## 手机打不开页面
 

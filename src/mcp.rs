@@ -84,7 +84,7 @@ fn tools() -> Vec<Value> {
         tool(
             "read_screen",
             "What a pane shows now, as text (with the last `lines` of its scrollback). A pane on another \
-             machine (host:port/%name) needs that machine to have allowed this one (link allow --screen).",
+             machine (host:port/%name) needs that machine to share it with this one (link share there).",
             json!({ "pane": pane.clone(), "lines": n("Lines of scrollback above the screen, too") }),
             &["pane"],
         ),
@@ -181,8 +181,8 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "create_remote_pane",
-            "Start a pane on another machine paired with this one, which must have allowed this one to \
-             (link allow --panes there): one of that machine's agent-commands, in a session named after \
+            "Start a pane on another machine paired with this one, which must have given this one all of \
+             it (link allow --full there): one of that machine's agent-commands, in a session named after \
              this machine unless one is given. Returns its address there, host:port/$1:@3.%7, to send it \
              messages; kill_pane with that address closes it.",
             json!({
@@ -199,7 +199,7 @@ fn tools() -> Vec<Value> {
         tool(
             "push_repo",
             "Send the commits of the current branch of the repository you are in to another machine paired \
-             with this one, which must have allowed this one to (link allow --push there): to where it was \
+             with this one, which must have given this one all of it (link allow --full there): to where it was \
              cloned or pushed before (keepane clone host:port makes the copy there first), or to path there. \
              Only committed work goes. Returns what happened there (fast-forwarded, or kept beside the branch \
              and why).",

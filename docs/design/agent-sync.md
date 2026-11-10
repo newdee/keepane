@@ -86,7 +86,7 @@ keepane send-agents -l
 ## 6. 传输与权限
 
 - 复用 `push` 的分块上传：每块 512 KiB、每块签名；先问对方已有什么（`/link/agents/look`：每个文件的 SHA-256，每段对话对方已有的长度和那一段的 SHA-256），只送缺的；gzip 压缩（实测对话压到 24%）。一次一个包，不超过 `link-agents-limit`（默认 1G，压缩后）；中途失败时对方什么也没写，再运行一次整包重送。
-- 对方要授予 `keepane link allow <本机地址> --agents`，默认关，只能在 pane 之外授予。对话里有读过的文件内容和命令输出，可能有密钥。
+- 对方要授予 `keepane link allow <本机地址> --full`（0.56 起；0.55 及以前是单独的 `--agents`，见 [link.md](link.md) 第 14 条），默认关，只能在 pane 之外授予。对话里有读过的文件内容和命令输出，可能有密钥。
 
 **警告：** link 的请求有签名，但不加密（[link.md](link.md) 第 32 行）。请在 Tailscale 上用，或只在可信的网络里用。
 

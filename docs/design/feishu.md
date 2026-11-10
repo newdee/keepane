@@ -69,7 +69,7 @@ WebSocket 和 TLS：`tokio-tungstenite`（`rustls-tls-webpki-roots`）加 `rustl
 
 - 默认关闭：`feishu-app-id` 和 `feishu-app-secret` 都设了才连。
 - 移出白名单立即生效：之后的消息不处理，通知不发，agent 对他以前消息的 `-r` 回答也不发（报错说明）。
-- 白名单：`link` 目录下的 `feishu-users`，一行一个 `ou_… shell=no screen=no`，文件只有当前用户能读。`feishu-allow` 只能在 pane 外运行（和 `link-allow` 同一个检查），agent 不能给别人开权限。`feishu-remove` 哪里都能运行（收回权限总是安全的）。
+- 白名单：`link` 目录下的 `feishu-users`，一行一个 `ou_… shell=no screen=no`，文件只有当前用户能读。`feishu-allow` 只能在 pane 外运行（和 `link-allow`、`link-share` 同一个检查），agent 不能给别人开权限。`feishu-remove` 哪里都能运行（收回权限总是安全的）。
 - 不在白名单的人：机器人回他自己的 open_id 和授权命令，状态栏提示一次；同一个人 10 分钟内只回一次，最多记 100 人。
 - 只收单聊（`chat_type == "p2p"`），只收 `sender_type == "user"`。
 - 能做什么，和 `link` 一致：

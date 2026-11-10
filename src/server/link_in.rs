@@ -178,11 +178,16 @@ impl Server {
                 &format!(",\"from\":{},\"to\":{},\"key\":{}", js(&was), js(&addr), js(&from)),
             );
         }
-        let peer = link::Peer { addr: addr.clone(), ..peer };
+        // `full` as this request has it: over Tailscale or from this machine,
+        // or from anywhere when that was given (`--lan`). Held back, it is
+        // what is shared, as for any other machine.
+        let held = peer.full && !peer.lan && !link::full_network(peer_ip);
+        let peer = link::Peer { addr: addr.clone(), full: peer.full && !held, ..peer };
         match (req.method.as_str(), req.path.as_str()) {
             ("POST", "/link/send") => self.link_send_in(cid, &req, &nonce, &peer),
+            ("GET", "/link/access") => self.link_access_in(&nonce, &peer, held),
             ("GET", "/link/info") => {
-                let text = self.machine_info();
+                let text = self.machine_info(&peer);
                 self.link_answer(&nonce, 200, text)
             }
             ("POST", "/link/capture") => self.link_capture_in(&req, &nonce, &peer),
@@ -197,17 +202,33 @@ impl Server {
             ("POST", "/link/agents/apply") => self.link_agents_apply_in(cid, &req.body, &nonce, &peer),
             ("GET", "/link/panes") => {
                 let cmd = Cmd::ListPanes { target: None, all: true, session: false, format: Some(PANES.into()) };
-                match self.exec(cmd, None) {
-                    Outcome::Text(t) => self.link_answer(&nonce, 200, t),
-                    Outcome::Error(e) if e.contains("no sessions") => self.link_answer(&nonce, 200, String::new()),
-                    Outcome::Error(e) => self.link_answer(&nonce, 500, e),
-                    _ => self.link_answer(&nonce, 200, String::new()),
-                }
+                let text = match self.exec(cmd, None) {
+                    Outcome::Text(t) => t,
+                    Outcome::Error(e) if e.contains("no sessions") => String::new(),
+                    Outcome::Error(e) => return self.link_answer(&nonce, 500, e),
+                    _ => String::new(),
+                };
+                // Only the panes it may reach: what is not shared with it is
+                // not there for it.
+                let reach = self.reachable_panes(&peer);
+                let lines: Vec<&str> = text
+                    .lines()
+                    .filter(|l| {
+                        let address = l.split('\t').next().unwrap_or_default();
+                        address
+                            .rsplit_once('%')
+                            .and_then(|(_, n)| n.parse::<super::PaneId>().ok())
+                            .is_some_and(|p| reach.contains(&p))
+                    })
+                    .collect();
+                let body = lines.join("\n");
+                self.link_answer(&nonce, 200, body)
             }
             ("POST", "/link/remove") => {
                 if let Ok(l) = self.link() {
                     l.peers.retain(|p| p.key != from);
                 }
+                self.unshare_everything(&from);
                 if let Err(e) = self.save_peers() {
                     return self.link_answer(&nonce, 500, e);
                 }
@@ -271,21 +292,13 @@ impl Server {
             return self.link_answer(nonce, 400, "that is this server itself".into());
         }
         let mine = l.id.public();
-        let mut shell = false;
+        let mut full = false;
         match l.peers.iter_mut().find(|p| p.key == from) {
             Some(p) => {
                 p.addr = addr.to_string();
-                shell = p.shell;
+                full = p.full;
             }
-            None => l.peers.push(link::Peer {
-                key: from.to_string(),
-                addr: addr.to_string(),
-                shell: false,
-                screen: false,
-                panes: false,
-                push: false,
-                agents: false,
-            }),
+            None => l.peers.push(link::Peer { key: from.to_string(), addr: addr.to_string(), full: false, lan: false }),
         }
         l.seen.insert(from.to_string(), chrono::Local::now());
         if let Err(e) = self.save_peers() {
@@ -294,10 +307,10 @@ impl Server {
         let fp = link::fingerprint(from);
         self.link_note(
             &format!(
-                "link: {addr} ({fp}) paired with this machine; `keepane link allow {addr} --shell` lets it run commands"
+                "link: {addr} ({fp}) paired with this machine; it sees nothing here until `keepane link share {addr} ...` or `link allow {addr} --full`"
             ),
             "paired",
-            &format!(",\"addr\":{},\"key\":{},\"shell\":{shell},\"how\":\"asked\"", js(addr), js(from)),
+            &format!(",\"addr\":{},\"key\":{},\"full\":{full},\"how\":\"asked\"", js(addr), js(from)),
         );
         let answer_proof = link::b64(&link::hmac(webkey.as_bytes(), link::pair_answer_text(nonce, &mine).as_bytes()));
         self.link_answer(nonce, 200, format!("{{\"key\":{},\"proof\":{}}}", js(&mine), js(&answer_proof)))
@@ -305,9 +318,17 @@ impl Server {
 
     /// This machine, for another one (`link-info`): what the status line
     /// knows of it, and what runs here.
-    fn machine_info(&self) -> String {
+    fn machine_info(&self, peer: &link::Peer) -> String {
         let sys = crate::sysinfo::system();
-        let panes: usize = self.sessions.iter().flat_map(|s| s.windows.iter()).map(|w| w.panes.len()).sum();
+        // The panes it may reach, and the sessions they are in: no more of
+        // this machine than it sees.
+        let reach = self.reachable_panes(peer);
+        let panes = reach.len();
+        let sessions = self
+            .sessions
+            .iter()
+            .filter(|s| s.windows.iter().any(|w| w.panes.iter().any(|p| reach.contains(&p.id))))
+            .count();
         let mut rows = vec![
             ("host", crate::sysinfo::hostname()),
             ("system", format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)),
@@ -320,33 +341,41 @@ impl Server {
             let charging = if sys.battery_charging { ", charging" } else { "" };
             rows.push(("battery", format!("{}{charging}", sys.battery_percentage)));
         }
-        rows.push(("panes", format!("{panes} in {}", crate::format::count(self.sessions.len(), "session"))));
+        rows.push(("panes", format!("{panes} in {}", crate::format::count(sessions, "session"))));
         rows.push(("time", chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string()));
         rows.iter().map(|(k, v)| format!("{k:<8} {v}")).collect::<Vec<_>>().join("\n")
     }
 
-    /// `POST /link/capture`: what a pane here shows, for a machine allowed
-    /// to read the panes (`link-allow --screen`).
-    fn link_capture_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
-        if !peer.screen {
-            let why = format!(
-                "{} may not read the panes here: on this machine, keepane link allow {} --screen",
-                peer.addr, peer.addr
-            );
-            self.link_refused(&peer.addr, &why);
-            return self.link_answer(nonce, 403, why);
+    /// The pane a request of that machine names, if it may reach it; a
+    /// pane it may not reach is answered as one that is not there (404),
+    /// with how it could be shared, so that its name says nothing.
+    fn reached(&mut self, to: &str, nonce: &str, peer: &link::Peer) -> Result<super::PaneId, Outcome> {
+        let t = Target::parse(to);
+        if t.remote.is_some() {
+            return Err(self.link_answer(nonce, 400, format!("{to}: a pane is named as this machine knows it")));
         }
+        match self.resolve(Some(&t), None) {
+            Ok((_, _, p)) if self.may_reach(peer, p) => Ok(p),
+            _ => {
+                let why = format!(
+                    "{to}: no pane by that name is shared with {} here (on this machine: keepane link share {} <session|window|pane>)",
+                    peer.addr, peer.addr
+                );
+                Err(self.link_answer(nonce, 404, why))
+            }
+        }
+    }
+
+    /// `POST /link/capture`: what a pane here shows, for a machine that may
+    /// reach it (shared with it, or `full`).
+    fn link_capture_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
         let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
         let Some(to) = v["to"].as_str() else {
             return self.link_answer(nonce, 400, "to: the pane".into());
         };
-        let t = Target::parse(to);
-        if t.remote.is_some() {
-            return self.link_answer(nonce, 400, format!("{to}: a pane is named as this machine knows it"));
-        }
-        let pid = match self.resolve(Some(&t), None) {
-            Ok((_, _, p)) => p,
-            Err(e) => return self.link_answer(nonce, 404, e),
+        let pid = match self.reached(to, nonce, peer) {
+            Ok(p) => p,
+            Err(out) => return out,
         };
         let history = v["history"].as_u64().unwrap_or(0).min(2000);
         let mut argv = vec!["capture-pane".to_string(), "-p".into(), "-t".into(), format!("%{pid}")];
@@ -364,24 +393,38 @@ impl Server {
         }
     }
 
-    /// Why a machine not allowed to start panes here is refused (the helper
-    /// `session_for`, below, names where its panes go).
-    fn no_panes(&mut self, nonce: &str, peer: &link::Peer) -> Outcome {
-        let why = format!(
-            "{} may not start panes here: on this machine, keepane link allow {} --panes",
-            peer.addr, peer.addr
-        );
+    /// What only a machine with all of this one may do (`full`): None when
+    /// it has that, the refusal to answer with otherwise; `what` reads after
+    /// "may not". A machine given `full` whose request came over a network
+    /// `full` is not taken from (no `--lan`) is told so.
+    pub(super) fn need_full(&mut self, nonce: &str, peer: &link::Peer, what: &str) -> Option<Outcome> {
+        if peer.full {
+            return None;
+        }
+        let given = self.link.as_ref().and_then(|l| l.peer_by_key(&peer.key)).is_some_and(|p| p.full);
+        let why = if given {
+            format!(
+                "{} has all of this machine only over Tailscale, and this request came over another network: \
+                 on this machine, keepane link allow {} --full --lan takes it from any network",
+                peer.addr, peer.addr
+            )
+        } else {
+            format!(
+                "{} may not {what} here: that takes all of this machine (on this machine, keepane link allow {} --full)",
+                peer.addr, peer.addr
+            )
+        };
         self.link_refused(&peer.addr, &why);
-        self.link_answer(nonce, 403, why)
+        Some(self.link_answer(nonce, 403, why))
     }
 
-    /// `POST /link/pane`: a pane started here for a machine allowed to
-    /// (`link-allow --panes`): one of this machine's `agent-commands`,
+    /// `POST /link/pane`: a pane started here for a machine with all of
+    /// this one (`link-allow --full`): one of this machine's `agent-commands`,
     /// within its `agent-pane-limit` (counted for that machine alone), in
     /// the session it asks for or one named after it. Its address back.
     fn link_pane_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
-        if !peer.panes {
-            return self.no_panes(nonce, peer);
+        if let Some(no) = self.need_full(nonce, peer, "start panes") {
+            return no;
         }
         let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
         let text = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).map(String::from);
@@ -461,8 +504,8 @@ impl Server {
     /// `POST /link/kill`: a pane that machine started here, closed; no
     /// other pane.
     fn link_kill_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
-        if !peer.panes {
-            return self.no_panes(nonce, peer);
+        if let Some(no) = self.need_full(nonce, peer, "close panes") {
+            return no;
         }
         let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
         let Some(to) = v["to"].as_str() else {
@@ -539,23 +582,28 @@ impl Server {
         if let Err(why) = sender_fields_ok(&body) {
             return self.link_answer(nonce, 400, why);
         }
-        let t = Target::parse(&body.to);
-        if t.remote.is_some() {
-            return self.link_answer(nonce, 400, format!("{}: a pane is named as this machine knows it", body.to));
-        }
-        let to = match self.resolve(Some(&t), None) {
-            Ok((_, _, p)) => p,
-            Err(e) => return self.link_answer(nonce, 404, e),
+        // An answer to a message a pane here sent that machine goes back to
+        // that pane, shared or not: it asked. Not to a pane in `shell` mode,
+        // where the answer would run as a command: that takes sharing it.
+        // Anything else goes to a pane it may reach, by the pane's work mode
+        // as anyone's: one in `shell` mode runs it (who shared it chose that).
+        let asker = body.re.and_then(|re| {
+            let ours = self.link.as_ref()?.sent.get(&re).is_some_and(|(k, _)| *k == peer.key);
+            match &self.observe.get(re)?.msg.from {
+                Sender::Pane { id, .. } if ours => Some(*id),
+                _ => None,
+            }
+        });
+        let asker = asker.filter(|p| self.pane_ref(*p).is_some_and(|p| p.actor.mode != WorkMode::Shell));
+        let named = self.resolve(Some(&Target::parse(&body.to)), None).ok().map(|(_, _, p)| p);
+        let to = match (asker, named) {
+            (Some(a), Some(n)) if a == n && Target::parse(&body.to).remote.is_none() => n,
+            _ => match self.reached(&body.to, nonce, peer) {
+                Ok(p) => p,
+                Err(out) => return out,
+            },
         };
         let via = self.pane_ref(to).map_or(WorkMode::Normal, |p| p.actor.mode);
-        if via == WorkMode::Shell && !peer.shell {
-            let why = format!(
-                "{} may not run commands here (%{to} is in shell mode): on this machine, keepane link allow {} --shell",
-                peer.addr, peer.addr
-            );
-            self.link_refused(&peer.addr, &why);
-            return self.link_answer(nonce, 403, why);
-        }
         self.next_msg += 1;
         let id = self.next_msg;
         let known = |n: Option<u64>| n.filter(|n| self.observe.get(*n).is_some());

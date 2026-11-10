@@ -19,7 +19,7 @@ keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程�
 - 给 pane 命名后，就能向它发消息。消息先进入收件箱，等 pane 准备好再投递：shell 回到提示符时执行命令，其他程序主动读取。
 - 每条消息都有固定格式的信封，记录发送方、接收方和任务。事件日志保留 30 天；按 `C-b v` 可查看 pane、消息和任务。
 - 人、脚本和 AI agent 使用同一套消息机制；agent 也可通过内置的 MCP 服务端操作。`keepane setup` 可以给 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode 配好 hook，每轮结束时把下一条消息交给它。
-- 同一个局域网或 Tailscale 里的两台电脑，像 `ssh-copy-id` 那样配对一次，之后一台上的 pane 就能给另一台上的 pane 发消息、派命令（`keepane link`）。别的机器发来的消息默认只交给 agent，要在 shell 里执行需要在本机授权。
+- 同一个局域网或 Tailscale 里的两台电脑，像 `ssh-copy-id` 那样配对一次，之后一台上的 pane 就能给另一台上的 pane 发消息、派命令（`keepane link`）。每台电脑自己决定共享哪些 session、窗口或 pane，或者把整台电脑都交给对方。
 - 在手机上，通过 Wi-Fi 或 Tailscale，`keepane web` 可以查看所有窗口和 pane，每个是忙是闲、收件箱里排着什么；在手机上输入的命令在电脑上执行。
 - 支持 tmux 风格的 `C-b` 前缀、分屏、copy mode、命令行、配置写法（`keepane import-config` 可以导入现成的 `.tmux.conf`）、格式串、hook 和插件。
 
@@ -288,7 +288,7 @@ keepane kill-server
 | `d` | 脱离 |
 | `?` | 列出所有按键。这类输出（还有 `:show-messages`、`:show-prompt-history`）比窗口长时，和 tmux 的 view mode 一样先显示末尾，可以滚动：↑ ↓ 或 `j` `k`、PgUp PgDn、`g` `G`、鼠标滚轮；`/` `?` 在里面搜索（找到的词反色显示），`n` `N` 接着找；按其他键关闭 |
 | （停一下） | 按了前缀，半秒内没按下一个键，就弹出按键提示面板，按组列出每个键做什么（pane、窗口、session、工具，以及你自己绑定的键）；接着按的键照常生效（`prefix-hint`、`prefix-hint-delay`） |
-| `s` / `w` | 挑一个 session / 窗口，`w` 一直展开到每个 pane。默认是结构图：第一排居中是 `keepane`，第二排是所有 session，第三排是当前所在 session 的窗口，第四排是那个窗口的 pane，每排横向铺开（一排比屏幕宽时左右滚动，两端显示 `‹` `›`），每个节点是一个空心框，框按类型着色（session 蓝、窗口紫、pane 绿，选中的框黄；名字用正文色，其余淡色），框的上边写着它是什么（`host`、`session`、`window`、`pane`）；`h` `l` 或 ← → 在同一排移动，下面几排跟着变，`k` 或 ↑ 到父节点，`j` 或 ↓ 到当前窗口或活动 pane。`a` 一次展开所有节点，每个父节点在自己的子节点上方；放不下时框先变窄，再变成每个节点一行字，再只剩编号，还是太宽就左右滚动，跟着选中的节点（再按 `a` 回到只展开选中分支）。和别的机器配对过（`keepane link`，见下文）时，`keepane` 下面多一排机器，本机在最前：在这一排用 ← → 选到别的机器，下面就是它的 session、窗口和 pane（chart 开着时每 5 秒问一次；对方不回答时显示 `offline`），在它的 pane 上按 Enter 弹窗显示那个 pane 的屏幕（需要对方执行过 `link allow <本机> --screen`）。`v` 切到方块树（一行一个，↑ ↓ 跳到父节点、第一个子节点，← → 在同一层移动，`-` / `+` 折叠、展开 session 或窗口），再按切到纯文字列表（`j` `k` 或方向键上下，`-` / `+` 或左右方向键折叠），再按回到结构图。树和列表里 `j` `k` 逐行移动；三种都是`g` `G` 到头到尾，数字直接跳（能选的行都有编号，超过 9 连按两位，`1` `2` 是第 12 行），`Enter` 跳过去，`q` 取消；`f` 输入子串过滤（边打边筛，`Enter` 留下，`Esc` 还原），`t` 给当前行打标记（`T` 清掉），`x` 杀掉标记的行（没标记就是当前行）；`D`（或 Delete 键）杀掉的同时删掉 session 的保存文件，`resume` 不会再带回来。对 session 按这两个键都会先问一句 (y/n)。`set -g choose-tree-style tree`（或 `list`）改成默认打开方块树（或列表） |
+| `s` / `w` | 挑一个 session / 窗口，`w` 一直展开到每个 pane。默认是结构图：第一排居中是 `keepane`，第二排是所有 session，第三排是当前所在 session 的窗口，第四排是那个窗口的 pane，每排横向铺开（一排比屏幕宽时左右滚动，两端显示 `‹` `›`），每个节点是一个空心框，框按类型着色（session 蓝、窗口紫、pane 绿，选中的框黄；名字用正文色，其余淡色），框的上边写着它是什么（`host`、`session`、`window`、`pane`）；`h` `l` 或 ← → 在同一排移动，下面几排跟着变，`k` 或 ↑ 到父节点，`j` 或 ↓ 到当前窗口或活动 pane。`a` 一次展开所有节点，每个父节点在自己的子节点上方；放不下时框先变窄，再变成每个节点一行字，再只剩编号，还是太宽就左右滚动，跟着选中的节点（再按 `a` 回到只展开选中分支）。和别的机器配对过（`keepane link`，见下文）时，`keepane` 下面多一排机器，本机在最前：在这一排用 ← → 选到别的机器，下面就是它的 session、窗口和 pane（chart 开着时每 5 秒问一次；对方不回答时显示 `offline`），在它的 pane 上按 Enter 弹窗显示那个 pane 的屏幕；这里只出现对方共享给本机的部分（`link share`，见下文）。`s` 把本机的 session、窗口或 pane 共享给配过对的机器（配了几台时弹菜单选），再按一次收回；共享的标上 `shared`。`v` 切到方块树（一行一个，↑ ↓ 跳到父节点、第一个子节点，← → 在同一层移动，`-` / `+` 折叠、展开 session 或窗口），再按切到纯文字列表（`j` `k` 或方向键上下，`-` / `+` 或左右方向键折叠），再按回到结构图。树和列表里 `j` `k` 逐行移动；三种都是`g` `G` 到头到尾，数字直接跳（能选的行都有编号，超过 9 连按两位，`1` `2` 是第 12 行），`Enter` 跳过去，`q` 取消；`f` 输入子串过滤（边打边筛，`Enter` 留下，`Esc` 还原），`t` 给当前行打标记（`T` 清掉），`x` 杀掉标记的行（没标记就是当前行）；`D`（或 Delete 键）杀掉的同时删掉 session 的保存文件，`resume` 不会再带回来。对 session 按这两个键都会先问一句 (y/n)。`set -g choose-tree-style tree`（或 `list`）改成默认打开方块树（或列表） |
 | `(` / `)` | 切到上一个 / 下一个 session |
 | `D` | 列出连着的客户端，挑一个踢下线 |
 | `>` / `<` | pane 菜单 / 窗口菜单（括号里的字母直接执行，`Enter` 执行选中那条） |
@@ -697,37 +697,45 @@ main 1a2b3c4..5d6e7f8: 1 commit, 2 files +40 -12, 1 new file
 
 ```powershell
 keepane link add http://100.64.0.3:7681/#k=...     # 配对，一次双向生效
-keepane link list                                  # 配过对的机器
-keepane link panes 100.64.0.3:7681                 # 对方的 pane
+keepane link list                                  # 配过对的机器，以及双方各给了对方什么
+keepane link panes 100.64.0.3:7681                 # 对方给这台机器看的 pane
 keepane send-message --to 100.64.0.3:7681/%worker "run the tests"
 ```
 
 对方的 pane 写成 `主机:端口/` 加上它在那台机器上的名字（`%worker`、`$1:@3.%7`）。消息到了那边，信封里的 `from=` 是这台机器和发送的 pane，所以那边用 `send-message -r` 回信就直接回到这里，并且归到同一个任务里。两边都要开着 `keepane web`；web 密钥只在配对那一次用到，之后每个请求都用 server 自己的密钥签名，所以 web 换了密钥也不影响。认的是公钥，不是地址：对方换个网络出现（从局域网换到 Tailscale），还是同一台机器。两边的时钟相差不能超过两分钟。
 
-配过对的机器发来的消息只进 `ai` 和 `normal` 模式的 pane。要让它们在 `shell` 模式的 pane 里当命令执行，得在 keepane 之外的终端里、或者 `C-b :` 提示符里（命令名是 `link-allow`）给那台机器授权。不能在 pane 里面做，否则 agent 就能自己开权限：从 0.54 起，在 pane 里敲 `keepane link allow` 也会被拒绝。
+配对之后双方什么都还看不到。规则只有一条：谁的 pane 被看，就在谁那台上设置。一共两档：
 
 ```powershell
-keepane link allow 100.64.0.3:7681 --shell     # --no-shell 收回
-keepane link allow 100.64.0.3:7681 --screen    # 允许它读这边 pane 的屏幕；--no-screen 收回
-keepane link allow 100.64.0.3:7681 --panes     # 允许它在这边开 pane；--no-panes 收回
-keepane link allow 100.64.0.3:7681 --push      # 允许它往这边的仓库送提交（clone、push）；--no-push 收回
-keepane link allow 100.64.0.3:7681 --agents    # 允许它送项目和对话过来（send-agents）；--no-agents 收回
-keepane link allow 100.64.0.3:7681 --all       # 五项全给：等于完全控制这台电脑；--none 全部收回
-keepane link allow 100.64.0.3:7681 --all --no-shell   # 除了 shell 都给：写在 --all 后面的单项覆盖它
-keepane link remove 100.64.0.3:7681            # 解除配对，两边一起
-keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的
+keepane link share 100.64.0.3:7681 work          # 共享一个 session：对方能看到它，能给里面的 pane 发消息
+keepane link share 100.64.0.3:7681 work:logs     # 共享一个窗口
+keepane link share 100.64.0.3:7681 %worker       # 共享一个 pane
+keepane link unshare 100.64.0.3:7681 work        # 取消共享；--all 取消全部
+keepane link allow 100.64.0.3:7681 --full        # 完全：整台电脑给它，和坐在这台电脑前一样
+keepane link allow 100.64.0.3:7681 --none        # 什么都不给，共享的也一起收回
+```
+
+共享出去的部分，对方能看到（它的 `C-b w` 结构图、`link panes`、`link capture`），也能发消息；这台电脑的其余部分对它来说不存在。共享一个 session 或窗口，以后在里面新开的也算共享。消息按 pane 的工作模式处理：发给 `shell` 模式 pane 的消息会当命令执行，`link share` 共享到这种 pane 时会点名提醒。在 `C-b w` 里按 `s`，把光标处的 session、窗口或 pane 共享给配过对的机器（配了几台时弹菜单选），再按一次 `s` 收回；共享的会标上 `shared`。共享标记记在 session、窗口、pane 本身上，不是记名字，所以后来新建的同名东西不会被共享；标记随 session 一起保存，`resume` 时恢复。
+
+`--full` 就是全部：所有 pane 都能看到，发来的消息在 `shell` pane 里执行，还能在这边开 pane、送提交和项目。普通 HTTP 在局域网里谁都能抓包看到，所以 `--full` 只对 Tailscale 地址（或本机）生效；从局域网地址来的请求只按共享的部分处理，并且会说明原因。`--full --lan` 则对任何网络都生效。
+
+共享和 `--full` 都要在 keepane 之外的终端里、或者 `C-b :` 提示符里做，不能在 pane 里做，否则 agent 就能自己把别的机器放进来。这台电脑的 pane 发出去的消息，对方的回信总能回到发信的 pane，不管这个 pane 有没有共享。0.55 及以前是五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`）；五个全开的机器升级后算 `--full`，只开了部分的算什么都不给，状态栏会提示一次是哪几台。
+
+```powershell
+keepane link remove 100.64.0.3:7681            # 解除配对，两边一起；共享的也一起收回
+keepane link trust 100.64.0.3:7681 <公钥>      # 手工加一台，公钥是它那边 `keepane link id` 打出来的（也可加 --full）
 keepane link rekey                             # 换一对新密钥：所有配对都要重做
 ```
 
 除了对方的 pane 列表，还能问到：
 
 ```powershell
-keepane link info 100.64.0.3:7681              # 对方机器：主机名、系统、keepane 版本、开机多久、CPU、内存、pane 数
+keepane link info 100.64.0.3:7681              # 对方机器：主机名、系统、keepane 版本、开机多久、CPU、内存、共享给这台的 pane 数
 keepane trace-message 12 -w 60                 # 发过去的消息在那边怎么样了（shell 命令还有输出）
-keepane link capture -S 100 100.64.0.3:7681/%worker   # 对方某个 pane 现在显示的内容（要对方授权 --screen）
+keepane link capture -S 100 100.64.0.3:7681/%worker   # 对方某个 pane 现在显示的内容（要共享给这台机器）
 ```
 
-对方授权了 `--panes` 的话，还能在对方那台电脑上开 pane：
+对方给了这台机器 `--full` 的话，还能在对方那台电脑上开 pane：
 
 ```powershell
 keepane link start 100.64.0.3:7681 -n helper -- claude   # 返回它在那边的地址
@@ -735,13 +743,13 @@ keepane send-message --to 100.64.0.3:7681/%helper "look at the failing test"
 keepane link kill 100.64.0.3:7681/%helper               # 只能关这台机器在那边开的 pane
 ```
 
-程序必须在对方的 `agent-commands` 白名单里，参数不限：白名单里要是有 shell（`pwsh`、`bash` 等），它收到什么就执行什么，这时 `--panes` 等于同时给了执行命令的权限；只想让对方开 agent 的话，在那台电脑上 `set -g agent-commands "claude codex"`（`link allow --panes` 的回复会列出当前白名单）。数量受对方的 `agent-pane-limit` 限制（按这台机器单独计数）。开出来的 pane 放在以这台机器命名的 session 里（`-s` 可以指定别的），工作模式和 agent 开的 pane 一样按程序自动定（`-m` 可以指定）；往那边 `shell` 模式的 pane 发命令仍然需要 `--shell` 授权。对方只在它的 server 运行期间记得哪些 pane 是这台机器开的。agent 也能通过 MCP 做同样的事：`create_remote_pane`，以及用地址调用 `kill_pane`。
+程序必须在对方的 `agent-commands` 白名单里，参数不限。数量受对方的 `agent-pane-limit` 限制（按这台机器单独计数）。开出来的 pane 放在以这台机器命名的 session 里（`-s` 可以指定别的），工作模式和 agent 开的 pane 一样按程序自动定（`-m` 可以指定）。对方只在它的 server 运行期间记得哪些 pane 是这台机器开的。agent 也能通过 MCP 做同样的事：`create_remote_pane`，以及用地址调用 `kill_pane`。
 
-没授权的机器发给 `shell` pane 的消息会被拒收，发送方会看到怎么授权。`keepane web --read-only` 的机器也不收别的机器的消息。对方连不上时立刻报错，不会在本机排队等以后再发；加 `-w` 时由对方等到投递为止，时间到了还在排队就算超时（和发给本机 pane 一样，退出码非 0）。配对和解除配对会在状态栏提示并记进事件日志；被拒的请求也一样，但同一个地址一分钟只记一次，有人大量乱发时不会刷屏，也不会把事件日志写满。设计和每条决定见 [docs/design/link.md](docs/design/link.md)。
+发给没共享的 pane 的消息，回答和“没有这个 pane”一样，并告诉发送方怎么共享，所以从名字上看不出没共享的部分。`keepane web --read-only` 的机器也不收别的机器的消息。对方连不上时立刻报错，不会在本机排队等以后再发；加 `-w` 时由对方等到投递为止，时间到了还在排队就算超时（和发给本机 pane 一样，退出码非 0）。配对和解除配对会在状态栏提示并记进事件日志；被拒的请求也一样，但同一个地址一分钟只记一次，有人大量乱发时不会刷屏，也不会把事件日志写满。设计和每条决定见 [docs/design/link.md](docs/design/link.md)。
 
 ### 把提交送到另一台电脑
 
-对方授权了 `--push` 的话，可以把本机仓库的提交送过去：单向，只送已提交的内容。在仓库目录里运行：
+对方给了这台机器 `--full` 的话，可以把本机仓库的提交送过去：单向，只送已提交的内容。在仓库目录里运行：
 
 ```powershell
 keepane clone 100.64.0.3:7681                  # 在对方建副本，放在它的 link-clone-dir 下（~/keepane/<本机仓库目录名>）
@@ -756,7 +764,7 @@ keepane push -l                                # 本机各仓库送到了哪里
 
 ### 把项目和 agent 的对话带到另一台电脑
 
-Claude Code、Codex、pi 的对话只存在它们运行的那台电脑上。`send-agents` 把一个项目连同它的对话送到配过对、并且允许本机这样做（`--agents`）的电脑上，到那边可以接着聊：
+Claude Code、Codex、pi 的对话只存在它们运行的那台电脑上。`send-agents` 把一个项目连同它的对话送到配过对、并且给了本机 `--full` 的电脑上，到那边可以接着聊：
 
 ```powershell
 keepane send-agents 100.64.0.3:7681 -n         # 只列出会送什么，不送

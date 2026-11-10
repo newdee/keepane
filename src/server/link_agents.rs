@@ -7,8 +7,8 @@
 //! asks for it to be taken in; its end comes back as an event. Where the
 //! folder went is kept (`agentsync::Record`).
 //!
-//! The other end: three requests, each from a machine allowed to
-//! (`link-allow --agents`): a look, a piece of the pack (kept in the link
+//! The other end: three requests, each from a machine with all of this one
+//! (`link-allow --full`): a look, a piece of the pack (kept in the link
 //! directory's `incoming`, as `push`'s bundles), the pack taken in. The
 //! folder lands in `<link-clone-dir>/from/<that machine>/<name>`, or
 //! where it went before, or where it came from (a folder sent back).
@@ -380,15 +380,7 @@ impl Server {
 
     /// The machine may send projects here, or the refusal to answer with.
     fn may_send_agents(&mut self, nonce: &str, peer: &link::Peer) -> Option<Outcome> {
-        if peer.agents {
-            return None;
-        }
-        let why = format!(
-            "{} may not send projects and chats here: on this machine, keepane link allow {} --agents",
-            peer.addr, peer.addr
-        );
-        self.link_refused(&peer.addr, &why);
-        Some(self.link_answer(nonce, 403, why))
+        self.need_full(nonce, peer, "send projects and chats")
     }
 
     /// Where a folder from `key` (its path there `there`, named `name`, from

@@ -6850,13 +6850,13 @@ async fn a_machine_allowed_to_starts_panes_on_another_and_closes_only_those() {
     assert_eq!(code, 0, "{err}");
     // Not allowed yet: said how to allow it.
     let (code, _, err) = a.cli(&["link-start", &addr_b]).await;
-    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --panes")), "{err}");
+    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --full")), "{err}");
     // Only from outside every pane.
-    let (code, _, err) = b.cli_in(Some(own), &["link-allow", &addr_a, "--panes"]).await;
+    let (code, _, err) = b.cli_in(Some(own), &["link-allow", &addr_a, "--full"]).await;
     assert!(code != 0 && err.contains("pane"), "{err}");
-    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--panes"]).await;
+    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--full"]).await;
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("may start panes here"), "{out}");
+    assert!(out.contains("has all of this machine") && out.contains("may start panes"), "{out}");
     // Started there, in a session named after this machine; its address back.
     // A program on its agent-commands (its default shell here is cmd, which is not).
     let (code, out, err) =
@@ -6870,8 +6870,8 @@ async fn a_machine_allowed_to_starts_panes_on_another_and_closes_only_those() {
     assert!(sessions.lines().count() == 2, "{sessions}");
     let (_, session, _) = b.cli(&["display", "-p", "-t", &format!("%{pid}"), "#{session_name}"]).await;
     assert!(!session.trim().is_empty() && session.trim() != "wb", "a session of its own for {host}: {session}");
-    // It takes messages at that address (in ai mode: a shell pane would
-    // need --shell as well, a permission of its own).
+    // It takes messages at that address (a machine with all of this one
+    // reaches every pane).
     let (code, _, err) = a.cli(&["send-message", "--to", &address, "hello"]).await;
     assert_eq!(code, 0, "{err}");
     // Only this machine's agent-commands, and within agent-pane-limit.
@@ -6943,11 +6943,11 @@ async fn a_project_goes_to_another_machine_by_send_agents() {
     b.cli(&["set", "-g", "link-clone-dir", &there.to_string_lossy()]).await;
     // Not allowed yet: said how to allow it, nothing made there.
     let (code, _, err) = a.cli_at(&here, &["send-agents", &addr_b]).await;
-    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --agents")), "{err}");
+    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --full")), "{err}");
     assert!(!there.exists());
-    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--agents"]).await;
+    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--full"]).await;
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("may send projects and their agents' chats here"), "{out}");
+    assert!(out.contains("send commits and projects here"), "{out}");
     // -n: what would go, nothing sent.
     let (code, out, err) = a.cli_at(&here, &["send-agents", "-n", &addr_b]).await;
     assert_eq!(code, 0, "{err}");
@@ -6975,7 +6975,7 @@ async fn a_project_goes_to_another_machine_by_send_agents() {
     // here since the last send).
     std::fs::write(copy.join("notes.md"), "changed there\n").unwrap();
     a.cli(&["set", "-g", "link-clone-dir", &root.join("there-a").to_string_lossy()]).await;
-    assert_eq!(a.cli(&["link-allow", &addr_b, "--agents"]).await.0, 0);
+    assert_eq!(a.cli(&["link-allow", &addr_b, "--full"]).await.0, 0);
     let (code, out, err) = b.cli_at(&copy, &["send-agents"]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains(&format!("sent to {addr_a}:")) && out.contains("files: 1 written"), "{out}");
@@ -7041,11 +7041,11 @@ async fn commits_go_to_another_machine_by_clone_and_push() {
     b.cli(&["set", "-g", "link-clone-dir", &there.to_string_lossy()]).await;
     // Not allowed yet: said how to allow it, nothing made there.
     let (code, _, err) = a.cli_at(&here, &["clone", &addr_b]).await;
-    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --push")), "{err}");
+    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --full")), "{err}");
     assert!(!there.exists());
-    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--push"]).await;
+    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--full"]).await;
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("may send commits into repositories here"), "{out}");
+    assert!(out.contains("send commits and projects here"), "{out}");
     // Cloned under link-clone-dir, by this repository's name; kept.
     let (code, out, err) = a.cli_at(&here, &["clone", &addr_b]).await;
     assert_eq!(code, 0, "{err}");
@@ -7178,8 +7178,10 @@ async fn the_chart_shows_the_paired_machines() {
     let (ub, addr_b) = web(&b).await;
     let (code, _, err) = a.cli(&["link-add", &ub]).await;
     assert_eq!(code, 0, "{err}");
-    let (code, _, err) = b.cli(&["link-allow", &addr_a, "--screen"]).await;
+    // What is not shared does not show there: b shares its session.
+    let (code, out, err) = b.cli(&["link-share", &addr_a, "wb"]).await;
     assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with(&format!("wb shared with {addr_a}: it sees them")), "{out}");
     // root, this machine, wa, wa:0, its pane; b, wb, wb:0 (edit), its two
     // panes: 10, the cursor on wa's pane (5).
     c.prefix('w').await;
@@ -7194,6 +7196,22 @@ async fn the_chart_shows_the_paired_machines() {
     })
     .await;
     assert!(c.text().contains("this machine · 1 session"), "{}", c.text());
+    // `s` on this machine's pane shares it with the one machine paired: the
+    // tree marks it, and that machine sees it; `s` again takes it back.
+    assert!(c.text().contains("s share"), "the hint says s: {}", c.text());
+    let (_, seen, _) = b.cli(&["link-panes", &addr_a]).await;
+    assert!(seen.trim().is_empty(), "nothing of a is shared yet: {seen}");
+    c.type_str("s").await;
+    c.wait_for("shared", |s| {
+        s.contents().contains(&format!("shared with {addr_b}")) && s.contents().contains("· shared")
+    })
+    .await;
+    let (code, seen, err) = b.cli(&["link-panes", &addr_a]).await;
+    assert!(code == 0 && seen.lines().count() == 1, "{seen}{err}");
+    c.type_str("s").await;
+    c.wait_for("taken back", |s| s.contents().contains(&format!("no longer shared with {addr_b}"))).await;
+    let (_, seen, _) = b.cli(&["link-panes", &addr_a]).await;
+    assert!(seen.trim().is_empty(), "taken back: {seen}");
     // Up to this machine (never the root), along to the other.
     for want in [4, 3, 2, 2] {
         c.key(0x26, '\0', 0).await;
@@ -7236,6 +7254,124 @@ async fn the_chart_shows_the_paired_machines() {
     c.wait_for("offline", |s| s.contents().contains("1 session · offline")).await;
     c.type_str("q").await;
     a.cli(&["kill-server"]).await;
+}
+
+/// What is shared with a paired machine is marked on the session, window
+/// or pane itself (docs/design/link.md, decision 14): a session made again
+/// under the same name is not shared by it; the marks go into the save and
+/// come back with `resume`; unpairing takes them away. Several targets at
+/// once, said by their names.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_is_shared_is_marked_on_it_and_comes_back_with_resume() {
+    let dir = link_test_dir();
+    let h = Harness::start("lshare").await;
+    let saves = std::env::temp_dir().join(format!("keepane-share-saves-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&saves);
+    h.cli(&["set", "-g", "sessions-dir", &saves.to_string_lossy()]).await;
+    // Saved only when asked: a session made again must not overwrite it.
+    h.cli(&["set", "-g", "autosave", "off"]).await;
+    h.cli(&["new", "-d", "-s", "keeper"]).await;
+    h.cli(&["new", "-d", "-s", "work", "-n", "edit"]).await;
+    h.cli(&["new-window", "-d", "-t", "work", "-n", "logs"]).await;
+    h.cli(&["rename-pane", "-t", "work:0.0", "tail"]).await;
+    let other = keepane::link::Identity::make(&dir.join(format!("share-k-{}", std::process::id()))).unwrap();
+    assert_eq!(h.cli(&["link-trust", "127.0.0.1:9", &other.public()]).await.0, 0);
+    let row = async || {
+        let (_, list, _) = h.cli(&["link-list"]).await;
+        list.lines().find(|l| l.starts_with("127.0.0.1:9")).unwrap_or_default().to_string()
+    };
+    assert!(row().await.contains("nothing"), "{}", row().await);
+    // Named twice (by name and by id): once.
+    let id = h.cli(&["display", "-p", "-t", "work:0.0", "#{pane_id}"]).await.1.trim().to_string();
+    let (code, out, err) = h.cli(&["link-share", "127.0.0.1:9", "work:logs", "%tail", &id]).await;
+    assert!(code == 0 && out.starts_with("work:logs, %tail shared with 127.0.0.1:9:"), "{out} {err}");
+    assert!(row().await.contains("shared: work:logs, %tail"), "{}", row().await);
+    let (_, out, _) = h.cli(&["link-unshare", "127.0.0.1:9", "keeper"]).await;
+    assert_eq!(out.trim(), "keeper was not shared with 127.0.0.1:9");
+    // Taken back from a pane in a session still shared: said that it is
+    // still seen, and through what.
+    assert_eq!(h.cli(&["link-share", "127.0.0.1:9", "work"]).await.0, 0);
+    let (_, out, _) = h.cli(&["link-unshare", "127.0.0.1:9", "%tail"]).await;
+    assert_eq!(out.trim(), "%tail no longer shared with 127.0.0.1:9; it still sees %tail through work");
+    let (_, out, _) = h.cli(&["link-unshare", "127.0.0.1:9", "work"]).await;
+    assert_eq!(out.trim(), "work no longer shared with 127.0.0.1:9");
+    assert_eq!(h.cli(&["link-share", "127.0.0.1:9", "%tail"]).await.0, 0);
+    assert!(row().await.contains("shared: work:logs, %tail"), "{}", row().await);
+    // Saved, then gone; the same names made again are not shared.
+    assert_eq!(h.cli(&["save-session", "-t", "work"]).await.0, 0);
+    h.cli(&["kill-session", "-t", "work"]).await;
+    assert!(row().await.contains("nothing"), "gone with what it was on: {}", row().await);
+    h.cli(&["new", "-d", "-s", "work", "-n", "edit"]).await;
+    h.cli(&["new-window", "-d", "-t", "work", "-n", "logs"]).await;
+    assert!(row().await.contains("nothing"), "a name used again is not shared: {}", row().await);
+    h.cli(&["kill-session", "-t", "work"]).await;
+    // Resumed: shared again, as it was.
+    let (code, out, err) = h.cli(&["restore-session"]).await;
+    assert!(code == 0 && out.starts_with("restored 1 session"), "{out} {err}");
+    assert!(row().await.contains("shared: work:logs, %tail"), "{}", row().await);
+    // Unpaired: nothing of it stays; paired again, nothing is shared.
+    h.cli(&["link-remove", "127.0.0.1:9"]).await;
+    assert_eq!(h.cli(&["link-trust", "127.0.0.1:9", &other.public()]).await.0, 0);
+    assert!(row().await.contains("nothing"), "{}", row().await);
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&saves);
+}
+
+/// `--full` comes only over Tailscale or from this machine, unless `--lan`:
+/// the same machine asking from a LAN address has only what is shared, and
+/// is told why (decision 14). Asked through `link-inbound`, as `keepane web`
+/// hands a request over, from the addresses a network would give.
+#[tokio::test(flavor = "multi_thread")]
+async fn full_control_is_taken_over_tailscale_only_unless_lan() {
+    let dir = link_test_dir();
+    let h = Harness::start("lfull").await;
+    h.cli(&["new", "-d", "-s", "w"]).await;
+    let (code, _, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+    assert_eq!(code, 0, "{err}");
+    let key_h = h.cli(&["link-id"]).await.1.split_whitespace().next().unwrap().to_string();
+    let other = keepane::link::Identity::make(&dir.join(format!("full-k-{}", std::process::id()))).unwrap();
+    let mut n = 0;
+    let mut ask = async |from_ip: &str, method: &str, path: &str, body: &str| {
+        use keepane::link as l;
+        n += 1;
+        let (time, nonce, from) = (l::now(), format!("full{n}"), other.public());
+        let text = l::request_text(method, path, &from, 9, &key_h, time, &nonce, body.as_bytes());
+        let headers = vec![
+            (l::H_PROTOCOL, l::PROTOCOL.to_string()),
+            (l::H_FROM, from.clone()),
+            (l::H_PORT, "9".to_string()),
+            (l::H_TIME, time.to_string()),
+            (l::H_NONCE, nonce.clone()),
+            (l::H_SIGN, other.sign(&text)),
+        ];
+        let req = serde_json::json!({ "method": method, "path": path, "headers": headers, "body": body }).to_string();
+        let (_, out, err) = h.cli(&["link-inbound", from_ip, &req]).await;
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|_| panic!("{out} {err}"));
+        (v["status"].as_u64().unwrap(), v["body"].as_str().unwrap().to_string())
+    };
+    assert_eq!(h.cli(&["link-trust", "192.168.1.5:9", &other.public(), "--full"]).await.0, 0);
+    // From the LAN: held back, said so, nothing of `full` taken.
+    let (status, body) = ask("192.168.1.5", "GET", "/link/access", "").await;
+    assert!(status == 200 && body.contains("\"level\":\"held\""), "{status} {body}");
+    let (status, body) = ask("192.168.1.5", "GET", "/link/panes", "").await;
+    assert!(status == 200 && body.trim().is_empty(), "only what is shared: {body}");
+    let (status, body) = ask("192.168.1.5", "POST", "/link/pane", "{}").await;
+    assert!(status == 403 && body.contains("only over Tailscale") && body.contains("--full --lan"), "{status} {body}");
+    // Over Tailscale (an IPv4 one, and one written as IPv6): all of it.
+    for ip in ["100.64.0.9", "::ffff:100.64.0.9", "fd7a:115c:a1e0::9"] {
+        let (status, body) = ask(ip, "GET", "/link/access", "").await;
+        assert!(status == 200 && body.contains("\"level\":\"full\""), "{ip}: {status} {body}");
+    }
+    let (_, body) = ask("100.64.0.9", "GET", "/link/panes", "").await;
+    assert_eq!(body.lines().count(), 1, "every pane: {body}");
+    // `--lan`: from the LAN too. (Its address moved with the last request.)
+    let (_, list, _) = h.cli(&["link-list"]).await;
+    let addr = list.lines().nth(1).unwrap().split_whitespace().next().unwrap().to_string();
+    let (code, out, err) = h.cli(&["link-allow", &addr, "--full", "--lan"]).await;
+    assert!(code == 0 && out.contains("from any network") && !out.contains("not a Tailscale"), "{out} {err}");
+    let (status, body) = ask("192.168.1.5", "GET", "/link/access", "").await;
+    assert!(status == 200 && body.contains("\"level\":\"full\""), "{status} {body}");
+    h.cli(&["kill-server"]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -7293,14 +7429,31 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let (code, out, err) = a.cli(&["link-add", &ub]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.starts_with(&format!("paired with {addr_b}  SHA256:")), "{out}");
+    // Paired, each has nothing of the other: said both ways in the list
+    // (what this one has there is asked of the other).
     let (_, list, _) = a.cli(&["link-list"]).await;
-    assert!(list.contains(&addr_b) && list.contains("no"), "{list}");
+    let row = list.lines().find(|l| l.contains(&addr_b)).unwrap_or_default();
+    assert!(row.matches("nothing").count() == 2, "{list}");
     let (_, list, _) = b.cli(&["link-list"]).await;
     assert!(list.contains(&addr_a), "{list}");
     let (_, said, _) = b.cli(&["show-messages"]).await;
     assert!(said.contains(&format!("link: {addr_a} (SHA256:")), "{said}");
     let (code, panes, err) = a.cli(&["link-panes", &addr_b]).await;
-    assert!(code == 0 && panes.contains("worker") && panes.contains("\tai\t"), "{panes} {err}");
+    assert!(code == 0 && panes.trim().is_empty(), "nothing shared, nothing seen: {panes} {err}");
+    let (code, _, err) = a.cli(&["send-message", "--to", &worker, "not yet"]).await;
+    assert!(code != 0 && err.contains("no pane by that name is shared with"), "{err}");
+    // Shared: seen there, and said so in the lists of both.
+    let (code, out, err) = b.cli(&["link-share", &addr_a, "%worker"]).await;
+    assert!(code == 0 && out.starts_with(&format!("%worker shared with {addr_a}")), "{out} {err}");
+    let (code, panes, err) = a.cli(&["link-panes", &addr_b]).await;
+    assert!(
+        code == 0 && panes.lines().count() == 1 && panes.contains("worker") && panes.contains("\tai\t"),
+        "{panes} {err}"
+    );
+    let (_, list, _) = a.cli(&["link-list"]).await;
+    assert!(list.contains("shared: 1 pane"), "what this machine has there, asked of it: {list}");
+    let (_, list, _) = b.cli(&["link-list"]).await;
+    assert!(list.contains("shared: %worker"), "{list}");
 
     // A message goes over, queued there until the agent is ready; its
     // record here says so, and there it reads from=<this machine>/<pane>.
@@ -7323,6 +7476,7 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
         inbox.contains(&format!("from {addr_a}/$")) && inbox.contains(" lead (ai)") && inbox.contains("hello worker"),
         "{inbox}"
     );
+    let first_on_b = inbox.split("  #").nth(1).and_then(|s| s.split_whitespace().next()).unwrap().to_string();
     assert_eq!(b.cli_in(Some(pb), &["pane-ready"]).await.0, 0);
     wait_format(&b, pb, "#{pane_inbox}", "0").await;
     // The envelope line is wider than the pane, so it is read with -J.
@@ -7345,6 +7499,12 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let (_, inbox, _) = a.cli(&["list-messages", "-t", &ta]).await;
     assert!(inbox.contains("got it") && inbox.contains(&format!("from {addr_b}/$")), "{inbox}");
     let reply_on_a = inbox.split("  #").nth(1).and_then(|s| s.split_whitespace().next()).unwrap().to_string();
+    // The asking pane takes the answer without being shared, but not in
+    // `shell` mode, where the answer would run as a command.
+    assert_eq!(a.cli(&["set-work-mode", "-t", &ta, "shell"]).await.0, 0);
+    let (code, _, err) = b.cli_in(Some(pb), &["send-message", "--re", &first_on_b, "run this"]).await;
+    assert!(code != 0 && err.contains("no pane by that name is shared with"), "{err}");
+    assert_eq!(a.cli(&["set-work-mode", "-t", &ta, "ai"]).await.0, 0);
 
     // `-w` waits on the other machine (busy: its agent has not said ready).
     let started = Instant::now();
@@ -7361,8 +7521,8 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     assert!(code != 0 && err.contains("message-hop-limit"), "{err}");
     a.cli(&["set", "-g", "message-hop-limit", "8"]).await;
 
-    // A shell pane there takes commands from here only once this machine is
-    // allowed to, by a person outside every pane.
+    // A shell pane there takes commands from here only once it is shared
+    // with this machine, by a person outside every pane.
     #[cfg(windows)]
     let (shell, echo): (&[&str], &str) = (&["pwsh", "-NoLogo", "-NoProfile"], "Write-Output linked-ok");
     #[cfg(unix)]
@@ -7375,20 +7535,28 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     wait_format(&b, ps, "#{pane_idle}", "1").await;
     let sh = format!("{addr_b}/%sh");
     let (code, _, err) = a.cli(&["send-message", "--to", &sh, echo]).await;
-    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --shell")), "{err}");
-    let (code, _, err) = b.cli_in(Some(pb), &["link-allow", &addr_a, "--shell"]).await;
-    assert!(code != 0 && err.contains("not run from inside a pane"), "{err}");
-    // The same through `keepane link allow` (the client's own words for it),
-    // the real binary run in that pane: refused too. (Up to 0.53 that way
-    // said no pane, and a program in a pane could allow itself.)
-    let (socket_b, addr) = (b.socket.clone(), addr_a.clone());
-    let (code, err) =
-        tokio::task::spawn_blocking(move || run_hook(&socket_b, Some(pb), &["link", "allow", &addr, "--shell"], ""))
-            .await
-            .unwrap();
-    assert!(code != 0 && err.contains("not run from inside a pane"), "keepane link allow from a pane: {err}");
-    let (code, out, err) = b.cli(&["link-allow", &addr_a, "--shell"]).await;
-    assert!(code == 0 && out.contains("may run commands"), "{out} {err}");
+    assert!(code != 0 && err.contains(&format!("keepane link share {addr_a}")), "{err}");
+    for argv in [vec!["link-share", &addr_a, "%sh"], vec!["link-allow", &addr_a, "--full"]] {
+        let (code, _, err) = b.cli_in(Some(pb), &argv).await;
+        assert!(code != 0 && err.contains("not run from inside a pane"), "{argv:?}: {err}");
+    }
+    // The same through `keepane link` (the client's own words for it), the
+    // real binary run in that pane: refused too. (Up to 0.53 that way said
+    // no pane, and a program in a pane could allow itself.)
+    for words in [["share", "%sh"], ["allow", "--full"]] {
+        let (socket_b, addr) = (b.socket.clone(), addr_a.clone());
+        let (code, err) = tokio::task::spawn_blocking(move || {
+            run_hook(&socket_b, Some(pb), &["link", words[0], &addr, words[1]], "")
+        })
+        .await
+        .unwrap();
+        assert!(code != 0 && err.contains("not run from inside a pane"), "keepane link {words:?} from a pane: {err}");
+    }
+    let (code, out, err) = b.cli(&["link-share", &addr_a, "%sh"]).await;
+    assert!(
+        code == 0 && out.contains("%sh is in shell mode: a message from it runs there as a command"),
+        "{out} {err}"
+    );
     // `-w` waits there until the shell is free and has it (a fresh shell may
     // still be busy drawing its prompt when the message lands).
     let (code, out, err) = a.cli(&["send-message", "--to", &sh, "-w", "30", echo]).await;
@@ -7409,12 +7577,16 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
         assert!(info.lines().any(|l| l.starts_with(field)), "{field}: {info}");
     }
     assert!(info.contains(&format!("keepane  {}", env!("CARGO_PKG_VERSION"))), "{info}");
-    // A pane's screen: only once that machine allows this one to read them.
-    let (code, _, err) = a.cli(&["link-capture", &sh]).await;
-    assert!(code != 0 && err.contains(&format!("keepane link allow {addr_a} --screen")), "{err}");
-    assert_eq!(b.cli(&["link-allow", &addr_a, "--screen"]).await.0, 0);
+    // No more of that machine than is shared: its two panes, one session.
+    assert!(info.lines().any(|l| l == "panes    2 in 1 session"), "{info}");
+    // A pane's screen: only while it is shared with this machine.
     let (code, screen, err) = a.cli(&["link-capture", "-S", "100", &sh]).await;
     assert!(code == 0 && screen.contains("linked-ok"), "{screen} {err}");
+    let (code, out, err) = b.cli(&["link-unshare", &addr_a, "%sh"]).await;
+    assert!(code == 0 && out.starts_with(&format!("%sh no longer shared with {addr_a}")), "{out} {err}");
+    let (code, _, err) = a.cli(&["link-capture", &sh]).await;
+    assert!(code != 0 && err.contains("no pane by that name is shared with"), "{err}");
+    assert_eq!(b.cli(&["link-share", &addr_a, "%sh"]).await.0, 0);
     // Another machine's message is not this one's to ask after.
     let (_, _, err) = b.cli(&["trace-message", "999"]).await;
     assert!(err.contains("no message #999"), "{err}");
@@ -7426,38 +7598,47 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     let now = keepane::link::now();
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n1", "").await;
     assert!(status == 401 && body.contains("not paired"), "{status} {body}");
-    // Trusted with what it may do: only from outside the panes, the agents'
-    // and all five too.
-    for (flag, named) in [("--agents", "link-trust --agents"), ("--all", "link-trust --shell")] {
-        let (code, _, err) = b.cli_in(Some(pb), &["link-trust", "127.0.0.1:9", &stranger.public(), flag]).await;
-        assert!(code != 0 && err.contains(named), "{flag}: {err}");
-        assert!(err.contains("not run from inside a pane"), "{flag}: {err}");
-    }
+    // Trusted with all of this machine: only from outside the panes. The
+    // five permissions of 0.55 say what took their place.
+    let (code, _, err) = b.cli_in(Some(pb), &["link-trust", "127.0.0.1:9", &stranger.public(), "--full"]).await;
+    assert!(code != 0 && err.contains("link-trust --full") && err.contains("not run from inside a pane"), "{err}");
+    let (code, _, err) = b.cli(&["link-trust", "127.0.0.1:9", &stranger.public(), "--agents"]).await;
+    assert!(code != 0 && err.contains("two levels"), "{err}");
     let (code, _, err) = b.cli(&["link-trust", "127.0.0.1:9", &stranger.public()]).await;
     assert_eq!(code, 0, "{err}");
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now - 300, "n2", "").await;
     assert!(status == 401 && body.contains("clocks"), "{status} {body}");
+    // Taken in, and shown nothing: nothing is shared with it.
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n3", "").await;
-    assert!(status == 200 && body.contains("worker"), "{status} {body}");
+    assert!(status == 200 && body.trim().is_empty(), "{status} {body}");
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/access", now, "n3a", "").await;
+    assert!(status == 200 && body.contains("\"level\":\"none\""), "{status} {body}");
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "GET", "/link/panes", now, "n3", "").await;
     assert!(status == 401 && body.contains("seen before"), "{status} {body}");
     let (status, body) = link_call(&stranger, "not-their-key", &addr_b, "GET", "/link/panes", now, "n4", "").await;
     assert!(status == 401 && body.contains("not signed"), "{status} {body}");
     // Paired, but asking after another machine's message: not its to know;
-    // nor its to read the panes (it was not allowed to).
+    // nor its to read a pane shared with another machine, or to message it:
+    // a pane there is to it as one that is not there.
     let ask = format!("{{\"id\":{ran_there}}}");
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/trace", now, "n7", &ask).await;
     assert!(status == 404 && body.contains(&format!("no message #{ran_there} from")), "{status} {body}");
     let (status, body) =
         link_call(&stranger, &key_b, &addr_b, "POST", "/link/capture", now, "n8", r#"{"to":"%sh"}"#).await;
-    assert!(status == 403 && body.contains("--screen"), "{status} {body}");
+    assert!(status == 404 && body.contains("no pane by that name is shared with 127.0.0.1:9"), "{status} {body}");
+    let to_worker = r##"{"to":"%worker","text":"x","from":"user","hop":0,"id":1,"task":1}"##;
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/send", now, "n8b", to_worker).await;
+    assert!(status == 404 && body.contains("no pane by that name is shared with"), "{status} {body}");
+    // Nor start panes or send commits: those take all of the machine.
+    let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/pane", now, "n8c", "{}").await;
+    assert!(status == 403 && body.contains("takes all of this machine"), "{status} {body}");
     // Malformed: a body that is not a message, a pane there is not, a
     // request without its key, another protocol: each refused with a reason.
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/send", now, "n5", "garbage").await;
     assert!(status == 400 && body.contains("not what keepane sends"), "{status} {body}");
     let nope = r##"{"to":"%nope","text":"x","from":"user","hop":0,"id":1,"task":1}"##;
     let (status, body) = link_call(&stranger, &key_b, &addr_b, "POST", "/link/send", now, "n6", nope).await;
-    assert!(status == 404 && body.contains("can't find pane"), "{status} {body}");
+    assert!(status == 404 && body.contains("no pane by that name is shared with"), "{status} {body}");
     // A sender's fields that would forge a header inside the envelope (a
     // space and a `]` in them): refused, nothing queued.
     let before = ask_pane(&b, pb, "#{pane_inbox}").await;
@@ -7544,6 +7725,11 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     assert_eq!(code, 0, "{err}");
     let (code, _, err) = b.cli(&["link-trust", &addr_a, &key_a]).await;
     assert_eq!(code, 0, "{err}");
+    // Unpairing took back what was shared: shared again, it takes messages.
+    let (code, _, err) = a.cli(&["send-message", "--to", &worker, "trusted"]).await;
+    assert!(code != 0 && err.contains("no pane by that name is shared with"), "{err}");
+    assert_eq!(b.cli(&["link-share", &addr_a, "wb"]).await.0, 0);
+    assert_eq!(a.cli(&["link-share", &addr_b, "%lead"]).await.0, 0);
     let (code, out, err) = a.cli(&["send-message", "--to", &worker, "trusted"]).await;
     assert!(code == 0 && out.contains("forwarded"), "{out} {err}");
 

@@ -707,17 +707,14 @@ pub enum Cmd {
     LinkAdd {
         url: String,
     },
-    /// `link-trust host:port key [--shell] [--screen] [--panes] [--push]
-    /// [--agents] [--all]`: let the machine with that public key send
-    /// messages here, by hand (no web key needed); `--all` is the five.
+    /// `link-trust host:port key [--full [--lan]]`: pair with the machine
+    /// with that public key by hand (no web key needed); `--full` gives it
+    /// all of this machine, as `link-allow --full` does.
     LinkTrust {
         addr: String,
         key: String,
-        shell: bool,
-        screen: bool,
-        panes: bool,
-        push: bool,
-        agents: bool,
+        full: bool,
+        lan: bool,
     },
     /// `link-list`: the machines paired with this server.
     LinkList,
@@ -732,7 +729,8 @@ pub enum Cmd {
     },
     /// `link-capture host:port/pane [-S lines]`: what that pane shows (and
     /// the last `lines` of its scrollback), as text; the machine must have
-    /// allowed this one to (`link-allow --screen` there).
+    /// shared it with this one (`link-share` there) or given it all of
+    /// itself (`link-allow --full`).
     LinkCapture {
         target: String,
         history: Option<u32>,
@@ -740,7 +738,7 @@ pub enum Cmd {
     /// `link-start host:port [-s session] [-n name] [-m mode] [-c dir] [--
     /// program args]`: a pane on that machine, running one of its
     /// `agent-commands`; the machine must have allowed this one to
-    /// (`link-allow --panes` there). Its address comes back.
+    /// (`link-allow --full` there). Its address comes back.
     LinkPane(Box<LinkPane>),
     /// `link-kill host:port/pane`: close a pane this machine started there.
     LinkKill {
@@ -765,21 +763,23 @@ pub enum Cmd {
         tell: Option<String>,
         list: bool,
     },
-    /// `link-allow host:port [--shell|--no-shell] [--screen|--no-screen]
-    /// [--panes|--no-panes] [--push|--no-push] [--agents|--no-agents]
-    /// [--all|--none]`: whether that machine's messages may run as commands
-    /// in `shell` panes here, whether it may read what the panes here show,
-    /// whether it may start panes here, whether it may send commits into
-    /// repositories here (`clone`, `push`), and projects with their agents'
-    /// chats (`send-agents`). `--all` and `--none` are the five, each set.
+    /// `link-allow host:port --full [--lan]`: that machine has all of this
+    /// one, as if it sat here (from a Tailscale address only, unless
+    /// `--lan`); `link-allow host:port --none`: it has nothing, what was
+    /// shared with it taken back too.
     LinkAllow {
         addr: String,
-        shell: Option<bool>,
-        screen: Option<bool>,
-        panes: Option<bool>,
-        push: Option<bool>,
-        /// It may send projects and their agents' chats here (`send-agents`).
-        agents: Option<bool>,
+        full: bool,
+        lan: bool,
+    },
+    /// `link-share host:port target...`: those sessions, windows or panes
+    /// here are seen by that machine and take its messages, and nothing
+    /// else is (a session or a window: what comes to be in it too);
+    /// `link-unshare host:port target...|--all`: no longer.
+    LinkShare {
+        addr: String,
+        targets: Vec<String>,
+        share: bool,
     },
     /// `link-send-agents [host:port] [dir] [-s id]... [-n]` (`send-agents`): the
     /// project the client is in (its repository, or `dir`) and its agents'
@@ -1779,22 +1779,13 @@ impl fmt::Display for Cmd {
             Cmd::WebTails { lines } => write!(f, "web-tails {lines}"),
             Cmd::LinkId => f.write_str("link-id"),
             Cmd::LinkAdd { url } => write!(f, "link-add {}", quote(url)),
-            Cmd::LinkTrust { addr, key, shell, screen, panes, push, agents } => {
+            Cmd::LinkTrust { addr, key, full, lan } => {
                 write!(f, "link-trust {} {}", quote(addr), quote(key))?;
-                if *agents {
-                    f.write_str(" --agents")?;
+                if *full {
+                    f.write_str(" --full")?;
                 }
-                if *shell {
-                    f.write_str(" --shell")?;
-                }
-                if *screen {
-                    f.write_str(" --screen")?;
-                }
-                if *panes {
-                    f.write_str(" --panes")?;
-                }
-                if *push {
-                    f.write_str(" --push")?;
+                if *lan {
+                    f.write_str(" --lan")?;
                 }
                 Ok(())
             }
@@ -1863,22 +1854,21 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::LinkAllow { addr, shell, screen, panes, push, agents } => {
+            Cmd::LinkAllow { addr, full, lan } => {
                 write!(f, "link-allow {}", quote(addr))?;
-                if let Some(s) = shell {
-                    f.write_str(if *s { " --shell" } else { " --no-shell" })?;
+                f.write_str(match (full, lan) {
+                    (true, true) => " --full --lan",
+                    (true, false) => " --full",
+                    _ => " --none",
+                })
+            }
+            Cmd::LinkShare { addr, targets, share } => {
+                write!(f, "{} {}", if *share { "link-share" } else { "link-unshare" }, quote(addr))?;
+                if targets.is_empty() {
+                    f.write_str(" --all")?;
                 }
-                if let Some(s) = screen {
-                    f.write_str(if *s { " --screen" } else { " --no-screen" })?;
-                }
-                if let Some(s) = panes {
-                    f.write_str(if *s { " --panes" } else { " --no-panes" })?;
-                }
-                if let Some(s) = push {
-                    f.write_str(if *s { " --push" } else { " --no-push" })?;
-                }
-                if let Some(s) = agents {
-                    f.write_str(if *s { " --agents" } else { " --no-agents" })?;
+                for t in targets {
+                    write!(f, " {}", quote(t))?;
                 }
                 Ok(())
             }
@@ -2285,6 +2275,21 @@ fn bad_flag(name: &str, flag: &str) -> String {
     format!("{name}: unknown flag '{flag}'")
 }
 
+/// A permission of `link-allow` and `link-trust` up to keepane 0.55, each
+/// on its own; two levels took their place.
+fn link_old_flag(flag: &str) -> bool {
+    let bare = flag.strip_prefix("--no-").or_else(|| flag.strip_prefix("--")).unwrap_or_default();
+    matches!(bare, "shell" | "screen" | "panes" | "push" | "agents") || flag == "--all"
+}
+
+fn link_old_said(name: &str) -> String {
+    format!(
+        "{name}: the five permissions (--shell, --screen, --panes, --push, --agents, --all) gave way to two levels \
+         in keepane 0.56: --full gives all of this machine, `keepane link share <host:port> <session|window|pane>` \
+         parts of it, and --none takes everything back"
+    )
+}
+
 fn seconds(name: &str, v: &str) -> Result<u64, String> {
     v.parse().map_err(|_| format!("{name}: bad number of seconds '{v}'"))
 }
@@ -2413,6 +2418,8 @@ pub const COMMANDS: &[&str] = &[
     "link-list",
     "link-panes",
     "link-rekey",
+    "link-share",
+    "link-unshare",
     "feishu-status",
     "feishu-allow",
     "feishu-remove",
@@ -2667,23 +2674,9 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
     ("link-add", &[]),
-    (
-        "link-allow",
-        &[
-            "--shell",
-            "--no-shell",
-            "--screen",
-            "--no-screen",
-            "--panes",
-            "--no-panes",
-            "--push",
-            "--no-push",
-            "--agents",
-            "--no-agents",
-            "--all",
-            "--none",
-        ],
-    ),
+    ("link-allow", &["--full", "--lan", "--none"]),
+    ("link-share", &[]),
+    ("link-unshare", &["--all"]),
     ("link-capture", &["-S"]),
     ("link-id", &[]),
     ("link-inbound", &[]),
@@ -2695,7 +2688,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("feishu-allow", &["--shell", "--no-shell", "--screen", "--no-screen"]),
     ("feishu-remove", &[]),
     ("link-remove", &[]),
-    ("link-trust", &["--shell", "--screen", "--panes", "--push", "--agents", "--all"]),
+    ("link-trust", &["--full", "--lan"]),
     ("link-start", &["-s", "-n", "-m", "-c"]),
     ("link-kill", &[]),
     ("link-clone", &["--tell"]),
@@ -4362,25 +4355,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
         }
         "link-allow" => {
-            let (mut addr, mut shell, mut screen, mut panes, mut push, mut agents) =
-                (None, None, None, None, None, None);
+            let (mut addr, mut full, mut lan) = (None, None, false);
             while let Some(w) = a.next() {
                 match w {
-                    "--shell" => shell = Some(true),
-                    "--no-shell" => shell = Some(false),
-                    "--screen" => screen = Some(true),
-                    "--no-screen" => screen = Some(false),
-                    "--panes" => panes = Some(true),
-                    "--no-panes" => panes = Some(false),
-                    "--push" => push = Some(true),
-                    "--no-push" => push = Some(false),
-                    "--agents" => agents = Some(true),
-                    "--no-agents" => agents = Some(false),
-                    // The five as they are now, each set (a permission keepane
-                    // gains later is not in an `--all` given before it); a
-                    // flag after it changes its own.
-                    "--all" => [shell, screen, panes, push, agents] = [Some(true); 5],
-                    "--none" => [shell, screen, panes, push, agents] = [Some(false); 5],
+                    "--full" => full = Some(true),
+                    "--none" => full = Some(false),
+                    "--lan" => lan = true,
+                    f if link_old_flag(f) => return Err(link_old_said(n)),
                     f if f.starts_with('-') => return Err(bad_flag(n, f)),
                     v if addr.is_none() => addr = Some(v.to_string()),
                     v => return Err(format!("{n}: what is '{v}'?")),
@@ -4390,13 +4371,41 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::link::valid_hostport(&addr) {
                 return Err(format!("{n}: '{addr}' is not host:port"));
             }
-            if [shell, screen, panes, push, agents].iter().all(Option::is_none) {
+            let Some(full) = full else {
                 return Err(format!(
-                    "{n}: --shell or --no-shell, --screen or --no-screen, --panes or --no-panes, --push or --no-push, \
-                     --agents or --no-agents; or --all, --none"
+                    "{n}: --full (all of this machine) or --none (nothing); parts of it: `link share`"
                 ));
+            };
+            if lan && !full {
+                return Err(format!("{n}: --lan goes with --full"));
             }
-            Cmd::LinkAllow { addr, shell, screen, panes, push, agents }
+            Cmd::LinkAllow { addr, full, lan }
+        }
+        "link-share" | "link-unshare" => {
+            let (mut addr, mut targets, mut all) = (None, Vec::new(), false);
+            while let Some(w) = a.next() {
+                match w {
+                    "--all" if n == "link-unshare" => all = true,
+                    f if f.starts_with("--") => return Err(bad_flag(n, f)),
+                    v if addr.is_none() => addr = Some(v.to_string()),
+                    v => targets.push(v.to_string()),
+                }
+            }
+            let Some(addr) = addr else { return Err(format!("{n}: host:port required")) };
+            if !crate::link::valid_hostport(&addr) {
+                return Err(format!("{n}: '{addr}' is not host:port"));
+            }
+            if all != targets.is_empty() {
+                return Err(if n == "link-share" {
+                    format!("{n}: what to share: a session (work), a window (work:logs) or a pane (%worker)")
+                } else {
+                    format!("{n}: what to take back (a session, work:window, %pane), or --all")
+                });
+            }
+            if let Some(t) = targets.iter().find(|t| crate::link::split_remote(t).is_some()) {
+                return Err(format!("{n}: '{t}' is on another machine: share what is here"));
+            }
+            Cmd::LinkShare { addr, targets, share: n == "link-share" }
         }
         "link-send-agents" => {
             let (mut words, mut sessions, mut dry, mut list) = (Vec::new(), Vec::new(), false, false);
@@ -4422,23 +4431,20 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::LinkSendAgents { addr, dir, sessions, dry, list }
         }
         "link-trust" => {
-            // `--shell` and `--screen` are the flags: a key is base64url, and
-            // one in 64 starts with `-`, so any other word is a word (and is
+            // `--full` and `--lan` are the flags: a key is base64url, and one
+            // in 64 starts with `-`, so any other word is a word (and is
             // checked as a key or an address below).
-            let (mut words, mut shell, mut screen, mut panes, mut push, mut agents) =
-                (Vec::new(), false, false, false, false, false);
+            let (mut words, mut full, mut lan) = (Vec::new(), false, false);
             while let Some(w) = a.next() {
                 match w {
-                    "--shell" => shell = true,
-                    "--screen" => screen = true,
-                    "--panes" => panes = true,
-                    "--push" => push = true,
-                    "--agents" => agents = true,
-                    // The five, each set: a permission keepane gains later is
-                    // not in it.
-                    "--all" => (shell, screen, panes, push, agents) = (true, true, true, true, true),
+                    "--full" => full = true,
+                    "--lan" => lan = true,
+                    f if link_old_flag(f) => return Err(link_old_said(n)),
                     v => words.push(v.to_string()),
                 }
+            }
+            if lan && !full {
+                return Err(format!("{n}: --lan goes with --full"));
             }
             let [addr, key] = <[String; 2]>::try_from(words)
                 .map_err(|_| format!("{n}: host:port and the machine's public key (its `keepane link id`)"))?;
@@ -4448,7 +4454,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::link::valid_public(&key) {
                 return Err(format!("{n}: '{key}' is not a keepane link public key"));
             }
-            Cmd::LinkTrust { addr, key, shell, screen, panes, push, agents }
+            Cmd::LinkTrust { addr, key, full, lan }
         }
         "link-inbound" => {
             let peer = a.next().ok_or("link-inbound: peer address required")?.to_string();
@@ -5618,23 +5624,56 @@ mod tests {
         assert_eq!(parse_line("").unwrap(), None);
     }
 
-    /// `link-allow --all` is the five permissions, each set; a flag after it
-    /// changes its own, one before it is overridden; `--none` is the five
-    /// taken back; written back, the five are spelled out.
+    /// `link-allow` is one of two levels, `--full` (with `--lan` for any
+    /// network) or `--none`; the last of the two words wins; written back
+    /// it reads the same. The five permissions of 0.55 say what took their
+    /// place. `link-share` takes targets here; `link-unshare` those or
+    /// `--all`.
     #[test]
-    fn link_allow_all_is_the_five() {
+    fn link_allow_is_a_level_and_share_takes_targets() {
         let allow = |line: &str| match parse_line(line).unwrap().unwrap() {
-            Cmd::LinkAllow { shell, screen, panes, push, agents, .. } => [shell, screen, panes, push, agents],
+            Cmd::LinkAllow { full, lan, .. } => (full, lan),
             other => panic!("{other:?}"),
         };
-        assert_eq!(allow("link-allow 10.0.0.1:7681 --all"), [Some(true); 5]);
-        assert_eq!(allow("link-allow 10.0.0.1:7681 --none"), [Some(false); 5]);
-        let mut want = [Some(true); 5];
-        want[0] = Some(false);
-        assert_eq!(allow("link-allow 10.0.0.1:7681 --all --no-shell"), want);
-        assert_eq!(allow("link-allow 10.0.0.1:7681 --no-shell --all"), [Some(true); 5], "--all after it wins");
-        let shown = parse_line("link-allow 10.0.0.1:7681 --all --no-push").unwrap().unwrap().to_string();
-        assert_eq!(shown, "link-allow 10.0.0.1:7681 --shell --screen --panes --no-push --agents");
-        assert!(parse_line("link-allow 10.0.0.1:7681").unwrap_err().contains("--all, --none"));
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --full"), (true, false));
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --full --lan"), (true, true));
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --lan --full"), (true, true));
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --none"), (false, false));
+        assert_eq!(allow("link-allow 10.0.0.1:7681 --full --none"), (false, false), "the last wins");
+        for line in [
+            "link-allow 10.0.0.1:7681 --full",
+            "link-allow 10.0.0.1:7681 --full --lan",
+            "link-allow 10.0.0.1:7681 --none",
+        ] {
+            assert_eq!(parse_line(line).unwrap().unwrap().to_string(), line);
+        }
+        assert!(parse_line("link-allow 10.0.0.1:7681").unwrap_err().contains("--full"));
+        assert!(parse_line("link-allow 10.0.0.1:7681 --none --lan").unwrap_err().contains("--lan goes with --full"));
+        for old in ["--shell", "--no-screen", "--panes", "--push", "--no-agents", "--all"] {
+            let e = parse_line(&format!("link-allow 10.0.0.1:7681 {old}")).unwrap_err();
+            assert!(e.contains("two levels") && e.contains("link share"), "{old}: {e}");
+        }
+        let share = |line: &str| match parse_line(line).unwrap().unwrap() {
+            Cmd::LinkShare { targets, share, .. } => (targets, share),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            share("link-share 10.0.0.1:7681 work work:logs %worker"),
+            (vec!["work".into(), "work:logs".into(), "%worker".into()], true)
+        );
+        assert_eq!(share("link-unshare 10.0.0.1:7681 work"), (vec!["work".into()], false));
+        assert_eq!(share("link-unshare 10.0.0.1:7681 --all"), (vec![], false));
+        for line in [
+            "link-share 10.0.0.1:7681 work %worker",
+            "link-unshare 10.0.0.1:7681 --all",
+            "link-unshare 10.0.0.1:7681 work:logs",
+        ] {
+            assert_eq!(parse_line(line).unwrap().unwrap().to_string(), line);
+        }
+        assert!(parse_line("link-share 10.0.0.1:7681").unwrap_err().contains("what to share"));
+        assert!(parse_line("link-share 10.0.0.1:7681 --all").unwrap_err().contains("unknown flag"));
+        assert!(parse_line("link-unshare 10.0.0.1:7681").unwrap_err().contains("or --all"));
+        assert!(parse_line("link-unshare 10.0.0.1:7681 work --all").unwrap_err().contains("or --all"));
+        assert!(parse_line("link-share 10.0.0.1:7681 10.0.0.2:7681/%7").unwrap_err().contains("another machine"));
     }
 }

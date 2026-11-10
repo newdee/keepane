@@ -32,6 +32,9 @@ pub struct SavedPane {
     /// pane takes up the history it had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_history: Option<String>,
+    /// The paired machines it is shared with (`link-share`), by key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -84,6 +87,9 @@ pub struct SavedWindow {
     /// Index of the active pane in leaf order.
     pub active: usize,
     pub zoomed: bool,
+    /// The paired machines it is shared with (`link-share`), by key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -95,6 +101,9 @@ pub struct SavedSession {
     /// the restored one. Older files have none: 80x24 then.
     #[serde(default)]
     pub size: Option<(u16, u16)>,
+    /// The paired machines it is shared with (`link-share`), by key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared: Vec<String>,
 }
 
 /// One file: one session.
@@ -206,6 +215,7 @@ mod tests {
             name: "main".into(),
             current: 1,
             size: Some((120, 40)),
+            shared: vec![],
             windows: vec![
                 SavedWindow {
                     name: "shell".into(),
@@ -226,12 +236,14 @@ mod tests {
                     },
                     active: 2,
                     zoomed: false,
+                    shared: vec!["k1".into()],
                 },
                 SavedWindow {
                     name: "logs".into(),
                     layout: SavedNode::Pane { pane: pane("pwsh.exe") },
                     active: 0,
                     zoomed: true,
+                    shared: vec![],
                 },
             ],
         })

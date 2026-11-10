@@ -8,7 +8,7 @@
 //! repository went is kept (`link::Pushed`), by the other machine's key.
 //!
 //! The other end: three requests, each from a machine allowed to
-//! (`link-allow --push`): a look at a path, a piece of a bundle (kept in
+//! (`link-allow --full`): a look at a path, a piece of a bundle (kept in
 //! the link directory's `incoming`), the bundle taken in. git runs on a
 //! thread; its answer comes back as an event and goes to the request.
 
@@ -494,15 +494,7 @@ impl Server {
 
     /// The machine may send commits here, or the refusal to answer with.
     fn may_push(&mut self, nonce: &str, peer: &link::Peer) -> Option<Outcome> {
-        if peer.push {
-            return None;
-        }
-        let why = format!(
-            "{} may not send commits here: on this machine, keepane link allow {} --push",
-            peer.addr, peer.addr
-        );
-        self.link_refused(&peer.addr, &why);
-        Some(self.link_answer(nonce, 403, why))
+        self.need_full(nonce, peer, "send commits")
     }
 
     /// The path here a request names (absolute), or why not.

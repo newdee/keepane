@@ -39,8 +39,8 @@ keepane push -l                     # 列出本机仓库记下的位置
 
 ## 3. 权限
 
-- 对方要授予：`keepane link allow <本机地址> --push`。默认关。和 `--shell`、`--screen`、`--panes` 一样，只能在 pane 之外授予（pane 里的 agent 不能给自己开权限）。
-- 没有授权时，对方返回 403，本机照录对方的话（`<本机地址> may not send commits here: on this machine, keepane link allow <本机地址> --push`）。
+- 对方要授予：`keepane link allow <本机地址> --full`（0.56 起；0.55 及以前是单独的 `--push`，见 [link.md](link.md) 第 14 条）。默认关。只能在 pane 之外授予（pane 里的 agent 不能给自己开权限）。
+- 没有授权时，对方返回 403，本机照录对方的话（`<本机地址> may not send commits here: that takes all of this machine (on this machine, keepane link allow <本机地址> --full)`）。
 - `web --read-only` 的机器拒收，与其他 link 请求相同。
 - 能写到哪里：对方当前用户能写的任何路径。理由：`--push` 是逐台机器显式授予的；写入的只是 git 提交和检出的文件，不运行这台机器送来的任何东西（git 的 bundle 不带钩子；对方仓库自己的钩子见第 6 节）。两条限制：
   - `clone` 的目标必须不存在，或是空目录。

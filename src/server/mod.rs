@@ -20,6 +20,7 @@ mod link_agents;
 mod link_git;
 mod link_in;
 mod link_out;
+mod link_share;
 mod link_state;
 mod link_tree;
 mod mail;
@@ -1286,6 +1287,14 @@ pub struct Server {
     feishu: feishu::FeishuHost,
     /// The paired machines' panes, by address, for the chart of `choose-tree`.
     remote_views: HashMap<String, link_tree::RemoteView>,
+    /// What is shared with which paired machine (`link-share`): the keys of
+    /// those machines, by the session, window or pane shared. Ids are never
+    /// used twice, so a mark outlives nothing it was put on.
+    link_shares: HashMap<link_share::Spot, Vec<String>>,
+    /// `link-list` answers waiting for what each paired machine gives this
+    /// one, by their number.
+    link_lists: HashMap<u64, link_share::ListWait>,
+    next_link_list: u64,
     /// Sessions sized to a phone (`web-fit`), by session.
     web_fits: HashMap<SessionId, web_fit::WebFit>,
 }
@@ -1694,6 +1703,9 @@ impl Server {
             link: None,
             feishu: feishu::FeishuHost::default(),
             remote_views: HashMap::new(),
+            link_shares: HashMap::new(),
+            link_lists: HashMap::new(),
+            next_link_list: 0,
             web_fits: HashMap::new(),
         }
     }
@@ -1826,6 +1838,7 @@ impl Server {
                             work_mode: (p.actor.mode != actor::WorkMode::Normal)
                                 .then(|| p.actor.mode.as_str().to_string()),
                             shell_history: p.shell_history.clone(),
+                            shared: self.shared_keys(link_share::Spot::Pane(id)),
                         })
                     };
                     let order = w.layout.panes();
@@ -1835,9 +1848,11 @@ impl Server {
                             .unwrap_or(SavedNode::Pane { pane: SavedPane::default() }),
                         active: order.iter().position(|p| *p == w.active).unwrap_or(0),
                         zoomed: w.zoomed,
+                        shared: self.shared_keys(link_share::Spot::Window(w.id)),
                     }
                 })
                 .collect(),
+            shared: self.shared_keys(link_share::Spot::Session(s.id)),
         }
     }
 
@@ -1979,6 +1994,16 @@ impl Server {
             s.cur = ss.current.min(s.windows.len().saturating_sub(1));
             s.last = None;
         }
+        // What was shared, shared again: the session, and its windows when
+        // they all came back (else which is which is not sure: none).
+        self.restore_shared(link_share::Spot::Session(sid), &ss.shared);
+        let windows: Vec<WindowId> =
+            self.session(sid).map(|s| s.windows.iter().map(|w| w.id).collect()).unwrap_or_default();
+        if windows.len() == ss.windows.len() {
+            for (wid, sw) in windows.into_iter().zip(ss.windows.iter()) {
+                self.restore_shared(link_share::Spot::Window(wid), &sw.shared);
+            }
+        }
         self.relayout_session(sid);
         Ok((sid, problems))
     }
@@ -2042,6 +2067,7 @@ impl Server {
                     pane.actor.name = Some(name.clone());
                 }
             }
+            self.restore_shared(link_share::Spot::Pane(pane.id), &saved.shared);
             panes.push(pane);
         }
         let mut ids = panes.iter().map(|p| p.id);
@@ -6168,9 +6194,12 @@ impl Server {
             Cmd::WebFit { target, size } => self.web_fit(cid, target.as_ref(), size),
             Cmd::WebTails { lines } => Outcome::Text(self.web_tails(lines)),
             c @ (Cmd::FeishuStatus | Cmd::FeishuAllow { .. } | Cmd::FeishuRemove { .. }) => self.exec_feishu(c, cid),
-            c @ (Cmd::LinkId | Cmd::LinkTrust { .. } | Cmd::LinkList | Cmd::LinkAllow { .. } | Cmd::LinkRekey) => {
-                self.exec_link_local(c, cid)
-            }
+            c @ (Cmd::LinkId
+            | Cmd::LinkTrust { .. }
+            | Cmd::LinkList
+            | Cmd::LinkAllow { .. }
+            | Cmd::LinkShare { .. }
+            | Cmd::LinkRekey) => self.exec_link_local(c, cid),
             c @ (Cmd::LinkAdd { .. }
             | Cmd::LinkPanes { .. }
             | Cmd::LinkRemove { .. }
@@ -7662,21 +7691,28 @@ impl Server {
         }
         // The chart shows the chosen branch, so nothing in it is folded.
         let folded = |item: ChooserItem| !chart && collapsed.contains(&item);
+        // Shared with a paired machine (`link-share`, `s` here): said after it.
+        let shared = |spot: link_share::Spot| match (self.is_shared(spot), tree) {
+            (false, _) => "",
+            (true, true) => " · shared",
+            (true, false) => " (shared)",
+        };
         for s in &self.sessions {
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
             let open = expand && !folded(ChooserItem::Tree(s.id, None));
+            let mark = shared(link_share::Spot::Session(s.id));
             items.push(ChooserItem::Tree(s.id, None));
             lines.push(if tree {
                 let fold = if expand && !open { " +" } else { "" };
                 format!(
-                    "{}{sep}{}{}{fold}",
+                    "{}{sep}{}{}{mark}{fold}",
                     s.name,
                     crate::format::count(s.windows.len(), "window"),
                     if attached { " · attached" } else { "" }
                 )
             } else {
                 format!(
-                    "{} {}: {} windows{}",
+                    "{} {}: {} windows{}{mark}",
                     if open { "-" } else { "+" },
                     s.name,
                     s.windows.len(),
@@ -7697,13 +7733,14 @@ impl Server {
                 let win_open = !folded(ChooserItem::Tree(s.id, Some(w.id)));
                 let index = i + self.opts.base_index;
                 let title = w.active_pane().map(|p| p.title.as_str()).unwrap_or("");
+                let sh = shared(link_share::Spot::Window(w.id));
                 items.push(ChooserItem::Tree(s.id, Some(w.id)));
                 lines.push(if tree {
                     let fold = if win_open { "" } else { " +" };
-                    format!("{index}:{}{flag}{sep}{}{fold}", w.name, crate::format::count(w.panes.len(), "pane"))
+                    format!("{index}:{}{flag}{sep}{}{sh}{fold}", w.name, crate::format::count(w.panes.len(), "pane"))
                 } else {
                     let mark = if win_open { "-" } else { "+" };
-                    format!("  {mark} {index}: {}{flag} ({} panes) \"{title}\"", w.name, w.panes.len())
+                    format!("  {mark} {index}: {}{flag} ({} panes){sh} \"{title}\"", w.name, w.panes.len())
                 });
                 if !win_open {
                     continue;
@@ -7714,11 +7751,12 @@ impl Server {
                     let name = p.actor.name.as_deref().map(|n| format!(" · %{n}")).unwrap_or_default();
                     let program = truncate(p.display_title(), 40);
                     let (index, mode) = (n + self.opts.pane_base_index, p.actor.mode.as_str());
+                    let sh = shared(link_share::Spot::Pane(pid));
                     items.push(ChooserItem::Job(s.id, w.id, pid));
                     lines.push(if tree {
-                        format!("{index}:{program}{active}{sep}{mode}{name}")
+                        format!("{index}:{program}{active}{sep}{mode}{name}{sh}")
                     } else {
-                        format!("      - {index}: {program}{active} · {mode}{name}")
+                        format!("      - {index}: {program}{active} · {mode}{name}{sh}")
                     });
                 }
             }
@@ -8059,6 +8097,12 @@ impl Server {
             // The task board and the tree act on the tagged lines, else the
             // one under the cursor, and stay open (the list is live, so the
             // rows change in place). A session asks first.
+            // `s` in the tree: what is under the cursor (or tagged) shared
+            // with a paired machine, or no longer (`link-share`).
+            (KeyCode::Char('s'), false, false) if matches!(ch.kind, ChooserKind::Tree { .. }) => {
+                let targets = ch.targets();
+                self.picker_share(cid, targets);
+            }
             (KeyCode::Char(key @ ('x' | 'r')), false, false)
                 if matches!(ch.kind, ChooserKind::Jobs)
                     || (key == 'x' && matches!(ch.kind, ChooserKind::Tree { .. })) =>
@@ -9854,15 +9898,29 @@ impl Server {
             } else if body_h > 0 && ch.sel >= ch.top + body_h {
                 ch.top = ch.sel + 1 - body_h;
             }
+            // Paired with another machine, `s` (share) takes the place of
+            // `t tag` in the hint, which still works: the line stays within
+            // 80 columns.
+            let paired = self.link.as_ref().is_some_and(|l| !l.peers.is_empty());
             let actions = match ch.kind {
                 ChooserKind::Jobs => "Enter go  x kill  r restart  t tag  f filter",
+                ChooserKind::Tree { style: TreeStyle::Chart, .. } if ch.all && paired => {
+                    "x kill  D delete  s share  f filter  a branch  v tree"
+                }
                 ChooserKind::Tree { style: TreeStyle::Chart, .. } if ch.all => {
                     "x kill  D delete  t tag  f filter  a branch  v tree"
                 }
+                ChooserKind::Tree { style: TreeStyle::Chart, .. } if paired => {
+                    "x kill  D delete  s share  f filter  a all  v tree"
+                }
                 ChooserKind::Tree { style: TreeStyle::Chart, .. } => "x kill  D delete  t tag  f filter  a all  v tree",
+                ChooserKind::Tree { style: TreeStyle::Tree, .. } if paired => {
+                    "x kill  D delete  s share  f filter  -/+ fold  v list"
+                }
                 ChooserKind::Tree { style: TreeStyle::Tree, .. } => {
                     "x kill  D delete  t tag  f filter  -/+ fold  v list"
                 }
+                ChooserKind::Tree { .. } if paired => "x kill  D delete  s share  f filter  v chart",
                 ChooserKind::Tree { .. } => "x kill  D delete  f filter  v chart",
                 ChooserKind::Clients => "Enter detach  f filter",
                 ChooserKind::Buffers => "Enter paste  f filter",

@@ -32,25 +32,7 @@ pub(crate) const LOCAL: &[&str] = &[
 const LOCAL_FLAGS: &[(&str, &[&str])] = &[
     ("feishu", &["--no-screen", "--no-shell", "--screen", "--shell"]),
     ("import-config", &["-n", "-o"]),
-    (
-        "link",
-        &[
-            "--agents",
-            "--all",
-            "--no-agents",
-            "--no-panes",
-            "--no-push",
-            "--no-screen",
-            "--no-shell",
-            "--none",
-            "--panes",
-            "--push",
-            "--screen",
-            "--shell",
-            "--tell",
-            "-l",
-        ],
-    ),
+    ("link", &["--all", "--full", "--lan", "--none", "--tell", "-l"]),
     ("man", &["--roff"]),
     ("setup", &["--install"]),
     ("update", &["--check"]),
@@ -116,10 +98,12 @@ pub fn complete(
                 "panes",
                 "push",
                 "send-agents",
+                "share",
                 "start",
                 "rekey",
                 "remove",
                 "trust",
+                "unshare",
             ])
         } else if canon == "feishu" && rest.len() == 1 && !current.starts_with('-') {
             owned(&["allow", "remove", "status"])
@@ -482,7 +466,8 @@ mod tests {
         assert_eq!(offer(&["link"], "a"), ["add", "allow"]);
         assert_eq!(offer(&["setup"], "c"), ["claude", "codex", "cursor"]);
         assert_eq!(offer(&["setup", "codex"], "--"), ["--install"]);
-        assert_eq!(offer(&["link", "allow", "10.0.0.1:7681"], "--s"), ["--screen", "--shell"]);
+        assert_eq!(offer(&["link", "allow", "10.0.0.1:7681"], "--f"), ["--full"]);
+        assert_eq!(offer(&["link"], "s"), ["send-agents", "share", "start"]);
         // -s names a source, except new-session's, which names the new one.
         assert_eq!(offer(&["join-pane", "-s"], "w"), ["work:1"]);
         // Nothing to offer is nothing, not everything.

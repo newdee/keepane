@@ -266,43 +266,64 @@ machines it lets in. `keepane link add <address>` (`link-add`), given the
 address `keepane web` prints on the other machine (the one the phone scans,
 key included), puts each server's key in the other's table, once; from then
 on every request is signed, and the web key plays no part. `keepane link
-trust <host:port> <key> [--shell]` (`link-trust`) lets a machine in by hand,
-by the key `keepane link id` (`link-id`) prints there. `keepane link list`
-(`link-list`) shows the machines paired; `keepane link panes <host:port>`
-(`link-panes`) their panes (address, name, mode, idle or busy, inbox, program, then session name, window index, window active, pane index, pane active, window name); `keepane link info <host:port>` (`link-info`)
-the machine: its name, system, keepane version, uptime, CPU, memory, panes;
+trust <host:port> <key> [--full [--lan]]` (`link-trust`) lets a machine in
+by hand, by the key `keepane link id` (`link-id`) prints there. `keepane
+link list` (`link-list`) shows the machines paired, what each has here,
+and what this machine has there (asked of it, a few seconds at most);
+`keepane link panes <host:port>` (`link-panes`) the panes of it this machine
+may reach (address, name, mode, idle or busy, inbox, program, then session name, window index, window active, pane index, pane active, window name); `keepane link info <host:port>` (`link-info`)
+the machine: its name, system, keepane version, uptime, CPU, memory, and
+the panes of it this machine may reach;
 `keepane link capture [-S lines] <host:port/pane>` (`link-capture`) what one
-of its panes shows, as text, which that machine must allow (`--screen`,
-below); `trace-message` of a message sent there asks that machine what became
-of it (queued, delivered, done or failed, a shell command's output; `-w`
-waits there). `keepane link remove <host:port>` (`link-remove`) unpairs;
-`keepane link rekey` (`link-rekey`) makes a new key, after which every
+of those panes shows, as text; `trace-message` of a message sent there asks
+that machine what became of it (queued, delivered, done or failed, a shell
+command's output; `-w` waits there). `keepane link remove <host:port>`
+(`link-remove`) unpairs, on both machines, and what was shared goes with
+it; `keepane link rekey` (`link-rekey`) makes a new key, after which every
 pairing has to be made again.
 
-A paired machine's messages go to `ai` and `normal` panes only. To let them
-run as commands in `shell` panes here: `keepane link allow <host:port>
---shell` (`link-allow`; `--no-shell` takes it back); to let it read what the
-panes here show: `--screen` (`--no-screen`); to let it start panes here:
-`--panes` (`--no-panes`); to let it send commits into repositories here:
-`--push` (`--no-push`); to let it send projects and their agents' chats
-here: `--agents` (`--no-agents`). `--all` gives the five at once (full
-control of this machine: the answer says so), `--none` takes the five
-back; a flag after either changes its own (`--all --no-shell`). `--all` is
-the five as they are when it is given: a permission keepane gains later is
-not in it. All are given from a terminal outside keepane or the `C-b :`
-prompt, never from inside a pane (`link-trust` takes `--shell`,
-`--screen`, `--panes`, `--push`, `--agents` and `--all` too).
+A paired machine has one of two levels here, and nothing until one is
+given. `keepane link share <host:port> <target>...` (`link-share`) shares
+sessions (`work`), windows (`work:logs`) and panes (`%worker`) with it: it
+sees them (its chart, `link panes`, `link capture`) and may send them
+messages, and nothing else of this machine exists for it; a session or a
+window shared covers what comes to be in it later too. A message goes by the
+pane's work mode, as anyone's: one to a `shell` pane runs as a command (the
+answer to `link share` names such panes). `keepane link unshare <host:port>
+<target>...` (`link-unshare`; `--all` for everything) takes it back. In the
+tree (`C-b w`), `s` shares what is under the cursor (or tagged) with the
+machine paired, or takes it back; with several machines paired, a menu asks
+which; a shared session, window or pane reads `shared` there. What is
+shared is marked on the session, window or pane itself, not on its name: a
+name used again by something else is not shared; the marks go into the
+session's save and come back with `resume`. `keepane link allow <host:port>
+--full` (`link-allow`) gives it all of this machine, as if it sat here:
+every pane, its messages run in `shell` panes, it may start panes and send
+commits and projects here. Over plain HTTP anyone on the network could read
+what goes between the two, so `--full` is taken only over Tailscale
+(100.64.0.0/10, fd7a:115c:a1e0::/48) or from this machine; from any other
+address the machine has only what is shared, and is told why. `--full
+--lan` takes it from any network. `keepane link allow <host:port> --none`
+takes everything back, what was shared too. Sharing and `--full` are given
+from a terminal outside keepane or the `C-b :` prompt, never from inside a
+pane (`link-trust --full` too); taking back (`link unshare`) is anyone's.
+An answer to a message a pane here sent goes back to that pane, shared or
+not. The five permissions of keepane 0.55 and before (`--shell`,
+`--screen`, `--panes`, `--push`, `--agents`, `--all`) are gone: a machine
+that had all five has `--full`, one that had some of them has nothing, and
+the status line says which, once.
 `keepane link start <host:port> [-s session] [-n name] [-m mode]
 [-c dir] [-- program args]` (`link-start`) starts a pane
-on a machine that allowed this one to: one of its `agent-commands` (with any
-arguments, so a shell on that list makes `--panes` as much as `--shell`), within
+on a machine that gave this one `--full`: one of its `agent-commands` (with
+any arguments), within
 its `agent-pane-limit` counted for this machine alone, in a session named
 after this machine unless `-s` names one; its address there comes back.
 `keepane link kill <host:port/pane>` (`link-kill`) closes a pane this
 machine started there, and no other (that machine knows which only while
-its server runs). A message for a
-`shell` pane from a machine not allowed is refused, and the sender told how
-to allow it. A message from another machine reads `from=host:port/…` in its
+its server runs). A message for a pane that is not shared with the sender
+is answered as one for a pane that is not there, and the sender told how
+it could be shared. A message from another machine reads
+`from=host:port/…` in its
 envelope. A machine is known by its key, not its address: when it turns up
 from a new address (another network, Tailscale), its entry follows. The two
 machines' clocks must agree to within 2 minutes. When the other machine
@@ -316,8 +337,8 @@ Tailscale addresses, so either network works; `web-status` lists them.
 the server, which holds the keys.
 
 `keepane clone <host:port> [path] [--tell pane]` (`clone`, `link-clone`)
-sends the repository the command runs in to a paired machine that allowed
-this one to (`--push`, above), as a new repository at `path` there: nothing
+sends the repository the command runs in to a paired machine that gave
+this one `--full` (above), as a new repository at `path` there: nothing
 may be there yet, or an empty directory. The path is that machine's: `~` is
 its home directory, and a relative path, or none, is under its
 `link-clone-dir` (default `~/keepane`), with none the name of this
@@ -347,7 +368,7 @@ shallow clone is refused (its early history is not there to send: `git fetch
 `keepane send-agents [<host:port>] [dir] [-s chat-id]... [-n]`
 (`send-agents`, `link-send-agents`; docs/design/agent-sync.md) sends the
 project the client is in (its repository, or `dir`) with its agents'
-chats to a machine that allowed this one to (`--agents`, above). A
+chats to a machine that gave this one `--full` (above). A
 repository's commits go as `push` sends them, and with them its files
 that git lists as changed or new (ignored ones stay); another folder goes
 whole, without `node_modules`, `target` and the like. The chats are those

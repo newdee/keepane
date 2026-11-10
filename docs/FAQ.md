@@ -115,43 +115,58 @@ whatever pane is there now. A full address (`$1:@2.%7`) also says where the
 pane is: if the pane has moved to another window, the delivery is refused
 rather than sent to the wrong place.
 
-## A message from another machine is refused by a shell pane
+## Another machine says "no pane by that name is shared"
 
-**Why.** What comes from a paired machine goes only to `ai` and `normal`
-panes. A shell pane would run it as a command, so that is off until you allow
-it for that machine.
+**Why.** Pairing gives nothing. A paired machine sees and messages only
+what the machine it reaches shares with it, and a pane not shared is
+answered as one that is not there. The machine being reached decides.
 
-**What to do.** On the receiving machine, in a terminal outside keepane (not
-in a pane, so an agent cannot grant it to itself):
+**What to do.** On the machine whose pane is to be reached, in a terminal
+outside keepane (not in a pane, so an agent cannot grant it to itself):
 
 ```sh
-keepane link allow 192.168.1.20:7681 --shell
+keepane link share 192.168.1.20:7681 %worker   # or a session (work), a window (work:logs)
+keepane link allow 192.168.1.20:7681 --full    # or all of this machine
 ```
 
-`--screen` lets that machine read a pane's screen (`keepane link capture`);
-`--panes` lets it start panes here; `--push` lets it send commits into
-repositories here (`keepane clone`, `keepane push`); `--agents` lets it
-send projects and their agents' chats here (`keepane send-agents`).
-`--all` gives all five, `--none` takes all five back.
+Or press `s` on it in `C-b w`. A message to a shared `shell` pane runs as a
+command. `--full` also lets that machine start panes here and send commits
+and projects; it is taken only over Tailscale, unless `--full --lan`.
+`keepane link list` shows, both ways, what each machine has of the other.
 
-## `keepane link allow` says it is "not run from inside a pane"
+## `keepane link allow --shell` says the permissions are two levels now
 
-**Why.** Since 0.54 keepane checks where `keepane link allow` (and
-`keepane link trust` with a permission, and `keepane feishu allow`) runs.
-In a keepane pane it is refused, because an agent in that pane could
-otherwise give another machine the right to run commands here. Before
-0.54, `keepane link allow` typed in a pane was let through by mistake.
+**Why.** Up to 0.55, `link allow` had five permissions (`--shell`,
+`--screen`, `--panes`, `--push`, `--agents`, and `--all`). Since 0.56
+there are two levels: what is shared (`keepane link share`), or all of the
+machine (`--full`). A machine that had all five has `--full` after the
+update; one that had some of them has nothing, and the status line names
+it once.
+
+**What to do.** Share what it needs (`keepane link share <host:port>
+<session|window|pane>`), or give it `--full`.
+
+## `keepane link share` says it is "not run from inside a pane"
+
+**Why.** Since 0.54 keepane checks where `keepane link share`, `keepane
+link allow` (and `keepane link trust --full`, and `keepane feishu allow`)
+run. In a keepane pane they are refused, because an agent in that pane
+could otherwise let another machine in. Before 0.54, `keepane link allow`
+typed in a pane was let through by mistake. Taking back (`keepane link
+unshare`) works anywhere.
 
 **What to do.** Run it in one of two places:
 
 - A terminal that is not a keepane pane (a plain Windows Terminal tab,
   another terminal app).
 - The `C-b :` prompt of any keepane client. There the command has its
-  server name, `link-allow`:
+  server name, `link-share` or `link-allow`:
 
 ```sh
-link-allow 192.168.1.20:7681 --shell
+link-share 192.168.1.20:7681 %worker
 ```
+
+Or press `s` in `C-b w`: a key you press is not a pane's program.
 
 ## The phone can't open the page
 
