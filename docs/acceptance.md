@@ -5678,3 +5678,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - attach 窗口保存的是 keepane 可执行文件的完整路径（和 watch 相同，Scoop 升级后旧路径失效）。
   - `C-b D` 标来源没有 e2e（与 `list-clients` 共用的函数有单元测试）。
   - 本机窗口大于 500×200 时，对方画面只占左上角。
+- 发布：v0.58.0（tag 在 a5aca13，其 CI 通过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（4426775）；winget 新开 PR #477386。
