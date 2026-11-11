@@ -7276,6 +7276,36 @@ async fn the_chart_shows_the_paired_machines() {
     c.enter().await;
     c.wait_for("back in the watch", |s| !s.contents().contains("hjkl move")).await;
     assert_eq!(a.cli(&["list-windows", "-t", "wa"]).await.1.lines().count(), 2, "no third window");
+    // Enter on its session: a window here attached to it there (`keepane
+    // link attach`). Only shared, that machine refuses, and the window says
+    // why; with nothing attached, `q` closes it.
+    c.prefix('w').await;
+    c.wait_for("the chart", |s| s.contents().contains("hjkl move") && !s.contents().contains("asking")).await;
+    c.type_str("f").await;
+    c.type_str("edit").await;
+    c.enter().await;
+    c.wait_for("filtered", |s| s.contents().contains("[6/6] hjkl move")).await;
+    // Up goes to the parent: the window, then the session.
+    for want in [4, 3] {
+        c.key(0x26, '\0', 0).await;
+        c.wait_for("up to its session", move |s| s.contents().contains(&format!("[{want}/6] hjkl move"))).await;
+    }
+    c.enter().await;
+    c.wait_for("the attach window, refused", |s| s.contents().contains("may not attach to sessions")).await;
+    let (_, windows, _) = a.cli(&["list-windows", "-t", "wa"]).await;
+    assert!(windows.lines().count() == 3 && windows.contains(&format!("{host}/wb")), "{windows}");
+    c.type_str("q").await;
+    let mut closed = false;
+    for _ in 0..50 {
+        if a.cli(&["list-windows", "-t", "wa"]).await.1.lines().count() == 2 {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(closed, "q closed the attach window");
+    a.cli(&["select-window", "-t", "wa:1"]).await;
+    c.wait_for("the watch again", |s| s.contents().matches("chart-marker").count() >= 2).await;
     // The other machine goes: the watch says so; the chart says it on its
     // block, its panes as last heard.
     b.cli(&["kill-server"]).await;
@@ -7648,6 +7678,199 @@ async fn a_pane_of_another_machine_is_watched_live_and_typed_into_only_with_full
     b.cli(&["kill-server"]).await;
 }
 
+/// A session of another machine, attached from here (`link-attach`,
+/// `keepane link attach`): only with all of that machine; a client made
+/// there at this terminal's size, drawn as it would be there, whose keys
+/// (the prefix too) are that machine's; resized with the terminal here; a
+/// client no one asks for is let go and made again; `prefix d` there ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_of_another_machine_is_attached_with_full_and_its_keys_are_its_own() {
+    let dir = link_test_dir();
+    let a = Harness::start("atta").await;
+    let b = Harness::start("attb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    b.wait_capture("wb:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    let attach = ["link-attach", &addr_b, "-t", "wb", "-x", "100", "-y", "30"];
+    // Shared is not enough: attached, every key is that machine's.
+    let (code, _, err) = a.cli(&attach).await;
+    assert!(code != 0 && err.contains("may not attach to sessions"), "{err}");
+    assert_eq!(b.cli(&["link-share", &addr_a, "wb"]).await.0, 0);
+    let (code, _, err) = a.cli(&attach).await;
+    assert!(code != 0 && err.contains("takes all of this machine"), "{err}");
+    let (_, clients, _) = b.cli(&["list-clients"]).await;
+    assert!(!clients.contains("from "), "nothing made when refused: {clients}");
+
+    // With --full: a client there, of the size asked for, in that session.
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--full"]).await.0, 0);
+    let (code, out, err) = a.cli(&attach).await;
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["session"], "wb", "{out}");
+    let client = v["client"].as_u64().unwrap().to_string();
+    let (_, clients, _) = b.cli(&["list-clients"]).await;
+    assert!(clients.contains(&format!("client-{client}: wb [100x30] (from {addr_a})")), "{clients}");
+    let view = async |size: (&str, &str), since: Option<&str>| {
+        let mut argv = vec!["link-view", &addr_b, "-c", &client, "-x", size.0, "-y", size.1];
+        if let Some(s) = since {
+            argv.extend(["-s", s]);
+        }
+        let (code, out, err) = a.cli(&argv).await;
+        assert_eq!(code, 0, "{err}");
+        serde_json::from_str::<serde_json::Value>(&out).unwrap()
+    };
+    // Drawn as a terminal there would be: the pane and the status line.
+    let mut v = view(("100", "30"), None).await;
+    for _ in 0..50 {
+        if v["screen"].as_str().is_some_and(|s| s.contains("keepane>")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        v = view(("100", "30"), None).await;
+    }
+    assert!(v["screen"].as_str().unwrap().contains("keepane>"), "{v}");
+    assert_eq!((v["cols"].as_u64(), v["rows"].as_u64(), v["typing"].as_bool()), (Some(100), Some(30), Some(true)));
+    let stamp = v["stamp"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let same = view(("100", "30"), Some(&stamp)).await;
+    assert!(same["same"] == true || same["stamp"] != stamp.as_str(), "{same}");
+
+    // Keys typed into it go where that machine sends them: text into its
+    // pane, the prefix and the key after it to its own bindings.
+    let key = |ch: u16| serde_json::json!({"down": true, "repeat": 1, "vk": 0, "sc": 0, "ch": ch, "ctrl": 0});
+    let typed = |s: &str| {
+        let mut keys: Vec<serde_json::Value> = s.chars().map(|c| key(c as u16)).collect();
+        keys.push(key(13));
+        serde_json::Value::from(keys).to_string()
+    };
+    let (code, _, err) = a.cli(&["link-keys", &addr_b, "-c", &client, &typed("echo via-attach")]).await;
+    assert_eq!(code, 0, "{err}");
+    b.wait_capture("wb:0", "typed from a", |t| t.matches("via-attach").count() >= 2).await;
+    let prefix_c = serde_json::Value::from(vec![key(2), key(u16::from(b'c'))]).to_string();
+    let (code, _, err) = a.cli(&["link-keys", &addr_b, "-c", &client, &prefix_c]).await;
+    assert_eq!(code, 0, "{err}");
+    let mut windows = String::new();
+    for _ in 0..50 {
+        windows = b.cli(&["list-windows", "-t", "wb"]).await.1;
+        if windows.lines().count() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(windows.lines().count(), 2, "prefix c there made a window there: {windows}");
+    assert_eq!(a.cli(&["list-windows", "-t", "wa"]).await.1.lines().count(), 1, "and none here");
+
+    // The terminal here resized: the client there takes the size.
+    let v = view(("80", "20"), None).await;
+    assert_eq!((v["cols"].as_u64(), v["rows"].as_u64()), (Some(80), Some(20)), "{v}");
+    let (_, clients, _) = b.cli(&["list-clients"]).await;
+    assert!(clients.contains(&format!("client-{client}: wb [80x20]")), "{clients}");
+
+    // A client that is not there says so (the program here then makes a
+    // new one). Another machine's client is not this one's, even with all
+    // of b: to it, it is not there either.
+    let (code, _, err) = a.cli(&["link-view", &addr_b, "-c", "12345"]).await;
+    assert!(code != 0 && err.contains("no client 12345 here"), "{err}");
+    let other = keepane::link::Identity::make(&dir.join(format!("attach-k-{}", std::process::id()))).unwrap();
+    assert_eq!(b.cli(&["link-trust", "127.0.0.1:9", &other.public(), "--full"]).await.0, 0);
+    let key_b = b.cli(&["link-id"]).await.1.split_whitespace().next().unwrap().to_string();
+    let now = keepane::link::now();
+    let theirs = format!(r#"{{"client":{client},"cols":80,"rows":20}}"#);
+    let (status, body) = link_call(&other, &key_b, &addr_b, "POST", "/link/view", now, "att1", &theirs).await;
+    assert!(status == 404 && body.contains(&format!("no client {client} here for 127.0.0.1:9")), "{status} {body}");
+    let keys = format!(r#"{{"client":{client},"keys":[]}}"#);
+    let (status, body) = link_call(&other, &key_b, &addr_b, "POST", "/link/keys", now, "att2", &keys).await;
+    assert!(status == 404 && body.contains("no client"), "{status} {body}");
+    let (status, body) =
+        link_call(&other, &key_b, &addr_b, "POST", "/link/view", now, "att3", r#"{"client":"x"}"#).await;
+    assert!(status == 404 && body.contains("no client \"x\""), "{status} {body}");
+    // What a request may hold, at the edges: a session that is not there,
+    // one named as another machine's, a size of nothing or past any
+    // terminal (held to 2..=500 by 2..=200), a body that is not JSON (the defaults:
+    // 80x24, the session used last), a connection's id (not a client made
+    // for a machine), keys that are not key records, a size that is not one.
+    let call = async |path: &'static str, nonce: &str, body: &str| {
+        link_call(&other, &key_b, &addr_b, "POST", path, now, nonce, body).await
+    };
+    // In a session of their own: a client takes its session to its size
+    // (`window-size latest`), and 2x2 would leave wb's shell in pieces.
+    // Made last, it is the session used last.
+    assert_eq!(b.cli(&["new", "-d", "-s", "edge"]).await.0, 0);
+    let (status, body) = call("/link/attach", "e1", r#"{"session":"nope","cols":80,"rows":24}"#).await;
+    assert!(status == 404 && body.contains("can't find session: nope"), "{status} {body}");
+    let (status, body) = call("/link/attach", "e2", r#"{"session":"10.0.0.1:7681/wb"}"#).await;
+    assert!(status == 400 && body.contains("as this machine knows it"), "{status} {body}");
+    let mut sizes = Vec::new();
+    let asks = [r#"{"session":"edge","cols":0,"rows":0}"#, r#"{"session":"edge","cols":99999,"rows":5000}"#, "garbage"];
+    for (i, ask) in asks.into_iter().enumerate() {
+        let (status, body) = call("/link/attach", &format!("s{i}"), ask).await;
+        assert_eq!(status, 200, "{ask}: {body}");
+        let made: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(made["session"], "edge", "named, or the session used last: {body}");
+        let id = made["client"].as_u64().unwrap();
+        let (_, seen) = call("/link/view", &format!("v{i}"), &format!(r#"{{"client":{id}}}"#)).await;
+        let seen: serde_json::Value = serde_json::from_str(&seen).unwrap();
+        sizes.push((seen["cols"].as_u64().unwrap(), seen["rows"].as_u64().unwrap()));
+        if i == 0 {
+            let odd = format!(r#"{{"client":{id},"cols":"80","rows":24}}"#);
+            let (status, seen) = call("/link/view", "odd", &odd).await;
+            assert!(status == 200 && seen.contains("\"cols\":2"), "a size that is not one changes nothing: {seen}");
+            let bad = format!(r#"{{"client":{id},"keys":"x"}}"#);
+            let (status, said) = call("/link/keys", "bad", &bad).await;
+            assert!(status == 400 && said.contains("key records"), "{status} {said}");
+        }
+    }
+    assert_eq!(sizes, [(2, 2), (500, 200), (80, 24)]);
+    let (status, body) = call("/link/view", "conn", r#"{"client":1}"#).await;
+    assert!(status == 404 && body.contains("no client 1 here"), "a connection is not one: {status} {body}");
+    assert_eq!(b.cli(&["link-remove", "127.0.0.1:9"]).await.0, 0);
+
+    // The program, in a pane here: it attaches at the pane's size, draws
+    // the session there, and puts the pane in passthrough, so the prefix
+    // typed here goes there too.
+    let exe = env!("CARGO_BIN_EXE_keepane");
+    let argv = ["new-window", "-d", "-t", "wa", "-n", "att", exe, "link", "attach", &addr_b, "wb"];
+    let (code, _, err) = a.cli(&argv).await;
+    assert_eq!(code, 0, "{err}");
+    a.wait_capture("wa:att", "the session there, drawn", |t| t.contains("via-attach") || t.contains("keepane>")).await;
+    let pt = pane_id(&a, "wa:att.0").await;
+    wait_format(&a, pt, "#{pane_passthrough}", "1").await;
+    a.cli(&["send-keys", "-t", "wa:att", "echo via-helper", "Enter"]).await;
+    b.wait_capture("wb", "typed through the program", |t| t.matches("via-helper").count() >= 2).await;
+    // `prefix d` there: detached there, and the program here ends.
+    a.cli(&["send-keys", "-t", "wa:att", "C-b", "d"]).await;
+    let mut gone = false;
+    for _ in 0..80 {
+        if !a.cli(&["list-windows", "-t", "wa"]).await.1.contains("att") {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(gone, "the program ended once detached there");
+    let (_, clients, _) = b.cli(&["list-clients"]).await;
+    assert_eq!(clients.matches(&format!("(from {addr_a})")).count(), 1, "only the first client is left: {clients}");
+
+    // Taken back: the client is refused at once.
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--none"]).await.0, 0);
+    let (code, _, err) = a.cli(&["link-view", &addr_b, "-c", &client, "-x", "80", "-y", "20"]).await;
+    assert!(code != 0 && err.contains("may not attach to sessions"), "{err}");
+    let (code, _, err) = a.cli(&["link-keys", &addr_b, "-c", &client, &typed("echo nope")]).await;
+    assert!(code != 0 && err.contains("may not attach to sessions"), "keys to a client: {err}");
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn panes_on_two_machines_pass_messages_once_paired() {
     let dir = link_test_dir();
@@ -7828,13 +8051,29 @@ async fn panes_on_two_machines_pass_messages_once_paired() {
     }
     let (code, out, err) = b.cli(&["link-share", &addr_a, "%sh"]).await;
     assert!(
-        code == 0 && out.contains("%sh is in shell mode: a message from it runs there as a command"),
+        code == 0 && out.contains("%sh is in shell mode: it may watch, but its messages there are refused"),
         "{out} {err}"
     );
-    // `-w` waits there until the shell is free and has it (a fresh shell may
-    // still be busy drawing its prompt when the message lands).
+    // Shared, it is seen; a message to it would run as a command, which is
+    // control of that machine: refused until it gives this one --full
+    // (in 0.56 and 0.57 sharing was enough). Nothing is queued there.
+    let inbox_before = ask_pane(&b, ps, "#{pane_inbox}").await;
+    let (code, _, err) = a.cli(&["send-message", "--to", &sh, echo]).await;
+    assert!(code != 0 && err.contains("may not send to a pane in shell mode") && err.contains("--full"), "{err}");
+    assert_eq!(ask_pane(&b, ps, "#{pane_inbox}").await, inbox_before, "nothing queued");
+    let (code, _, err) = a.cli(&["link-capture", &sh]).await;
+    assert_eq!(code, 0, "still seen: {err}");
+    // A message to an `ai` pane shared the same way is still taken (above);
+    // with --full the shell runs it. `-w` waits there until the shell is
+    // free and has it (a fresh shell may still be drawing its prompt).
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--full"]).await.0, 0);
     let (code, out, err) = a.cli(&["send-message", "--to", &sh, "-w", "30", echo]).await;
     assert!(code == 0 && out.contains("delivered to"), "{out} {err}");
+    // Back to what is shared (`--none` takes the shares too).
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--none"]).await.0, 0);
+    for p in ["%worker", "%sh"] {
+        assert_eq!(b.cli(&["link-share", &addr_a, p]).await.0, 0);
+    }
     b.wait_capture("wb:1.0", "the command's output", |t| t.contains("linked-ok")).await;
     // What became of it there, asked from here: done, with what it printed.
     let ran = msg_id(&out);

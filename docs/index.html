@@ -91,7 +91,7 @@
       <section class="stats">
         <div><b>1</b><span data-i18n="stat.exe">file to install</span></div>
         <div><b>0</b><span data-i18n="stat.deps">Cygwin / WSL needed</span></div>
-        <div><b>754</b><span data-i18n="stat.tests">automated tests</span></div>
+        <div><b>759</b><span data-i18n="stat.tests">automated tests</span></div>
         <div><b>MIT</b><span data-i18n="stat.license">licensed</span></div>
       </section>
 
@@ -155,11 +155,13 @@ keepane send-message --to 192.168.1.20:7681/%agent "review the diff"
 keepane link info 192.168.1.20:7681
 keepane link capture 192.168.1.20:7681/%agent
 <span class="c"># that pane, live here (also: C-b w, Enter on it); typed into with --full there</span>
-keepane link watch 192.168.1.20:7681/%agent</code></pre>
+keepane link watch 192.168.1.20:7681/%agent
+<span class="c"># its session, as if you sat there (also: C-b w, Enter on it); every key goes there, F12 back</span>
+keepane link attach 192.168.1.20:7681 work</code></pre>
         <ul class="points">
           <li data-i18n="cl.p1">A pane is addressed as <code>host:port/%name</code> or <code>host:port/$1:@3.%7</code>. The answer to a message goes back by pane id, so it still arrives after the pane that asked has been moved.</li>
           <li data-i18n="cl.p2">Each machine has its own key pair. Pairing uses the other side's phone code once; after that every request and every answer is signed, with the time and a one-off number, so an old one cannot be sent again. A machine is known by its key, not its address.</li>
-          <li data-i18n="cl.p3">Pairing gives nothing yet: each machine shares the sessions, windows or panes it chooses (<code>keepane link share</code>, or <code>s</code> in <code>C-b w</code>), and the other sees and messages only those. <code>keepane link allow --full</code> gives all of the machine, over Tailscale only (<code>--none</code> takes everything back). Both only from outside keepane: an agent in a pane cannot let another machine in.</li>
+          <li data-i18n="cl.p3">Pairing gives nothing yet: each machine shares the sessions, windows or panes it chooses (<code>keepane link share</code>, or <code>s</code> in <code>C-b w</code>), and the other sees and messages only those; a pane in <code>shell</code> mode, which runs messages as commands, takes none. <code>keepane link allow --full</code> gives all of the machine, over Tailscale only (<code>--none</code> takes everything back): typing into panes and attaching to sessions (<code>keepane link attach</code>, or Enter on a session in <code>C-b w</code>) take it. Both only from outside keepane: an agent in a pane cannot let another machine in.</li>
           <li data-i18n="cl.p4">Agents get it through MCP too: <code>list_links</code>, <code>link_info</code>, <code>read_screen</code>, and <code>send_message</code> to an address on another machine.</li>
         </ul>
       </section>

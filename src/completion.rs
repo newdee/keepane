@@ -89,6 +89,7 @@ pub fn complete(
             owned(&[
                 "add",
                 "allow",
+                "attach",
                 "capture",
                 "clone",
                 "id",
@@ -464,12 +465,13 @@ mod tests {
         assert_eq!(offer(&["web"], "st"), ["status", "stop"]);
         assert!(offer(&["web", "status"], "").is_empty());
         assert_eq!(offer(&["web"], "--r"), ["--read-only"]);
-        assert_eq!(offer(&["link"], "a"), ["add", "allow"]);
+        assert_eq!(offer(&["link"], "a"), ["add", "allow", "attach"]);
         assert_eq!(offer(&["setup"], "c"), ["claude", "codex", "cursor"]);
         assert_eq!(offer(&["setup", "codex"], "--"), ["--install"]);
         assert_eq!(offer(&["link", "allow", "10.0.0.1:7681"], "--f"), ["--full"]);
         assert_eq!(offer(&["link"], "s"), ["send-agents", "share", "start"]);
         assert_eq!(offer(&["link"], "w"), ["watch"]);
+        assert_eq!(offer(&["link"], "at"), ["attach"]);
         // -s names a source, except new-session's, which names the new one.
         assert_eq!(offer(&["join-pane", "-s"], "w"), ["work:1"]);
         // Nothing to offer is nothing, not everything.

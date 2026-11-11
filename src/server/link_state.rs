@@ -259,8 +259,9 @@ impl Server {
                 "over Tailscale or from this machine"
             };
             let mut said = format!(
-                "{addr} has all of this machine {from}: it sees every pane and may type into it, its messages \
-                 run in shell panes, it may start panes and send commits and projects here (--none takes it all back)"
+                "{addr} has all of this machine {from}: it sees every pane and may type into it, attach to every \
+                 session, its messages run in shell panes, it may start panes and send commits and projects here \
+                 (--none takes it all back)"
             );
             // Where it is now, said when that is not where `full` comes from.
             let now =

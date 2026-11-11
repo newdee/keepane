@@ -9,11 +9,17 @@
 - [pane 一直显示忙，消息投递不进去](#pane-一直显示忙消息投递不进去)
 - [怎么切换 pane 的工作模式？](#怎么切换-pane-的工作模式)
 - [交换了两个 pane 的位置，消息会发到哪？](#交换了两个-pane-的位置消息会发到哪)
+- [别的机器提示 "no pane by that name is shared"](#别的机器提示-no-pane-by-that-name-is-shared)
+- [`keepane link allow --shell` 提示权限改成了两档](#keepane-link-allow---shell-提示权限改成了两档)
+- [`keepane link share` 提示 "not run from inside a pane"](#keepane-link-share-提示-not-run-from-inside-a-pane)
 - [别的机器发来的消息被 shell 模式的 pane 拒收](#别的机器发来的消息被-shell-模式的-pane-拒收)
 - [能看另一台机器的 pane，但打字没反应](#能看另一台机器的-pane但打字没反应)
+- [进入另一台机器的窗口里，前缀键在本机不起作用](#进入另一台机器的窗口里前缀键在本机不起作用)
 - [手机打不开页面](#手机打不开页面)
+- [分享的链接显示 "this link has ended"](#分享的链接显示-this-link-has-ended)
 - [任务跑完时通知我的手机，锁屏也要收到](#任务跑完时通知我的手机锁屏也要收到)
 - [飞书或钉钉机器人拒收 keepane 的消息](#飞书或钉钉机器人拒收-keepane-的消息)
+- [飞书：应用连不上，或者机器人不回话](#飞书应用连不上或者机器人不回话)
 - [Windows：hook 里的 keepane 路径加了引号就报错](#windowshook-里的-keepane-路径加了引号就报错)
 - [macOS：有些目录提示 "Operation not permitted"](#macos有些目录提示-operation-not-permitted)
 
@@ -86,7 +92,7 @@ keepane link share 192.168.1.20:7681 %worker   # 也可以是 session（work）�
 keepane link allow 192.168.1.20:7681 --full    # 或者整台电脑都给它
 ```
 
-也可以在 `C-b w` 里选中它按 `s`。发给共享的 `shell` 模式 pane 的消息会当命令执行。`--full` 还允许那台机器在这边的 pane 里打字、开 pane、送提交和项目；它只对 Tailscale 地址生效，除非加 `--full --lan`。`keepane link list` 会双向列出每台机器各有对方的什么。
+也可以在 `C-b w` 里选中它按 `s`。共享的 `shell` 模式 pane 能看到，但不收消息（见下面几条）。`--full` 还允许那台机器在这边的 `shell` pane 里执行命令、在 pane 里打字、进入 session、开 pane、送提交和项目；它只对 Tailscale 地址生效，除非加 `--full --lan`。`keepane link list` 会双向列出每台机器各有对方的什么。
 
 ## `keepane link allow --shell` 提示权限改成了两档
 
@@ -109,6 +115,19 @@ link-share 192.168.1.20:7681 %worker
 
 也可以在 `C-b w` 里按 `s`：你按的键不是 pane 里的程序。
 
+## 别的机器发来的消息被 shell 模式的 pane 拒收
+
+**看到了什么。** `send-message --to 主机:端口/%build ...` 提示 `... may not send to a pane in shell mode (it runs messages as commands) here: that takes all of this machine`，可是 `%build` 已经共享给这台机器，`link watch` 也能看到它。
+
+**为什么。** `shell` 模式的 pane 会把每条消息当命令执行。在一台电脑上执行命令就是控制它，而控制一个 pane 和控制全部没有区别，所以和打字一样，要 `--full`。共享只给"能看"，以及给不执行消息的 pane（`ai`、`normal`）发消息。0.56 和 0.57 里，共享的 `shell` pane 会执行消息；0.56 之前要 `--shell` 授权。
+
+**怎么办。** 在 pane 所在的那台电脑上，在 keepane 外面，二选一：
+
+```sh
+keepane link allow 192.168.1.20:7681 --full    # 整台电脑给它；走 Tailscale
+keepane set-work-mode -t %build normal         # 消息留着给 read-message 读，不执行
+```
+
 ## 能看另一台机器的 pane，但打字没反应
 
 **为什么。** 在 `C-b w` 里对着另一台机器的 pane 按 Enter，会开一个窗口实时看它（`keepane link watch`）。往 pane 里打字就能在那边执行任意命令，所以需要那台机器的全部权限：只是共享的 pane 只能看，你打字时最下面一行会说明。
@@ -120,6 +139,12 @@ keepane link allow 192.168.1.20:7681 --full    # 走 Tailscale；--full --lan �
 ```
 
 0.57 之前，按 Enter 只显示一次那个 pane 的屏幕。两台都要 0.57 才能实时看：对方版本旧时，查看器会说明要升级哪一台。
+
+## 进入另一台机器的窗口里，前缀键在本机不起作用
+
+**为什么。** 在 `C-b w` 里对着另一台机器的 session 按 Enter（或者运行 `keepane link attach`），会开一个窗口进入那边的这个 session。在这个窗口里，所有键都发给那台机器，前缀键也一样，所以 `C-b c` 在那边开窗口，`C-b d` 在那边断开。这边的窗口处于 `passthrough`（状态栏显示 `passthrough`）。
+
+**怎么办。** 按 F12：键又归本机了，前缀键也一样。再按 F12 又交给那台机器。在这个窗口里按 `C-b d` 断开，窗口随之关闭。两台都要 0.58；对方版本旧时，窗口里会说明。
 
 ## 手机打不开页面
 

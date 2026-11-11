@@ -5642,3 +5642,39 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 第 3 步（`--full` 等于本地，进入远程 session）未做。
   - 0.56 的决定"发给共享 `shell` pane 的消息照样执行"与本条原则不一致（执行命令 = 控制），已向用户提出，等用户决定。
 - 发布：v0.57.0（tag 在 786ab61，其 CI 四项全过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取；winget 新开 PR #477203（脚本第一次因网络返回空值失败，分支未建，重跑成功）。
+
+## 181. 进入另一台电脑的 session（`--full` 等于本地）；共享的 `shell` pane 不再执行消息
+
+- 用户要求："继续，按推荐做第3步，shell那条也改吧"。推荐的两点：远程窗口里所有键（含 `C-b`）发给对方，F12 回本机；只是共享的机器发来的消息不在 `shell` pane 里执行，只有 `--full` 才执行。
+- 香农六法：换说法（"进入远程 session" = "那边多一个终端，线是 HTTP"）、简化（虚拟客户端就是普通客户端去掉终端，画面写进 VT 解析器）、相似问题（ssh 里套 tmux 的嵌套用法，F12 切 passthrough；第 2 步的查看器和戳）、推广（`link-view`/`link-keys` 加 `client`，查看器复用）、结构分析（三个请求：attach、view、keys；本机 helper 与对方客户端分开）、逆向（要让 `C-b c` 在对方开窗口，键必须进对方的 `handle_key`，不能当 pane 的字节，所以是客户端不是 pane）。
+- 做法（设计见 docs/design/link.md 第 16 条）：
+  - shell：`link_send_in` 解析出目标 pane 后，`shell` 模式的先过 `need_full`，被拒回 403，什么都不排队。`link share` 的回答改说"能看，消息会被拒"。
+  - attach：`POST /link/attach` 建虚拟客户端（id 从 2^31 起），按请求的大小 attach 到 session（没写就是最近用的）；`/link/view`、`/link/keys` 带 `client` 时走客户端：画面从通道取出写进 VT 解析器，按戳答"没变"或整屏；大小变了按 resize 处理；键交给 `handle_key`。三个请求都只给完全，客户端只认建它的那台机器。15 秒没人问就放掉；断开后的状态保留到放掉，答复带 `ended`。
+  - 本机：`keepane link attach <机器> [session]`（`link-attach`、`link-view -c -x -y`、`link-keys -c`）。helper 把自己所在 pane 切成 passthrough（退出时切回），按本窗口大小问，收到 "no client" 就重新 attach 同名 session（刚建不到 2 秒的不立刻重建），收到 `ended` 退出。`C-b w` 里 Enter：远程 pane 仍是 watch，远程 session/窗口/机器开 attach 窗口（开过的还在就跳过去）。
+  - `list-clients` 和 `C-b D` 里标 `(from 机器)`；`--full` 的回答、README 中英、手册、FAQ 中英（新增两条，补上一条目录里有、正文没有的，以及目录漏的 5 条）、设计文档、网站、`--help`、补全都写上。
+- 修 bug 定性：不是 bug 修复。shell 这条是设计改动；共性检查：能执行命令的远程入口 8 个（发给 shell pane、打字、attach、对客户端看和打字、开 pane、关 pane、送提交、送项目），都过 `need_full`（第 5 轮）。
+- 新 bug 风险评估：
+  - 行为改变：0.56/0.57 里共享的 `shell` pane 会执行对方消息，现在被拒；e2e 改成先断言被拒、不排队、仍能看，给 `--full` 后执行。
+  - 服务端把连接的建立和断开抽成 `client_connected`、`client_gone`，真连接和虚拟客户端共用；原来的两段代码原样搬过去，全量测试覆盖。
+  - 虚拟客户端进了 `clients`，所有遍历客户端的地方逐一看过（19 处）：大小计算、通知、`focus-pane` 都把它当终端，和 tmux 一样；`list-clients`、`C-b D` 标来源；空闲退出照旧。
+  - 一台有 `--full` 的机器能在虚拟客户端的 `C-b :` 里运行 `link allow`。这和"坐在这台电脑前"一致；它本来就能在 shell pane 里执行任意命令，没有新增能力。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 实现 | 全量：补全测试列 `link a…` 时少了新的 `attach`；chart e2e 里"向上"一次就到窗口，按实际改 | 实现中，不计 |
+| 1 | 静态一致 | 发现 3 处：几条注释没提客户端；给客户端送键被拒时说 "type into panes"，改为 "attach to sessions"（e2e 覆盖）；FAQ 建议把 shell pane 切成 `ai`，改为只建议 `normal`。Windows 591 + 11 + 157 | 有发现，不计 |
+| 2 | 机制存活 | 7 个变异全被抓到，都停在预期断言：查看客户端跳过 `need_full`、不核对是哪台机器的客户端、shell 不拒、helper 不切 passthrough、到期不放掉、忽略大小、断开后 helper 不退出。还原后 grep 无残留。Windows 591 + 11 + 157，Linux 576 + 154 | 干净（1/3） |
+| 3 | 出错路径 | 发现：helper 收到 "no client" 立刻重建；对方若刚建就说没有（病态情况），每 100 ms 建一个、每个在对方留 15 秒。改为刚建不到 2 秒就丢失时等 2 秒（单元测试覆盖边界）。Windows 591 + 11 + 157 | 有发现，不计 |
+| 4 | 边界输入 | 伪造签名请求：不存在的 session 404、写成别的机器的 session 400、非 JSON 用默认 80×24 和最近的 session、连接的编号 404、`keys` 不是列表 400、大小不是数字不改。发现：1000×1000 的客户端让 debug 版一次查看超过 5 秒（400×400 时 1.67 s、161 KB）。上限改为 500 列 × 200 行；边界请求放到单独的 session（2×2 客户端会把 wb 缩成 2×2） | 有发现，不计 |
+| 5 | 不变量 | 8 个能执行命令的入口都过 `need_full`；19 处遍历客户端逐一看过。发现：`C-b D` 的列表不标来源，`list-clients` 标了。补上。Windows 591 + 11 + 157 | 有发现，不计 |
+| 6 | 真实环境 | release 两台临时 server：无 `--full` 被拒并说明；首屏 4907 字节（120×35）；20 次"没变"平均 79 ms、最长 110 ms，答复 41 字节；helper 244 ms 画出，passthrough 为 1；打字 268 ms 在对方执行，77 ms 画回；`C-b c` 71 ms 在对方开窗口，本机不变；对方 web 停 15.07 s 后放掉客户端，恢复后 1.28 s 重新进入，91 ms 重画；`C-b d` 89 ms 关窗口，对方无客户端。Linux 576 + 154 | 干净（1/3） |
+| 7 | 可复现 | 4 个跨机器测试连跑 5 次 20/20（每次 9.15–9.23 s）。Windows 591 + 11 + 157 | 干净（2/3） |
+| 8 | 兼容 | 本机新版、对方 0.56.0（已安装的 Scoop 版，临时 socket）：attach 答 "older than 0.58: update it there"，watch 答 "older than 0.57"；0.56 的机器发给新版共享的 shell pane 被拒，原因写清。Linux 576 + 154 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - attach 不转发鼠标。
+  - 在远程窗口那一行按 Enter 进入的是它的 session，不切到那个窗口。
+  - `focus-pane`（通知的"去 pane"）也会切换别的机器 attach 进来的客户端（所有终端都切，和 tmux 一样）。
+  - attach 窗口保存的是 keepane 可执行文件的完整路径（和 watch 相同，Scoop 升级后旧路径失效）。
+  - `C-b D` 标来源没有 e2e（与 `list-clients` 共用的函数有单元测试）。
+  - 本机窗口大于 500×200 时，对方画面只占左上角。

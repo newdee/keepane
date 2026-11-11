@@ -717,11 +717,11 @@ keepane link allow 100.64.0.3:7681 --full        # 完全：整台电脑给它�
 keepane link allow 100.64.0.3:7681 --none        # 什么都不给，共享的也一起收回
 ```
 
-共享出去的部分，对方能看到（它的 `C-b w` 结构图、`link panes`、`link capture`、`link watch`），也能发消息；这台电脑的其余部分对它来说不存在。共享一个 session 或窗口，以后在里面新开的也算共享。消息按 pane 的工作模式处理：发给 `shell` 模式 pane 的消息会当命令执行，`link share` 共享到这种 pane 时会点名提醒。在 `C-b w` 里按 `s`，把光标处的 session、窗口或 pane 共享给配过对的机器（配了几台时弹菜单选），再按一次 `s` 收回；共享的会标上 `shared`。共享标记记在 session、窗口、pane 本身上，不是记名字，所以后来新建的同名东西不会被共享；标记随 session 一起保存，`resume` 时恢复。
+共享出去的部分，对方能看到（它的 `C-b w` 结构图、`link panes`、`link capture`、`link watch`），也能发消息；这台电脑的其余部分对它来说不存在。共享一个 session 或窗口，以后在里面新开的也算共享。消息按 pane 的工作模式处理，但 `shell` 模式的 pane 不收只是共享的机器发来的消息：消息在那里会当命令执行，等于控制这台电脑，要 `--full` 才行。`link share` 共享到这种 pane 时会点名提醒。在 `C-b w` 里按 `s`，把光标处的 session、窗口或 pane 共享给配过对的机器（配了几台时弹菜单选），再按一次 `s` 收回；共享的会标上 `shared`。共享标记记在 session、窗口、pane 本身上，不是记名字，所以后来新建的同名东西不会被共享；标记随 session 一起保存，`resume` 时恢复。
 
-`--full` 就是全部：所有 pane 都能看到，也能在里面打字（`keepane link watch`），发来的消息在 `shell` pane 里执行，还能在这边开 pane、送提交和项目。普通 HTTP 在局域网里谁都能抓包看到，所以 `--full` 只对 Tailscale 地址（或本机）生效；从局域网地址来的请求只按共享的部分处理，并且会说明原因。`--full --lan` 则对任何网络都生效。
+`--full` 就是全部：所有 pane 都能看到，也能在里面打字（`keepane link watch`），所有 session 都能进入（`keepane link attach`），发来的消息在 `shell` pane 里执行，还能在这边开 pane、送提交和项目。普通 HTTP 在局域网里谁都能抓包看到，所以 `--full` 只对 Tailscale 地址（或本机）生效；从局域网地址来的请求只按共享的部分处理，并且会说明原因。`--full --lan` 则对任何网络都生效。
 
-共享和 `--full` 都要在 keepane 之外的终端里、或者 `C-b :` 提示符里做，不能在 pane 里做，否则 agent 就能自己把别的机器放进来。这台电脑的 pane 发出去的消息，对方的回信总能回到发信的 pane，不管这个 pane 有没有共享。0.55 及以前是五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`）；五个全开的机器升级后算 `--full`，只开了部分的算什么都不给，状态栏会提示一次是哪几台。
+共享和 `--full` 都要在 keepane 之外的终端里、或者 `C-b :` 提示符里做，不能在 pane 里做，否则 agent 就能自己把别的机器放进来。这台电脑的 pane 发出去的消息，对方的回信总能回到发信的 pane，不管这个 pane 有没有共享。0.56 和 0.57 里，共享出去的 `shell` pane 会执行对方发来的消息。0.55 及以前是五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`）；五个全开的机器升级后算 `--full`，只开了部分的算什么都不给，状态栏会提示一次是哪几台。
 
 ```powershell
 keepane link remove 100.64.0.3:7681            # 解除配对，两边一起；共享的也一起收回
@@ -736,9 +736,12 @@ keepane link info 100.64.0.3:7681              # 对方机器：主机名、系�
 keepane trace-message 12 -w 60                 # 发过去的消息在那边怎么样了（shell 命令还有输出）
 keepane link capture -S 100 100.64.0.3:7681/%worker   # 对方某个 pane 现在显示的内容（要共享给这台机器）
 keepane link watch 100.64.0.3:7681/%worker            # 在这个终端里实时看那个 pane
+keepane link attach 100.64.0.3:7681 work              # 进入那个 session，和在那台电脑上 attach 一样（要 --full）
 ```
 
 另一台机器的 pane 可以在这里实时打开：在 `C-b w` 结构图里对着它按 Enter，就开一个窗口看它（这个窗口还开着时，再按 Enter 就跳过去）；`keepane link watch` 在任何终端里做同样的事。查看器是普通 pane 里的普通程序，所以缩放、分屏、复制模式、`C-b v` 都和对待别的 pane 一样，`resume` 也会把它恢复。它按那个 pane 的大小显示，放不下时截掉，并跟着光标走。只有对方给了这台 `--full`，打的字才会送到那个 pane：在 shell 里打字就能执行任意命令，所以能控制一个 pane 和控制全部没有区别。只是共享的 pane 只能看，按 `q` 关掉。
+
+对方给了这台 `--full`，就能像坐在那台电脑前一样用它：在结构图里对着它的某个 session 按 Enter（对着机器本身按，就进它最近用的 session），会开一个窗口进入那边的这个 session；`keepane link attach` 在任何终端里做同样的事。对方按这个窗口的大小开一个客户端，和在那边运行 `keepane attach` 一样，并把画面画出来；状态栏、前缀键、快捷键、复制模式、`C-b :` 都是对方的，所以 `C-b c` 在对方那边开窗口。所有键都发过去，前缀键也一样：这边的窗口会切到 `passthrough`，按 F12 把键交回本机（再按 F12 又交过去）。在对方那边按 `C-b d` 断开，窗口随之关闭。网络断了，对方 15 秒后放掉这个客户端；网络恢复时窗口会重新进入。
 
 对方给了这台机器 `--full` 的话，还能在对方那台电脑上开 pane：
 

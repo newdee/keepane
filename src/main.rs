@@ -76,6 +76,7 @@ Panes on other machines (both run `keepane web`; docs/design/link.md):
   link share host:port session|session:window|%pane...   link unshare host:port ...|--all   (it sees those and may message them; prefix w then s)
   link allow host:port --full [--lan]   (all of this machine, over Tailscale; --lan any network)   link allow host:port --none   link capture [-S lines] host:port/%name
   link watch host:port/%name   (that pane live here; typed into with --full there, else read-only; prefix w then Enter on it)
+  link attach host:port [session]   (a session there, as if attached there: every key goes to it, F12 back here; takes --full there)
   clone host:port [path] [--tell pane]   push [host:port [path]] [--tell pane]   push -l   (commits of this repository there; docs/design/link-push.md)
   send-agents [host:port] [dir] [-s chat-id]... [-n]   send-agents -l   (this project and its agents' chats there; docs/design/agent-sync.md)
   link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane

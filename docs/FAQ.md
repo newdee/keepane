@@ -9,11 +9,17 @@ Each answer says what you see, why, and what to do.
 - [A pane stays busy and nothing is delivered](#a-pane-stays-busy-and-nothing-is-delivered)
 - [How do I change a pane's work mode?](#how-do-i-change-a-panes-work-mode)
 - [I swapped two panes: where do messages go now?](#i-swapped-two-panes-where-do-messages-go-now)
+- [Another machine says "no pane by that name is shared"](#another-machine-says-no-pane-by-that-name-is-shared)
+- [`keepane link allow --shell` says the permissions are two levels now](#keepane-link-allow---shell-says-the-permissions-are-two-levels-now)
+- [`keepane link share` says it is "not run from inside a pane"](#keepane-link-share-says-it-is-not-run-from-inside-a-pane)
 - [A message from another machine is refused by a shell pane](#a-message-from-another-machine-is-refused-by-a-shell-pane)
 - [I can watch another machine's pane, but what I type does nothing](#i-can-watch-another-machines-pane-but-what-i-type-does-nothing)
+- [In a window attached to another machine, the prefix does nothing here](#in-a-window-attached-to-another-machine-the-prefix-does-nothing-here)
 - [The phone can't open the page](#the-phone-cant-open-the-page)
+- [A shared link says "this link has ended"](#a-shared-link-says-this-link-has-ended)
 - [Tell me on my phone when a job finishes, even when it is locked](#tell-me-on-my-phone-when-a-job-finishes-even-when-it-is-locked)
 - [The Feishu or DingTalk bot refuses keepane's messages](#the-feishu-or-dingtalk-bot-refuses-keepanes-messages)
+- [Feishu: the app does not connect, or does not answer](#feishu-the-app-does-not-connect-or-does-not-answer)
 - [Windows: a hook with a quoted keepane path fails](#windows-a-hook-with-a-quoted-keepane-path-fails)
 - [macOS: "Operation not permitted" in some folders](#macos-operation-not-permitted-in-some-folders)
 
@@ -130,8 +136,9 @@ keepane link share 192.168.1.20:7681 %worker   # or a session (work), a window (
 keepane link allow 192.168.1.20:7681 --full    # or all of this machine
 ```
 
-Or press `s` on it in `C-b w`. A message to a shared `shell` pane runs as a
-command. `--full` also lets that machine type into panes here, start
+Or press `s` on it in `C-b w`. A shared `shell` pane is seen, but takes no
+messages (see the next answers). `--full` also lets that machine run
+commands in `shell` panes, type into panes here, attach to sessions, start
 panes and send commits and projects; it is taken only over Tailscale,
 unless `--full --lan`.
 `keepane link list` shows, both ways, what each machine has of the other.
@@ -170,6 +177,27 @@ link-share 192.168.1.20:7681 %worker
 
 Or press `s` in `C-b w`: a key you press is not a pane's program.
 
+## A message from another machine is refused by a shell pane
+
+**What you see.** `send-message --to host:port/%build ...` says `... may
+not send to a pane in shell mode (it runs messages as commands) here: that
+takes all of this machine`, though `%build` is shared with this machine,
+and `link watch` shows it.
+
+**Why.** A pane in `shell` mode runs each message as a command. Running
+commands on a machine is control of it, and control of one pane is as much
+as control of all of them, so it takes `--full`, as typing does. Sharing
+gives seeing and messages to panes that do not run them (`ai`, `normal`).
+In 0.56 and 0.57 a shared `shell` pane ran the messages; before 0.56 it
+took `--shell`.
+
+**What to do.** On the machine whose pane it is, outside keepane, one of:
+
+```sh
+keepane link allow 192.168.1.20:7681 --full    # all of that machine; over Tailscale
+keepane set-work-mode -t %build normal         # it keeps messages for read-message, runs none
+```
+
 ## I can watch another machine's pane, but what I type does nothing
 
 **Why.** Enter on a pane of another machine in `C-b w` opens a window that
@@ -185,6 +213,18 @@ keepane link allow 192.168.1.20:7681 --full    # over Tailscale; --full --lan fr
 
 Before 0.57, Enter showed the pane's screen once. Both machines need 0.57
 to watch: an older one is named in the watch, with what to update.
+
+## In a window attached to another machine, the prefix does nothing here
+
+**Why.** Enter on a session of another machine in `C-b w` (or `keepane
+link attach`) opens a window attached to that session there. In it every
+key goes to that machine, the prefix too, so `C-b c` opens a window there
+and `C-b d` detaches there. The window here is in `passthrough` (its
+status line reads `passthrough`).
+
+**What to do.** Press F12: the keys are this machine's again, the prefix
+too. F12 again hands them back. `C-b d` in the window ends the attach and
+closes it. Both machines need 0.58; an older one is named in the window.
 
 ## The phone can't open the page
 

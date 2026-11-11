@@ -116,7 +116,7 @@ const ZH = {
   "cl.p2":
     "每台机器有自己的密钥对。配对时用一次对方手机页的二维码密钥；之后每个请求和每个答复都带签名、时间和一次性的随机数，旧请求重放不了。认机器认的是密钥，不是地址。",
   "cl.p3":
-    "配对本身不给任何东西：每台电脑自己选择共享哪些 session、窗口或 pane（<code>keepane link share</code>，或在 <code>C-b w</code> 里按 <code>s</code>），对方只能看到这些、只能给这些发消息。<code>keepane link allow --full</code> 把整台电脑交给对方，只对 Tailscale 生效（<code>--none</code> 全部收回）。两者都只能在 keepane 外面做：pane 里的 agent 不能把别的机器放进来。",
+    "配对本身不给任何东西：每台电脑自己选择共享哪些 session、窗口或 pane（<code>keepane link share</code>，或在 <code>C-b w</code> 里按 <code>s</code>），对方只能看到这些、只能给这些发消息（<code>shell</code> 模式的 pane 会把消息当命令执行，所以除外）。<code>keepane link allow --full</code> 把整台电脑交给对方，只对 Tailscale 生效（<code>--none</code> 全部收回）：在 pane 里打字、进入 session（<code>keepane link attach</code>，或在 <code>C-b w</code> 里对着 session 按 Enter）都要它。两者都只能在 keepane 外面做：pane 里的 agent 不能把别的机器放进来。",
   "cl.p4":
     "agent 也能通过 MCP 用：<code>list_links</code>、<code>link_info</code>、<code>read_screen</code>，以及用 <code>send_message</code> 发到另一台机器上的地址。",
 

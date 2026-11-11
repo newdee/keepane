@@ -17,6 +17,7 @@ pub mod input;
 mod keyhint;
 pub mod layout;
 mod link_agents;
+mod link_attach;
 mod link_git;
 mod link_in;
 mod link_out;
@@ -1296,6 +1297,12 @@ pub struct Server {
     feishu: feishu::FeishuHost,
     /// The paired machines' panes, by address, for the chart of `choose-tree`.
     remote_views: HashMap<String, link_tree::RemoteView>,
+    /// Clients attached here for other machines (`keepane link attach`
+    /// there): drawn into a screen of their own, which that machine asks for.
+    remote_clients: HashMap<ClientId, link_attach::RemoteClient>,
+    /// The next id for one of those: from 2^31 on, out of the way of the
+    /// connections' ids, which count up from 1.
+    next_remote_client: ClientId,
     /// What is shared with which paired machine (`link-share`): the keys of
     /// those machines, by the session, window or pane shared. Ids are never
     /// used twice, so a mark outlives nothing it was put on.
@@ -1717,6 +1724,8 @@ impl Server {
             link: None,
             feishu: feishu::FeishuHost::default(),
             remote_views: HashMap::new(),
+            remote_clients: HashMap::new(),
+            next_remote_client: link_attach::FIRST_ID,
             link_shares: HashMap::new(),
             link_lists: HashMap::new(),
             next_link_list: 0,
@@ -2632,70 +2641,8 @@ impl Server {
                     self.forget_after.push((name, Instant::now()));
                 }
             }
-            Event::Connected(id, tx) => {
-                self.clients.insert(
-                    id,
-                    Client {
-                        id,
-                        tx,
-                        cols: 80,
-                        rows: 24,
-                        cwd: String::new(),
-                        interactive: false,
-                        pane_env: None,
-                        session: None,
-                        last_session: None,
-                        last_grid: None,
-                        last_cursor: None,
-                        prefix: false,
-                        prefix_at: None,
-                        repeat_until: None,
-                        panes_until: None,
-                        panes_typed: None,
-                        hints: None,
-                        prompt: None,
-                        message: None,
-                        overlay: None,
-                        chooser: None,
-                        popup: None,
-                        mouse_buttons: 0,
-                        drag: None,
-                        selecting: None,
-                        swallow_up: HashSet::new(),
-                        pending_bell: false,
-                        pending: std::collections::VecDeque::new(),
-                        window_hits: Vec::new(),
-                        created: Instant::now(),
-                        last_activity: Instant::now(),
-                        view_x: 0,
-                        view_y: 0,
-                        view_pinned: false,
-                        view_follow: false,
-                        cursor_out: None,
-                    },
-                );
-            }
-            Event::Gone(id) => {
-                self.mail_client_gone(id);
-                self.output_waits_client_gone(id);
-                let was_in = self.clients.remove(&id).and_then(|c| c.session);
-                if let Some(sid) = was_in {
-                    self.fit_session(sid, None); // smallest/largest: one client fewer
-                }
-                // A client that went away while waiting must not hold a
-                // `wait-for` lock, or nothing could ever take it again.
-                let mut freed: Vec<String> = Vec::new();
-                for (name, w) in self.waits.iter_mut() {
-                    w.waiters.retain(|c| *c != id);
-                    w.lockers.retain(|c| *c != id);
-                    if w.idle() {
-                        freed.push(name.clone());
-                    }
-                }
-                for name in freed {
-                    self.waits.remove(&name);
-                }
-            }
+            Event::Connected(id, tx) => self.client_connected(id, tx),
+            Event::Gone(id) => self.client_gone(id),
             Event::Msg(id, msg) => self.handle_msg(id, msg),
             Event::ShellDone { cid, output, code } => {
                 let text = output.trim_end().to_string();
@@ -2797,6 +2744,7 @@ impl Server {
                 self.web_fit_tick();
                 self.git_tick();
                 self.link_git_sweep();
+                self.remote_clients_tick();
                 self.forget_due();
                 // An open chart keeps the paired machines' panes fresh.
                 if self.a_chart_is_open() {
@@ -2818,6 +2766,76 @@ impl Server {
         }
         if self.had_session && self.sessions.is_empty() {
             self.quit = true;
+        }
+    }
+
+    /// A client connected (or one for another machine was made): nothing
+    /// known of it yet but where its frames and answers go.
+    fn client_connected(&mut self, id: ClientId, tx: mpsc::Sender<ServerMsg>) {
+        self.clients.insert(
+            id,
+            Client {
+                id,
+                tx,
+                cols: 80,
+                rows: 24,
+                cwd: String::new(),
+                interactive: false,
+                pane_env: None,
+                session: None,
+                last_session: None,
+                last_grid: None,
+                last_cursor: None,
+                prefix: false,
+                prefix_at: None,
+                repeat_until: None,
+                panes_until: None,
+                panes_typed: None,
+                hints: None,
+                prompt: None,
+                message: None,
+                overlay: None,
+                chooser: None,
+                popup: None,
+                mouse_buttons: 0,
+                drag: None,
+                selecting: None,
+                swallow_up: HashSet::new(),
+                pending_bell: false,
+                pending: std::collections::VecDeque::new(),
+                window_hits: Vec::new(),
+                created: Instant::now(),
+                last_activity: Instant::now(),
+                view_x: 0,
+                view_y: 0,
+                view_pinned: false,
+                view_follow: false,
+                cursor_out: None,
+            },
+        );
+    }
+
+    /// A client went away (or one for another machine was let go).
+    fn client_gone(&mut self, id: ClientId) {
+        self.mail_client_gone(id);
+        self.output_waits_client_gone(id);
+        self.remote_clients.remove(&id);
+        let was_in = self.clients.remove(&id).and_then(|c| c.session);
+        if let Some(sid) = was_in {
+            self.fit_session(sid, None); // smallest/largest: one client fewer
+        }
+        // A client that went away while waiting must not hold a
+        // `wait-for` lock, or nothing could ever take it again.
+        let mut freed: Vec<String> = Vec::new();
+        for (name, w) in self.waits.iter_mut() {
+            w.waiters.retain(|c| *c != id);
+            w.lockers.retain(|c| *c != id);
+            if w.idle() {
+                freed.push(name.clone());
+            }
+        }
+        for name in freed {
+            self.waits.remove(&name);
         }
     }
 
@@ -5625,7 +5643,9 @@ impl Server {
                     .filter(|c| c.session.is_some())
                     .map(|c| {
                         let name = c.session.and_then(|s| self.session(s)).map(|s| s.name.clone()).unwrap_or_default();
-                        format!("client-{}: {} [{}x{}]", c.id, name, c.cols, c.rows)
+                        // One attached for another machine says which.
+                        let from = self.remote_client_addr(c.id).map(|a| format!(" (from {a})")).unwrap_or_default();
+                        format!("client-{}: {} [{}x{}]{from}", c.id, name, c.cols, c.rows)
                     })
                     .collect();
                 lines.sort();
@@ -6357,7 +6377,8 @@ impl Server {
             | Cmd::LinkPane(_)
             | Cmd::LinkKill { .. }
             | Cmd::LinkView { .. }
-            | Cmd::LinkKeys { .. }) => self.exec_link_out(c, cid),
+            | Cmd::LinkKeys { .. }
+            | Cmd::LinkAttach { .. }) => self.exec_link_out(c, cid),
             c @ (Cmd::LinkClone { .. } | Cmd::LinkPush { .. }) => self.exec_link_git(c, cid),
             c @ Cmd::LinkSendAgents { .. } => self.exec_link_agents(c, cid),
             Cmd::LinkInbound { peer, request } => self.link_inbound(cid, &peer, &request),
@@ -7784,7 +7805,10 @@ impl Server {
                     let Some(c) = self.clients.get(&id) else { continue };
                     let session = c.session.and_then(|s| self.session(s)).map(|s| s.name.as_str()).unwrap_or("-");
                     items.push(ChooserItem::Client(id));
-                    lines.push(format!("client-{id}: {session} [{}x{}]", c.cols, c.rows));
+                    // One attached for another machine says which, as in
+                    // `list-clients`.
+                    let from = self.remote_client_addr(id).map(|a| format!(" (from {a})")).unwrap_or_default();
+                    lines.push(format!("client-{id}: {session} [{}x{}]{from}", c.cols, c.rows));
                 }
                 return Some((items, lines));
             }
@@ -8304,7 +8328,9 @@ impl Server {
                     _ => None,
                 };
                 // A machine in the chart: another machine's pane opens in a
-                // window watching it (`keepane link watch`); the rest says how.
+                // window watching it (`keepane link watch`); its session, or
+                // the machine itself, in a window attached to it there
+                // (`keepane link attach`, which takes all of that machine).
                 match target {
                     Some(ChooserItem::Remote(m, _, Some(_), Some(p))) => {
                         c.chooser = None;
@@ -8313,8 +8339,23 @@ impl Server {
                         }
                         return;
                     }
-                    Some(ChooserItem::Host(_) | ChooserItem::Remote(..)) => {
-                        self.message(cid, "Enter on a pane: one here goes there, another machine's opens watched here");
+                    Some(ChooserItem::Remote(m, s, _, None)) => {
+                        c.chooser = None;
+                        if let Some(addr) = self.chart_hosts().get(m as usize).cloned() {
+                            let name = self.remote_session_name(&addr, s);
+                            self.attach_remote(cid, &addr, Some(&name));
+                        }
+                        return;
+                    }
+                    Some(ChooserItem::Host(Some(m))) => {
+                        c.chooser = None;
+                        if let Some(addr) = self.chart_hosts().get(m as usize).cloned() {
+                            self.attach_remote(cid, &addr, None);
+                        }
+                        return;
+                    }
+                    Some(ChooserItem::Host(None)) => {
+                        self.message(cid, "Enter on a session, window or pane, or on another machine");
                         return;
                     }
                     _ => {}

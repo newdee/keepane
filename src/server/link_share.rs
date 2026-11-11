@@ -8,7 +8,8 @@
 //!
 //! A machine that has a pane may see it (in its chart, `link panes`,
 //! `link capture`, `link watch`) and send it messages, which go by the pane's work mode
-//! as anyone's do (one to a `shell` pane runs). It may do nothing else:
+//! as anyone's do, but for a pane in `shell` mode: a message there runs as a
+//! command, so it is refused. It may do nothing else: running commands,
 //! typing into panes, starting and closing them, sending commits and
 //! projects need `full`.
 //! What is not shared with it does not exist for it: a pane it names that
@@ -250,8 +251,9 @@ impl Server {
                 }
             }
             let mut said = format!("{} shared with {addr}: it sees them and may send them messages", labels.join(", "));
-            // A message to a `shell` pane runs there: said for each such
-            // pane that is now within reach.
+            // A message to a `shell` pane would run there as a command, which
+            // takes all of this machine: said for each such pane now within
+            // reach, so that a refused message is not a surprise.
             let shell: Vec<String> = self
                 .reachable_panes(&Peer { full: false, ..peer.clone() })
                 .into_iter()
@@ -263,7 +265,7 @@ impl Server {
                 .collect();
             if !shell.is_empty() {
                 said.push_str(&format!(
-                    "; {} in shell mode: a message from it runs there as a command (set-work-mode normal, and it does not)",
+                    "; {} in shell mode: it may watch, but its messages there are refused (they would run as commands: that takes --full)",
                     if shell.len() == 1 { format!("{} is", shell[0]) } else { format!("{} are", shell.join(", ")) }
                 ));
             }

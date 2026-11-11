@@ -281,7 +281,15 @@ of those panes shows, as text; `keepane link watch <host:port/pane>` that
 pane live in the terminal it runs in (Enter on it in `C-b w` opens a window
 running it), typed into only when that machine gave this one `--full`, else
 read-only (`q` closes it); it asks through `link-view` (the screen, or
-"same" since a stamp) and types through `link-keys` (key records);
+"same" since a stamp) and types through `link-keys` (key records).
+`keepane link attach <host:port> [session]` attaches to a session there
+(the one used last when none is named; Enter on a session or machine in
+`C-b w` opens a window running it), for a machine that gave this one
+`--full`: that machine makes a client of this terminal's size
+(`link-attach`), draws it, and takes every key as its own, the prefix too
+(the pane here is put in `passthrough`; F12 gives the keys back);
+`link-view -c` and `link-keys -c` name that client. `prefix d` there ends
+it; a client not asked for in 15 seconds is let go there and made again.
 `trace-message` of a message sent there asks
 that machine what became of it (queued, delivered, done or failed, a shell
 command's output; `-w` waits there). `keepane link remove <host:port>`
@@ -296,8 +304,10 @@ sees them (its chart, `link panes`, `link capture`, `link watch`) and may
 send them messages, and nothing else of this machine exists for it; a
 session or a
 window shared covers what comes to be in it later too. A message goes by the
-pane's work mode, as anyone's: one to a `shell` pane runs as a command (the
-answer to `link share` names such panes). `keepane link unshare <host:port>
+pane's work mode, as anyone's, but a `shell` pane, where a message runs as
+a command, takes none from a machine without `--full` (the answer to `link
+share` names such panes; in 0.56 and 0.57 sharing was enough). `keepane
+link unshare <host:port>
 <target>...` (`link-unshare`; `--all` for everything) takes it back. In the
 tree (`C-b w`), `s` shares what is under the cursor (or tagged) with the
 machine paired, or takes it back; with several machines paired, a menu asks
@@ -306,8 +316,9 @@ shared is marked on the session, window or pane itself, not on its name: a
 name used again by something else is not shared; the marks go into the
 session's save and come back with `resume`. `keepane link allow <host:port>
 --full` (`link-allow`) gives it all of this machine, as if it sat here:
-every pane, typed into too (`link watch`), its messages run in `shell`
-panes, it may start panes and send commits and projects here. Over plain
+every pane, typed into too (`link watch`), every session, attached to
+(`link attach`), its messages run in `shell` panes, it may start panes and
+send commits and projects here. Over plain
 HTTP anyone on the network could read what goes between the two, so
 `--full` is taken only over Tailscale
 (100.64.0.0/10, fd7a:115c:a1e0::/48) or from this machine; from any other

@@ -193,6 +193,7 @@ impl Server {
             ("POST", "/link/capture") => self.link_capture_in(&req, &nonce, &peer),
             ("POST", "/link/view") => self.link_view_in(&req, &nonce, &peer),
             ("POST", "/link/keys") => self.link_keys_in(&req, &nonce, &peer),
+            ("POST", "/link/attach") => self.link_attach_in(&req.body, &nonce, &peer),
             ("POST", "/link/pane") => self.link_pane_in(&req, &nonce, &peer),
             ("POST", "/link/kill") => self.link_kill_in(&req, &nonce, &peer),
             ("POST", "/link/trace") => self.link_trace_in(cid, &req, &nonce, &peer),
@@ -399,9 +400,13 @@ impl Server {
     /// machine that may see the pane (as `/link/capture`). `since` is the
     /// stamp of the screen it last drew: when nothing printed and nothing
     /// resized since, only that is said (a watch asks several times a
-    /// second, and most of the time nothing changed).
+    /// second, and most of the time nothing changed). With `client`: what a
+    /// client made here for that machine is drawn (`link_attach`).
     fn link_view_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
         let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
+        if !v["client"].is_null() {
+            return self.link_client_view(&v, nonce, peer);
+        }
         let Some(to) = v["to"].as_str() else {
             return self.link_answer(nonce, 400, "to: the pane".into());
         };
@@ -437,16 +442,22 @@ impl Server {
     /// `/link/keys`: keys typed into a pane by `keepane link watch` there.
     /// Only a machine with all of this one may (typing into a shell runs any
     /// command); each key is made into bytes here, by the pane's own modes.
+    /// With `client`: into a client made here for that machine, as a
+    /// terminal's keys (`link_attach`).
     fn link_keys_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
-        if let Some(refused) = self.need_full(nonce, peer, "type into panes") {
+        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
+        let what = if v["client"].is_null() { "type into panes" } else { "attach to sessions" };
+        if let Some(refused) = self.need_full(nonce, peer, what) {
             return refused;
         }
-        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
-        let Some(to) = v["to"].as_str() else {
-            return self.link_answer(nonce, 400, "to: the pane".into());
-        };
         let Ok(keys) = serde_json::from_value::<Vec<crate::ipc::KeyRecord>>(v["keys"].clone()) else {
             return self.link_answer(nonce, 400, "keys: a list of key records".into());
+        };
+        if !v["client"].is_null() {
+            return self.link_client_keys(&v, keys, nonce, peer);
+        }
+        let Some(to) = v["to"].as_str() else {
+            return self.link_answer(nonce, 400, "to: the pane".into());
         };
         let pid = match self.reached(to, nonce, peer) {
             Ok(p) => p,
@@ -655,9 +666,10 @@ impl Server {
         }
         // An answer to a message a pane here sent that machine goes back to
         // that pane, shared or not: it asked. Not to a pane in `shell` mode,
-        // where the answer would run as a command: that takes sharing it.
-        // Anything else goes to a pane it may reach, by the pane's work mode
-        // as anyone's: one in `shell` mode runs it (who shared it chose that).
+        // where the answer would run as a command. Anything else goes to a
+        // pane it may reach, by the pane's work mode; one in `shell` mode
+        // runs it as a command, which is control of this machine: only a
+        // machine with all of it (`full`) may, as for typing.
         let asker = body.re.and_then(|re| {
             let ours = self.link.as_ref()?.sent.get(&re).is_some_and(|(k, _)| *k == peer.key);
             match &self.observe.get(re)?.msg.from {
@@ -675,6 +687,12 @@ impl Server {
             },
         };
         let via = self.pane_ref(to).map_or(WorkMode::Normal, |p| p.actor.mode);
+        if via == WorkMode::Shell
+            && let Some(refused) =
+                self.need_full(nonce, peer, "send to a pane in shell mode (it runs messages as commands)")
+        {
+            return refused;
+        }
         self.next_msg += 1;
         let id = self.next_msg;
         let known = |n: Option<u64>| n.filter(|n| self.observe.get(*n).is_some());

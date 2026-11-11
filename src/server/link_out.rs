@@ -38,10 +38,14 @@ pub(super) enum LinkOp {
     Tree { addr: String, key: String },
     /// `link-list`: what this machine has there, row `row` of table `list`.
     Access { addr: String, key: String, list: u64, row: usize },
-    /// `link-view`: a pane's screen for `keepane link watch`, as they send it.
+    /// `link-view`: a pane's screen for `keepane link watch` (or what a
+    /// client there is drawn, for `keepane link attach`), as they send it.
     View { addr: String, key: String },
-    /// `link-keys`: keys typed into a pane there; nothing to say when taken.
+    /// `link-keys`: keys typed into a pane or a client there; nothing to say
+    /// when taken.
     Keys { addr: String, key: String },
+    /// `link-attach`: a client made there for `keepane link attach`.
+    Attach { addr: String, key: String },
 }
 
 /// How a message handed to another machine is known there, for asking
@@ -165,25 +169,45 @@ impl Server {
                     self.link_signed(cid, &addr, &key, "POST", "/link/kill", body.into_bytes(), ANSWER_GRACE, op)
                 })
             }
-            Cmd::LinkView { target, since } => {
-                let (addr, pane) = link::split_remote(&target).expect("the parser checked");
-                let (addr, pane) = (addr.to_string(), pane.to_string());
+            // A pane's screen, or (`client`) what a client `link-attach`
+            // made there is drawn, at the size of the terminal here.
+            Cmd::LinkView { target, since, client, size } => {
+                let (addr, body) = match client {
+                    Some(c) => {
+                        let (cols, rows) = size.map_or((None, None), |(x, y)| (Some(x), Some(y)));
+                        (target, serde_json::json!({ "client": c, "since": since, "cols": cols, "rows": rows }))
+                    }
+                    None => {
+                        let (addr, pane) = link::split_remote(&target).expect("the parser checked");
+                        (addr.to_string(), serde_json::json!({ "to": pane, "since": since }))
+                    }
+                };
                 self.peer_key(&addr).and_then(|key| {
-                    let body = serde_json::json!({ "to": pane, "since": since }).to_string();
                     let op = LinkOp::View { addr: addr.clone(), key: key.clone() };
-                    self.link_signed(cid, &addr, &key, "POST", "/link/view", body.into_bytes(), ANSWER_GRACE, op)
+                    let body = body.to_string().into_bytes();
+                    self.link_signed(cid, &addr, &key, "POST", "/link/view", body, ANSWER_GRACE, op)
                 })
             }
-            Cmd::LinkKeys { target, keys } => {
-                let (addr, pane) = link::split_remote(&target).expect("the parser checked");
-                let (addr, pane) = (addr.to_string(), pane.to_string());
+            Cmd::LinkKeys { target, keys, client } => {
                 let keys: serde_json::Value = serde_json::from_str(&keys).expect("the parser checked");
+                let (addr, body) = match client {
+                    Some(c) => (target, serde_json::json!({ "client": c, "keys": keys })),
+                    None => {
+                        let (addr, pane) = link::split_remote(&target).expect("the parser checked");
+                        (addr.to_string(), serde_json::json!({ "to": pane, "keys": keys }))
+                    }
+                };
                 self.peer_key(&addr).and_then(|key| {
-                    let body = serde_json::json!({ "to": pane, "keys": keys }).to_string();
                     let op = LinkOp::Keys { addr: addr.clone(), key: key.clone() };
-                    self.link_signed(cid, &addr, &key, "POST", "/link/keys", body.into_bytes(), ANSWER_GRACE, op)
+                    let body = body.to_string().into_bytes();
+                    self.link_signed(cid, &addr, &key, "POST", "/link/keys", body, ANSWER_GRACE, op)
                 })
             }
+            Cmd::LinkAttach { addr, session, size: (cols, rows) } => self.peer_key(&addr).and_then(|key| {
+                let body = serde_json::json!({ "session": session, "cols": cols, "rows": rows }).to_string();
+                let op = LinkOp::Attach { addr: addr.clone(), key: key.clone() };
+                self.link_signed(cid, &addr, &key, "POST", "/link/attach", body.into_bytes(), ANSWER_GRACE, op)
+            }),
             Cmd::LinkRemove { addr } => return self.link_remove(cid, &addr),
             other => Err(format!("not a link command: {other}")),
         };
@@ -464,6 +488,14 @@ impl Server {
                     Err(e) => Outcome::Error(e),
                 }
             }
+            LinkOp::Attach { addr, key } => match Self::checked(&addr, &key, &nonce, result) {
+                Ok(ans) if ans.status == 200 => Outcome::Text(ans.text()),
+                Ok(ans) if ans.status == 404 && ans.text().contains("not a keepane link path") => Outcome::Error(
+                    format!("keepane on {addr} is older than 0.58: update it there to attach to its sessions"),
+                ),
+                Ok(ans) => Outcome::Error(format!("{addr} said: {}", ans.text())),
+                Err(e) => Outcome::Error(e),
+            },
             LinkOp::Tree { .. } | LinkOp::Access { .. } => unreachable!("answered above"),
         };
         if let Some(cid) = cid {

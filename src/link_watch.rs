@@ -11,6 +11,14 @@
 //! all of itself (`link allow --full`): typing into a shell is running any
 //! command there. A machine that only shared the pane is watched read-only;
 //! `q` then closes the watch.
+//!
+//! `keepane link attach host:port [session]` is the same program for a
+//! whole session there, as `keepane attach` would be on that machine: it
+//! has a client made there (`link-attach`) of this terminal's size, and
+//! shows what that client is drawn. Every key goes to it, the prefix too
+//! (the pane here is put in `passthrough`, so F12 gives the keys back to
+//! this machine); `prefix d` there detaches and ends the program. A client
+//! that machine let go (the network was away) is made again.
 
 use std::time::{Duration, Instant};
 
@@ -28,6 +36,13 @@ const BUSY_FOR: Duration = Duration::from_secs(3);
 const ASK_AFTER_ERROR: Duration = Duration::from_secs(2);
 /// How long a note stays on the bottom row.
 const NOTE_FOR: Duration = Duration::from_secs(4);
+
+/// What is shown: a pane there, or a session there through a client.
+#[derive(Clone, Debug, PartialEq)]
+enum Watched {
+    Pane { target: String },
+    Session { session: Option<String> },
+}
 
 /// The other machine's screen as last heard.
 struct Remote {
@@ -53,6 +68,8 @@ enum View {
         screen: String,
         typing: bool,
         dead: bool,
+        /// A client there that detached: why.
+        ended: Option<String>,
     },
 }
 
@@ -72,7 +89,15 @@ fn read_view(text: &str) -> Option<View> {
         screen: v["screen"].as_str().unwrap_or_default().to_string(),
         typing: v["typing"] == true,
         dead: v["dead"] == true,
+        ended: v["ended"].as_str().map(String::from),
     })
+}
+
+/// The answer of `link-attach`: the client made there, and its session.
+fn read_attached(text: &str) -> Option<(u32, String)> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let client = u32::try_from(v["client"].as_u64()?).ok()?;
+    Some((client, v["session"].as_str()?.to_string()))
 }
 
 /// Where the shown part of a remote screen starts on one axis: from the
@@ -134,14 +159,44 @@ fn plain(error: &str) -> String {
     error.trim().lines().next().unwrap_or("no answer").to_string()
 }
 
+/// Whether an error of `link-view` or `link-keys` says the client there is
+/// gone (let go unasked, or that machine's server started again): one is
+/// made again.
+fn client_gone(error: &str) -> bool {
+    error.contains("no client ")
+}
+
+/// When to make a client again after the last one went: at once, unless
+/// that one was made less than `ASK_AFTER_ERROR` ago.
+fn again_at(made: Instant, now: Instant) -> Instant {
+    if now.duration_since(made) < ASK_AFTER_ERROR { now + ASK_AFTER_ERROR } else { now }
+}
+
+/// `keepane link watch host:port/pane`.
 pub async fn run(socket: &str, target: &str) -> Result<i32> {
     let Some((addr, _)) = crate::link::split_remote(target) else {
         anyhow::bail!("keepane link watch: '{target}' is not host:port/pane");
     };
+    show(socket, addr, Watched::Pane { target: target.to_string() }).await
+}
+
+/// `keepane link attach host:port [session]`.
+pub async fn attach(socket: &str, addr: &str, session: Option<&str>) -> Result<i32> {
+    if !crate::link::valid_hostport(addr) {
+        anyhow::bail!("keepane link attach: '{addr}' is not host:port");
+    }
+    show(socket, addr, Watched::Session { session: session.map(String::from) }).await
+}
+
+async fn show(socket: &str, addr: &str, mut watched: Watched) -> Result<i32> {
     let addr = addr.to_string();
+    let label = |w: &Watched| match w {
+        Watched::Pane { target } => format!("{target} (watch)"),
+        Watched::Session { session } => format!("{addr}/{} (attach)", session.as_deref().unwrap_or("…")),
+    };
     let mut console = Console::open()?;
     console.enter_raw()?;
-    console.set_title(&format!("{target} (watch)"));
+    console.set_title(&label(&watched));
     let console = std::sync::Arc::new(console);
     // Console input blocks: read on a thread of its own.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<InputEvent>();
@@ -159,10 +214,34 @@ pub async fn run(socket: &str, target: &str) -> Result<i32> {
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
         crate::client::query(socket, &argv).await
     };
+    let attaching = matches!(watched, Watched::Session { .. });
+    let mut note: Option<(String, Instant)> = None;
+    // Attached, every key is that machine's: the pane this runs in (when
+    // it is one of this machine's) gives the prefix up too, until F12.
+    let own = crate::client::own_pane(socket).filter(|_| attaching);
+    if let Some(pane) = own {
+        let on = vec!["passthrough".to_string(), "-t".into(), format!("%{pane}"), "on".into()];
+        let back = match query(on).await {
+            // "… the prefix too (F12 ends it)": the key that ends it.
+            Ok((0, out, _)) => {
+                out.trim().rsplit_once('(').and_then(|(_, k)| k.strip_suffix(" ends it)")).map(String::from)
+            }
+            _ => None,
+        };
+        let back = back.unwrap_or_else(|| "`keepane passthrough off`".to_string());
+        note = Some((format!("every key goes to {addr}, the prefix too; {back} gives them back here"), Instant::now()));
+    }
+    let mut client: Option<u32> = None;
+    // When the client was made: one gone at once is not made again at once
+    // (a loop of clients there, each kept for its time unasked).
+    let mut attached_at = Instant::now();
     let mut remote: Option<Remote> = None;
     let mut stamp: Option<String> = None;
-    let mut message = format!("asking {target} for its screen…");
-    let mut note: Option<(String, Instant)> = None;
+    let mut message = if attaching {
+        format!("attaching to {addr}…")
+    } else {
+        format!("asking {} for its screen…", label(&watched))
+    };
     let mut busy = Instant::now();
     let mut next_ask = Instant::now();
     let (mut cols, mut rows) = console.size();
@@ -183,48 +262,123 @@ pub async fn run(socket: &str, target: &str) -> Result<i32> {
                     let mut more = Some(ev);
                     while let Some(ev) = more.take().or_else(|| rx.try_recv().ok()) {
                         match ev {
-                            InputEvent::Key(k) if k.down => keys.push(k),
-                            InputEvent::Resize => (cols, rows) = console.size(),
+                            // A client takes key-ups as a terminal's are;
+                            // a pane is typed into by the keys pressed.
+                            InputEvent::Key(k) if k.down || client.is_some() => keys.push(k),
+                            InputEvent::Resize => {
+                                (cols, rows) = console.size();
+                                // The client there takes the new size now.
+                                if attaching {
+                                    next_ask = Instant::now();
+                                }
+                            }
                             _ => {}
                         }
                     }
                     if keys.is_empty() {
                         continue;
                     }
-                    let typing = remote.as_ref().is_some_and(|r| r.typing);
-                    if !typing {
-                        if keys.iter().any(|k| k.ch == u16::from(b'q')) {
-                            return Ok(0);
+                    let argv = match (&watched, client) {
+                        (Watched::Session { .. }, Some(c)) => {
+                            vec!["link-keys".to_string(), addr.clone(), "-c".into(), c.to_string()]
                         }
-                        note = Some((format!(
-                            "read-only: {addr} shares this pane for watching; typing needs `keepane link allow <this machine> --full` there · q closes"
-                        ), Instant::now()));
-                        continue;
-                    }
+                        (Watched::Pane { target }, _) if remote.as_ref().is_some_and(|r| r.typing) => {
+                            vec!["link-keys".to_string(), target.clone()]
+                        }
+                        // Nothing to type into: read-only, or not attached.
+                        _ => {
+                            if keys.iter().any(|k| k.down && k.ch == u16::from(b'q')) {
+                                return Ok(0);
+                            }
+                            let why = match &watched {
+                                Watched::Pane { .. } => format!(
+                                    "read-only: {addr} shares this pane for watching; typing needs `keepane link allow <this machine> --full` there · q closes"
+                                ),
+                                Watched::Session { .. } => format!("not attached to {addr} · q closes"),
+                            };
+                            note = Some((why, Instant::now()));
+                            continue;
+                        }
+                    };
                     let json = serde_json::to_string(&keys).expect("keys serialize");
-                    match query(vec!["link-keys".into(), target.into(), json]).await {
+                    let mut argv = argv;
+                    argv.push(json);
+                    match query(argv).await {
                         Ok((0, _, _)) => {}
+                        Ok((_, _, err)) if attaching && client_gone(&err) => client = None,
                         Ok((_, _, err)) => note = Some((plain(&err), Instant::now())),
                         Err(e) => note = Some((plain(&format!("{e:#}")), Instant::now())),
                     }
                     busy = Instant::now();
-                    // What the keys did, at once.
-                    next_ask = Instant::now();
+                    // What the keys did, at once (a client gone: a new one,
+                    // as after a view that found it gone).
+                    next_ask = if attaching && client.is_none() {
+                        again_at(attached_at, Instant::now())
+                    } else {
+                        Instant::now()
+                    };
                 }
                 _ = tokio::time::sleep(wait) => {
                     if Instant::now() < next_ask {
                         continue;
                     }
-                    let mut argv = vec!["link-view".to_string(), target.to_string()];
+                    let every = if busy.elapsed() < BUSY_FOR { ASK_BUSY } else { ASK_IDLE };
+                    next_ask = Instant::now() + every;
+                    let argv = match (&watched, client) {
+                        (Watched::Pane { target }, _) => vec!["link-view".to_string(), target.clone()],
+                        (Watched::Session { .. }, Some(c)) => vec![
+                            "link-view".to_string(), addr.clone(), "-c".into(), c.to_string(),
+                            "-x".into(), cols.to_string(), "-y".into(), rows.to_string(),
+                        ],
+                        // A client first: at this terminal's size, in the
+                        // session asked for (by name once known, so one made
+                        // again is in the same session).
+                        (Watched::Session { session }, None) => {
+                            let mut argv = vec!["link-attach".to_string(), addr.clone()];
+                            if let Some(s) = session {
+                                argv.extend(["-t".into(), s.clone()]);
+                            }
+                            argv.extend(["-x".into(), cols.to_string(), "-y".into(), rows.to_string()]);
+                            match query(argv).await {
+                                Ok((0, out, _)) => match read_attached(&out) {
+                                    Some((c, name)) => {
+                                        client = Some(c);
+                                        attached_at = Instant::now();
+                                        stamp = None;
+                                        watched = Watched::Session { session: Some(name) };
+                                        console.set_title(&label(&watched));
+                                        next_ask = Instant::now();
+                                    }
+                                    None => {
+                                        message = format!("{addr} answered with something that is not a client");
+                                        next_ask = Instant::now() + ASK_AFTER_ERROR;
+                                    }
+                                },
+                                Ok((_, _, err)) => {
+                                    remote = None;
+                                    message = plain(&err);
+                                    next_ask = Instant::now() + ASK_AFTER_ERROR;
+                                }
+                                Err(e) => {
+                                    remote = None;
+                                    message = plain(&format!("this machine's keepane: {e:#}"));
+                                    next_ask = Instant::now() + ASK_AFTER_ERROR;
+                                }
+                            }
+                            continue;
+                        }
+                    };
+                    let mut argv = argv;
                     if let (Some(s), Some(_)) = (&stamp, &remote) {
                         argv.extend(["-s".into(), s.clone()]);
                     }
-                    let every = if busy.elapsed() < BUSY_FOR { ASK_BUSY } else { ASK_IDLE };
-                    next_ask = Instant::now() + every;
                     match query(argv).await {
                         Ok((0, out, _)) => match read_view(&out) {
                             Some(View::Same { .. }) => {}
-                            Some(View::Screen { stamp: st, cols: rc, rows: rr, cursor, cursor_shown, screen, typing, dead }) => {
+                            // Detached there (`prefix d`, its session gone):
+                            // done, as `keepane attach` is.
+                            Some(View::Screen { ended: Some(_), .. }) if attaching => return Ok(0),
+                            Some(View::Screen { stamp: st, cols: rc, rows: rr, cursor, cursor_shown, screen, typing, dead, .. }) => {
                                 let mut parser = vt100::Parser::new(rr, rc, 0);
                                 parser.process(screen.as_bytes());
                                 remote = Some(Remote { parser, cursor, cursor_shown, typing, dead });
@@ -240,6 +394,14 @@ pub async fn run(socket: &str, target: &str) -> Result<i32> {
                                 next_ask = Instant::now() + ASK_AFTER_ERROR;
                             }
                         },
+                        // The client there was let go: a new one, at once,
+                        // unless the one gone was only just made.
+                        Ok((_, _, err)) if attaching && client_gone(&err) => {
+                            client = None;
+                            stamp = None;
+                            message = format!("attaching to {addr} again…");
+                            next_ask = again_at(attached_at, Instant::now());
+                        }
                         Ok((_, _, err)) => {
                             remote = None;
                             stamp = None;
@@ -258,6 +420,10 @@ pub async fn run(socket: &str, target: &str) -> Result<i32> {
     }
     .await;
     console.restore();
+    // The pane, should it stay (`remain-on-exit`), is this machine's again.
+    if let Some(pane) = own {
+        let _ = query(vec!["passthrough".to_string(), "-t".into(), format!("%{pane}"), "off".into()]).await;
+    }
     result
 }
 
@@ -290,7 +456,8 @@ mod tests {
                 cursor_shown: false,
                 screen: "hi".into(),
                 typing: true,
-                dead: false
+                dead: false,
+                ended: None,
             })
         );
         assert_eq!(read_view("garbage"), None);
@@ -298,6 +465,30 @@ mod tests {
         // A size of nothing is one cell, not a screen that cannot be made.
         let Some(View::Screen { cols, rows, .. }) = read_view(r#"{"stamp":"s","cols":0,"rows":0}"#) else { panic!() };
         assert_eq!((cols, rows), (1, 1));
+        // A client there that detached says why.
+        let Some(View::Screen { ended, dead, .. }) =
+            read_view(r#"{"stamp":"s","cols":9,"rows":9,"dead":true,"ended":"detached"}"#)
+        else {
+            panic!()
+        };
+        assert_eq!((ended.as_deref(), dead), (Some("detached"), true));
+    }
+
+    #[test]
+    fn an_attach_answer_reads_and_what_is_not_one_does_not() {
+        assert_eq!(read_attached(r#"{"client":2147483648,"session":"work"}"#), Some((1 << 31, "work".into())));
+        assert_eq!(read_attached(r#"{"client":7}"#), None, "no session");
+        assert_eq!(read_attached(r#"{"client":-1,"session":"w"}"#), None);
+        assert_eq!(read_attached(r#"{"client":4294967296,"session":"w"}"#), None, "past a u32");
+        assert_eq!(read_attached("garbage"), None);
+        // What says the client there is gone, and what does not.
+        assert!(client_gone("100.64.0.3:7681 said: no client 2147483648 here for 100.64.0.2:7681: it ended"));
+        assert!(!client_gone("100.64.0.3:7681 said: 100.64.0.2:7681 may not attach to sessions here"));
+        // Made again at once, unless the one gone was only just made.
+        let t = Instant::now();
+        assert_eq!(again_at(t, t + Duration::from_secs(20)), t + Duration::from_secs(20));
+        assert_eq!(again_at(t, t + Duration::from_millis(300)), t + Duration::from_millis(300) + ASK_AFTER_ERROR);
+        assert_eq!(again_at(t, t + ASK_AFTER_ERROR), t + ASK_AFTER_ERROR, "the edge: at once");
     }
 
     #[test]

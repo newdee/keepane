@@ -747,16 +747,31 @@ pub enum Cmd {
     /// `link-view host:port/pane [-s stamp]`: that pane's screen as `keepane
     /// link watch` draws it (JSON: its size, cursor and cells as VT), or only
     /// that nothing changed since `stamp`; what `link-capture` may see.
+    /// `link-view host:port -c client -x cols -y rows [-s stamp]`: what a
+    /// client `link-attach` made there is drawn, at that size.
     LinkView {
         target: String,
         since: Option<String>,
+        client: Option<u32>,
+        size: Option<(u16, u16)>,
     },
     /// `link-keys host:port/pane keys`: keys typed into that pane (`keys`:
     /// the JSON key records `keepane link watch` reads); the machine must
     /// have given this one all of itself (`link-allow --full` there).
+    /// `link-keys host:port -c client keys`: into that client instead.
     LinkKeys {
         target: String,
         keys: String,
+        client: Option<u32>,
+    },
+    /// `link-attach host:port [-t session] -x cols -y rows`: a client made on
+    /// that machine, attached to that session (else the one used last),
+    /// for `keepane link attach`; its id comes back. The machine must have
+    /// given this one all of itself.
+    LinkAttach {
+        addr: String,
+        session: Option<String>,
+        size: (u16, u16),
     },
     /// `link-clone host:port [path] [--tell pane]` (`clone`): the repository
     /// the client is in, as a new one at `path` on that machine (its
@@ -1829,14 +1844,33 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::LinkKill { target } => write!(f, "link-kill {}", quote(target)),
-            Cmd::LinkView { target, since } => {
+            Cmd::LinkView { target, since, client, size } => {
                 write!(f, "link-view {}", quote(target))?;
+                if let Some(c) = client {
+                    write!(f, " -c {c}")?;
+                }
+                if let Some((x, y)) = size {
+                    write!(f, " -x {x} -y {y}")?;
+                }
                 if let Some(s) = since {
                     write!(f, " -s {}", quote(s))?;
                 }
                 Ok(())
             }
-            Cmd::LinkKeys { target, keys } => write!(f, "link-keys {} {}", quote(target), quote(keys)),
+            Cmd::LinkKeys { target, keys, client } => {
+                write!(f, "link-keys {}", quote(target))?;
+                if let Some(c) = client {
+                    write!(f, " -c {c}")?;
+                }
+                write!(f, " {}", quote(keys))
+            }
+            Cmd::LinkAttach { addr, session, size: (x, y) } => {
+                write!(f, "link-attach {}", quote(addr))?;
+                if let Some(s) = session {
+                    write!(f, " -t {}", quote(s))?;
+                }
+                write!(f, " -x {x} -y {y}")
+            }
             Cmd::LinkClone { addr, path, tell } => {
                 write!(f, "link-clone {}", quote(addr))?;
                 if let Some(p) = path {
@@ -2428,6 +2462,7 @@ pub const COMMANDS: &[&str] = &[
     "last-window",
     "link-add",
     "link-allow",
+    "link-attach",
     "link-capture",
     "link-clone",
     "link-kill",
@@ -2715,8 +2750,9 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("link-trust", &["--full", "--lan"]),
     ("link-start", &["-s", "-n", "-m", "-c"]),
     ("link-kill", &[]),
-    ("link-view", &["-s"]),
-    ("link-keys", &[]),
+    ("link-view", &["-s", "-c", "-x", "-y"]),
+    ("link-keys", &["-c"]),
+    ("link-attach", &["-t", "-x", "-y"]),
     ("link-clone", &["--tell"]),
     ("link-push", &["-l", "--tell"]),
     ("link-send-agents", &["-l", "-n", "-s"]),
@@ -4349,34 +4385,68 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             Cmd::LinkKill { target }
         }
-        "link-view" => {
-            // `-s` before or after the pane (how it prints is after).
-            let (mut since, mut target) = (None, None);
+        "link-view" | "link-keys" | "link-attach" => {
+            // The flags before or after the words (how they print is after).
+            let (mut since, mut client, mut session, mut x, mut y) = (None, None, None, None, None);
+            let mut words: Vec<String> = Vec::new();
+            let number = |flag: &str, v: &str| -> Result<u32, String> {
+                v.parse::<u32>().map_err(|_| format!("{n}: {flag} takes a number, not '{v}'"))
+            };
+            let side = |flag: &str, v: &str| -> Result<u16, String> {
+                v.parse::<u16>().ok().filter(|s| *s > 0).ok_or_else(|| format!("{n}: {flag} takes a size, not '{v}'"))
+            };
             while let Some(w) = a.next() {
                 match w {
-                    "-s" => since = Some(a.value("-s")?.to_string()),
+                    "-s" if n == "link-view" => since = Some(a.value("-s")?.to_string()),
+                    "-c" if n != "link-attach" => client = Some(number("-c", a.value("-c")?)?),
+                    "-t" if n == "link-attach" => session = Some(a.value("-t")?.to_string()),
+                    "-x" if n != "link-keys" => x = Some(side("-x", a.value("-x")?)?),
+                    "-y" if n != "link-keys" => y = Some(side("-y", a.value("-y")?)?),
+                    // Key records are JSON, never a flag.
                     f if f.starts_with('-') => return Err(bad_flag(n, f)),
-                    t if target.is_none() => target = Some(t.to_string()),
-                    t => return Err(format!("{n}: unexpected argument '{t}'")),
+                    v => words.push(v.to_string()),
                 }
             }
-            let target = target.ok_or_else(|| format!("{n}: host:port/pane required"))?;
-            if crate::link::split_remote(&target).is_none() {
-                return Err(format!("{n}: '{target}' is not host:port/pane"));
+            let size = match (x, y) {
+                (Some(x), Some(y)) => Some((x, y)),
+                (None, None) => None,
+                _ => return Err(format!("{n}: -x and -y go together")),
+            };
+            let want = if n == "link-keys" { 2 } else { 1 };
+            if words.len() > want {
+                return Err(format!("{n}: unexpected argument '{}'", words[want]));
             }
-            Cmd::LinkView { target, since }
-        }
-        "link-keys" => {
-            let target = a.next().ok_or_else(|| format!("{n}: host:port/pane required"))?.to_string();
-            let keys = a.next().ok_or_else(|| format!("{n}: the keys (JSON) required"))?.to_string();
-            a.none_left(n)?;
-            if crate::link::split_remote(&target).is_none() {
-                return Err(format!("{n}: '{target}' is not host:port/pane"));
+            let mut words = words.into_iter();
+            let on_client = client.is_some() || n == "link-attach";
+            let what = if on_client { "host:port" } else { "host:port/pane" };
+            let target = words.next().ok_or_else(|| format!("{n}: {what} required"))?;
+            let fits = if on_client {
+                crate::link::valid_hostport(&target)
+            } else {
+                crate::link::split_remote(&target).is_some()
+            };
+            if !fits {
+                return Err(format!("{n}: '{target}' is not {what}"));
             }
-            if serde_json::from_str::<Vec<crate::ipc::KeyRecord>>(&keys).is_err() {
-                return Err(format!("{n}: the keys are a JSON list of key records"));
+            match n {
+                "link-view" => {
+                    if size.is_some() && client.is_none() {
+                        return Err(format!("{n}: -x and -y go with -c (a pane is seen at its own size)"));
+                    }
+                    Cmd::LinkView { target, since, client, size }
+                }
+                "link-keys" => {
+                    let keys = words.next().ok_or_else(|| format!("{n}: the keys (JSON) required"))?;
+                    if serde_json::from_str::<Vec<crate::ipc::KeyRecord>>(&keys).is_err() {
+                        return Err(format!("{n}: the keys are a JSON list of key records"));
+                    }
+                    Cmd::LinkKeys { target, keys, client }
+                }
+                _ => {
+                    let size = size.ok_or_else(|| format!("{n}: -x and -y required (the terminal's size)"))?;
+                    Cmd::LinkAttach { addr: target, session, size }
+                }
             }
-            Cmd::LinkKeys { target, keys }
         }
         "link-clone" | "link-push" => {
             let (mut words, mut tell, mut list) = (Vec::new(), None, false);
@@ -5703,6 +5773,41 @@ mod tests {
         assert!(parse_line("link-view 10.0.0.1:7681/%5 -x").is_err());
         assert!(parse_line("link-keys 10.0.0.1:7681/%5 'not json'").unwrap_err().contains("key records"));
         assert!(parse_line("link-keys 10.0.0.1:7681/%5").unwrap_err().contains("keys"));
+    }
+
+    #[test]
+    fn link_attach_and_the_client_forms_read_and_print_back() {
+        for line in [
+            "link-attach 10.0.0.1:7681 -x 120 -y 40",
+            "link-attach 10.0.0.1:7681 -t work -x 120 -y 40",
+            "link-view 10.0.0.1:7681 -c 2147483648 -x 120 -y 40",
+            "link-view 10.0.0.1:7681 -c 2147483648 -x 120 -y 40 -s '9 120x40 false'",
+            "link-view 10.0.0.1:7681 -c 7",
+            r#"link-keys 10.0.0.1:7681 -c 7 '[{"down":true,"repeat":1,"vk":0,"sc":0,"ch":97,"ctrl":0}]'"#,
+        ] {
+            let cmd = parse_line(line).unwrap().unwrap();
+            assert_eq!(parse_line(&cmd.to_string()).unwrap().unwrap(), cmd, "{line}");
+        }
+        // Flags in any place.
+        match parse_line("link-attach -x 80 -t work 10.0.0.1:7681 -y 24").unwrap().unwrap() {
+            Cmd::LinkAttach { addr, session, size } => {
+                assert_eq!((addr.as_str(), session.as_deref(), size), ("10.0.0.1:7681", Some("work"), (80, 24)));
+            }
+            other => panic!("{other:?}"),
+        }
+        let err = |line: &str| parse_line(line).unwrap_err();
+        assert!(err("link-attach 10.0.0.1:7681").contains("-x and -y required"));
+        assert!(err("link-attach 10.0.0.1:7681 -x 80").contains("go together"));
+        assert!(err("link-attach 10.0.0.1:7681 -x 0 -y 24").contains("a size"));
+        assert!(err("link-attach 10.0.0.1:7681/%5 -x 80 -y 24").contains("not host:port"));
+        assert!(err("link-attach 10.0.0.1:7681 extra -x 80 -y 24").contains("unexpected"));
+        assert!(err("link-attach 10.0.0.1:7681 -s x -x 80 -y 24").contains("-s"), "no -s on attach");
+        // A client is on a machine, not a pane; a pane is seen at its size.
+        assert!(err("link-view 10.0.0.1:7681/%5 -c 7").contains("not host:port"));
+        assert!(err("link-view 10.0.0.1:7681 -c x").contains("a number"));
+        assert!(err("link-view 10.0.0.1:7681/%5 -x 80 -y 24").contains("go with -c"));
+        assert!(err("link-keys 10.0.0.1:7681 '[]'").contains("host:port/pane"), "no -c: a pane");
+        assert!(err("link-keys 10.0.0.1:7681 -c 7 -x 80 '[]'").contains("-x"), "no size on keys");
     }
 
     #[test]

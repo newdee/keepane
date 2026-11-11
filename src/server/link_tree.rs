@@ -170,6 +170,42 @@ impl Server {
             self.message(cid, &e);
         }
     }
+
+    /// A session of another machine by its number there, as the chart
+    /// names it: its name (0.26 on), else `$N`, which names it there too.
+    pub(super) fn remote_session_name(&self, addr: &str, session: u32) -> String {
+        self.remote_views
+            .get(addr)
+            .and_then(|v| v.panes.iter().find(|p| p.session == session))
+            .and_then(|p| p.session_name.clone())
+            .unwrap_or_else(|| format!("${session}"))
+    }
+
+    /// Enter on a session of another machine in the chart (or on the
+    /// machine: its session used last): a window running `keepane link
+    /// attach` to it, in the session the client is in; the window Enter
+    /// opened for it before, while that is still there.
+    pub(super) fn attach_remote(&mut self, cid: ClientId, addr: &str, session: Option<&str>) {
+        let mut tail = vec!["link".to_string(), "attach".into(), addr.to_string()];
+        tail.extend(session.map(String::from));
+        let attached = |argv: &[String]| argv.len() > tail.len() && argv[argv.len() - tail.len()..] == tail[..];
+        let found = self.sessions.iter().find_map(|s| {
+            s.windows.iter().find_map(|w| w.panes.iter().find(|p| attached(&p.argv)).map(|p| (s.id, w.id, p.id)))
+        });
+        if let Some((sid, wid, pid)) = found {
+            return self.chooser_go_pane(cid, sid, wid, pid);
+        }
+        let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return };
+        let Some(exe) = super::pane::helper_exe() else {
+            return self.message(cid, "no keepane executable to attach with");
+        };
+        let argv: Vec<String> = std::iter::once(exe.to_string_lossy().into_owned()).chain(tail).collect();
+        let host = addr.rsplit_once(':').map_or(addr, |(h, _)| h);
+        let name = session.map_or_else(|| host.to_string(), |s| format!("{host}/{s}"));
+        if let Err(e) = self.new_window(sid, Some(name), None, &argv) {
+            self.message(cid, &e);
+        }
+    }
 }
 
 #[cfg(test)]

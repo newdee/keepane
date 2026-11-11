@@ -1518,9 +1518,10 @@ keepane link allow 100.64.0.3:7681 --none        # nothing, what was shared too
 What is shared, the other machine sees (its chart in `C-b w`, `link panes`,
 `link capture`, `link watch`) and may send messages to; the rest of this
 machine does not exist for it. A session or window shared covers what
-comes to be in it later. A message goes by the pane's work mode: one to a
-`shell` pane runs as a command, and `link share` names such panes when it
-shares them. In the
+comes to be in it later. A message goes by the pane's work mode, but a
+pane in `shell` mode takes none from a machine that only shares it: there
+a message runs as a command, which is control of this machine and takes
+`--full`. `link share` names such panes when it shares them. In the
 tree (`C-b w`), `s` shares what is under the cursor with the paired machine
 (a menu asks which when there are several), and `s` again takes it back;
 shared things read `shared` there. The marks are on the sessions, windows
@@ -1528,8 +1529,9 @@ and panes themselves, so a name used again by something new is not shared;
 they go into the saves and come back with `resume`.
 
 `--full` is all of it: every pane, typed into too (`keepane link watch`),
-its messages run in `shell` panes, and it may start panes and send commits
-and projects here. Plain HTTP can be read
+every session, attached to (`keepane link attach`), its messages run in
+`shell` panes, and it may start panes and send commits and projects here.
+Plain HTTP can be read
 by anyone on the network, so `--full` is taken only over Tailscale (or from
 this machine); from a LAN address the machine has only what is shared, and
 is told why. `--full --lan` takes it from any network.
@@ -1537,10 +1539,11 @@ is told why. `--full --lan` takes it from any network.
 Sharing and `--full` are given from a terminal outside keepane or at the
 `C-b :` prompt, never from inside a pane, where an agent could let another
 machine in. An answer to a message a pane here sent comes back to that pane
-whether it is shared or not. Up to 0.55 there were five permissions
-(`--shell`, `--screen`, `--panes`, `--push`, `--agents`); a machine that
-had all five has `--full` now, one that had some has nothing, and the
-status line names it once.
+whether it is shared or not. In 0.56 and 0.57 a shared `shell` pane ran
+the messages of every machine it was shared with. Up to 0.55 there were five
+permissions (`--shell`, `--screen`, `--panes`, `--push`, `--agents`); a
+machine that had all five has `--full` now, one that had some has
+nothing, and the status line names it once.
 
 ```powershell
 keepane link remove 100.64.0.3:7681            # unpair, on both; what was shared goes too
@@ -1555,6 +1558,7 @@ keepane link info 100.64.0.3:7681              # its name, system, keepane, upti
 keepane trace-message 12 -w 60                 # a message sent there: what became of it there (and a command's output)
 keepane link capture -S 100 100.64.0.3:7681/%worker   # what a pane there shows (shared with this machine)
 keepane link watch 100.64.0.3:7681/%worker            # that pane, live, in this terminal
+keepane link attach 100.64.0.3:7681 work              # that session, as if attached there (--full)
 ```
 
 A pane of another machine opens live here: Enter on it in the chart of
@@ -1567,6 +1571,19 @@ What is typed goes to that pane only when that machine gave this one
 `--full`: typing into a shell runs any command, so one pane is as much as
 all of them. A pane that is only shared is watched read-only, and `q`
 closes it.
+
+A machine that gave this one `--full` can be used as if you sat at it:
+Enter on one of its sessions in the chart (or on the machine, for the
+session it used last) opens a window attached to it there, and `keepane
+link attach` does the same in any terminal. That machine makes a client
+of this window's size, as `keepane attach` there would, and draws it; the
+status line, the prefix, the bindings, copy mode and `C-b :` are all that
+machine's, so `C-b c` opens a window there. Every key goes there, the
+prefix too: the window here is put in `passthrough`, and F12 gives the
+keys back to this machine (F12 again hands them over). `C-b d` there
+detaches and closes the window. When the network goes away, that machine
+lets the client go after 15 seconds; the window makes a new one when it
+comes back.
 
 A machine that gave this one `--full` runs panes for it:
 
