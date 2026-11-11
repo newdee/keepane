@@ -145,19 +145,29 @@ impl Server {
         }
     }
 
-    /// A pane of another machine on the screen, from the chart (Enter on it):
-    /// asked of it, shown over the chart when it comes.
-    pub(super) fn peek_remote(&mut self, cid: ClientId, addr: &str, target: &str) {
-        let key = match self.link.as_ref().and_then(|l| l.peer_by_addr(addr)).map(|p| p.key.clone()) {
-            Some(k) => k,
-            None => return self.message(cid, &format!("{addr} is no longer paired")),
+    /// Enter on a pane of another machine in the chart: a window running
+    /// `keepane link watch` on it (live; typed into when that machine gave
+    /// this one all of itself), in the session the client is in; the window
+    /// Enter opened for it before, while that is still there (a watch
+    /// started by hand under the pane's name is not known as the same).
+    pub(super) fn watch_remote(&mut self, cid: ClientId, addr: &str, pane: u32) {
+        let target = format!("{addr}/%{pane}");
+        let watching =
+            |argv: &[String]| argv.len() >= 3 && argv[argv.len() - 3..] == ["link", "watch", target.as_str()];
+        let found = self.sessions.iter().find_map(|s| {
+            s.windows.iter().find_map(|w| w.panes.iter().find(|p| watching(&p.argv)).map(|p| (s.id, w.id, p.id)))
+        });
+        if let Some((sid, wid, pid)) = found {
+            return self.chooser_go_pane(cid, sid, wid, pid);
+        }
+        let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return };
+        let Some(exe) = super::pane::helper_exe() else {
+            return self.message(cid, "no keepane executable to watch it with");
         };
-        let body = serde_json::json!({ "to": target, "history": 0 }).to_string();
-        let title = format!("{addr}/{target}");
-        let op = LinkOp::Peek { addr: addr.to_string(), key: key.clone(), title: title.clone() };
-        match self.link_signed(Some(cid), addr, &key, "POST", "/link/capture", body.into_bytes(), ASK_EVERY, op) {
-            Ok(()) => self.message(cid, &format!("asking {title} for its screen")),
-            Err(e) => self.message(cid, &e),
+        let argv = vec![exe.to_string_lossy().into_owned(), "link".into(), "watch".into(), target];
+        let host = addr.rsplit_once(':').map_or(addr, |(h, _)| h);
+        if let Err(e) = self.new_window(sid, Some(format!("{host}/%{pane}")), None, &argv) {
+            self.message(cid, &e);
         }
     }
 }

@@ -277,7 +277,12 @@ may reach (address, name, mode, idle or busy, inbox, program, then session name,
 the machine: its name, system, keepane version, uptime, CPU, memory, and
 the panes of it this machine may reach;
 `keepane link capture [-S lines] <host:port/pane>` (`link-capture`) what one
-of those panes shows, as text; `trace-message` of a message sent there asks
+of those panes shows, as text; `keepane link watch <host:port/pane>` that
+pane live in the terminal it runs in (Enter on it in `C-b w` opens a window
+running it), typed into only when that machine gave this one `--full`, else
+read-only (`q` closes it); it asks through `link-view` (the screen, or
+"same" since a stamp) and types through `link-keys` (key records);
+`trace-message` of a message sent there asks
 that machine what became of it (queued, delivered, done or failed, a shell
 command's output; `-w` waits there). `keepane link remove <host:port>`
 (`link-remove`) unpairs, on both machines, and what was shared goes with
@@ -287,8 +292,9 @@ pairing has to be made again.
 A paired machine has one of two levels here, and nothing until one is
 given. `keepane link share <host:port> <target>...` (`link-share`) shares
 sessions (`work`), windows (`work:logs`) and panes (`%worker`) with it: it
-sees them (its chart, `link panes`, `link capture`) and may send them
-messages, and nothing else of this machine exists for it; a session or a
+sees them (its chart, `link panes`, `link capture`, `link watch`) and may
+send them messages, and nothing else of this machine exists for it; a
+session or a
 window shared covers what comes to be in it later too. A message goes by the
 pane's work mode, as anyone's: one to a `shell` pane runs as a command (the
 answer to `link share` names such panes). `keepane link unshare <host:port>
@@ -300,9 +306,10 @@ shared is marked on the session, window or pane itself, not on its name: a
 name used again by something else is not shared; the marks go into the
 session's save and come back with `resume`. `keepane link allow <host:port>
 --full` (`link-allow`) gives it all of this machine, as if it sat here:
-every pane, its messages run in `shell` panes, it may start panes and send
-commits and projects here. Over plain HTTP anyone on the network could read
-what goes between the two, so `--full` is taken only over Tailscale
+every pane, typed into too (`link watch`), its messages run in `shell`
+panes, it may start panes and send commits and projects here. Over plain
+HTTP anyone on the network could read what goes between the two, so
+`--full` is taken only over Tailscale
 (100.64.0.0/10, fd7a:115c:a1e0::/48) or from this machine; from any other
 address the machine has only what is shared, and is told why. `--full
 --lan` takes it from any network. `keepane link allow <host:port> --none`

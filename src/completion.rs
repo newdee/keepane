@@ -104,6 +104,7 @@ pub fn complete(
                 "remove",
                 "trust",
                 "unshare",
+                "watch",
             ])
         } else if canon == "feishu" && rest.len() == 1 && !current.starts_with('-') {
             owned(&["allow", "remove", "status"])
@@ -468,6 +469,7 @@ mod tests {
         assert_eq!(offer(&["setup", "codex"], "--"), ["--install"]);
         assert_eq!(offer(&["link", "allow", "10.0.0.1:7681"], "--f"), ["--full"]);
         assert_eq!(offer(&["link"], "s"), ["send-agents", "share", "start"]);
+        assert_eq!(offer(&["link"], "w"), ["watch"]);
         // -s names a source, except new-session's, which names the new one.
         assert_eq!(offer(&["join-pane", "-s"], "w"), ["work:1"]);
         // Nothing to offer is nothing, not everything.

@@ -191,6 +191,8 @@ impl Server {
                 self.link_answer(&nonce, 200, text)
             }
             ("POST", "/link/capture") => self.link_capture_in(&req, &nonce, &peer),
+            ("POST", "/link/view") => self.link_view_in(&req, &nonce, &peer),
+            ("POST", "/link/keys") => self.link_keys_in(&req, &nonce, &peer),
             ("POST", "/link/pane") => self.link_pane_in(&req, &nonce, &peer),
             ("POST", "/link/kill") => self.link_kill_in(&req, &nonce, &peer),
             ("POST", "/link/trace") => self.link_trace_in(cid, &req, &nonce, &peer),
@@ -391,6 +393,75 @@ impl Server {
             Outcome::Error(e) => self.link_answer(nonce, 404, e),
             _ => self.link_answer(nonce, 200, String::new()),
         }
+    }
+
+    /// `/link/view`: a pane's screen for `keepane link watch` there, to any
+    /// machine that may see the pane (as `/link/capture`). `since` is the
+    /// stamp of the screen it last drew: when nothing printed and nothing
+    /// resized since, only that is said (a watch asks several times a
+    /// second, and most of the time nothing changed).
+    fn link_view_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
+        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
+        let Some(to) = v["to"].as_str() else {
+            return self.link_answer(nonce, 400, "to: the pane".into());
+        };
+        let pid = match self.reached(to, nonce, peer) {
+            Ok(p) => p,
+            Err(out) => return out,
+        };
+        let typing = peer.full;
+        let Some(p) = self.pane_ref(pid) else {
+            return self.link_answer(nonce, 404, format!("{to}: no such pane"));
+        };
+        let stamp = format!("{} {}x{} {}", p.output_count, p.cols, p.rows, p.exit_code.is_some());
+        let body = if v["since"].as_str() == Some(stamp.as_str()) {
+            serde_json::json!({ "stamp": stamp, "same": true })
+        } else {
+            let s = p.screen();
+            let (row, col) = s.cursor_position();
+            serde_json::json!({
+                "stamp": stamp,
+                "cols": p.cols,
+                "rows": p.rows,
+                "cursor": [col, row],
+                "cursor_shown": !s.hide_cursor(),
+                "screen": String::from_utf8_lossy(&s.contents_formatted()),
+                "title": p.title,
+                "dead": p.exit_code.is_some(),
+                "typing": typing,
+            })
+        };
+        self.link_answer(nonce, 200, body.to_string())
+    }
+
+    /// `/link/keys`: keys typed into a pane by `keepane link watch` there.
+    /// Only a machine with all of this one may (typing into a shell runs any
+    /// command); each key is made into bytes here, by the pane's own modes.
+    fn link_keys_in(&mut self, req: &Inbound, nonce: &str, peer: &link::Peer) -> Outcome {
+        if let Some(refused) = self.need_full(nonce, peer, "type into panes") {
+            return refused;
+        }
+        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap_or_default();
+        let Some(to) = v["to"].as_str() else {
+            return self.link_answer(nonce, 400, "to: the pane".into());
+        };
+        let Ok(keys) = serde_json::from_value::<Vec<crate::ipc::KeyRecord>>(v["keys"].clone()) else {
+            return self.link_answer(nonce, 400, "keys: a list of key records".into());
+        };
+        let pid = match self.reached(to, nonce, peer) {
+            Ok(p) => p,
+            Err(out) => return out,
+        };
+        let Some(p) = self.find_pane_mut(pid) else {
+            return self.link_answer(nonce, 404, format!("{to}: no such pane"));
+        };
+        for k in keys.iter().filter(|k| k.down) {
+            let bytes = p.key_bytes(k);
+            for _ in 0..k.repeat.clamp(1, 64) {
+                p.write_input(&bytes);
+            }
+        }
+        self.link_answer(nonce, 200, String::new())
     }
 
     /// What only a machine with all of this one may do (`full`): None when

@@ -6355,7 +6355,9 @@ impl Server {
             | Cmd::LinkInfo { .. }
             | Cmd::LinkCapture { .. }
             | Cmd::LinkPane(_)
-            | Cmd::LinkKill { .. }) => self.exec_link_out(c, cid),
+            | Cmd::LinkKill { .. }
+            | Cmd::LinkView { .. }
+            | Cmd::LinkKeys { .. }) => self.exec_link_out(c, cid),
             c @ (Cmd::LinkClone { .. } | Cmd::LinkPush { .. }) => self.exec_link_git(c, cid),
             c @ Cmd::LinkSendAgents { .. } => self.exec_link_agents(c, cid),
             Cmd::LinkInbound { peer, request } => self.link_inbound(cid, &peer, &request),
@@ -8301,17 +8303,18 @@ impl Server {
                     }
                     _ => None,
                 };
-                // A machine in the chart: another machine's pane shows its
-                // screen over the chart, which stays; the rest says how.
+                // A machine in the chart: another machine's pane opens in a
+                // window watching it (`keepane link watch`); the rest says how.
                 match target {
-                    Some(ChooserItem::Remote(m, s, Some(w), Some(p))) => {
+                    Some(ChooserItem::Remote(m, _, Some(_), Some(p))) => {
+                        c.chooser = None;
                         if let Some(addr) = self.chart_hosts().get(m as usize).cloned() {
-                            self.peek_remote(cid, &addr, &format!("${s}:@{w}.%{p}"));
+                            self.watch_remote(cid, &addr, p);
                         }
                         return;
                     }
                     Some(ChooserItem::Host(_) | ChooserItem::Remote(..)) => {
-                        self.message(cid, "Enter on a pane: one here goes there, another machine's shows its screen");
+                        self.message(cid, "Enter on a pane: one here goes there, another machine's opens watched here");
                         return;
                     }
                     _ => {}

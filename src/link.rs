@@ -118,12 +118,13 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
         "clone",
         "push",
         "send-agents",
+        "watch",
     ];
     const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
                          trust <host:port> <key> [--full [--lan]] | list | panes <host:port> | \
                          info <host:port> | capture [-S lines] <host:port/pane> | \
                          start <host:port> [-s session] [-n name] [-m mode] [-c dir] [-- program args] | \
-                         kill <host:port/pane> | \
+                         kill <host:port/pane> | watch <host:port/pane> | \
                          allow <host:port> --full [--lan] | allow <host:port> --none | \
                          share <host:port> <session|session:window|pane>... | \
                          unshare <host:port> <session|session:window|pane>... | unshare <host:port> --all | \
@@ -135,6 +136,11 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     };
     if !crate::client::server_running(&crate::ipc::pipe_name(socket)) {
         bail!("no keepane server is running (socket '{socket}'): start a session first, then `keepane web`");
+    }
+    // A program of its own: it draws the pane, it does not print an answer.
+    if what == "watch" {
+        let [_, target] = args else { bail!("usage: keepane link watch <host:port/pane>") };
+        return crate::link_watch::run(socket, target).await;
     }
     let argv: Vec<String> = std::iter::once(format!("link-{what}")).chain(args[1..].iter().cloned()).collect();
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
@@ -443,9 +449,9 @@ pub struct Peer {
     /// `host:port`: where its answers and replies go. Updated whenever a
     /// request of its comes from somewhere else (its key says who it is).
     pub addr: String,
-    /// All of this machine, as if it sat here: every pane seen, any
-    /// message taken (one to a `shell` pane runs), panes started here,
-    /// commits and projects sent here.
+    /// All of this machine, as if it sat here: every pane seen and typed
+    /// into, any message taken (one to a `shell` pane runs), panes started
+    /// here, commits and projects sent here.
     pub full: bool,
     /// `full` taken from any network: without it, only from a Tailscale
     /// address (or this machine itself), since plain HTTP on a LAN can be

@@ -7168,8 +7168,9 @@ async fn commits_go_to_another_machine_by_clone_and_push() {
 }
 /// The chart with another machine paired: a row of machines under the
 /// root (this one first), the other's sessions, windows and panes under it
-/// by their names, Enter on one of its panes shows that pane's screen,
-/// `x` touches nothing there, and a machine that went off says so.
+/// by their names, Enter on one of its panes opens a window watching it
+/// (and goes to that window the next time), `x` touches nothing there, and
+/// a machine that went off says so.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_chart_shows_the_paired_machines() {
     let _dir = link_test_dir();
@@ -7244,15 +7245,6 @@ async fn the_chart_shows_the_paired_machines() {
     c.type_str("x").await;
     c.wait_for("refused", |s| s.contents().contains("x closes what is on this machine only")).await;
     assert_eq!(b.cli(&["list-panes", "-t", "wb"]).await.1.lines().count(), 2);
-    // Enter: its screen over the chart; a key and the chart is back.
-    c.enter().await;
-    c.wait_for("its screen", |s| {
-        let t = s.contents();
-        t.contains(&format!("{addr_b}/$")) && t.contains("keepane>")
-    })
-    .await;
-    c.type_str("q").await;
-    c.wait_for("the chart again", at(10)).await;
     // A filter keeps what matches with the machine, session and window
     // above it: root, b, wb, edit, its two panes (this machine has none).
     c.type_str("f").await;
@@ -7263,8 +7255,32 @@ async fn the_chart_shows_the_paired_machines() {
         t.contains("[6/6] hjkl move") && t.contains("2  wb") && t.contains("3  0:edit*") && !t.contains("this machine")
     })
     .await;
-    // The other machine goes: said on its block, its panes as last heard.
+    // Enter on its pane: a window here watching it live, named after it.
+    b.cli(&["send-keys", "-t", "wb:0.1", "echo chart-marker", "Enter"]).await;
+    b.wait_capture("wb:0.1", "the echo", |t| t.matches("chart-marker").count() >= 2).await;
+    c.enter().await;
+    let host = addr_b.rsplit_once(':').unwrap().0.to_string();
+    c.wait_for("the watch window", |s| {
+        let t = s.contents();
+        t.contains(&format!("{host}/%")) && t.matches("chart-marker").count() >= 2
+    })
+    .await;
+    assert_eq!(a.cli(&["list-windows", "-t", "wa"]).await.1.lines().count(), 2, "one window more");
+    // Enter on it again goes to that window: no third one.
+    c.prefix('w').await;
+    c.wait_for("the chart", |s| s.contents().contains("hjkl move") && !s.contents().contains("asking")).await;
+    c.type_str("f").await;
+    c.type_str("edit").await;
+    c.enter().await;
+    c.wait_for("filtered", |s| s.contents().contains("[6/6] hjkl move")).await;
+    c.enter().await;
+    c.wait_for("back in the watch", |s| !s.contents().contains("hjkl move")).await;
+    assert_eq!(a.cli(&["list-windows", "-t", "wa"]).await.1.lines().count(), 2, "no third window");
+    // The other machine goes: the watch says so; the chart says it on its
+    // block, its panes as last heard.
     b.cli(&["kill-server"]).await;
+    c.wait_for("the watch says it", |s| !s.contents().contains("chart-marker")).await;
+    c.prefix('w').await;
     c.wait_for("offline", |s| s.contents().contains("1 session · offline")).await;
     c.type_str("q").await;
     a.cli(&["kill-server"]).await;
@@ -7521,6 +7537,29 @@ async fn full_control_is_taken_over_tailscale_only_unless_lan() {
     }
     let (_, body) = ask("100.64.0.9", "GET", "/link/panes", "").await;
     assert_eq!(body.lines().count(), 1, "every pane: {body}");
+    // Typing into a pane (what `keepane link watch` sends) is `full`'s:
+    // refused from the LAN, said why; what is not a request for it is
+    // refused as such; a pane that is not there is not.
+    let pane = pane_id(&h, "w:0.0").await;
+    let a_key = format!(r#"{{"to":"%{pane}","keys":[{{"down":true,"repeat":1,"vk":0,"sc":0,"ch":97,"ctrl":0}}]}}"#);
+    let (status, body) = ask("192.168.1.5", "POST", "/link/keys", &a_key).await;
+    assert!(status == 403 && body.contains("only over Tailscale"), "{status} {body}");
+    let (status, body) = ask("192.168.1.5", "POST", "/link/view", &format!(r#"{{"to":"%{pane}"}}"#)).await;
+    assert!(status == 404, "not shared, from the LAN: not there: {status} {body}");
+    for (path, body, want) in [
+        ("/link/view", "{}", 400),
+        ("/link/keys", "{}", 400),
+        ("/link/keys", &format!(r#"{{"to":"%{pane}","keys":"a"}}"#), 400),
+        ("/link/view", r#"{"to":"%9999"}"#, 404),
+        ("/link/keys", r#"{"to":"%9999","keys":[]}"#, 404),
+    ] {
+        let (status, said) = ask("100.64.0.9", "POST", path, body).await;
+        assert_eq!(status, want, "{path} {body}: {said}");
+    }
+    let (status, body) = ask("100.64.0.9", "POST", "/link/view", &format!(r#"{{"to":"%{pane}"}}"#)).await;
+    assert!(status == 200 && body.contains("\"typing\":true") && body.contains("\"screen\""), "{status} {body}");
+    let (status, _) = ask("100.64.0.9", "POST", "/link/keys", &a_key).await;
+    assert_eq!(status, 200);
     // `--lan`: from the LAN too. (Its address moved with the last request.)
     let (_, list, _) = h.cli(&["link-list"]).await;
     let addr = list.lines().nth(1).unwrap().split_whitespace().next().unwrap().to_string();
@@ -7529,6 +7568,84 @@ async fn full_control_is_taken_over_tailscale_only_unless_lan() {
     let (status, body) = ask("192.168.1.5", "GET", "/link/access", "").await;
     assert!(status == 200 && body.contains("\"level\":\"full\""), "{status} {body}");
     h.cli(&["kill-server"]).await;
+}
+
+/// A pane of another machine, watched live (`link-view`, `keepane link
+/// watch`): seen when shared, typed into only when that machine gave this
+/// one all of itself (typing into a shell runs any command); asked again
+/// with its stamp, only "same"; taken back, the watch says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_of_another_machine_is_watched_live_and_typed_into_only_with_full() {
+    let _dir = link_test_dir();
+    let a = Harness::start("watcha").await;
+    let b = Harness::start("watchb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    b.wait_capture("wb:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let pb = pane_id(&b, "wb:0.0").await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    let target = format!("{addr_b}/%{pb}");
+    // Not shared: no such pane, for this machine.
+    let (code, _, err) = a.cli(&["link-view", &target]).await;
+    assert!(code != 0 && err.contains("no pane by that name is shared with"), "{err}");
+    // Shared: seen, not typed into.
+    assert_eq!(b.cli(&["link-share", &addr_a, &format!("%{pb}")]).await.0, 0);
+    b.cli(&["send-keys", "-t", &format!("%{pb}"), "echo from-b-one", "Enter"]).await;
+    b.wait_capture("wb:0", "the echo", |t| t.matches("from-b-one").count() >= 2).await;
+    let (code, out, err) = a.cli(&["link-view", &target]).await;
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["screen"].as_str().unwrap().contains("from-b-one"), "{out}");
+    assert_eq!(v["typing"], false, "shared only: watched, not typed into");
+    // Asked again with its stamp: only that nothing changed.
+    let stamp = v["stamp"].as_str().unwrap().to_string();
+    let (_, out, err) = a.cli(&["link-view", &target, "-s", &stamp]).await;
+    assert!(out.contains("\"same\":true") && !out.contains("screen"), "{out} {err}");
+    let key = |c: char| serde_json::json!({"down": true, "repeat": 1, "vk": 0, "sc": 0, "ch": c as u16, "ctrl": 0});
+    let typed = |s: &str| {
+        let mut keys: Vec<serde_json::Value> = s.chars().map(key).collect();
+        keys.push(serde_json::json!({"down": true, "repeat": 1, "vk": 13, "sc": 28, "ch": 13, "ctrl": 0}));
+        serde_json::Value::from(keys).to_string()
+    };
+    let (code, _, err) = a.cli(&["link-keys", &target, &typed("echo nope")]).await;
+    assert!(code != 0 && err.contains("may not type into panes"), "{err}");
+    // The watch program, in a pane here: it draws the pane there; a key
+    // typed into it is refused as read-only, and `q` would close it.
+    let exe = env!("CARGO_BIN_EXE_keepane");
+    let (code, _, err) = a.cli(&["new-window", "-d", "-t", "wa", "-n", "watch", exe, "link", "watch", &target]).await;
+    assert_eq!(code, 0, "{err}");
+    a.wait_capture("wa:watch", "the other pane, drawn", |t| t.contains("from-b-one")).await;
+    a.cli(&["send-keys", "-t", "wa:watch", "x"]).await;
+    a.wait_capture("wa:watch", "read-only said", |t| t.contains("read-only")).await;
+
+    // Given all of b (from this machine: loopback counts as Tailscale does):
+    // typed into, by `link-keys` and through the watch.
+    let (code, _, err) = b.cli(&["link-allow", &addr_a, "--full"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = a.cli(&["link-view", &target]).await;
+    assert!(out.contains("\"typing\":true"), "{out}");
+    let (code, _, err) = a.cli(&["link-keys", &target, &typed("echo via-keys")]).await;
+    assert_eq!(code, 0, "{err}");
+    b.wait_capture("wb:0", "typed from a", |t| t.matches("via-keys").count() >= 2).await;
+    // The watch notices it may type within its next asking; then keys go over.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    a.cli(&["send-keys", "-t", "wa:watch", "echo via-watch", "Enter"]).await;
+    b.wait_capture("wb:0", "typed through the watch", |t| t.matches("via-watch").count() >= 2).await;
+    a.wait_capture("wa:watch", "and drawn back", |t| t.matches("via-watch").count() >= 2).await;
+    // Nothing of it any more: the watch says so instead of a stale screen.
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--none"]).await.0, 0);
+    a.wait_capture("wa:watch", "taken back, said", |t| t.contains("no pane by that name is shared with")).await;
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

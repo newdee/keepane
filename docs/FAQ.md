@@ -10,6 +10,7 @@ Each answer says what you see, why, and what to do.
 - [How do I change a pane's work mode?](#how-do-i-change-a-panes-work-mode)
 - [I swapped two panes: where do messages go now?](#i-swapped-two-panes-where-do-messages-go-now)
 - [A message from another machine is refused by a shell pane](#a-message-from-another-machine-is-refused-by-a-shell-pane)
+- [I can watch another machine's pane, but what I type does nothing](#i-can-watch-another-machines-pane-but-what-i-type-does-nothing)
 - [The phone can't open the page](#the-phone-cant-open-the-page)
 - [Tell me on my phone when a job finishes, even when it is locked](#tell-me-on-my-phone-when-a-job-finishes-even-when-it-is-locked)
 - [The Feishu or DingTalk bot refuses keepane's messages](#the-feishu-or-dingtalk-bot-refuses-keepanes-messages)
@@ -130,8 +131,9 @@ keepane link allow 192.168.1.20:7681 --full    # or all of this machine
 ```
 
 Or press `s` on it in `C-b w`. A message to a shared `shell` pane runs as a
-command. `--full` also lets that machine start panes here and send commits
-and projects; it is taken only over Tailscale, unless `--full --lan`.
+command. `--full` also lets that machine type into panes here, start
+panes and send commits and projects; it is taken only over Tailscale,
+unless `--full --lan`.
 `keepane link list` shows, both ways, what each machine has of the other.
 
 ## `keepane link allow --shell` says the permissions are two levels now
@@ -167,6 +169,22 @@ link-share 192.168.1.20:7681 %worker
 ```
 
 Or press `s` in `C-b w`: a key you press is not a pane's program.
+
+## I can watch another machine's pane, but what I type does nothing
+
+**Why.** Enter on a pane of another machine in `C-b w` opens a window that
+watches it live (`keepane link watch`). Typing into a pane can run any
+command there, so it takes all of that machine: a pane that is only
+shared is watched read-only, and the bottom row says so when you type.
+
+**What to do.** On the machine whose pane it is, outside keepane:
+
+```sh
+keepane link allow 192.168.1.20:7681 --full    # over Tailscale; --full --lan from any network
+```
+
+Before 0.57, Enter showed the pane's screen once. Both machines need 0.57
+to watch: an older one is named in the watch, with what to update.
 
 ## The phone can't open the page
 

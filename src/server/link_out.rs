@@ -36,10 +36,12 @@ pub(super) enum LinkOp {
     Trace { addr: String, key: String, here: String, waited: bool },
     /// The chart of `choose-tree`: their panes, kept, told to no one.
     Tree { addr: String, key: String },
-    /// Enter on a pane of theirs in the chart: its screen, shown over it.
-    Peek { addr: String, key: String, title: String },
     /// `link-list`: what this machine has there, row `row` of table `list`.
     Access { addr: String, key: String, list: u64, row: usize },
+    /// `link-view`: a pane's screen for `keepane link watch`, as they send it.
+    View { addr: String, key: String },
+    /// `link-keys`: keys typed into a pane there; nothing to say when taken.
+    Keys { addr: String, key: String },
 }
 
 /// How a message handed to another machine is known there, for asking
@@ -161,6 +163,25 @@ impl Server {
                     let body = serde_json::json!({ "to": pane }).to_string();
                     let op = LinkOp::Kill { addr: addr.clone(), key: key.clone() };
                     self.link_signed(cid, &addr, &key, "POST", "/link/kill", body.into_bytes(), ANSWER_GRACE, op)
+                })
+            }
+            Cmd::LinkView { target, since } => {
+                let (addr, pane) = link::split_remote(&target).expect("the parser checked");
+                let (addr, pane) = (addr.to_string(), pane.to_string());
+                self.peer_key(&addr).and_then(|key| {
+                    let body = serde_json::json!({ "to": pane, "since": since }).to_string();
+                    let op = LinkOp::View { addr: addr.clone(), key: key.clone() };
+                    self.link_signed(cid, &addr, &key, "POST", "/link/view", body.into_bytes(), ANSWER_GRACE, op)
+                })
+            }
+            Cmd::LinkKeys { target, keys } => {
+                let (addr, pane) = link::split_remote(&target).expect("the parser checked");
+                let (addr, pane) = (addr.to_string(), pane.to_string());
+                let keys: serde_json::Value = serde_json::from_str(&keys).expect("the parser checked");
+                self.peer_key(&addr).and_then(|key| {
+                    let body = serde_json::json!({ "to": pane, "keys": keys }).to_string();
+                    let op = LinkOp::Keys { addr: addr.clone(), key: key.clone() };
+                    self.link_signed(cid, &addr, &key, "POST", "/link/keys", body.into_bytes(), ANSWER_GRACE, op)
                 })
             }
             Cmd::LinkRemove { addr } => return self.link_remove(cid, &addr),
@@ -343,22 +364,6 @@ impl Server {
                 let result = Self::checked(&addr, &key, &nonce, result);
                 return self.link_list_answered(list, row, result);
             }
-            LinkOp::Peek { addr, key, title } => {
-                let Some(cid) = cid else { return };
-                match Self::checked(&addr, &key, &nonce, result) {
-                    Ok(ans) if ans.status == 200 => {
-                        let screen = String::from_utf8_lossy(&ans.body);
-                        let mut lines = vec![title, String::new()];
-                        lines.extend(screen.trim_end_matches('\n').lines().map(str::to_string));
-                        if let Some(c) = self.clients.get_mut(&cid) {
-                            c.overlay = Some(super::Overlay::new(lines));
-                        }
-                    }
-                    Ok(ans) => self.message(cid, &format!("{addr} said: {}", ans.text())),
-                    Err(e) => self.message(cid, &e),
-                }
-                return;
-            }
             other => other,
         };
         let out = match op {
@@ -449,7 +454,17 @@ impl Server {
                 Ok(ans) => Outcome::Text(format!("{here}\non {addr}: {}", ans.text())),
                 Err(e) => Outcome::Text(format!("{here}\non {addr}: not asked ({e})")),
             },
-            LinkOp::Tree { .. } | LinkOp::Peek { .. } | LinkOp::Access { .. } => unreachable!("answered above"),
+            LinkOp::View { addr, key } | LinkOp::Keys { addr, key } => {
+                match Self::checked(&addr, &key, &nonce, result) {
+                    Ok(ans) if ans.status == 200 => Outcome::Text(ans.text()),
+                    Ok(ans) if ans.status == 404 && ans.text().contains("not a keepane link path") => Outcome::Error(
+                        format!("keepane on {addr} is older than 0.57: update it there to watch its panes"),
+                    ),
+                    Ok(ans) => Outcome::Error(format!("{addr} said: {}", ans.text())),
+                    Err(e) => Outcome::Error(e),
+                }
+            }
+            LinkOp::Tree { .. } | LinkOp::Access { .. } => unreachable!("answered above"),
         };
         if let Some(cid) = cid {
             self.reply(cid, out);

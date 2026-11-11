@@ -744,6 +744,20 @@ pub enum Cmd {
     LinkKill {
         target: String,
     },
+    /// `link-view host:port/pane [-s stamp]`: that pane's screen as `keepane
+    /// link watch` draws it (JSON: its size, cursor and cells as VT), or only
+    /// that nothing changed since `stamp`; what `link-capture` may see.
+    LinkView {
+        target: String,
+        since: Option<String>,
+    },
+    /// `link-keys host:port/pane keys`: keys typed into that pane (`keys`:
+    /// the JSON key records `keepane link watch` reads); the machine must
+    /// have given this one all of itself (`link-allow --full` there).
+    LinkKeys {
+        target: String,
+        keys: String,
+    },
     /// `link-clone host:port [path] [--tell pane]` (`clone`): the repository
     /// the client is in, as a new one at `path` on that machine (its
     /// `link-clone-dir` and this one's name when none); where it went is kept
@@ -1815,6 +1829,14 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::LinkKill { target } => write!(f, "link-kill {}", quote(target)),
+            Cmd::LinkView { target, since } => {
+                write!(f, "link-view {}", quote(target))?;
+                if let Some(s) = since {
+                    write!(f, " -s {}", quote(s))?;
+                }
+                Ok(())
+            }
+            Cmd::LinkKeys { target, keys } => write!(f, "link-keys {} {}", quote(target), quote(keys)),
             Cmd::LinkClone { addr, path, tell } => {
                 write!(f, "link-clone {}", quote(addr))?;
                 if let Some(p) = path {
@@ -2415,11 +2437,13 @@ pub const COMMANDS: &[&str] = &[
     "link-id",
     "link-inbound",
     "link-info",
+    "link-keys",
     "link-list",
     "link-panes",
     "link-rekey",
     "link-share",
     "link-unshare",
+    "link-view",
     "feishu-status",
     "feishu-allow",
     "feishu-remove",
@@ -2691,6 +2715,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("link-trust", &["--full", "--lan"]),
     ("link-start", &["-s", "-n", "-m", "-c"]),
     ("link-kill", &[]),
+    ("link-view", &["-s"]),
+    ("link-keys", &[]),
     ("link-clone", &["--tell"]),
     ("link-push", &["-l", "--tell"]),
     ("link-send-agents", &["-l", "-n", "-s"]),
@@ -4323,6 +4349,35 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             Cmd::LinkKill { target }
         }
+        "link-view" => {
+            // `-s` before or after the pane (how it prints is after).
+            let (mut since, mut target) = (None, None);
+            while let Some(w) = a.next() {
+                match w {
+                    "-s" => since = Some(a.value("-s")?.to_string()),
+                    f if f.starts_with('-') => return Err(bad_flag(n, f)),
+                    t if target.is_none() => target = Some(t.to_string()),
+                    t => return Err(format!("{n}: unexpected argument '{t}'")),
+                }
+            }
+            let target = target.ok_or_else(|| format!("{n}: host:port/pane required"))?;
+            if crate::link::split_remote(&target).is_none() {
+                return Err(format!("{n}: '{target}' is not host:port/pane"));
+            }
+            Cmd::LinkView { target, since }
+        }
+        "link-keys" => {
+            let target = a.next().ok_or_else(|| format!("{n}: host:port/pane required"))?.to_string();
+            let keys = a.next().ok_or_else(|| format!("{n}: the keys (JSON) required"))?.to_string();
+            a.none_left(n)?;
+            if crate::link::split_remote(&target).is_none() {
+                return Err(format!("{n}: '{target}' is not host:port/pane"));
+            }
+            if serde_json::from_str::<Vec<crate::ipc::KeyRecord>>(&keys).is_err() {
+                return Err(format!("{n}: the keys are a JSON list of key records"));
+            }
+            Cmd::LinkKeys { target, keys }
+        }
         "link-clone" | "link-push" => {
             let (mut words, mut tell, mut list) = (Vec::new(), None, false);
             while let Some(w) = a.next() {
@@ -5629,6 +5684,27 @@ mod tests {
     /// it reads the same. The five permissions of 0.55 say what took their
     /// place. `link-share` takes targets here; `link-unshare` those or
     /// `--all`.
+    #[test]
+    fn link_view_and_keys_read_and_print_back() {
+        for line in [
+            "link-view 10.0.0.1:7681/%5",
+            "link-view 10.0.0.1:7681/%5 -s '3 80x24 false'",
+            r#"link-keys 10.0.0.1:7681/%5 '[{"down":true,"repeat":1,"vk":0,"sc":0,"ch":97,"ctrl":0}]'"#,
+        ] {
+            let cmd = parse_line(line).unwrap().unwrap();
+            assert_eq!(parse_line(&cmd.to_string()).unwrap().unwrap(), cmd, "{line}");
+        }
+        match parse_line("link-view -s x 10.0.0.1:7681/%5").unwrap().unwrap() {
+            Cmd::LinkView { since, .. } => assert_eq!(since.as_deref(), Some("x"), "-s before the pane too"),
+            other => panic!("{other:?}"),
+        }
+        assert!(parse_line("link-view %5").unwrap_err().contains("host:port/pane"));
+        assert!(parse_line("link-view 10.0.0.1:7681/%5 extra").unwrap_err().contains("unexpected"));
+        assert!(parse_line("link-view 10.0.0.1:7681/%5 -x").is_err());
+        assert!(parse_line("link-keys 10.0.0.1:7681/%5 'not json'").unwrap_err().contains("key records"));
+        assert!(parse_line("link-keys 10.0.0.1:7681/%5").unwrap_err().contains("keys"));
+    }
+
     #[test]
     fn link_allow_is_a_level_and_share_takes_targets() {
         let allow = |line: &str| match parse_line(line).unwrap().unwrap() {

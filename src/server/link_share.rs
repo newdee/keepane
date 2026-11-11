@@ -7,9 +7,10 @@
 //! a session's save, and `resume` brings them back.
 //!
 //! A machine that has a pane may see it (in its chart, `link panes`,
-//! `link capture`) and send it messages, which go by the pane's work mode
+//! `link capture`, `link watch`) and send it messages, which go by the pane's work mode
 //! as anyone's do (one to a `shell` pane runs). It may do nothing else:
-//! starting and closing panes, sending commits and projects need `full`.
+//! typing into panes, starting and closing them, sending commits and
+//! projects need `full`.
 //! What is not shared with it does not exist for it: a pane it names that
 //! it may not reach is answered as one that is not there.
 
