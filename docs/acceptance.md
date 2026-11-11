@@ -5604,3 +5604,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 - 遗留：
   - keepane server 从 PowerShell 7 里启动时，pane 里运行的 Windows PowerShell 也会继承 7 的 `PSModulePath`（本轮测试发现的同一机制，产品侧未改）。
   - 改了 `sessions-dir` 后，计数器从新目录接着数；两个目录各自只增。
+- 发布：v0.56.1（tag 在 6de569e）。其 CI 第一次 ubuntu 有 1 个已有测试失败（a_command_that_ends_at_the_right_edge_keeps_its_first_line_of_output，与本改动无关，本机 Linux、Windows 都过），重跑失败的 job 后四项全过。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取；winget 新开 PR #477171（0.56.0 的 #476283 已不在打开列表里）。
