@@ -442,6 +442,8 @@ keepane save-session -a     # 现在就把每个 session 各存一遍（prefix C
 
 恢复出来的是布局、每个 pane 的启动命令、所在目录，还有每块屏幕上最后 `save-history` 行（默认 500 行；`set -g save-history all` 把整段 scrollback 连颜色一起存下来）的输出。程序当时跑到哪是回不来的，谁也做不到。存档是自动的：布局一变就存，pane 上的文字每 30 秒存一次，Windows 关机、重启、注销时再整个存一遍（server 会把关机拖住那一瞬间）；Linux 和 macOS 上 server 收到 SIGTERM 或 SIGHUP 时也一样。想让 server 一启动就自己恢复，配置里写 `set -g restore-on-start on`；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
 
+重启后恢复出来的 session、窗口、pane 编号（`$1`、`@3`、`%4`）不变。server 把计数器存在存档目录里（`next-id`），所以同一台机器上一个编号只会给一个 pane：脚本或别的机器记着 `%4`，找到的就是那个 pane，或者找不到。同一个 server 运行期间先 kill 再恢复的 session 会拿新编号；编号已被占用时也拿新编号。
+
 每个 PowerShell、bash、zsh pane 的命令历史（按 ↑ 翻出来的那些）也各自保存，放在会话存档目录下，所以恢复后的 pane 翻到的是它自己跑过的命令，而不是所有 pane 混在一起的。新开的 pane 会复制一份它来源的那个 pane 的历史（分屏时是被分的那个，新窗口时是当前在用的那个），没有来源就复制这个 shell 自己的历史文件。没有 pane、也没有存档再引用的历史文件，超过 `log-history-days` 天会被清掉。
 
 发给 `shell` 模式 pane 的消息在那里也是一条命令，会带着信封头（`<# keepane #12 from %builder #>`）进这个历史。`keepane shell-history -t %3` 把历史读出来，消息那行会标出来（`✉ #12 %builder  cargo test`）；`-c` 只看命令，去掉消息；`-m` 改为列出事件日志里所有发给这个 pane 的消息（任何模式），带上每条的处理结果；`-n 20` 只看最后 20 条。

@@ -35,6 +35,11 @@ pub struct SavedPane {
     /// The paired machines it is shared with (`link-share`), by key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared: Vec<String>,
+    /// Its id (`%N`), taken back on resume when this server has not used
+    /// it yet, so a pane keeps its number across a reboot. Older files
+    /// have none: a new number then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -90,6 +95,9 @@ pub struct SavedWindow {
     /// The paired machines it is shared with (`link-share`), by key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared: Vec<String>,
+    /// Its id (`@N`), as `SavedPane::id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -104,6 +112,21 @@ pub struct SavedSession {
     /// The paired machines it is shared with (`link-share`), by key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared: Vec<String>,
+    /// Its id (`$N`), as `SavedPane::id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u32>,
+}
+
+impl SavedSession {
+    /// Every id the file holds (session, windows, panes).
+    pub fn ids(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self.id.into_iter().collect();
+        for w in &self.windows {
+            out.extend(w.id);
+            out.extend(w.layout.panes().iter().filter_map(|p| p.id));
+        }
+        out
+    }
 }
 
 /// One file: one session.
@@ -216,6 +239,7 @@ mod tests {
             current: 1,
             size: Some((120, 40)),
             shared: vec![],
+            id: Some(3),
             windows: vec![
                 SavedWindow {
                     name: "shell".into(),
@@ -237,6 +261,7 @@ mod tests {
                     active: 2,
                     zoomed: false,
                     shared: vec!["k1".into()],
+                    id: Some(4),
                 },
                 SavedWindow {
                     name: "logs".into(),
@@ -244,9 +269,39 @@ mod tests {
                     active: 0,
                     zoomed: true,
                     shared: vec![],
+                    id: None,
                 },
             ],
         })
+    }
+
+    #[test]
+    fn ids_are_every_id_the_file_holds_and_older_files_have_none() {
+        let mut f = sample();
+        if let SavedNode::Split { children, .. } = &mut f.session.windows[0].layout
+            && let SavedNode::Pane { pane } = &mut children[0]
+        {
+            pane.id = Some(7);
+        }
+        assert_eq!(f.session.ids(), vec![3, 4, 7]);
+        let back = SavedFile::from_json(&f.to_json()).unwrap();
+        assert_eq!(back.session.ids(), vec![3, 4, 7]);
+        // A file written before ids were saved reads as having none.
+        fn strip(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    m.remove("id");
+                    m.values_mut().for_each(strip);
+                }
+                serde_json::Value::Array(a) => a.iter_mut().for_each(strip),
+                _ => {}
+            }
+        }
+        let mut v: serde_json::Value = serde_json::from_str(&f.to_json()).unwrap();
+        strip(&mut v);
+        assert!(!v.to_string().contains("\"id\""));
+        let old = SavedFile::from_json(&v.to_string()).unwrap();
+        assert!(old.session.ids().is_empty());
     }
 
     #[test]

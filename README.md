@@ -884,6 +884,13 @@ the server is sent SIGTERM or SIGHUP on Linux and macOS. `set -g
 restore-on-start on` makes a fresh server restore everything by itself;
 `set -g autosave off` turns saving off; `sessions-dir` moves the files.
 
+Sessions, windows and panes keep their numbers (`$1`, `@3`, `%4`) when
+they come back after a restart. The server keeps its counter in the
+sessions directory (`next-id`), so a number is never given to a second
+pane on that machine: a script or another machine that holds `%4` finds
+that pane or none. A session killed and resumed while the same server
+runs gets new numbers, and so does one whose number is already taken.
+
 Each PowerShell, bash or zsh pane keeps its own command history (what Up
 brings back), in a file under the sessions directory, so a resumed pane has
 what it ran and not what every other pane ran. A new pane starts with a

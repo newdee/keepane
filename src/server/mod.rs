@@ -1178,6 +1178,15 @@ pub struct Server {
     sessions: Vec<Session>,
     clients: HashMap<ClientId, Client>,
     next_id: u32,
+    /// Every number handed out in this run, given back by a resume
+    /// included (`alloc_id`, `claim_id`).
+    used_ids: HashSet<u32>,
+    /// Whether the counter is kept in the sessions directory: only the
+    /// real server's, not a `Server` made for a test or `import-config`.
+    keep_ids: bool,
+    /// The sessions directory the counter was last taken up from.
+    ids_dir: Option<PathBuf>,
+    ids_warned: bool,
     pane_tx: std::sync::mpsc::Sender<PaneEvent>,
     socket: String,
     had_session: bool,
@@ -1400,6 +1409,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     let mut srv = Server::new(pane_tx, socket, tx.clone());
     srv.force_restore = options.force_restore;
     srv.config_override = options.config;
+    srv.keep_ids = true;
     srv.load_config();
     srv.feishu_sync();
     srv.mail_start();
@@ -1645,6 +1655,10 @@ impl Server {
             sessions: Vec::new(),
             clients: HashMap::new(),
             next_id: 1,
+            used_ids: HashSet::new(),
+            keep_ids: false,
+            ids_dir: None,
+            ids_warned: false,
             pane_tx,
             socket,
             had_session: false,
@@ -1839,6 +1853,7 @@ impl Server {
                                 .then(|| p.actor.mode.as_str().to_string()),
                             shell_history: p.shell_history.clone(),
                             shared: self.shared_keys(link_share::Spot::Pane(id)),
+                            id: Some(id),
                         })
                     };
                     let order = w.layout.panes();
@@ -1849,10 +1864,12 @@ impl Server {
                         active: order.iter().position(|p| *p == w.active).unwrap_or(0),
                         zoomed: w.zoomed,
                         shared: self.shared_keys(link_share::Spot::Window(w.id)),
+                        id: Some(w.id),
                     }
                 })
                 .collect(),
             shared: self.shared_keys(link_share::Spot::Session(s.id)),
+            id: Some(s.id),
         }
     }
 
@@ -1966,8 +1983,43 @@ impl Server {
         path: &std::path::Path,
         size: Option<(u16, u16)>,
     ) -> Result<(SessionId, Vec<String>), String> {
-        use crate::resurrect::*;
-        let ss = SavedFile::load(path)?.session;
+        let ss = crate::resurrect::SavedFile::load(path)?.session;
+        self.reserve_ids(ss.ids());
+        self.restore_saved(&ss, size)
+    }
+
+    /// Raise the id counter past `ids`, so nothing made later takes a
+    /// number a saved session holds (the kept counter normally is past
+    /// them already; not when its file was lost).
+    fn reserve_ids(&mut self, ids: impl IntoIterator<Item = u32>) {
+        self.load_ids();
+        if let Some(top) = ids.into_iter().filter(|&id| id < ID_CEILING).max()
+            && top >= self.next_id
+        {
+            self.next_id = top + 1;
+            self.store_ids();
+        }
+    }
+
+    /// A saved id given back to what a resume makes, when this server has
+    /// not handed it out yet. Two files can hold the same number (a session
+    /// resumed, killed and resumed again; files copied by hand): the second
+    /// gets a new one, as everything did before ids were saved. A number
+    /// handed out once in a run is never handed out again in it, so no mark,
+    /// wait or answer kept for a gone pane finds a new one.
+    fn claim_id(&mut self, want: Option<u32>) -> Option<u32> {
+        let id = want.filter(|&id| id > 0 && id < ID_CEILING && !self.used_ids.contains(&id))?;
+        self.used_ids.insert(id);
+        Some(id)
+    }
+
+    /// Recreate saved session `ss` (its name must be free), giving back the
+    /// ids it saved that are still free (`claim_id`).
+    fn restore_saved(
+        &mut self,
+        ss: &crate::resurrect::SavedSession,
+        size: Option<(u16, u16)>,
+    ) -> Result<(SessionId, Vec<String>), String> {
         if self.sessions.iter().any(|s| s.name == ss.name) {
             return Err(format!("session {} already exists", ss.name));
         }
@@ -1988,6 +2040,28 @@ impl Server {
             }
             if let Err(e) = self.rebuild_window(sid, i, sw) {
                 problems.push(format!("{}:{}: {e}", ss.name, sw.name));
+            }
+        }
+        // The session and its windows take their numbers back (nothing
+        // outside holds the new ones yet: no client, mark or hook); windows
+        // only when they all came back, else which is which is not sure.
+        let sid = match self.claim_id(ss.id) {
+            Some(id) => {
+                if let Some(s) = self.session_mut(sid) {
+                    s.id = id;
+                }
+                id
+            }
+            None => sid,
+        };
+        let count = self.session(sid).map_or(0, |s| s.windows.len());
+        if count == ss.windows.len() {
+            for (i, sw) in ss.windows.iter().enumerate() {
+                if let Some(id) = self.claim_id(sw.id)
+                    && let Some(w) = self.session_mut(sid).and_then(|s| s.windows.get_mut(i))
+                {
+                    w.id = id;
+                }
             }
         }
         if let Some(s) = self.session_mut(sid) {
@@ -2012,11 +2086,21 @@ impl Server {
     fn restore_all(&mut self, size: Option<(u16, u16)>) -> (Vec<SessionId>, Vec<String>) {
         let mut created = Vec::new();
         let mut problems = Vec::new();
+        let mut files = Vec::new();
         for (name, _, path) in crate::resurrect::list(&self.sessions_dir()) {
             if self.sessions.iter().any(|s| s.name == name) {
                 continue;
             }
-            match self.restore_session_file(&path, size) {
+            match crate::resurrect::SavedFile::load(&path) {
+                Ok(f) => files.push(f.session),
+                Err(e) => problems.push(e),
+            }
+        }
+        // Every file's numbers are reserved before any session is made, so
+        // the first one's new windows and panes take none of the others'.
+        self.reserve_ids(files.iter().flat_map(|s| s.ids()));
+        for ss in &files {
+            match self.restore_saved(ss, size) {
                 Ok((sid, p)) => {
                     created.push(sid);
                     problems.extend(p);
@@ -2054,7 +2138,9 @@ impl Server {
             });
             // Sizes are refitted by relayout; spawn at the window size.
             let hist = saved.shell_history.clone().map_or(ShellHistory::From(None), ShellHistory::Keep);
-            let mut pane = self.spawn_pane_replaying(&argv, cwd, area.w, area.h, replay, hist)?;
+            // Its number back, when no pane took it first.
+            let id = self.claim_id(saved.id);
+            let mut pane = self.spawn_pane_replaying(&argv, cwd, area.w, area.h, replay, hist, id)?;
             // Its name and work mode come back; a name another pane has
             // taken meanwhile does not.
             pane.actor.mode = saved.work_mode.as_deref().and_then(actor::WorkMode::parse).unwrap_or_default();
@@ -2088,10 +2174,66 @@ impl Server {
         Ok(())
     }
 
+    /// A new number for a session, window or pane. The server keeps its
+    /// counter in the sessions directory (`NEXT_ID_FILE`), so a number is
+    /// never handed out twice on this machine, across restarts and reboots
+    /// too: a `%N` a script, a resumed file or another machine holds names
+    /// that pane or none (README, Resume after a reboot).
     fn alloc_id(&mut self) -> u32 {
+        self.load_ids();
+        // A number a resume gave back is skipped.
+        while self.used_ids.contains(&self.next_id) {
+            self.next_id += 1;
+        }
         let id = self.next_id;
         self.next_id += 1;
+        self.used_ids.insert(id);
+        self.store_ids();
         id
+    }
+
+    /// Take up the kept counter before the first number, and again when
+    /// `sessions-dir` points somewhere else (a config sets it after start).
+    fn load_ids(&mut self) {
+        if !self.keep_ids {
+            return;
+        }
+        let dir = self.sessions_dir();
+        if self.ids_dir.as_ref() == Some(&dir) {
+            return;
+        }
+        let path = dir.join(NEXT_ID_FILE);
+        self.ids_dir = Some(dir);
+        if let Some(n) = read_next_id(&path) {
+            self.next_id = self.next_id.max(n);
+        }
+    }
+
+    /// Write the counter down (temp file + rename: a crash leaves the old
+    /// one, never half a number). A failure is logged once; numbers then
+    /// last for this run only, as before.
+    fn store_ids(&mut self) {
+        if !self.keep_ids {
+            return;
+        }
+        let dir = self.sessions_dir();
+        let path = dir.join(NEXT_ID_FILE);
+        // Servers on other sockets save into the same directory: the file
+        // only ever goes up, so no server's restart reuses another's numbers.
+        let there = read_next_id(&path).unwrap_or(0);
+        if there >= self.next_id {
+            return;
+        }
+        let tmp = dir.join(format!("{NEXT_ID_FILE}.{}.tmp", std::process::id()));
+        let wrote = std::fs::create_dir_all(&dir)
+            .and_then(|_| std::fs::write(&tmp, format!("{}\n", self.next_id)))
+            .and_then(|_| std::fs::rename(&tmp, &path));
+        if let Err(e) = wrote
+            && !self.ids_warned
+        {
+            self.ids_warned = true;
+            log::warn!("{}: {e}; pane numbers start over after a restart", path.display());
+        }
     }
 
     fn load_config(&mut self) {
@@ -3385,11 +3527,12 @@ impl Server {
         rows: u16,
         hist: ShellHistory,
     ) -> Result<Pane, String> {
-        self.spawn_pane_replaying(argv, cwd, cols, rows, None, hist)
+        self.spawn_pane_replaying(argv, cwd, cols, rows, None, hist, None)
     }
 
     /// As `spawn_pane`, with a resumed pane's saved output printed into its
-    /// console first.
+    /// console first and its saved id (`id`, already checked free) given back.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_pane_replaying(
         &mut self,
         argv: &[String],
@@ -3398,8 +3541,14 @@ impl Server {
         rows: u16,
         replay: Option<String>,
         hist: ShellHistory,
+        id: Option<PaneId>,
     ) -> Result<Pane, String> {
-        let id = self.alloc_id();
+        // The pane's shell is told its id (KEEPANE_PANE), so it is settled
+        // before the spawn.
+        let id = match id {
+            Some(id) => id,
+            None => self.alloc_id(),
+        };
         let argv = if argv.is_empty() { resolve_shell(&self.opts) } else { argv.to_vec() };
         let mut env = self.pane_env(id);
         // Only an interactive shell that gets keepane's hook (PowerShell,
@@ -10281,6 +10430,20 @@ const FORGET_AFTER: Duration = Duration::from_secs(10);
 /// machine is expected to be gone by then; if it is not, it was called off.
 const ENDING_HOLDS: Duration = Duration::from_secs(60);
 
+/// The file in the sessions directory that keeps the id counter: the next
+/// number, as text.
+const NEXT_ID_FILE: &str = "next-id";
+
+/// Numbers from files (saved sessions, the counter) at or above this are
+/// damage, not taken: the counter must never come near overflowing.
+const ID_CEILING: u32 = 1 << 30;
+
+/// The number `NEXT_ID_FILE` holds; none for a missing or damaged file.
+fn read_next_id(path: &std::path::Path) -> Option<u32> {
+    let n = std::fs::read_to_string(path).ok()?.trim().parse::<u32>().ok()?;
+    (n < ID_CEILING).then_some(n)
+}
+
 const STATUS_SHELL_TIMEOUT: Duration = Duration::from_secs(30);
 /// A `#(command)` run for a one-shot `display-message -p` or `jobs -F`
 /// blocks the server while it runs, so it gets less rope than the status
@@ -11244,6 +11407,55 @@ mod tests {
         clock_on(&mut p, 1);
         assert_eq!(p.clock_over, None);
         assert_eq!(clock_kind(&opts, &p), None);
+    }
+
+    /// The id counter is kept in the sessions directory: a next server takes
+    /// it up; it only goes up (another socket's server wrote more); a
+    /// damaged or absurd file is not taken; a `Server` not marked to keep it
+    /// (a test, `import-config`) writes nothing. A resume's number is given
+    /// back once in a run, and never one handed out already.
+    #[test]
+    fn the_id_counter_is_kept_and_only_goes_up() {
+        let dir = std::env::temp_dir().join(format!("keepane-next-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let make = |keep: bool| {
+            let (pane_tx, _p) = std::sync::mpsc::channel::<PaneEvent>();
+            let (events, _e) = tokio::sync::mpsc::unbounded_channel::<Event>();
+            let mut s = Server::new(pane_tx, "t".into(), events);
+            s.opts.sessions_dir = dir.to_string_lossy().into_owned();
+            s.keep_ids = keep;
+            s
+        };
+        let file = dir.join(NEXT_ID_FILE);
+        let mut quiet = make(false);
+        assert_eq!((quiet.alloc_id(), quiet.alloc_id()), (1, 2));
+        assert!(!file.exists(), "a server that keeps nothing writes nothing");
+        let mut a = make(true);
+        assert_eq!((a.alloc_id(), a.alloc_id()), (1, 2));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "3\n");
+        let mut b = make(true);
+        assert_eq!(b.alloc_id(), 3, "taken up where the last one stopped");
+        // Another server got further: the file is not lowered.
+        std::fs::write(&file, "40\n").unwrap();
+        assert_eq!(a.alloc_id(), 3);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "40\n");
+        for bad in ["junk", "", &(ID_CEILING + 5).to_string()] {
+            std::fs::write(&file, bad).unwrap();
+            assert_eq!(make(true).alloc_id(), 1, "{bad:?} is not taken");
+        }
+        // A resume gives a number back once; never one handed out.
+        let mut c = make(true);
+        c.reserve_ids([7, 9]);
+        assert_eq!(c.claim_id(Some(7)), Some(7));
+        assert_eq!(c.claim_id(Some(7)), None, "given back once");
+        assert_eq!(c.alloc_id(), 10, "past what the files hold");
+        assert_eq!(c.claim_id(Some(10)), None, "handed out already");
+        assert_eq!(c.claim_id(Some(0)), None);
+        assert_eq!(c.claim_id(Some(ID_CEILING)), None);
+        assert_eq!(c.claim_id(None), None);
+        c.reserve_ids([ID_CEILING + 1]);
+        assert_eq!(c.alloc_id(), 11, "an absurd saved number reserves nothing");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// No clock on any screen: the machine is not read, and what was read

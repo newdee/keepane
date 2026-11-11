@@ -142,7 +142,9 @@ whose prompt hook was never heard), exited, or `-`.
 ### Resuming after a reboot
 
 Sessions save themselves to the data directory. `resume`, `list-saved`,
-`save-session`, `restore-session`, `delete-saved`, `set-cwd`.
+`save-session`, `restore-session`, `delete-saved`, `set-cwd`. Sessions,
+windows and panes come back with their numbers; the counter is kept in
+`next-id` there, so no number is given out twice.
 
 ### Options, keys and scripting
 

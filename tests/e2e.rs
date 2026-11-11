@@ -176,6 +176,11 @@ impl Harness {
         unsafe { std::env::set_var("KEEPANE_NO_TOAST", "1") };
         // Nor asks of GitHub whether a newer keepane is out.
         unsafe { std::env::set_var("KEEPANE_NO_UPDATE_CHECK", "1") };
+        // Nor writes the real sessions directory (saved sessions, the pane
+        // number counter) before a test points `sessions-dir` elsewhere: a
+        // config that makes a session at start comes before that.
+        let fallback = std::env::temp_dir().join(format!("keepane-test-sessions-{}", std::process::id()));
+        unsafe { std::env::set_var("KEEPANE_SESSIONS_DIR", fallback) };
         // The replay helper is keepane.exe; this test binary is not it.
         unsafe { std::env::set_var("KEEPANE_EXE", env!("CARGO_BIN_EXE_keepane")) };
         keep_history_out();
@@ -1202,7 +1207,12 @@ async fn plugins_hooks_status_formats_and_run_shell() {
 async fn a_bare_keepane_goes_into_what_is_there() {
     let dir = std::env::temp_dir().join(format!("keepane-bare-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let files = || std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
+    // Saved sessions; the id counter (`next-id`) lives beside them.
+    let files = || {
+        std::fs::read_dir(&dir)
+            .map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).count())
+            .unwrap_or(0)
+    };
     let names = async |h: &Harness| {
         let mut v: Vec<String> =
             h.cli(&["ls"]).await.1.lines().map(|l| l.split(':').next().unwrap().to_string()).collect();
@@ -5879,8 +5889,12 @@ async fn files_and_folders_are_shared_by_a_link() {
             zip_file.display().to_string().replace('\'', "''"),
             unpacked.display().to_string().replace('\'', "''")
         );
+        // Started from PowerShell 7, the module path is 7's: Windows
+        // PowerShell then loads 7's Expand-Archive, which fails there (it
+        // prints an error and exits 0). Its own path, as from Explorer.
         std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .env_remove("PSModulePath")
             .output()
     } else {
         std::process::Command::new("python3").args(["-m", "zipfile", "-e"]).arg(&zip_file).arg(&unpacked).output()
@@ -7315,6 +7329,149 @@ async fn what_is_shared_is_marked_on_it_and_comes_back_with_resume() {
     assert!(row().await.contains("nothing"), "{}", row().await);
     h.cli(&["kill-server"]).await;
     let _ = std::fs::remove_dir_all(&saves);
+}
+
+/// Stop `h`'s server and start the next one on its socket as the logon
+/// entry does (`__server --restore`), on the same sessions directory.
+async fn restart_restoring(h: &Harness) {
+    let config = h.sessions_dir.with_extension("conf");
+    std::fs::write(&config, format!("set -g sessions-dir '{}'\n", h.sessions_dir.display())).unwrap();
+    h.cli(&["kill-server"]).await;
+    let pipe = pipe_name(&h.socket);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while open_pipe(&pipe).is_ok() {
+        assert!(Instant::now() < deadline, "the server did not end");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let s = h.socket.clone();
+    tokio::spawn(async move {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let options = keepane::server::RunOptions { force_restore: true, config: Some(config.clone()) };
+            match keepane::server::run_with(s.clone(), options).await {
+                Err(e) if format!("{e:#}").contains("already running") && Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await
+                }
+                r => break r.unwrap(),
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while open_pipe(&pipe).is_err() {
+        assert!(Instant::now() < deadline, "the server did not come up");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    h.cli(&["set", "-g", "default-command", PROMPT_SHELL]).await;
+}
+
+/// The numbers of every session, window and pane, one line a pane:
+/// `name:window.pane $session @window %pane`, sorted.
+async fn all_numbers(h: &Harness) -> Vec<String> {
+    let f = "#{session_name}:#{window_index}.#{pane_index} #{session_id} #{window_id} #{pane_id}";
+    let (_, out, _) = h.cli(&["list-panes", "-a", "-F", f]).await;
+    let mut lines: Vec<String> = out.lines().map(str::to_string).collect();
+    lines.sort();
+    lines
+}
+
+/// Whether no number in `lines` (from `all_numbers`) names two things.
+fn numbers_distinct(lines: &[String]) -> bool {
+    let objects: std::collections::BTreeSet<&str> = lines.iter().flat_map(|l| l.split_whitespace().skip(1)).collect();
+    let mut all: Vec<u32> = objects.iter().map(|w| w[1..].parse().unwrap()).collect();
+    all.sort();
+    let n = all.len();
+    all.dedup();
+    all.len() == n
+}
+
+/// Saved files that disagree: two holding the same numbers (one copied by
+/// hand), and one pane number twice in one file. Each number goes to one
+/// thing; the first file resumed keeps its numbers, what clashes gets new
+/// ones, and nothing is lost.
+#[tokio::test(flavor = "multi_thread")]
+async fn clashing_saved_numbers_go_to_one_thing_each() {
+    let h = Harness::start("ids-clash").await;
+    h.cli(&["set", "-g", "autosave", "off"]).await;
+    h.cli(&["new", "-d", "-s", "a"]).await;
+    h.cli(&["split-window", "-d", "-t", "a"]).await;
+    assert_eq!(h.cli(&["save-session", "-t", "a"]).await.0, 0);
+    let before = all_numbers(&h).await;
+    // b: a's file under another name, its two panes given one number.
+    let a_file = std::fs::read_dir(&h.sessions_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "json"))
+        .unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&a_file).unwrap()).unwrap();
+    v["session"]["name"] = "b".into();
+    let children = v["session"]["windows"][0]["layout"]["children"].as_array_mut().unwrap();
+    let first = children[0]["pane"]["id"].clone();
+    children[1]["pane"]["id"] = first;
+    // Saved earlier: resumed after a (newest first).
+    v["saved_at"] = "2000-01-01T00:00:00+00:00".into();
+    std::fs::write(h.sessions_dir.join("b.json"), v.to_string()).unwrap();
+    restart_restoring(&h).await;
+    let after = all_numbers(&h).await;
+    assert_eq!(after.len(), 4, "every pane back: {after:?}");
+    assert!(numbers_distinct(&after), "a number names two things: {after:?}");
+    let of = |lines: &[String], s: &str| lines.iter().filter(|l| l.starts_with(s)).cloned().collect::<Vec<_>>();
+    assert_eq!(of(&after, "a:"), before, "the first file keeps its numbers");
+    h.cli(&["kill-server"]).await;
+}
+
+/// Sessions, windows and panes keep their numbers across a server restart
+/// (what a reboot is): the file saves them and the counter is kept beside
+/// it, so a number is never handed out twice, neither to a new pane after
+/// the restart nor to a session resumed after it was killed.
+#[tokio::test(flavor = "multi_thread")]
+async fn numbers_survive_a_restart_and_are_never_handed_out_twice() {
+    let h = Harness::start("ids-keep").await;
+    // Saved only when asked: the killed session must not be in a file.
+    h.cli(&["set", "-g", "autosave", "off"]).await;
+    h.cli(&["new", "-d", "-s", "a"]).await;
+    h.cli(&["split-window", "-d", "-t", "a"]).await;
+    h.cli(&["new-window", "-d", "-t", "a"]).await;
+    h.cli(&["new", "-d", "-s", "b"]).await;
+    h.cli(&["new", "-d", "-s", "gone"]).await;
+    let gone = pane_id(&h, "gone:0.0").await;
+    h.cli(&["kill-session", "-t", "gone"]).await;
+    let ids = async |h: &Harness| {
+        let f = "#{session_name}:#{window_index}.#{pane_index} #{session_id} #{window_id} #{pane_id}";
+        let (_, out, _) = h.cli(&["list-panes", "-a", "-F", f]).await;
+        let mut lines: Vec<String> = out.lines().filter(|l| !l.starts_with("w2:")).map(str::to_string).collect();
+        lines.sort();
+        lines
+    };
+    let before = ids(&h).await;
+    assert_eq!(before.len(), 4, "{before:?}");
+    let top: u32 =
+        before.iter().flat_map(|l| l.split_whitespace().skip(1)).map(|w| w[1..].parse::<u32>().unwrap()).max().unwrap();
+    for s in ["a", "b"] {
+        assert_eq!(h.cli(&["save-session", "-t", s]).await.0, 0);
+    }
+    let kept = h.sessions_dir.join("next-id");
+    assert!(std::fs::read_to_string(&kept).unwrap().trim().parse::<u32>().unwrap() > gone);
+
+    restart_restoring(&h).await;
+    // Every number as it was.
+    assert_eq!(ids(&h).await, before);
+    // A new pane takes none of the old numbers, the killed one included.
+    h.cli(&["new", "-d", "-s", "w2"]).await;
+    let fresh = pane_id(&h, "w2:0.0").await;
+    assert!(fresh > top && fresh != gone, "{fresh} after {top} (gone {gone})");
+    // Killed and resumed in one run: its old numbers were handed out in this
+    // run already, so it comes back with new ones, distinct from all.
+    h.cli(&["kill-session", "-t", "b"]).await;
+    let (code, out, err) = h.cli(&["restore-session", "b"]).await;
+    assert!(code == 0 && out.starts_with("restored 1 session"), "{out} {err}");
+    let again = ids(&h).await;
+    let old_b = before.iter().find(|l| l.starts_with("b:")).unwrap();
+    let new_b = again.iter().find(|l| l.starts_with("b:")).unwrap();
+    assert_ne!(old_b.split_whitespace().last(), new_b.split_whitespace().last(), "{old_b} / {new_b}");
+    // One counter numbers all three kinds.
+    assert!(numbers_distinct(&again), "a number held twice: {again:?}");
+    h.cli(&["kill-server"]).await;
 }
 
 /// `--full` comes only over Tailscale or from this machine, unless `--lan`:
