@@ -38,6 +38,8 @@ flate2 = "1"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+prost = { version = "0.13", default-features = false, features = ["derive", "std"] }
+snow = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 # WinRT toasts (the notification with a "Go to pane" button) and WMI (the

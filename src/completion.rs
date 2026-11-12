@@ -96,6 +96,7 @@ pub fn complete(
                 "info",
                 "kill",
                 "list",
+                "mirror",
                 "panes",
                 "push",
                 "send-agents",

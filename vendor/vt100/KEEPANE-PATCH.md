@@ -32,6 +32,13 @@ keepane also adds, beside that fix (each marked `(keepane)` in the source):
   only when no region is set, so an inline interface that pushes its output
   up past a fixed box at the bottom (Codex CLI) left no history at all.
   Regression test: `server::pane::tests::a_region_from_the_top_row_keeps_what_scrolls_off`.
+- `Screen::snapshot` / `Screen::restore` (`src/snapshot.rs`, with a
+  `write_snap` / `read_snap` pair in each of `attrs`, `cell`, `row`,
+  `grid`, `screen`): the whole state as versioned bytes and back (both
+  grids, the scrollback, the cursor saved, the scroll region, the modes),
+  so a copy of a pane on another machine restores exactly what the
+  original has and, fed the same bytes after, stays the same. Test:
+  `server::journal::tests::a_copy_restored_from_a_screen_snapshot_stays_the_same`.
 
 Drop this directory and the `[patch]` entry once upstream has all of it,
-which, for the last five, it will not: they are keepane's own.
+which, for the last six, it will not: they are keepane's own.

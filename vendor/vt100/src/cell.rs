@@ -177,3 +177,23 @@ impl Cell {
         self.attrs.inverse()
     }
 }
+
+// (keepane) `snapshot`: a cell as its parts, and back.
+impl Cell {
+    /// Its length byte (the wide flags in it), what it holds, its
+    /// attributes.
+    pub(crate) fn snap_parts(&self) -> (u8, &[u8], &crate::attrs::Attrs) {
+        (self.len, &self.contents[..self.len()], &self.attrs)
+    }
+
+    /// A cell from `snap_parts`; None for parts no cell has.
+    pub(crate) fn from_snap_parts(len: u8, bytes: &[u8], attrs: crate::attrs::Attrs) -> Option<Self> {
+        if usize::from(len & LEN_BITS) != bytes.len() || bytes.len() > CONTENT_BYTES || len & !(LEN_BITS | IS_WIDE | IS_WIDE_CONTINUATION) != 0 {
+            return None;
+        }
+        let mut contents = [0u8; CONTENT_BYTES];
+        contents[..bytes.len()].copy_from_slice(bytes);
+        std::str::from_utf8(bytes).ok()?;
+        Some(Self { contents, len, attrs })
+    }
+}

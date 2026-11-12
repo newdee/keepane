@@ -269,9 +269,16 @@ impl Server {
         self.web_generation += 1;
         let generation = self.web_generation;
         let events = self.events.clone();
-        let state = std::sync::Arc::new(crate::web::State::new(&self.socket, &key, o.read_only).notify(move |seen| {
-            let _ = events.send(Event::Web(generation, seen));
-        }));
+        let asks = self.events.clone();
+        let state = std::sync::Arc::new(
+            crate::web::State::new(&self.socket, &key, o.read_only)
+                .notify(move |seen| {
+                    let _ = events.send(Event::Web(generation, seen));
+                })
+                .stream(move |ask| {
+                    let _ = asks.send(Event::LinkStream(ask));
+                }),
+        );
         let served: Vec<_> =
             listeners.into_iter().map(|(ip, l)| (ip, tokio::spawn(crate::web::serve(l, state.clone())))).collect();
         let url = scanned(ip, port, &key);

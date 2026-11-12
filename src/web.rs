@@ -167,15 +167,23 @@ pub struct State {
     pub read_only: bool,
     /// Told who asks and what they watch (the server, to list the phones).
     notify: Option<Box<dyn Fn(Seen) + Send + Sync>>,
+    /// Handed a link stream's first handshake message (the server, which
+    /// holds the link key); none: streams are not served.
+    stream: Option<Box<dyn Fn(crate::server::link_feed::StreamAsk) + Send + Sync>>,
 }
 
 impl State {
     pub fn new(socket: &str, key: &str, read_only: bool) -> State {
-        State { socket: socket.into(), key: key.into(), read_only, notify: None }
+        State { socket: socket.into(), key: key.into(), read_only, notify: None, stream: None }
     }
 
     pub fn notify(mut self, f: impl Fn(Seen) + Send + Sync + 'static) -> State {
         self.notify = Some(Box::new(f));
+        self
+    }
+
+    pub fn stream(mut self, f: impl Fn(crate::server::link_feed::StreamAsk) + Send + Sync + 'static) -> State {
+        self.stream = Some(Box::new(f));
         self
     }
 
@@ -437,6 +445,9 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
             range = Some(value.to_string());
         } else if name.eq_ignore_ascii_case("x-keepane-key") {
             key = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("upgrade") {
+            // What a link stream asks for (`crate::link_stream`).
+            headers.push(("upgrade".to_string(), value.to_string()));
         } else if name.len() > 10 && name[..10].eq_ignore_ascii_case("x-keepane-") {
             headers.push((name.to_ascii_lowercase(), value.to_string()));
         }
@@ -537,6 +548,11 @@ async fn connection(mut stream: TcpStream, peer: IpAddr, state: &State) -> Resul
         let _watching = Watching(state, peer, pane.to_string());
         return watch(&mut stream, state, pane, history, req.param("join") == Some("1")).await;
     }
+    // Another machine keeping a copy of this one's sessions: the connection
+    // is a link stream from here on (`crate::link_stream`).
+    if req.method == "GET" && req.path == crate::link_stream::PATH {
+        return link_stream(stream, peer, state, &req).await;
+    }
     // A file or a folder shared (`keepane share`): its own token, not the
     // key; sent as it is read.
     if req.path.starts_with("/s/") {
@@ -545,6 +561,103 @@ async fn connection(mut stream: TcpStream, peer: IpAddr, state: &State) -> Resul
     }
     let resp = handle(&req, peer, state).await;
     write_response(&mut stream, &resp).await
+}
+
+/// How long the other machine has to send its first handshake message, and
+/// the server to answer it.
+const STREAM_HANDSHAKE: Duration = Duration::from_secs(10);
+/// A stream that sent nothing for this long says it is still there (`Ping`);
+/// one that heard nothing for `STREAM_SILENCE` is taken as gone.
+const STREAM_PING: Duration = Duration::from_secs(15);
+const STREAM_SILENCE: Duration = Duration::from_secs(45);
+
+/// A link stream, the machine copied's end (`crate::link_stream`,
+/// `crate::server::link_feed`): the handshake goes to the server, which
+/// holds the key; then the feed's changes go out, as protobuf, encrypted.
+async fn link_stream(mut stream: TcpStream, peer: IpAddr, state: &State, req: &Request) -> Result<()> {
+    use crate::link_proto::{Ping, ToClient, ToServer, to_client};
+    use crate::server::link_feed::{FeedItem, StreamAsk};
+    let upgrade = req
+        .headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("upgrade") && v.eq_ignore_ascii_case(crate::link_stream::UPGRADE));
+    if !upgrade {
+        return write_response(&mut stream, &Response::text(400, "a link stream is an upgrade to keepane-stream"))
+            .await;
+    }
+    let Some(ask_server) = &state.stream else {
+        return write_response(
+            &mut stream,
+            &Response::text(503, "link streams are served by the server's own web (`keepane web`)"),
+        )
+        .await;
+    };
+    stream.write_all(crate::link_stream::SWITCHING.as_bytes()).await?;
+    let msg1 = tokio::time::timeout(STREAM_HANDSHAKE, crate::link_stream::read_frame(&mut stream)).await??;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    ask_server(StreamAsk { peer, msg1, reply: tx });
+    // No answer (a first message that did not check out): the connection
+    // just ends.
+    let Ok(Ok(reply)) = tokio::time::timeout(STREAM_HANDSHAKE, rx).await else { return Ok(()) };
+    crate::link_stream::write_frame(&mut stream, &reply.msg2).await?;
+    let Some((keys, mut feed)) = reply.open else { return Ok(()) };
+    let (sealer, mut opener) = crate::link_stream::split(keys);
+    let (mut rd, mut wr) = stream.into_split();
+    // Frames read on a task of their own: a read cut short by the select
+    // below would lose the frame's start.
+    let (frames_tx, mut frames) = tokio::sync::mpsc::channel::<Result<Vec<u8>>>(16);
+    let reader = tokio::spawn(async move {
+        loop {
+            let f = crate::link_stream::read_frame(&mut rd).await;
+            let end = f.is_err();
+            if frames_tx.send(f).await.is_err() || end {
+                break;
+            }
+        }
+    });
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    let (mut sent, mut heard) = (std::time::Instant::now(), std::time::Instant::now());
+    let result: Result<()> = async {
+        loop {
+            tokio::select! {
+                item = feed.rx.recv() => {
+                    let Some(item) = item else { return Ok(()) };
+                    feed.queued.fetch_sub(item.cost(), std::sync::atomic::Ordering::Relaxed);
+                    let kind = match &item {
+                        FeedItem::Entry(e) => to_client::Kind::Entry(e.into()),
+                        FeedItem::Snapshot(s) => to_client::Kind::Snapshot(s.into()),
+                        FeedItem::End(why) => {
+                            log::info!("link stream to {peer} ends: {why}");
+                            return Ok(());
+                        }
+                    };
+                    sealer.send(&mut wr, &ToClient { kind: Some(kind) }).await?;
+                    sent = std::time::Instant::now();
+                }
+                frame = frames.recv() => {
+                    let Some(frame) = frame else { return Ok(()) };
+                    // What it says back is only that it is there, for now.
+                    let _ = opener.open::<ToServer>(&frame?)?;
+                    heard = std::time::Instant::now();
+                }
+                _ = tick.tick() => {
+                    if heard.elapsed() > STREAM_SILENCE {
+                        anyhow::bail!("nothing heard for {} s", STREAM_SILENCE.as_secs());
+                    }
+                    if sent.elapsed() > STREAM_PING {
+                        sealer.send(&mut wr, &ToClient { kind: Some(to_client::Kind::Ping(Ping {})) }).await?;
+                        sent = std::time::Instant::now();
+                    }
+                }
+            }
+        }
+    }
+    .await;
+    reader.abort();
+    if let Err(e) = &result {
+        log::info!("link stream to {peer}: {e:#}");
+    }
+    Ok(())
 }
 
 /// How often a watched pane is asked whether it changed. The question is a

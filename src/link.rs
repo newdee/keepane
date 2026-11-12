@@ -120,12 +120,14 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
         "send-agents",
         "watch",
         "attach",
+        "mirror",
     ];
     const USAGE: &str = "usage: keepane link id | add <the other machine's web address> | \
                          trust <host:port> <key> [--full [--lan]] | list | panes <host:port> | \
                          info <host:port> | capture [-S lines] <host:port/pane> | \
                          start <host:port> [-s session] [-n name] [-m mode] [-c dir] [-- program args] | \
                          kill <host:port/pane> | watch <host:port/pane> | attach <host:port> [session] | \
+                         mirror <host:port> [--stop] | \
                          allow <host:port> --full [--lan] | allow <host:port> --none | \
                          share <host:port> <session|session:window|pane>... | \
                          unshare <host:port> <session|session:window|pane>... | unshare <host:port> --all | \
@@ -334,6 +336,18 @@ impl Identity {
     /// The public key, as the other side's table holds it.
     pub fn public(&self) -> String {
         b64(self.key.verifying_key().as_bytes())
+    }
+
+    /// This key as an X25519 secret (what the link stream's Noise handshake
+    /// takes; `crate::link_stream`): the Ed25519 key's own scalar, as
+    /// libsodium turns one into the other.
+    pub fn x25519_secret(&self) -> [u8; 32] {
+        self.key.to_scalar_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_seed(seed: [u8; 32]) -> Identity {
+        Identity { key: SigningKey::from_bytes(&seed) }
     }
 
     pub fn sign(&self, text: &str) -> String {

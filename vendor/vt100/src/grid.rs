@@ -785,3 +785,80 @@ pub struct Pos {
     pub row: u16,
     pub col: u16,
 }
+
+// (keepane) `snapshot`: a grid as bytes, its scrollback included.
+impl Grid {
+    pub(crate) fn has_rows(&self) -> bool {
+        !self.rows.is_empty()
+    }
+
+    pub(crate) fn write_snap(&self, w: &mut crate::snapshot::Writer) {
+        w.u16(self.size.rows);
+        w.u16(self.size.cols);
+        for p in [self.pos, self.saved_pos] {
+            w.u16(p.row);
+            w.u16(p.col);
+        }
+        w.u16(self.scroll_top);
+        w.u16(self.scroll_bottom);
+        w.u8(u8::from(self.origin_mode));
+        w.u8(u8::from(self.saved_origin_mode));
+        w.u64(self.scrollback_len as u64);
+        w.u64(self.scrolled);
+        w.u32(u32::try_from(self.rows.len()).unwrap_or(u32::MAX));
+        for row in &self.rows {
+            row.write_snap(w);
+        }
+        w.u32(u32::try_from(self.scrollback.len()).unwrap_or(u32::MAX));
+        for row in &self.scrollback {
+            row.write_snap(w);
+        }
+    }
+
+    pub(crate) fn read_snap(r: &mut crate::snapshot::Reader) -> Option<Self> {
+        let size = Size { rows: r.u16()?, cols: r.u16()? };
+        if size.rows == 0 || size.cols == 0 {
+            return None;
+        }
+        let mut pos = || -> Option<Pos> { Some(Pos { row: r.u16()?, col: r.u16()? }) };
+        let (cur, saved) = (pos()?, pos()?);
+        let (scroll_top, scroll_bottom) = (r.u16()?, r.u16()?);
+        let flag = |b: u8| match b {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        let (origin_mode, saved_origin_mode) = (flag(r.u8()?)?, flag(r.u8()?)?);
+        let scrollback_len = usize::try_from(r.u64()?).ok()?;
+        let scrolled = r.u64()?;
+        let n = r.u32()? as usize;
+        // A grid not used yet (the alternate one) has no rows.
+        if n != 0 && n != usize::from(size.rows) {
+            return None;
+        }
+        let rows = (0..n).map(|_| crate::row::Row::read_snap(r, size.cols)).collect::<Option<Vec<_>>>()?;
+        let n = r.u32()? as usize;
+        if n > scrollback_len {
+            return None;
+        }
+        let scrollback = (0..n).map(|_| crate::row::Row::read_snap(r, size.cols)).collect::<Option<_>>()?;
+        let inside = |p: Pos| p.row < size.rows && p.col <= size.cols;
+        if !inside(cur) || !inside(saved) || scroll_top > scroll_bottom || scroll_bottom >= size.rows {
+            return None;
+        }
+        Some(Self {
+            size,
+            pos: cur,
+            saved_pos: saved,
+            rows,
+            scroll_top,
+            scroll_bottom,
+            origin_mode,
+            saved_origin_mode,
+            scrollback,
+            scrollback_len,
+            scrollback_offset: 0,
+            scrolled,
+        })
+    }
+}

@@ -5725,3 +5725,44 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 日志常开，最多占 8 MiB 内存。
   - WSL 里两个卡在 D 状态的测试进程要 `wsl --shutdown` 才能清掉（会关掉所有 WSL 会话，由用户决定）；在那之前 WSL 里 `ps` 会卡住。
 - 发布：v0.59.0（tag 在 4d505e6，其 CI 通过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（37ff6b5）；winget 新开 PR #478227。
+
+## 183. 跨机器第 2 阶段：加密的全双工长连接（Noise + protobuf），本机保存另一台的副本（`link mirror`）
+
+- 用户要求："按推荐做第2阶段，加密加protobuf"；同时定了：第 3 阶段显示给了 `--full` 的机器的全部 session；清理 WSL 里卡死的两个测试进程（`wsl --shutdown`，用户同意后执行，D 状态进程清零）。
+- 香农六法：换说法（"protobuf 安全"是错误前提：编码不是加密；局域网明文要靠加密通道）、相似问题（Noise IK = WireGuard 的握手族；tmux control mode 的事件流）、简化（握手在 server 里做，私钥不出 server，web 只转手字节；快照不用转义序列重画，直接按结构序列化 vt100）、逆向（副本要逐字节一致，就要结构快照 + 原样字节 + 全局序号 + 纪元号）、结构分析（vt100 结构快照、协议、加密帧、推送、副本五块）、推广（`reset`/`screen` 带输出起点，respawn、clear-history、undo 都不用重来）。
+- 做法（设计见 docs/design/link.md 第 17 条第 2 阶段）：
+  - vendor vt100：`Screen::snapshot` / `restore`（`src/snapshot.rs` 和各模块的 `write_snap`/`read_snap`），两块屏、回滚历史、光标与保存的光标、滚动区域、模式，带版本号；增量流的快照和"整个模型"（`screen`）都改用它。
+  - `link_stream.rs`：`GET /link/stream` + `Upgrade: keepane-stream`，101 后是"2 字节长度 + Noise 消息"的帧；Noise `IK_25519_ChaChaPoly_BLAKE2s`（`snow`），link 的 Ed25519 密钥按 libsodium 办法换成 X25519；`link_proto.rs`：protobuf（`prost` derive），握手里 `Hello{since,version,time,epoch}` / `Answer{version,refused,epoch}`，之后 `ToClient`（增量、快照、ping）/ `ToServer`（ping），终端模型 deflate。
+  - 对方（`link_feed.rs`）：要 `--full`，按来源地址判定（局域网要 `--lan`）；拒绝原因加密返回；防重放（时间 120 秒、临时公钥 240 秒内见过就拒）；每批事件后推送，积压超过 16 MiB 或权限收回就断开；续传按纪元号和序号，否则快照。`link list` 标 `copies it now`。
+  - 本机（`link_mirror.rs`）：`keepane link mirror <机器> [--stop]`，断线 1 秒起翻倍到 30 秒重连；序号、字节起点、模型不对就标记重来，等快照期间丢掉在途增量；`show-mirror [机器] [-t 窗格] [-J]`。
+  - 手册、`--help`、补全、README 中英、tmux-parity、设计文档、vendor 补丁说明写上。
+- 修 bug 定性：不是 bug 修复（新功能）。实现和验收中发现并修正的问题见下表第 0–12 轮；其中"对方重启后序号从头编起，续传会接错"是结构缺陷，改为每次运行一个纪元号。
+- 新 bug 风险评估：
+  - 增量流的快照从 `state_formatted` 换成结构快照：`show-changes -S -J` 的 `screen` 字段内容变了（第 1 阶段 0.59 刚发布，只有本机查看用），e2e 改为 `restore`。
+  - `PaneChange::Reset` 加 `at`、新增 `Screen`；`show-changes` 列表多一种 `screen, N bytes`。
+  - web 的请求头多收一个 `Upgrade`（只用于 `/link/stream`）；`link-allow --full` 的回答多了 "keep a copy of them all"。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 实现 | `gen` 是 2024 版保留字；web 只收 `x-keepane-` 头，`Upgrade` 被丢；往 COMMANDS 加名字时测试列表也被替换；手册里命令名跨行；设计推演时发现 IK 第一条消息可重放，加时间和临时公钥检查（e2e：重放答 seen before，旧时间答 clocks） | 实现中，不计 |
+| 1 | 静态一致 | 发现：对方 server 重启后序号从 1 编起，旧续传点会接到新 server 上；加纪元号。另：respawn/undo 后副本沿用旧字节计数会触发多余重来，`reset`/`screen` 改带 `at`（变异后 e2e 6 次重来）；一次重来被记 6 次，改为等快照期间丢掉在途增量 | 有发现，不计 |
+| 2 | 真实环境、安全 | 中转记录线路字节：标记串和 `Write-Output` 都不在流里，同一 pane 用普通 `link-view` 时明文可见；按键到副本 91–101 ms；中途改一个字节：断开、续传、0 次重来、副本一致；A 重启：第 2 次快照、0 次重来。发现：对方是 0.58 时提示成 "400: keepane link protocol  (keepane ) at your end"，改为按 `X-Keepane-Version` 认出旧版本 | 有发现，不计 |
+| 3 | 真实环境复跑 | 上述各项全过，0.58 答 "keepane there (0.58.0) is older than 0.60"。Windows 610 + 11 + 159，Linux 595 + 156 | 干净，但之后改了代码，重新计数 |
+| 4 | 机制存活 | 先把判定抽成纯函数加测试（`may_stream`、`resume_from`、`fed_too_much`、`Mirror::receive`、缺 `Upgrade` 答 400）；17 个变异全抓到（权限、局域网、重放两项、纪元、超过最新、积压、收回仍推送、副本三项、Upgrade、纪元未保存、不推送、`at` 两项、快照还原校验）。Windows 614 + 11 + 159，Linux 599 + 156 | 干净（1/3） |
+| 5 | 边界 | 全屏程序运行时建副本：带主屏，退出后一致；9000 行历史快照 243 KB、线上 28 KiB、新副本 91 ms；12 个 pane 各 3000 行：12/12 一致，36519 条，0 次重来；内存 A 70 MB、B 62 MB。全量通过 | 干净（2/3） |
+| 6 | 可复现 | Windows 副本 e2e 10/10、第 1 阶段 e2e 5/5、安全脚本 2 次 4/4、Linux 5/5。发现：Linux 全量里副本 e2e 偶发 `Address already in use`（9 次 1 次）：测试停 web 后在同端口再起，端口被并行测试拿去作源端口；测试改为收回再给 `--full` 来断开连接（同一续传路径） | 有发现，不计 |
+| 7 | 并行负载 | Linux 全量 1 次 + 全量 e2e 连跑 6 次全过；Windows 全量通过 | 干净（1/3） |
+| 8 | 真实环境 | 安全脚本、边界脚本各项全过（数据同上）。全量通过 | 干净（2/3） |
+| 9 | 静态一致 | 发现：vendor 补丁说明里混进字面的 `` `n ``（PowerShell 转义没生效）；修正并查遍改动文件，余下命中都是 `` `name-pane `` 这类误报 | 有发现，不计 |
+| 10 | 资源 | 4 个 pane 每 50 ms 一行连跑 3 分钟：history-limit 100 时 B 一直 19.7 MB（副本不泄漏），A 每 30 秒多 0.5 MB，是日志在涨（1685 KiB，上限 8 MiB）；4/4 一致，24104 条，0 次重来。默认 history-limit 时两边都按回滚历史增长（每行 60 列约 1.9 KB），吻合 | 干净（1/3） |
+| 11 | 可复现 | Windows 副本 e2e 10/10、全量通过；Linux 全量 + e2e 连跑 5/5 | 干净（2/3） |
+| 12 | 静态一致 | 发现：README 英文写成 "copied here"（方向反了），中文"复制到对方"不清楚；改为 "copied over to it whole" / "也能整份复制过去" | 有发现，不计 |
+| 13 | 安全（静态） | 握手前只读一帧（≤64 KiB，10 秒）；验证不过不答复；未配对只得到加密的拒绝；重放窗口 120/240 秒；帧载荷 ≤65519；消息 ≤64 MiB 且只来自已认证的完全机器；私钥不出 server。Windows 614 + 11 + 159，Linux 599 + 156 | 干净（1/3） |
+| 14 | 真实环境 | 安全脚本：线路无明文、按键到副本 95–121 ms、篡改后续传、A 重启后快照、0.58 提示正确；边界脚本各项全过。全量通过 | 干净（2/3） |
+| 15 | 可复现 | Windows 副本 e2e 10/10、第 1 阶段 e2e 5/5、全量通过；Linux 全量 + e2e 连跑 5/5 | 干净（3/3），验收通过 |
+
+- 遗留：
+  - 副本按开始时的地址连接；对方地址变了（DHCP）要 `--stop` 再开。
+  - 只共享（没有 `--full`）的机器不能建副本，仍用 `link watch`。
+  - 快照不含解析器读到一半的转义序列（只在两次读取之间拍）。
+  - 本机渲染（第 3 阶段）和 attach 改走新通路（第 4 阶段）未做；第 3 阶段显示给了 `--full` 的机器的全部 session（用户已定）。

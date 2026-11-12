@@ -55,15 +55,27 @@ pub enum PaneChange {
     /// Its terminal took this size.
     Size { cols: u16, rows: u16 },
     /// Its terminal model was made again at this size and fed `bytes`: a
-    /// new pane (fed nothing), its history cleared (fed its screen), what
-    /// it printed while nobody looked was more than is kept, or it is back
-    /// in a window (`undo-kill`) after changes a copy never had (fed its
-    /// screen, both).
+    /// new pane (fed nothing), or its history cleared (fed its screen, as
+    /// `clear-history` does it here).
     Reset {
         cols: u16,
         rows: u16,
         #[serde(serialize_with = "as_b64")]
         bytes: Vec<u8>,
+        /// Where its next output starts (stamped when it is kept:
+        /// `PaneChanges::push`): 0 for a new pane.
+        at: u64,
+    },
+    /// Its terminal model is now this one, whole (vt100's `Screen::snapshot`:
+    /// the size, the scrollback, the alternate screen and the cursor saved
+    /// are in it): what it printed while nobody looked was more than is
+    /// kept, or it is back in a window (`undo-kill`) after changes a copy
+    /// never had.
+    Screen {
+        #[serde(serialize_with = "as_b64")]
+        snapshot: Vec<u8>,
+        /// Where its next output starts (stamped when it is kept).
+        at: u64,
     },
     /// A full-screen program took the screen (the alternate screen), or
     /// gave it back.
@@ -77,10 +89,17 @@ pub enum PaneChange {
 }
 
 impl PaneChange {
+    /// Whether it is the pane's terminal model whole: nothing before it is
+    /// needed.
+    pub fn is_whole(&self) -> bool {
+        matches!(self, PaneChange::Reset { .. } | PaneChange::Screen { .. })
+    }
+
     /// About how much keeping it costs.
     fn cost(&self) -> usize {
         64 + match self {
             PaneChange::Output { bytes, .. } | PaneChange::Reset { bytes, .. } => bytes.len(),
+            PaneChange::Screen { snapshot, .. } => snapshot.len(),
             PaneChange::CommandStart { command, cwd, .. } => command.len() + cwd.as_ref().map_or(0, String::len),
             PaneChange::CommandEnd { command, .. } => command.len(),
             PaneChange::Size { .. } | PaneChange::Fullscreen { .. } => 0,
@@ -99,43 +118,37 @@ pub struct PaneChanges {
     cost: usize,
     /// Bytes printed so far: where the next output starts.
     pub at: u64,
-    /// The terminal's size, as last told: what a `Reset` in place of
-    /// too many changes is made at.
-    size: (u16, u16),
 }
 
 impl PaneChanges {
     /// A new pane's: its terminal model, made at this size, fed nothing.
     pub fn new(cols: u16, rows: u16) -> Self {
         let mut c = Self::default();
-        c.push(PaneChange::Reset { cols, rows, bytes: Vec::new() }, Vec::new);
+        c.push(PaneChange::Reset { cols, rows, bytes: Vec::new(), at: 0 }, Vec::new);
         c
     }
 
     /// Keep `change`; past `PANE_LIMIT`, keep the screen instead (`screen`
-    /// gives it, as bytes that draw it, with the size it is now).
-    pub fn push(&mut self, change: PaneChange, screen: impl FnOnce() -> Vec<u8>) {
-        if let PaneChange::Output { bytes, .. } = &change {
-            self.at += bytes.len() as u64;
-        }
-        match change {
-            PaneChange::Reset { cols, rows, .. } => {
-                self.list.clear();
-                self.cost = 0;
-                self.size = (cols, rows);
-            }
-            PaneChange::Size { cols, rows } => self.size = (cols, rows),
+    /// gives it: its terminal model, `Screen::snapshot`).
+    pub fn push(&mut self, mut change: PaneChange, screen: impl FnOnce() -> Vec<u8>) {
+        match &mut change {
+            PaneChange::Output { bytes, .. } => self.at += bytes.len() as u64,
+            // A whole model: what comes after it starts here.
+            PaneChange::Reset { at, .. } | PaneChange::Screen { at, .. } => *at = self.at,
             _ => {}
         }
-        // A screen bigger than the limit (500 x 200 cells, each its own
-        // colour) is still kept: a `Reset` never makes another.
-        let whole = matches!(change, PaneChange::Reset { .. });
+        // The model whole: nothing before it is needed. One bigger than the
+        // limit (500 x 200 cells, each its own colour; a long scrollback)
+        // is still kept: a whole one never makes another.
+        let whole = change.is_whole();
+        if whole {
+            self.list.clear();
+            self.cost = 0;
+        }
         self.cost += change.cost();
         self.list.push(change);
         if self.cost > PANE_LIMIT && !whole {
-            let (cols, rows) = self.size;
-            let bytes = screen();
-            self.push(PaneChange::Reset { cols, rows, bytes }, Vec::new);
+            self.push(PaneChange::Screen { snapshot: screen(), at: 0 }, Vec::new);
         }
     }
 
@@ -150,10 +163,10 @@ impl PaneChanges {
         std::mem::take(&mut self.list)
     }
 
-    /// Whether the oldest kept is a `Reset`: a copy needs nothing from
-    /// before it.
+    /// Whether the oldest kept is a whole model (`Reset`, `Screen`): a copy
+    /// needs nothing from before it.
     fn starts_whole(&self) -> bool {
-        matches!(self.list.first(), Some(PaneChange::Reset { .. }))
+        self.list.first().is_some_and(PaneChange::is_whole)
     }
 }
 
@@ -244,7 +257,7 @@ pub enum Change {
 }
 
 impl Entry {
-    fn cost(&self) -> usize {
+    pub fn cost(&self) -> usize {
         match &self.change {
             // About what it takes written out.
             Change::Shape { shape: s } => 128 + s.panes().count() * 256,
@@ -260,11 +273,16 @@ pub struct Journal {
     /// The number the next change takes.
     next: u64,
     shape: Shape,
+    /// This run of the server, at random: the numbers start again with
+    /// the next one, so a number means something only with it.
+    pub epoch: u64,
 }
 
 impl Default for Journal {
     fn default() -> Self {
-        Self { entries: VecDeque::new(), cost: 0, next: 1, shape: Shape::default() }
+        let mut e = [0u8; 8];
+        let _ = crate::platform::random::fill(&mut e);
+        Self { entries: VecDeque::new(), cost: 0, next: 1, shape: Shape::default(), epoch: u64::from_le_bytes(e) }
     }
 }
 
@@ -293,7 +311,8 @@ pub struct PaneScreen {
     pub cols: u16,
     pub rows: u16,
     pub fullscreen: bool,
-    /// Bytes that draw its screen on a terminal model of its size.
+    /// Its terminal model whole (vt100's `Screen::snapshot`): restored, a
+    /// copy then takes the changes after `seq`.
     #[serde(serialize_with = "as_b64")]
     pub screen: Vec<u8>,
     /// Bytes it has printed: where its next output starts.
@@ -500,8 +519,7 @@ impl Server {
                         // Back in a window with changes a copy never had
                         // the start of: its screen as it is now.
                         p.changes.take();
-                        let (cols, rows, bytes) = (p.cols, p.rows, p.screen().state_formatted());
-                        p.changes.push(PaneChange::Reset { cols, rows, bytes }, Vec::new);
+                        p.changes.push(PaneChange::Screen { snapshot: p.screen().snapshot(), at: 0 }, Vec::new);
                     }
                     let changes = p.changes.take();
                     if !changes.is_empty() {
@@ -534,7 +552,7 @@ impl Server {
                         cols: p.cols,
                         rows: p.rows,
                         fullscreen: screen.alternate_screen(),
-                        screen: screen.state_formatted(),
+                        screen: screen.snapshot(),
                         at: p.changes.at,
                     });
                 }
@@ -630,7 +648,10 @@ fn list_changes(entries: &[&Entry], out: &mut String) {
                 let what = match change {
                     PaneChange::Output { .. } => unreachable!(),
                     PaneChange::Size { cols, rows } => format!("size {cols}x{rows}"),
-                    PaneChange::Reset { cols, rows, bytes } => format!("reset {cols}x{rows}, {} bytes", bytes.len()),
+                    PaneChange::Reset { cols, rows, bytes, .. } => {
+                        format!("reset {cols}x{rows}, {} bytes", bytes.len())
+                    }
+                    PaneChange::Screen { snapshot, .. } => format!("screen, {} bytes", snapshot.len()),
                     PaneChange::Fullscreen { on: true } => "full screen".into(),
                     PaneChange::Fullscreen { on: false } => "full screen ends".into(),
                     PaneChange::CommandStart { command, cwd, .. } => match cwd {
@@ -744,14 +765,18 @@ mod tests {
         let big = vec![b'y'; PANE_LIMIT];
         c.push(PaneChange::Output { at: 5, bytes: big.clone() }, || b"SCREEN".to_vec());
         let got = c.take();
-        assert_eq!(got, [PaneChange::Reset { cols: 100, rows: 30, bytes: b"SCREEN".to_vec() }]);
+        assert_eq!(
+            got,
+            [PaneChange::Screen { snapshot: b"SCREEN".to_vec(), at: 5 + PANE_LIMIT as u64 }],
+            "stamped where what comes next starts"
+        );
         assert_eq!(c.at, 5 + big.len() as u64, "the count goes on: bytes after start there");
         // A screen bigger than the limit itself: kept, once.
         let huge = vec![b'z'; PANE_LIMIT * 2];
         c.push(PaneChange::Output { at: 0, bytes: big }, || huge.clone());
         let got = c.take();
         assert_eq!(got.len(), 1);
-        assert!(matches!(&got[0], PaneChange::Reset { bytes, .. } if bytes.len() == PANE_LIMIT * 2));
+        assert!(matches!(&got[0], PaneChange::Screen { snapshot, .. } if snapshot.len() == PANE_LIMIT * 2));
     }
 
     #[test]
@@ -763,6 +788,64 @@ mod tests {
         assert!(j.new_panes(&shape_of(&[(1, 0)])).is_empty());
     }
 
+    /// A screen's state as vt100 keeps it, the scrollback, the alternate
+    /// screen, the saved cursor and the scroll region included: restored
+    /// from a snapshot taken anywhere, a copy fed the rest of the same
+    /// bytes ends the same as the original, byte for byte.
+    #[test]
+    fn a_copy_restored_from_a_screen_snapshot_stays_the_same() {
+        let stream = [
+            "plain line\r\n\x1b[1;31mred bold\x1b[0m and \x1b[38;2;10;200;30mrgb\x1b[48;5;17m bg\x1b[0m\r\n",
+            "中文宽字符在这里折行中文宽字符在这里折行中文宽字符\r\n",
+            &"x".repeat(97),
+            "\r\n\x1b[?2004h\x1b[?1h\x1b=\x1b[?1006h\x1b[?1002h",
+            &(0..60).map(|i| format!("history {i}\r\n")).collect::<String>(),
+            "\x1b[3;8r\x1b[?6h\x1b[2;3Hin region\x1b7\x1b[?6l\x1b[5;5H\x1b[44m",
+            "\x1b[?1049h\x1b[2J\x1b[Hfull screen \x1b[7minverse\x1b[0m\x1b[10;1Hrow ten",
+            "\x1b[2;10r\x1b[?25l\x1b[20;40Hend at the edge",
+            &"y".repeat(40),
+            "\x1b[?1049l\x1b8back\r\nafter",
+        ]
+        .concat();
+        let bytes = stream.as_bytes();
+        let fed = |b: &[u8]| {
+            let mut p = vt100::Parser::new(24, 80, 50);
+            p.process(b);
+            p
+        };
+        let whole = fed(bytes).screen().snapshot();
+        // Every point between two sequences: where a read can end.
+        let points: Vec<usize> =
+            (0..=bytes.len()).filter(|&k| k == bytes.len() || (bytes[k] == 0x1b || bytes[k] == b'\r')).collect();
+        assert!(points.len() > 40, "{}", points.len());
+        for &k in &points {
+            let original = fed(&bytes[..k]);
+            let snap = original.screen().snapshot();
+            let mut copy = vt100::Parser::new(5, 5, 0);
+            assert!(copy.screen_mut().restore(&snap), "at {k}");
+            assert_eq!(copy.screen().snapshot(), snap, "the same, read back, at {k}");
+            copy.process(&bytes[k..]);
+            assert_eq!(copy.screen().snapshot(), whole, "fed the rest from {k}");
+        }
+        // The size, the scrollback limit and what scrolled come with it.
+        let mut copy = vt100::Parser::new(5, 5, 0);
+        assert!(copy.screen_mut().restore(&whole));
+        assert_eq!(copy.screen().size(), (24, 80));
+        assert_eq!(copy.screen().scrollback_rows(), fed(bytes).screen().scrollback_rows());
+        assert_eq!(copy.screen().scrolled_total(), fed(bytes).screen().scrolled_total());
+        // Bytes it did not write change nothing.
+        let before = copy.screen().snapshot();
+        for bad in [&b""[..], b"KPS", b"KPS\x02", &whole[..whole.len() - 1], &[&whole[..], b"x"].concat()] {
+            assert!(!copy.screen_mut().restore(bad));
+        }
+        let mut flipped = whole.clone();
+        for i in (4..flipped.len()).step_by(97) {
+            flipped[i] ^= 0xff;
+            let _ = copy.screen_mut().restore(&flipped);
+            flipped[i] ^= 0xff;
+        }
+        assert!(copy.screen_mut().restore(&before), "still usable after damaged bytes");
+    }
     #[test]
     fn the_preview_leaves_escapes_out() {
         assert_eq!(preview(b"\x1b[1;32mok\x1b[0m\r\nnext\x1b]0;title\x07!", 60), "ok⏎next!");

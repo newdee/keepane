@@ -142,3 +142,41 @@ impl Attrs {
         attrs.write_buf(contents);
     }
 }
+
+// (keepane) `snapshot`: a colour and attributes as bytes.
+impl Color {
+    pub(crate) fn write_snap(self, w: &mut crate::snapshot::Writer) {
+        match self {
+            Self::Default => w.u8(0),
+            Self::Idx(i) => {
+                w.u8(1);
+                w.u8(i);
+            }
+            Self::Rgb(r, g, b) => {
+                w.u8(2);
+                w.bytes(&[r, g, b]);
+            }
+        }
+    }
+
+    pub(crate) fn read_snap(r: &mut crate::snapshot::Reader) -> Option<Self> {
+        Some(match r.u8()? {
+            0 => Self::Default,
+            1 => Self::Idx(r.u8()?),
+            2 => Self::Rgb(r.u8()?, r.u8()?, r.u8()?),
+            _ => return None,
+        })
+    }
+}
+
+impl Attrs {
+    pub(crate) fn write_snap(&self, w: &mut crate::snapshot::Writer) {
+        self.fgcolor.write_snap(w);
+        self.bgcolor.write_snap(w);
+        w.u8(self.mode);
+    }
+
+    pub(crate) fn read_snap(r: &mut crate::snapshot::Reader) -> Option<Self> {
+        Some(Self { fgcolor: Color::read_snap(r)?, bgcolor: Color::read_snap(r)?, mode: r.u8()? })
+    }
+}

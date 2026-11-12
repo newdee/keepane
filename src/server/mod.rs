@@ -14,13 +14,15 @@ mod gitstate;
 mod hints;
 pub mod import;
 pub mod input;
-mod journal;
+pub(crate) mod journal;
 mod keyhint;
 pub mod layout;
 mod link_agents;
 mod link_attach;
+pub(crate) mod link_feed;
 mod link_git;
 mod link_in;
+mod link_mirror;
 mod link_out;
 mod link_share;
 mod link_state;
@@ -100,6 +102,11 @@ const OUTPUT_QUEUE: usize = 64;
 
 enum Event {
     Pane(PaneEvent),
+    /// A link stream's first handshake message, from `keepane web`
+    /// (`link_feed`).
+    LinkStream(link_feed::StreamAsk),
+    /// What a copy of another machine's sessions heard (`link_mirror`).
+    Mirror(u64, String, link_mirror::MirrorNews),
     Connected(ClientId, mpsc::Sender<ServerMsg>),
     Msg(ClientId, ClientMsg),
     Gone(ClientId),
@@ -1306,6 +1313,11 @@ pub struct Server {
     next_remote_client: ClientId,
     /// Every change, numbered, for copies on other machines (decision 17).
     journal: journal::Journal,
+    /// The machines that copy this one's sessions now (`link_feed`).
+    feeds: Vec<link_feed::Subscriber>,
+    /// Copies of other machines' sessions, by their key (`link_mirror`).
+    mirrors: HashMap<String, link_mirror::Mirror>,
+    next_mirror: u64,
     /// What is shared with which paired machine (`link-share`): the keys of
     /// those machines, by the session, window or pane shared. Ids are never
     /// used twice, so a mark outlives nothing it was put on.
@@ -1451,6 +1463,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
                 // What the batch changed, for the journal: looked at once
                 // per batch, before anything else can change.
                 srv.journal_look();
+                srv.stream_push();
             }
             // At most one frame per FRAME: panes printing flat out would
             // otherwise be redrawn for every read (measured: half a core
@@ -1733,6 +1746,9 @@ impl Server {
             remote_clients: HashMap::new(),
             next_remote_client: link_attach::FIRST_ID,
             journal: journal::Journal::default(),
+            feeds: Vec::new(),
+            mirrors: HashMap::new(),
+            next_mirror: 0,
             link_shares: HashMap::new(),
             link_lists: HashMap::new(),
             next_link_list: 0,
@@ -2713,6 +2729,8 @@ impl Server {
             Event::SshSeen(seen) => self.ssh_seen(seen),
             Event::Prices(p) => self.prices_fetched(p),
             Event::Web(generation, seen) => self.web_seen(generation, seen),
+            Event::LinkStream(ask) => self.link_stream_ask(ask),
+            Event::Mirror(round, key, news) => self.mirror_news(round, key, news),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
             Event::LinkAnswer(a) => self.link_answered(*a),
             Event::LinkGitDone(d) => self.link_git_done(*d),
@@ -6545,7 +6563,7 @@ impl Server {
                     let state = p.screen().state_formatted();
                     fresh.process(&state);
                     // A copy elsewhere makes its model again the same way.
-                    p.note(journal::PaneChange::Reset { cols, rows, bytes: state });
+                    p.note(journal::PaneChange::Reset { cols, rows, bytes: state, at: 0 });
                     // What scrolled off so far is logged by the old parser;
                     // the new one counts its lines from where it starts.
                     if p.log_to.is_some() {
@@ -6560,6 +6578,8 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::ListDone { after, json } => Outcome::Text(self.list_done(after, json)),
+            Cmd::LinkMirror { addr, stop } => self.link_mirror(&addr, stop),
+            Cmd::ShowMirror { addr, pane, json } => self.show_mirror(addr.as_deref(), pane, json),
             Cmd::ShowChanges { since, target, json, snapshot } => {
                 let pane = match target {
                     Some(t) => match self.resolve(Some(&t), cid) {

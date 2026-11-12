@@ -1529,8 +1529,9 @@ and panes themselves, so a name used again by something new is not shared;
 they go into the saves and come back with `resume`.
 
 `--full` is all of it: every pane, typed into too (`keepane link watch`),
-every session, attached to (`keepane link attach`), its messages run in
-`shell` panes, and it may start panes and send commits and projects here.
+every session, attached to (`keepane link attach`) and copied over to
+it whole (`keepane link mirror`), its messages run in `shell` panes, and
+it may start panes and send commits and projects here.
 Plain HTTP can be read
 by anyone on the network, so `--full` is taken only over Tailscale (or from
 this machine); from a LAN address the machine has only what is shared, and
@@ -1559,6 +1560,8 @@ keepane trace-message 12 -w 60                 # a message sent there: what beca
 keepane link capture -S 100 100.64.0.3:7681/%worker   # what a pane there shows (shared with this machine)
 keepane link watch 100.64.0.3:7681/%worker            # that pane, live, in this terminal
 keepane link attach 100.64.0.3:7681 work              # that session, as if attached there (--full)
+keepane link mirror 100.64.0.3:7681                   # a copy of every session there, kept here (--full)
+keepane show-mirror 100.64.0.3:7681                   # what the copy holds (-t %3: a pane's screen)
 ```
 
 A pane of another machine opens live here: Enter on it in the chart of

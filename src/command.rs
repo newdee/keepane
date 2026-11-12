@@ -198,6 +198,19 @@ pub enum Cmd {
         /// ends, where what it printed stops, and the command itself.
         json: bool,
     },
+    /// `link-mirror <machine> [--stop]`: keep a copy of that machine's sessions
+    /// here, up to date over a link stream (docs/design/link.md, decision 17).
+    LinkMirror {
+        addr: String,
+        stop: bool,
+    },
+    /// `show-mirror [machine] [-t pane] [-J]`: the copies kept, one's sessions,
+    /// or one pane's screen in it.
+    ShowMirror {
+        addr: Option<String>,
+        pane: Option<u32>,
+        json: bool,
+    },
     /// `show-changes [-J] [-S] [-s seq] [-t pane]`: the server's changes after
     /// number `seq` (docs/design/link.md, decision 17), one pane's with `-t`;
     /// `-S`: every pane's screen now instead, where a copy starts.
@@ -1150,6 +1163,26 @@ impl fmt::Display for Cmd {
                     f.write_str(" -J")?;
                 }
                 fmt_target(f, target)
+            }
+            Cmd::LinkMirror { addr, stop } => {
+                write!(f, "link-mirror {}", quote(addr))?;
+                if *stop {
+                    f.write_str(" --stop")?;
+                }
+                Ok(())
+            }
+            Cmd::ShowMirror { addr, pane, json } => {
+                f.write_str("show-mirror")?;
+                if *json {
+                    f.write_str(" -J")?;
+                }
+                if let Some(p) = pane {
+                    write!(f, " -t %{p}")?;
+                }
+                if let Some(a) = addr {
+                    write!(f, " {}", quote(a))?;
+                }
+                Ok(())
             }
             Cmd::ShowChanges { since, target, json, snapshot } => {
                 f.write_str("show-changes")?;
@@ -2512,6 +2545,8 @@ pub const COMMANDS: &[&str] = &[
     "list-keys",
     "list-marks",
     "show-changes",
+    "show-mirror",
+    "link-mirror",
     "list-agents",
     "ssh-hosts",
     "trace-pane",
@@ -2660,6 +2695,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-keys", &[]),
     ("list-marks", &["-J", "-t"]),
     ("show-changes", &["-J", "-S", "-s", "-t"]),
+    ("show-mirror", &["-J", "-t"]),
+    ("link-mirror", &["--stop", "-k"]),
     ("list-agents", &["-J"]),
     ("ssh-hosts", &["-J"]),
     ("trace-pane", &["-J", "-t"]),
@@ -3115,6 +3152,42 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ListMarks { target, json }
+        }
+        "link-mirror" => {
+            let (mut addr, mut stop) = (None, false);
+            while let Some(w) = a.next() {
+                match w {
+                    "--stop" | "-k" => stop = true,
+                    f if f.starts_with('-') => return Err(bad_flag(n, f)),
+                    w if addr.is_none() => addr = Some(w.to_string()),
+                    w => return Err(format!("{n}: unexpected argument '{w}'")),
+                }
+            }
+            let Some(addr) = addr else { return Err(format!("usage: {n} <host:port> [--stop]")) };
+            Cmd::LinkMirror { addr, stop }
+        }
+        "show-mirror" => {
+            let (mut addr, mut pane, mut json) = (None, None, false);
+            while let Some(w) = a.next() {
+                match w {
+                    "-J" => json = true,
+                    "-t" => {
+                        let v = a.value("-t")?;
+                        pane = Some(
+                            v.trim_start_matches('%')
+                                .parse()
+                                .map_err(|_| format!("{n}: -t takes a pane of the copy: %N"))?,
+                        );
+                    }
+                    f if f.starts_with('-') => return Err(bad_flag(n, f)),
+                    w if addr.is_none() => addr = Some(w.to_string()),
+                    w => return Err(format!("{n}: unexpected argument '{w}'")),
+                }
+            }
+            if pane.is_some() && addr.is_none() {
+                return Err(format!("{n}: -t needs the machine"));
+            }
+            Cmd::ShowMirror { addr, pane, json }
         }
         "show-changes" => {
             let (mut since, mut target, mut json, mut snapshot) = (None, None, false, false);
@@ -5157,6 +5230,10 @@ mod tests {
             "list-marks",
             "show-changes -J -s 4 -t %2",
             "show-changes -J -S",
+            "link-mirror 100.64.0.2:7681",
+            "link-mirror 100.64.0.2:7681 --stop",
+            "show-mirror",
+            "show-mirror -J -t %3 100.64.0.2:7681",
             "show-changes",
         ];
         for s in all.into_iter().chain([
@@ -5177,7 +5254,7 @@ mod tests {
     }
 
     fn p(s: &str) -> Cmd {
-        parse_line(s).unwrap().unwrap()
+        parse_line(s).unwrap_or_else(|e| panic!("{s:?}: {e}")).unwrap()
     }
 
     #[test]

@@ -426,6 +426,7 @@ impl Server {
         if peers.is_empty() {
             return Outcome::Text("no machines paired: `keepane link add <its keepane web address>`".into());
         }
+        let fed = self.feeds_to();
         let mut rows =
             vec![["MACHINE", "KEY", "IT HAS HERE", "THIS HAS THERE", "LAST SEEN"].map(String::from).to_vec()];
         for p in &peers {
@@ -439,6 +440,8 @@ impl Server {
                 let shared = self.shared_labels(&p.key);
                 if shared.is_empty() { "nothing".to_string() } else { format!("shared: {}", shared.join(", ")) }
             };
+            // Copying this machine's sessions over a link stream right now.
+            let here = if fed.contains(&p.key) { format!("{here}; copies it now") } else { here };
             let seen = self
                 .link
                 .as_ref()

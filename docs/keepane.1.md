@@ -294,6 +294,13 @@ read-only (`q` closes it); it asks through `link-view` (the screen, or
 (the pane here is put in `passthrough`; F12 gives the keys back);
 `link-view -c` and `link-keys -c` name that client. `prefix d` there ends
 it; a client not asked for in 15 seconds is let go there and made again.
+`keepane link mirror <host:port>` (`link-mirror`) keeps a copy of every
+session there, for a machine that gave this one `--full`: one connection
+to its web port, encrypted (Noise IK with the two machines' link keys),
+protobuf inside; the copy starts from a snapshot of every pane and takes
+each change after it, and after a dropped connection goes on from the last
+change it had (`--stop` ends it). `show-mirror` (`[host:port] [-t pane]
+[-J]`) lists the copies, one copy's sessions, or a pane's screen in it.
 `trace-message` of a message sent there asks
 that machine what became of it (queued, delivered, done or failed, a shell
 command's output; `-w` waits there). `keepane link remove <host:port>`
@@ -321,8 +328,8 @@ name used again by something else is not shared; the marks go into the
 session's save and come back with `resume`. `keepane link allow <host:port>
 --full` (`link-allow`) gives it all of this machine, as if it sat here:
 every pane, typed into too (`link watch`), every session, attached to
-(`link attach`), its messages run in `shell` panes, it may start panes and
-send commits and projects here. Over plain
+(`link attach`), copied (`link mirror`), its messages run in `shell`
+panes, it may start panes and send commits and projects here. Over plain
 HTTP anyone on the network could read what goes between the two, so
 `--full` is taken only over Tailscale
 (100.64.0.0/10, fd7a:115c:a1e0::/48) or from this machine; from any other

@@ -1337,7 +1337,7 @@ impl Pane {
     /// many (`journal::PaneChanges::push`).
     pub fn note(&mut self, change: super::journal::PaneChange) {
         let parser = &self.parser;
-        self.changes.push(change, || parser.screen().state_formatted());
+        self.changes.push(change, || parser.screen().snapshot());
     }
 
     /// Fold what the shell said into the pane's marks.
@@ -2764,6 +2764,7 @@ mod tests {
                 C::Fullscreen { on } => Some(format!("full {on}")),
                 C::Size { cols, rows } => Some(format!("size {cols}x{rows}")),
                 C::Reset { .. } => Some("reset".into()),
+                C::Screen { .. } => Some("screen".into()),
             })
             .collect();
         assert_eq!(

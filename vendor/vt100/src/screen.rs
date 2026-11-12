@@ -1381,3 +1381,54 @@ fn u16_to_u8(i: u16) -> Option<u8> {
         Some(i.try_into().unwrap())
     }
 }
+
+// (keepane) `snapshot`: the whole screen as bytes.
+impl Screen {
+    pub(crate) fn write_snap(&self, w: &mut crate::snapshot::Writer) {
+        self.attrs.write_snap(w);
+        self.saved_attrs.write_snap(w);
+        w.u8(self.modes);
+        w.u8(match self.mouse_protocol_mode {
+            MouseProtocolMode::None => 0,
+            MouseProtocolMode::Press => 1,
+            MouseProtocolMode::PressRelease => 2,
+            MouseProtocolMode::ButtonMotion => 3,
+            MouseProtocolMode::AnyMotion => 4,
+        });
+        w.u8(match self.mouse_protocol_encoding {
+            MouseProtocolEncoding::Default => 0,
+            MouseProtocolEncoding::Utf8 => 1,
+            MouseProtocolEncoding::Sgr => 2,
+        });
+        self.grid.write_snap(w);
+        self.alternate_grid.write_snap(w);
+    }
+
+    pub(crate) fn read_snap(r: &mut crate::snapshot::Reader) -> Option<Self> {
+        let attrs = crate::attrs::Attrs::read_snap(r)?;
+        let saved_attrs = crate::attrs::Attrs::read_snap(r)?;
+        let modes = r.u8()?;
+        let mouse_protocol_mode = match r.u8()? {
+            0 => MouseProtocolMode::None,
+            1 => MouseProtocolMode::Press,
+            2 => MouseProtocolMode::PressRelease,
+            3 => MouseProtocolMode::ButtonMotion,
+            4 => MouseProtocolMode::AnyMotion,
+            _ => return None,
+        };
+        let mouse_protocol_encoding = match r.u8()? {
+            0 => MouseProtocolEncoding::Default,
+            1 => MouseProtocolEncoding::Utf8,
+            2 => MouseProtocolEncoding::Sgr,
+            _ => return None,
+        };
+        let grid = crate::grid::Grid::read_snap(r)?;
+        let alternate_grid = crate::grid::Grid::read_snap(r)?;
+        // The screen in use has its rows.
+        let in_use = if modes & MODE_ALTERNATE_SCREEN != 0 { &alternate_grid } else { &grid };
+        if in_use.size() != grid.size() || alternate_grid.size() != grid.size() || !in_use.has_rows() {
+            return None;
+        }
+        Some(Self { grid, alternate_grid, attrs, saved_attrs, modes, mouse_protocol_mode, mouse_protocol_encoding })
+    }
+}

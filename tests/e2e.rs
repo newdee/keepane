@@ -7678,6 +7678,155 @@ async fn a_pane_of_another_machine_is_watched_live_and_typed_into_only_with_full
     b.cli(&["kill-server"]).await;
 }
 
+/// A copy of another machine's sessions (`link-mirror`, `show-mirror`;
+/// docs/design/link.md, decision 17): only with all of that machine; it
+/// starts from a snapshot and follows every change, pane for pane; after a
+/// dropped connection it goes on from the last change it had; taken back,
+/// the stream ends and a new one is refused, with the reason.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
+    let _dir = link_test_dir();
+    let a = Harness::start("mira").await;
+    let b = Harness::start("mirb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb", "-x", "100", "-y", "30"]).await;
+    b.wait_capture("wb:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let web = async |h: &Harness, port: &str| {
+        let (code, status, err) = h.cli(&["web-start", "-p", port, "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a, "0").await;
+    let (ub, addr_b) = web(&b, "0").await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    let mirror = |out: &str| out.to_string();
+    // Paired is not enough: a copy of every session takes all of it.
+    let (code, out, err) = a.cli(&["link-mirror", &addr_b]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("copying"), "{out}");
+    a.wait_for_cli("refused, and why", &["show-mirror"], |_, out| out.contains("does not have all of this machine"))
+        .await;
+    // Given all of it: the copy starts from a snapshot.
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--full"]).await.0, 0);
+    a.wait_for_cli("live", &["show-mirror"], |_, out| out.contains(": live") && out.contains("1 snapshots")).await;
+    let pane = pane_id(&b, "wb:0.0").await.to_string();
+    let same_in = async |id: &str, what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pane = id.to_string();
+        loop {
+            let (_, real, _) = b.cli(&["capture-pane", "-p", "-t", &format!("%{pane}")]).await;
+            let (_, copy, _) = a.cli(&["show-mirror", "-t", &pane, &addr_b]).await;
+            let trim = |s: &str| s.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim_end().to_string();
+            if trim(&real) == trim(&copy) && trim(&real).contains(what) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the copy of {pane} is not the pane:\n{real}\n---\n{copy}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    let same = async |what: &str| same_in(&pane, what).await;
+    b.cli(&["send-keys", "-t", "wb:0.0", "echo mirror-one", "Enter"]).await;
+    same("mirror-one").await;
+
+    // A first handshake message recorded and sent again is refused, as is
+    // one too old (this machine's own key, a fixed ephemeral key: the same
+    // message twice, and its answers readable).
+    let id_a = keepane::link::Identity::load_or_make(&keepane::link::dir(&a.socket)).unwrap();
+    let (_, key_b, _) = b.cli(&["link-id"]).await;
+    let theirs = keepane::link_stream::x25519_public(key_b.split_whitespace().next().unwrap()).unwrap();
+    let answer_to = async |ephemeral: [u8; 32], time: i64| {
+        use prost::Message;
+        use tokio::io::AsyncWriteExt;
+        let mut noise = snow::Builder::new(keepane::link_stream::NOISE.parse().unwrap())
+            .prologue(keepane::link_stream::PROLOGUE)
+            .local_private_key(&id_a.x25519_secret())
+            .remote_public_key(&theirs)
+            .fixed_ephemeral_key_for_testing_only(&ephemeral)
+            .build_initiator()
+            .unwrap();
+        let hello = keepane::link_proto::Hello { since: None, version: "test".into(), time, epoch: None };
+        let mut msg1 = vec![0u8; 65535];
+        let n = noise.write_message(&hello.encode_to_vec(), &mut msg1).unwrap();
+        let mut s = tokio::net::TcpStream::connect(&addr_b).await.unwrap();
+        s.write_all(keepane::link_stream::request(&addr_b).as_bytes()).await.unwrap();
+        let head = keepane::link_stream::read_answer_head(&mut s).await.unwrap();
+        assert_eq!(head.status, 101);
+        keepane::link_stream::write_frame(&mut s, &msg1[..n]).await.unwrap();
+        let msg2 = keepane::link_stream::read_frame(&mut s).await.unwrap();
+        let mut payload = vec![0u8; 65535];
+        let n = noise.read_message(&msg2, &mut payload).unwrap();
+        keepane::link_proto::Answer::decode(&payload[..n]).unwrap()
+    };
+    // Not an upgrade: an answer, no stream.
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut s = tokio::net::TcpStream::connect(&addr_b).await.unwrap();
+        s.write_all(format!("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", keepane::link_stream::PATH).as_bytes())
+            .await
+            .unwrap();
+        let head = keepane::link_stream::read_answer_head(&mut s).await.unwrap();
+        assert_eq!(head.status, 400, "{}", head.body);
+    }
+    let now = keepane::link::now();
+    assert_eq!(answer_to([9; 32], now).await.refused, None, "the first time: welcome");
+    let again = answer_to([9; 32], now).await.refused.unwrap_or_default();
+    assert!(again.contains("seen before"), "{again}");
+    let old = answer_to([8; 32], now - 600).await.refused.unwrap_or_default();
+    assert!(old.contains("clocks"), "{old}");
+    // A pane made there is in the copy too, its shape and its screen.
+    b.cli(&["split-window", "-d", "-t", "wb:0"]).await;
+    let second = pane_id(&b, "wb:0.1").await;
+    a.wait_for_cli("the new pane", &["show-mirror", &addr_b], |_, out| out.contains(&format!("%{second} "))).await;
+    // Its model made again there (respawned, its history cleared): the copy
+    // takes it and goes on, without starting again.
+    same_in(&second.to_string(), "keepane>").await;
+    assert_eq!(b.cli(&["respawn-pane", "-k", "-t", &format!("%{second}")]).await.0, 0);
+    b.cli(&["select-pane", "-t", "wb:0.0"]).await;
+    b.cli(&["clear-history"]).await;
+    b.cli(&["send-keys", "-t", "wb:0.0", "echo after-clear", "Enter"]).await;
+    same("after-clear").await;
+    // The respawned pane's new prompt, in the copy too.
+    same_in(&second.to_string(), "keepane>").await;
+    let (_, out, _) = a.cli(&["show-mirror"]).await;
+    assert!(out.contains(" 0 restarts"), "{out}");
+    let (_, list, _) = b.cli(&["link-list"]).await;
+    assert!(list.contains("copies it now"), "{list}");
+    let (_, j, _) = a.cli(&["show-mirror", "-J", &addr_b]).await;
+    let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+    assert_eq!(v["sessions"][0]["name"], "wb", "{j}");
+    assert_eq!(v["panes"].as_array().unwrap().len(), 2, "{j}");
+
+    // The connection dropped (all of it taken back for a moment, then given
+    // again; stopping its web and listening on the same port again races
+    // other tests for the port on Linux): the copy goes on from the last
+    // change it had, no snapshot.
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--none"]).await.0, 0);
+    // Given again as soon as the stream ends, before the copy tries again
+    // (a second later).
+    a.wait_for_cli("ended", &["show-mirror"], |_, out| !out.contains(": live")).await;
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--full"]).await.0, 0);
+    b.cli(&["send-keys", "-t", "wb:0.0", "echo mirror-two", "Enter"]).await;
+    a.wait_for_cli("live again", &["show-mirror"], |_, out| out.contains(": live") && out.contains("2 connections"))
+        .await;
+    same("mirror-two").await;
+    let (_, out, _) = a.cli(&["show-mirror"]).await;
+    assert!(out.contains("1 snapshots") && out.contains("0 restarts"), "went on from where it was: {}", mirror(&out));
+
+    // All of it taken back: the stream ends, and a new one is refused.
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--none"]).await.0, 0);
+    a.wait_for_cli("refused again", &["show-mirror"], |_, out| out.contains("does not have all of this machine")).await;
+    // Stopped: nothing copied.
+    let (code, out, _) = a.cli(&["link-mirror", &addr_b, "--stop"]).await;
+    assert!(code == 0 && out.contains("stopped"), "{out}");
+    assert_eq!(a.cli(&["show-mirror"]).await.1.trim(), "");
+    let (code, _, err) = a.cli(&["show-mirror", "-t", "%1", "127.0.0.9:1"]).await;
+    assert!(code != 0 && err.contains("not paired"), "{err}");
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
+}
+
 /// A session of another machine, attached from here (`link-attach`,
 /// `keepane link attach`): only with all of that machine; a client made
 /// there at this terminal's size, drawn as it would be there, whose keys
@@ -11595,7 +11744,7 @@ async fn a_copy_fed_the_changes_after_a_snapshot_shows_what_the_pane_shows() {
     let mine = snap["panes"].as_array().unwrap().iter().find(|p| p["id"].as_u64() == Some(u64::from(id))).unwrap();
     let (cols, rows) = (mine["cols"].as_u64().unwrap() as u16, mine["rows"].as_u64().unwrap() as u16);
     let mut copy = vt100::Parser::new(rows, cols, 0);
-    copy.process(&bytes(&mine["screen"]));
+    assert!(copy.screen_mut().restore(&bytes(&mine["screen"])), "its terminal model, whole");
     let mut at = mine["at"].as_u64().unwrap();
 
     // A command, a resize, and a second window.
@@ -11628,6 +11777,8 @@ async fn a_copy_fed_the_changes_after_a_snapshot_shows_what_the_pane_shows() {
         } else if let Some(r) = e.get("reset") {
             copy = vt100::Parser::new(r["rows"].as_u64().unwrap() as u16, r["cols"].as_u64().unwrap() as u16, 0);
             copy.process(&bytes(&r["bytes"]));
+        } else if let Some(s) = e.get("screen") {
+            assert!(copy.screen_mut().restore(&bytes(&s["snapshot"])));
         }
     }
     let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", "ch:0.0"]).await;
@@ -11709,7 +11860,10 @@ async fn a_copy_fed_the_changes_after_a_snapshot_shows_what_the_pane_shows() {
     let (code, _, err) = h.cli(&["undo-kill"]).await;
     assert_eq!(code, 0, "{err}");
     let (_, out, _) = h.cli(&["show-changes", "-J", "-s", &before]).await;
-    assert_eq!(pane_changes(&out, second, "reset").len(), 1, "{out}");
+    let back = pane_changes(&out, second, "screen");
+    assert_eq!(back.len(), 1, "{out}");
+    let mut model = vt100::Parser::new(2, 2, 0);
+    assert!(model.screen_mut().restore(&bytes(&back[0]["snapshot"])), "its terminal model, whole");
     let (code, _, err) = h.cli(&["show-changes", "-s", "nope"]).await;
     assert!(code != 0 && err.contains("bad number"), "{err}");
     // The biggest number there is: nothing after it, no error.

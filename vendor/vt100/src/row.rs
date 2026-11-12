@@ -484,3 +484,71 @@ impl Row {
         (prev_pos, prev_attrs)
     }
 }
+
+/// (keepane) `snapshot`: a cell whose attributes follow it (they differ
+/// from the cell before), as a flag in its length byte, which never uses
+/// this bit.
+const SNAP_ATTRS: u8 = 0b0010_0000;
+/// (keepane) `snapshot`: the cell before, again, `u16` more times: a length
+/// byte no cell has (31 bytes, more than a cell holds).
+const SNAP_REPEAT: u8 = 0b0001_1111;
+
+// (keepane) `snapshot`: a row as bytes, runs of the same cell once.
+impl Row {
+    pub(crate) fn write_snap(&self, w: &mut crate::snapshot::Writer) {
+        w.u16(self.cols());
+        w.u8(u8::from(self.wrapped));
+        let mut attrs = crate::attrs::Attrs::default();
+        let mut i = 0;
+        while i < self.cells.len() {
+            let cell = &self.cells[i];
+            let (len, bytes, a) = cell.snap_parts();
+            let differ = *a != attrs;
+            w.u8(len | if differ { SNAP_ATTRS } else { 0 });
+            w.bytes(bytes);
+            if differ {
+                a.write_snap(w);
+                attrs = *a;
+            }
+            let same = self.cells[i + 1..].iter().take(usize::from(u16::MAX)).take_while(|c| *c == cell).count();
+            if same > 0 {
+                w.u8(SNAP_REPEAT);
+                // at most u16::MAX, taken above
+                w.u16(u16::try_from(same).unwrap());
+            }
+            i += 1 + same;
+        }
+    }
+
+    pub(crate) fn read_snap(r: &mut crate::snapshot::Reader, cols: u16) -> Option<Self> {
+        if r.u16()? != cols {
+            return None;
+        }
+        let wrapped = match r.u8()? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        let mut cells: Vec<crate::Cell> = Vec::with_capacity(usize::from(cols));
+        let mut attrs = crate::attrs::Attrs::default();
+        while cells.len() < usize::from(cols) {
+            let h = r.u8()?;
+            if h == SNAP_REPEAT {
+                let n = usize::from(r.u16()?);
+                let last = cells.last()?.clone();
+                if cells.len() + n > usize::from(cols) {
+                    return None;
+                }
+                cells.extend(std::iter::repeat_n(last, n));
+                continue;
+            }
+            let len = h & !SNAP_ATTRS;
+            let bytes = r.take(usize::from(len & 0b0001_1111))?.to_vec();
+            if h & SNAP_ATTRS != 0 {
+                attrs = crate::attrs::Attrs::read_snap(r)?;
+            }
+            cells.push(crate::Cell::from_snap_parts(len, &bytes, attrs)?);
+        }
+        Some(Self { cells, wrapped })
+    }
+}

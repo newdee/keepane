@@ -55,6 +55,7 @@ mod parser;
 mod perform;
 mod row;
 mod screen;
+mod snapshot;
 mod term;
 
 pub use attrs::Color;

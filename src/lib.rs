@@ -14,6 +14,8 @@ pub mod ipc;
 pub mod keys;
 pub mod legacy;
 pub mod link;
+pub mod link_proto;
+pub mod link_stream;
 pub mod link_watch;
 pub mod logger;
 pub mod man;
