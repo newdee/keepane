@@ -116,7 +116,19 @@ impl Server {
         {
             return Ok(p);
         }
-        self.resolve(target, cid).map(|(_, _, p)| p)
+        let (sid, _, p) = self.resolve(target, cid)?;
+        // A pane of another machine copied here (`mirrored`) has its inbox
+        // there: a message goes to it by that machine's name for it.
+        if let Some(r) = self.session(sid).and_then(|s| s.remote.as_ref())
+            && let Some(id) = self.pane_ref(p).and_then(|p| p.remote)
+        {
+            if let Some(t) = target.filter(|t| t.remote.is_some()) {
+                let t = crate::command::target_string(t);
+                return Err(format!("{t}: a pane on another machine ({}); only send-message goes there", r.addr));
+            }
+            return Err(format!("%{p} is pane %{} of {}: send it to {}/%{}", id.id, r.addr, r.addr, id.id));
+        }
+        Ok(p)
     }
 
     /// `pane` is `by`, or was created by it or by one it created.
@@ -345,8 +357,8 @@ impl Server {
             }
         } else {
             let Some(t) = target else { return Outcome::Error("send-message: --to pane (or -t) required".into()) };
-            match self.resolve(Some(t), cid) {
-                Ok((_, _, p)) => p,
+            match self.mail_target(Some(t), cid) {
+                Ok(p) => p,
                 Err(e) => return Outcome::Error(e),
             }
         };

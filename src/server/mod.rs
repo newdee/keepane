@@ -28,6 +28,7 @@ mod link_share;
 mod link_state;
 mod link_tree;
 mod mail;
+mod mirrored;
 mod newer;
 pub mod observe;
 mod outwait;
@@ -107,6 +108,9 @@ enum Event {
     LinkStream(link_feed::StreamAsk),
     /// What a copy of another machine's sessions heard (`link_mirror`).
     Mirror(u64, String, link_mirror::MirrorNews),
+    /// Keys a machine fed typed into a copy of one of this machine's panes
+    /// (its key, the pane's id, the bytes): `link_feed`.
+    StreamInput(String, u32, Vec<u8>),
     Connected(ClientId, mpsc::Sender<ServerMsg>),
     Msg(ClientId, ClientMsg),
     Gone(ClientId),
@@ -883,6 +887,10 @@ struct Window {
     last_output: Instant,
     /// The focus frame moving to where the eye should go (`animation`).
     anim: Option<Anim>,
+    /// A window of another machine's session (`Session::remote`): its id
+    /// there, and its zoom. Its panes are placed as they are there, never
+    /// laid out here.
+    remote: Option<Box<mirrored::RemoteWindow>>,
 }
 
 /// A focus-frame animation (`animation`): a rounded frame that moves and
@@ -1018,6 +1026,17 @@ impl Window {
     }
 
     fn relayout(&mut self, area: Rect, chrome: Chrome) {
+        // Placed as it is on its machine (`mirrored`), whatever the size here:
+        // zoomed as it is there, on the pane chosen here.
+        if let Some(r) = &self.remote {
+            self.zoomed = r.zoomed;
+            // Zoomed there: drawn where the zoomed pane is, the pane chosen
+            // here.
+            self.rects = mirrored::place(&r.placed, r.zoomed_pane.filter(|_| r.zoomed), area, chrome);
+            self.layout_rects = self.rects.clone();
+            mirrored::zoom_on_active(self);
+            return;
+        }
         self.rects.clear();
         if self.zoomed && self.pane(self.active).is_some() {
             self.rects.push((self.active, area));
@@ -1109,6 +1128,9 @@ struct Session {
     /// Unix time of creation, for `#{session_created}`.
     created_at: i64,
     last_used: Instant,
+    /// A session of another machine, kept here as a copy (`mirrored`,
+    /// docs/design/link.md, decision 17).
+    remote: Option<mirrored::RemoteSession>,
 }
 
 impl Session {
@@ -1318,6 +1340,9 @@ pub struct Server {
     /// Copies of other machines' sessions, by their key (`link_mirror`).
     mirrors: HashMap<String, link_mirror::Mirror>,
     next_mirror: u64,
+    /// Machines whose copy `link mirror --stop` stopped: not copied again
+    /// by themselves (`mirror_peers`) while this server runs.
+    mirrors_stopped: HashSet<String>,
     /// What is shared with which paired machine (`link-share`): the keys of
     /// those machines, by the session, window or pane shared. Ids are never
     /// used twice, so a mark outlives nothing it was put on.
@@ -1749,6 +1774,7 @@ impl Server {
             feeds: Vec::new(),
             mirrors: HashMap::new(),
             next_mirror: 0,
+            mirrors_stopped: HashSet::new(),
             link_shares: HashMap::new(),
             link_lists: HashMap::new(),
             next_link_list: 0,
@@ -1773,7 +1799,9 @@ impl Server {
         let dir = self.history_dir();
         let day = chrono::Local::now().date_naive();
         let mut out = Vec::new();
-        for s in &self.sessions {
+        // Another machine's sessions copied here (`mirrored`) keep their
+        // history there.
+        for s in self.sessions.iter().filter(|s| s.remote.is_none()) {
             for (wi, w) in s.windows.iter().enumerate() {
                 for (pi, id) in w.layout.panes().into_iter().enumerate() {
                     let file = crate::histlog::file_for(
@@ -1932,6 +1960,10 @@ impl Server {
     fn save_session_file(&mut self, sid: SessionId) -> Result<PathBuf, String> {
         let history = self.pane_histories(sid);
         let s = self.session(sid).ok_or("no such session")?;
+        // Another machine's, copied here (`mirrored`): saved there.
+        if let Some(r) = &s.remote {
+            return Err(format!("{} is a session of {}: it is saved there", s.name, r.addr));
+        }
         let saved = self.snapshot(s, &history);
         // The change key covers the structure only: pane output changes every
         // second and must not make the file be rewritten every second.
@@ -1956,7 +1988,7 @@ impl Server {
         if !self.opts.autosave {
             return;
         }
-        let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
+        let ids: Vec<SessionId> = self.sessions.iter().filter(|s| s.remote.is_none()).map(|s| s.id).collect();
         for sid in ids {
             if let Err(e) = self.save_session_file(sid) {
                 log::warn!("save at session end: {e}");
@@ -1980,7 +2012,7 @@ impl Server {
             return;
         }
         let dir = self.sessions_dir();
-        let ids: Vec<SessionId> = self.sessions.iter().map(|s| s.id).collect();
+        let ids: Vec<SessionId> = self.sessions.iter().filter(|s| s.remote.is_none()).map(|s| s.id).collect();
         // Pane output is saved too, but refreshing it means writing files, so
         // that happens on a slow beat rather than whenever something printed.
         let refresh_history =
@@ -2730,6 +2762,7 @@ impl Server {
             Event::Prices(p) => self.prices_fetched(p),
             Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::LinkStream(ask) => self.link_stream_ask(ask),
+            Event::StreamInput(key, pane, bytes) => self.stream_input(&key, pane, &bytes),
             Event::Mirror(round, key, news) => self.mirror_news(round, key, news),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
             Event::LinkAnswer(a) => self.link_answered(*a),
@@ -2775,6 +2808,7 @@ impl Server {
                 self.git_tick();
                 self.link_git_sweep();
                 self.remote_clients_tick();
+                self.mirror_peers();
                 self.forget_due();
                 // An open chart keeps the paired machines' panes fresh.
                 if self.a_chart_is_open() {
@@ -2785,7 +2819,9 @@ impl Server {
                 self.killed.retain(|k| k.at().elapsed() < keep);
                 // A server nobody uses has no reason to live (e.g. started by
                 // `keepane attach` when there was nothing to attach to).
-                if self.sessions.is_empty()
+                // Other machines' sessions copied here are theirs: they keep
+                // no server alive.
+                if self.own_sessions() == 0
                     && self.clients.is_empty()
                     && self.started.elapsed() > Duration::from_secs(10)
                 {
@@ -2794,9 +2830,15 @@ impl Server {
                 }
             }
         }
-        if self.had_session && self.sessions.is_empty() {
+        if self.had_session && self.own_sessions() == 0 {
             self.quit = true;
         }
+    }
+
+    /// How many sessions are this machine's own (not another machine's
+    /// copied here, `mirrored`).
+    fn own_sessions(&self) -> usize {
+        self.sessions.iter().filter(|s| s.remote.is_none()).count()
     }
 
     /// A client connected (or one for another machine was made): nothing
@@ -3164,7 +3206,7 @@ impl Server {
             .iter()
             .flat_map(|s| s.windows.iter())
             .flat_map(|w| w.panes.iter())
-            .find(|p| p.actor.name.as_deref() == Some(name))
+            .find(|p| p.remote.is_none() && p.actor.name.as_deref() == Some(name))
             .map(|p| p.id)
     }
 
@@ -3180,10 +3222,21 @@ impl Server {
     /// where the pane is expected to be: a pane that has moved since is an
     /// error, never a message to wherever it went.
     fn named_pane(&self, t: &Target) -> Result<Option<(SessionId, usize, PaneId)>, String> {
-        let id = match (t.pane_id, &t.pane_name) {
-            (Some(id), _) => id,
-            (None, Some(name)) => self.pane_by_name(name).ok_or_else(|| format!("can't find pane: %{name}"))?,
-            (None, None) => return Ok(None),
+        let id = match (t.pane_id, &t.pane_name, &t.remote) {
+            // `host:port/%7`: pane 7 of that machine, copied here.
+            (Some(id), _, Some(machine)) => self
+                .sessions
+                .iter()
+                .filter(|s| s.remote.as_ref().is_some_and(|r| r.addr == *machine))
+                .flat_map(|s| s.windows.iter())
+                .flat_map(|w| w.panes.iter())
+                .find(|p| p.remote.is_some_and(|r| r.id == id))
+                .map(|p| p.id)
+                .ok_or_else(|| format!("can't find pane: {machine}/%{id}"))?,
+            (None, Some(name), Some(machine)) => return Err(format!("can't find pane: {machine}/%{name}")),
+            (Some(id), _, None) => id,
+            (None, Some(name), None) => self.pane_by_name(name).ok_or_else(|| format!("can't find pane: %{name}"))?,
+            (None, None, _) => return Ok(None),
         };
         let (sid, widx) = self
             .sessions
@@ -3191,7 +3244,12 @@ impl Server {
             .find_map(|s| s.windows.iter().position(|w| w.pane(id).is_some()).map(|widx| (s.id, widx)))
             .ok_or_else(|| format!("can't find pane: %{id}"))?;
         if t.session.is_some() || t.window.is_some() {
-            let place = Target { session: t.session.clone(), window: t.window.clone(), ..Default::default() };
+            let place = Target {
+                session: t.session.clone(),
+                window: t.window.clone(),
+                remote: t.remote.clone(),
+                ..Default::default()
+            };
             let s = if t.session.is_some() { self.resolve_session(Some(&place), None)? } else { sid };
             let w = if t.window.is_some() { self.resolve_window(s, Some(&place))? } else { widx };
             if (s, w) != (sid, widx) {
@@ -3206,7 +3264,7 @@ impl Server {
     /// most recently used.
     fn resolve_session(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<SessionId, String> {
         if let Some(t) = target {
-            Self::here(t)?;
+            self.here(t)?;
         }
         if let Some(t) = target.filter(|t| t.names_pane()) {
             return Ok(self.named_pane(t)?.expect("names a pane").0);
@@ -3214,14 +3272,25 @@ impl Server {
         if let Some(t) = target
             && let Some(name) = &t.session
         {
+            // `host:port/name`: that machine's session, copied here.
+            if let Some(machine) = &t.remote {
+                return self
+                    .mirror_session(machine, name)
+                    .ok_or_else(|| format!("can't find session: {machine}/{name}"));
+            }
             return self
                 .sessions
                 .iter()
                 .find(|s| s.name == *name || name.strip_prefix('$').and_then(|n| n.parse::<u32>().ok()) == Some(s.id))
                 .map(|s| s.id)
                 .or_else(|| {
-                    // Prefix match like tmux.
-                    let m: Vec<_> = self.sessions.iter().filter(|s| s.name.starts_with(name.as_str())).collect();
+                    // Prefix match like tmux; of this machine's own: a bare
+                    // name never names another machine's session.
+                    let m: Vec<_> = self
+                        .sessions
+                        .iter()
+                        .filter(|s| s.remote.is_none() && s.name.starts_with(name.as_str()))
+                        .collect();
                     if m.len() == 1 { Some(m[0].id) } else { None }
                 })
                 .ok_or_else(|| format!("can't find session: {name}"));
@@ -3288,11 +3357,18 @@ impl Server {
         }
     }
 
-    /// A target of this machine: one on another (`host:port/…`,
+    /// A target of this machine, or of a session of another machine copied
+    /// here (`mirrored`); any other on another machine (`host:port/…`,
     /// docs/design/link.md) is only for `send-message`, which never comes
     /// here with it.
-    fn here(t: &Target) -> Result<(), String> {
+    fn here(&self, t: &Target) -> Result<(), String> {
         match &t.remote {
+            Some(machine) if self.sessions.iter().any(|s| s.remote.as_ref().is_some_and(|r| r.addr == *machine)) => {
+                if t.session.is_none() && !t.names_pane() {
+                    return Err(format!("{machine}/: which session of it?"));
+                }
+                Ok(())
+            }
             Some(machine) => Err(format!(
                 "{}: a pane on another machine ({machine}); only send-message goes there",
                 crate::command::target_string(t)
@@ -3304,7 +3380,7 @@ impl Server {
     /// (session id, window index, pane id) for a command context.
     fn resolve(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<(SessionId, usize, PaneId), String> {
         if let Some(t) = target {
-            Self::here(t)?;
+            self.here(t)?;
         }
         if let Some(t) = target.filter(|t| t.names_pane()) {
             return Ok(self.named_pane(t)?.expect("names a pane"));
@@ -3352,6 +3428,18 @@ impl Server {
     }
 
     fn resize_session(&mut self, sid: SessionId, cols: u16, rows: u16) {
+        // A session of another machine is the size it is there: looking at
+        // it from here never resizes it (`mirrored`); its windows are placed
+        // again, as what the window area is here may have changed (the status
+        // line moved, a border row taken or given).
+        if self.session(sid).is_some_and(|s| s.remote.is_some()) {
+            let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap_or((cols, rows));
+            let (area, chrome) = (self.window_area(scols, srows), self.chrome());
+            for w in self.session_mut(sid).map(|s| s.windows.iter_mut()).into_iter().flatten() {
+                w.relayout(area, chrome);
+            }
+            return;
+        }
         let area = self.window_area(cols.max(1), rows.max(1));
         let border = self.chrome();
         if let Some(s) = self.session_mut(sid) {
@@ -3539,6 +3627,7 @@ impl Server {
         full: bool,
     ) -> Result<PaneId, String> {
         let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).ok_or("no such session")?;
+        self.own_session(sid, "split a pane of it")?;
         let area = self.window_area(scols, srows);
         let border = self.chrome();
         // Unzoom first so the layout rectangles are real.
@@ -4015,6 +4104,7 @@ impl Server {
         argv: &[String],
     ) -> Result<usize, String> {
         let (cols, rows) = self.session(sid).map(|s| (s.cols, s.rows)).ok_or("no such session")?;
+        self.own_session(sid, "add a window to it")?;
         let area = self.window_area(cols, rows);
         // A new window's shell starts from the history of the pane in use.
         let from = self.session(sid).and_then(|s| s.window()).map(|w| w.active);
@@ -4047,6 +4137,7 @@ impl Server {
             alert_mail: false,
             last_output: Instant::now(),
             anim: None,
+            remote: None,
         };
         w.relayout(area, self.chrome());
         let s = self.session_mut(sid).unwrap();
@@ -4098,6 +4189,7 @@ impl Server {
             created: Instant::now(),
             created_at: chrono::Local::now().timestamp(),
             last_used: Instant::now(),
+            remote: None,
         });
         self.had_session = true;
         if let Err(e) = self.new_window(sid, window_name, cwd, argv) {
@@ -4127,6 +4219,9 @@ impl Server {
     // -------------------------------------------------------------- commands
 
     fn exec(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
+        if let Some(why) = self.mirror_refusal(&cmd, cid) {
+            return Outcome::Error(why);
+        }
         match cmd {
             Cmd::Version => Outcome::Text(format!("keepane {}", env!("CARGO_PKG_VERSION"))),
             c @ (Cmd::SendMessage { .. }
@@ -4459,8 +4554,15 @@ impl Server {
             },
             Cmd::KillSession { target, all_but } => match self.resolve_session(target.as_ref(), cid) {
                 Ok(sid) => {
-                    let victims: Vec<SessionId> =
-                        self.sessions.iter().map(|s| s.id).filter(|id| (*id == sid) != all_but).collect();
+                    // Another machine's sessions are not this one's to kill
+                    // (`mirrored`): `-a` leaves them.
+                    let victims: Vec<SessionId> = self
+                        .sessions
+                        .iter()
+                        .filter(|s| s.remote.is_none())
+                        .map(|s| s.id)
+                        .filter(|id| (*id == sid) != all_but)
+                        .collect();
                     for v in victims {
                         self.kill_session(v, "session killed");
                     }
@@ -4483,7 +4585,7 @@ impl Server {
             }
             Cmd::SaveSession { target, all } => {
                 let ids: Vec<SessionId> = if all {
-                    self.sessions.iter().map(|s| s.id).collect()
+                    self.sessions.iter().filter(|s| s.remote.is_none()).map(|s| s.id).collect()
                 } else {
                     match self.resolve_session(target.as_ref(), cid) {
                         Ok(s) => vec![s],
@@ -5423,6 +5525,7 @@ impl Server {
                     alert_mail: false,
                     last_output: Instant::now(),
                     anim: None,
+                    remote: None,
                 });
                 let idx = s.windows.len() - 1;
                 s.select_window(idx);
@@ -6926,6 +7029,7 @@ impl Server {
             }
             ctx.pane_ssh_host = self.ssh_host_of(pid);
         }
+        ctx.pane_machine = sess.remote.as_ref().map(|r| r.addr.clone()).unwrap_or_default();
         if let Some(r) = w.rect_of(pid) {
             let area = self.window_area(sess.cols, sess.rows);
             ctx.pane_top = r.y.saturating_sub(area.y);
@@ -9220,8 +9324,10 @@ impl Server {
         let Some(pid) = w.pane_at(x, y) else {
             // On a border: start a drag from the pane whose edge this is.
             // The outer edge of the window is not a border.
+            // (Another machine's window is laid out there: no drag.)
             if pressed & BTN_LEFT != 0
                 && mouse_opt
+                && w.remote.is_none()
                 && area.contains(x, y)
                 && let Some((pane, horizontal)) = border_owner(&w.rects, x, y, frames, area)
             {

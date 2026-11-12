@@ -449,13 +449,15 @@ pub fn preview(bytes: &[u8], max: usize) -> String {
 }
 
 impl Server {
-    /// Every session's shape now.
+    /// Every session's shape now: this machine's own (not those of other
+    /// machines copied here, `mirrored`, which are theirs to tell).
     pub(super) fn journal_shape(&self) -> Shape {
         let base = self.opts.base_index;
         Shape {
             sessions: self
                 .sessions
                 .iter()
+                .filter(|s| s.remote.is_none())
                 .map(|s| SessionShape {
                     id: s.id,
                     name: s.name.clone(),
@@ -512,7 +514,7 @@ impl Server {
         let shape = self.journal_shape();
         let fresh: HashSet<PaneId> = self.journal.new_panes(&shape).into_iter().collect();
         let mut panes = Vec::new();
-        for s in &mut self.sessions {
+        for s in self.sessions.iter_mut().filter(|s| s.remote.is_none()) {
             for w in &mut s.windows {
                 for p in &mut w.panes {
                     if fresh.contains(&p.id) && !p.changes.starts_whole() {
@@ -543,7 +545,7 @@ impl Server {
         self.journal_look();
         let shape = self.journal.shape().clone();
         let mut panes = Vec::new();
-        for s in &self.sessions {
+        for s in self.sessions.iter().filter(|s| s.remote.is_none()) {
             for w in &s.windows {
                 for p in &w.panes {
                     let screen = p.screen();

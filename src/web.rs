@@ -575,7 +575,7 @@ const STREAM_SILENCE: Duration = Duration::from_secs(45);
 /// `crate::server::link_feed`): the handshake goes to the server, which
 /// holds the key; then the feed's changes go out, as protobuf, encrypted.
 async fn link_stream(mut stream: TcpStream, peer: IpAddr, state: &State, req: &Request) -> Result<()> {
-    use crate::link_proto::{Ping, ToClient, ToServer, to_client};
+    use crate::link_proto::{Ping, ToClient, ToServer, to_client, to_server};
     use crate::server::link_feed::{FeedItem, StreamAsk};
     let upgrade = req
         .headers
@@ -636,8 +636,12 @@ async fn link_stream(mut stream: TcpStream, peer: IpAddr, state: &State, req: &R
                 }
                 frame = frames.recv() => {
                     let Some(frame) = frame else { return Ok(()) };
-                    // What it says back is only that it is there, for now.
-                    let _ = opener.open::<ToServer>(&frame?)?;
+                    // That it is there, and what is typed into its copy.
+                    for msg in opener.open::<ToServer>(&frame?)? {
+                        if let Some(to_server::Kind::Input(i)) = msg.kind {
+                            (feed.input)(i.pane, i.bytes);
+                        }
+                    }
                     heard = std::time::Instant::now();
                 }
                 _ = tick.tick() => {

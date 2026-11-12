@@ -154,6 +154,14 @@ keepane 的文件（日志、事件日志、会话存档、pane 历史）放在�
 brew install newdee/tap/keepane
 ```
 
+也可以先加 tap、信任一次 keepane，之后用短名字安装（Homebrew 6 起只加载信任过的第三方 tap 里的 formula；`brew trust --formula` 只信任这一个，不是整个 tap）：
+
+```bash
+brew tap newdee/tap
+brew trust --formula newdee/tap/keepane   # Homebrew 6 起需要
+brew install keepane
+```
+
 以后用 `brew upgrade keepane` 升级。也可以从 [Releases](https://github.com/newdee/keepane/releases) 下载 `keepane-v<版本>-linux-x86_64.tar.gz`（静态编译，任何 x86_64 Linux 都能跑）、`keepane-v<版本>-macos-aarch64.tar.gz`（Apple 芯片）或 `keepane-v<版本>-macos-x86_64.tar.gz`（Intel），解压后把 `keepane` 放进 `PATH`：
 
 ```bash
@@ -719,7 +727,7 @@ keepane link allow 100.64.0.3:7681 --none        # 什么都不给，共享的�
 
 共享出去的部分，对方能看到（它的 `C-b w` 结构图、`link panes`、`link capture`、`link watch`），也能发消息；这台电脑的其余部分对它来说不存在。共享一个 session 或窗口，以后在里面新开的也算共享。消息按 pane 的工作模式处理，但 `shell` 模式的 pane 不收只是共享的机器发来的消息：消息在那里会当命令执行，等于控制这台电脑，要 `--full` 才行。`link share` 共享到这种 pane 时会点名提醒。在 `C-b w` 里按 `s`，把光标处的 session、窗口或 pane 共享给配过对的机器（配了几台时弹菜单选），再按一次 `s` 收回；共享的会标上 `shared`。共享标记记在 session、窗口、pane 本身上，不是记名字，所以后来新建的同名东西不会被共享；标记随 session 一起保存，`resume` 时恢复。
 
-`--full` 就是全部：所有 pane 都能看到，也能在里面打字（`keepane link watch`），所有 session 都能进入（`keepane link attach`），也能整份复制过去（`keepane link mirror`），发来的消息在 `shell` pane 里执行，还能在这边开 pane、送提交和项目。普通 HTTP 在局域网里谁都能抓包看到，所以 `--full` 只对 Tailscale 地址（或本机）生效；从局域网地址来的请求只按共享的部分处理，并且会说明原因。`--full --lan` 则对任何网络都生效。
+`--full` 就是全部：所有 pane 都能看到，也能在里面打字（`keepane link watch`），所有 session 都能进入（`keepane link attach`），它的 session 都会显示在这边（`keepane link mirror`），发来的消息在 `shell` pane 里执行，还能在这边开 pane、送提交和项目。普通 HTTP 在局域网里谁都能抓包看到，所以 `--full` 只对 Tailscale 地址（或本机）生效；从局域网地址来的请求只按共享的部分处理，并且会说明原因。`--full --lan` 则对任何网络都生效。
 
 共享和 `--full` 都要在 keepane 之外的终端里、或者 `C-b :` 提示符里做，不能在 pane 里做，否则 agent 就能自己把别的机器放进来。这台电脑的 pane 发出去的消息，对方的回信总能回到发信的 pane，不管这个 pane 有没有共享。0.56 和 0.57 里，共享出去的 `shell` pane 会执行对方发来的消息。0.55 及以前是五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`）；五个全开的机器升级后算 `--full`，只开了部分的算什么都不给，状态栏会提示一次是哪几台。
 
@@ -737,9 +745,11 @@ keepane trace-message 12 -w 60                 # 发过去的消息在那边怎�
 keepane link capture -S 100 100.64.0.3:7681/%worker   # 对方某个 pane 现在显示的内容（要共享给这台机器）
 keepane link watch 100.64.0.3:7681/%worker            # 在这个终端里实时看那个 pane
 keepane link attach 100.64.0.3:7681 work              # 进入那个 session，和在那台电脑上 attach 一样（要 --full）
-keepane link mirror 100.64.0.3:7681                   # 在这边保存那台全部 session 的副本（要 --full）
+keepane link mirror 100.64.0.3:7681                   # 立刻重新复制（--stop：不再复制）
 keepane show-mirror 100.64.0.3:7681                   # 副本里有什么（-t %3：某个 pane 的屏幕）
 ```
+
+给了这台 `--full` 的机器，它的每个 session 在这边也是 session，名字后面标上它：`work@100.64.0.3:7681`。每台配对的机器都会自动经加密连接复制过来；没给 `--full` 的会拒绝，一分钟后再问一次。这种 session 和别的 session 一样可以 attach、切换、查看、打字，快捷键、主题、复制模式都用本机的；打的字送到对方那个 pane（连接断着时打的字直接丢掉，`show-mirror` 会计数）。命令里用 `100.64.0.3:7681/work` 指它，`100.64.0.3:7681/%3` 指它的 3 号 pane，它里面的 `#{pane_machine}` 是 `100.64.0.3:7681`。它的结构归对方：在这边分屏、关闭、改大小都会被拒绝，在这边看它也不会改对方的尺寸。终端比 session 小时只显示一部分，和别的过大 session 一样平移。它不会保存在这边，复制这台的机器也看不到它。
 
 另一台机器的 pane 可以在这里实时打开：在 `C-b w` 结构图里对着它按 Enter，就开一个窗口看它（这个窗口还开着时，再按 Enter 就跳过去）；`keepane link watch` 在任何终端里做同样的事。查看器是普通 pane 里的普通程序，所以缩放、分屏、复制模式、`C-b v` 都和对待别的 pane 一样，`resume` 也会把它恢复。它按那个 pane 的大小显示，放不下时截掉，并跟着光标走。只有对方给了这台 `--full`，打的字才会送到那个 pane：在 shell 里打字就能执行任意命令，所以能控制一个 pane 和控制全部没有区别。只是共享的 pane 只能看，按 `q` 关掉。
 

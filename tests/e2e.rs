@@ -7679,10 +7679,13 @@ async fn a_pane_of_another_machine_is_watched_live_and_typed_into_only_with_full
 }
 
 /// A copy of another machine's sessions (`link-mirror`, `show-mirror`;
-/// docs/design/link.md, decision 17): only with all of that machine; it
-/// starts from a snapshot and follows every change, pane for pane; after a
-/// dropped connection it goes on from the last change it had; taken back,
-/// the stream ends and a new one is refused, with the reason.
+/// docs/design/link.md, decision 17): every paired machine is copied by
+/// itself, but only one that gives all of itself answers; the copy starts
+/// from a snapshot and follows every change, pane for pane; its sessions are
+/// sessions here (`host:port/name`), looked at and typed into, but their
+/// shape is theirs; after a dropped connection it goes on from the last
+/// change it had; taken back, the stream ends and a new one is refused, with
+/// the reason, and its sessions stay as they were last seen until stopped.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     let _dir = link_test_dir();
@@ -7702,14 +7705,16 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     let (ub, addr_b) = web(&b, "0").await;
     assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
     let mirror = |out: &str| out.to_string();
-    // Paired is not enough: a copy of every session takes all of it.
+    // Paired: copied by itself. Paired is not enough: a copy of every
+    // session takes all of it.
+    a.wait_for_cli("refused, and why", &["show-mirror"], |_, out| out.contains("does not have all of this machine"))
+        .await;
+    // Given all of it, and asked again at once (by itself, a minute later):
+    // the copy starts from a snapshot.
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--full"]).await.0, 0);
     let (code, out, err) = a.cli(&["link-mirror", &addr_b]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("copying"), "{out}");
-    a.wait_for_cli("refused, and why", &["show-mirror"], |_, out| out.contains("does not have all of this machine"))
-        .await;
-    // Given all of it: the copy starts from a snapshot.
-    assert_eq!(b.cli(&["link-allow", &addr_a, "--full"]).await.0, 0);
     a.wait_for_cli("live", &["show-mirror"], |_, out| out.contains(": live") && out.contains("1 snapshots")).await;
     let pane = pane_id(&b, "wb:0.0").await.to_string();
     let same_in = async |id: &str, what: &str| {
@@ -7729,6 +7734,44 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     let same = async |what: &str| same_in(&pane, what).await;
     b.cli(&["send-keys", "-t", "wb:0.0", "echo mirror-one", "Enter"]).await;
     same("mirror-one").await;
+
+    // Its session is a session here, named with the machine; `host:port/`
+    // names it and its panes (by their ids there), a bare name does not.
+    let (_, sessions, _) = a.cli(&["list-sessions"]).await;
+    assert!(sessions.contains(&format!("wb@{addr_b}:")) && sessions.contains("wa:"), "{sessions}");
+    let size = "#{window_width}x#{window_height}";
+    let real = b.cli(&["display-message", "-p", "-t", "wb", size]).await.1;
+    let copied =
+        a.cli(&["display-message", "-p", "-t", &format!("{addr_b}/wb"), &format!("#{{session_name}} {size}")]).await.1;
+    assert_eq!(copied.trim(), format!("wb@{addr_b} {}", real.trim()));
+    let there = format!("{addr_b}/%{pane}");
+    let (code, shown, err) = a.cli(&["capture-pane", "-p", "-t", &there]).await;
+    assert!(code == 0 && shown.contains("mirror-one"), "{err}{shown}");
+    assert_ne!(a.cli(&["has-session", "-t", "wb"]).await.0, 0, "a bare name is this machine's");
+    assert_eq!(a.cli(&["has-session", "-t", &format!("{addr_b}/wb")]).await.0, 0);
+    // Typed into here, typed into there.
+    assert_eq!(a.cli(&["send-keys", "-t", &there, "echo typed-from-a", "Enter"]).await.0, 0);
+    b.wait_capture("wb:0.0", "what the copy typed", |t| t.matches("typed-from-a").count() >= 2).await;
+    same("typed-from-a").await;
+    // Its shape is that machine's to change; its size too: a client here
+    // of another size leaves it as it is there.
+    let (code, _, err) = a.cli(&["split-window", "-t", &format!("{addr_b}/wb")]).await;
+    assert!(code != 0 && err.contains("only that machine can"), "{err}");
+    let (code, _, err) = a.cli(&["resize-pane", "-Z", "-t", &there]).await;
+    assert!(code != 0 && err.contains("only that machine can"), "{err}");
+    // Every session but this machine's one killed: another machine's are not
+    // this one's to kill.
+    assert_eq!(a.cli(&["kill-session", "-a", "-t", "wa"]).await.0, 0);
+    assert_eq!(a.cli(&["has-session", "-t", &format!("{addr_b}/wb")]).await.0, 0);
+    let (_, size, _) = b.cli(&["display-message", "-p", "-t", "wb:0.0", "#{pane_width}x#{pane_height}"]).await;
+    let (_, copied, _) = a.cli(&["display-message", "-p", "-t", &there, "#{pane_width}x#{pane_height}"]).await;
+    assert_eq!(size.trim(), copied.trim());
+    let machine = a.cli(&["display-message", "-p", "-t", &there, "#{pane_machine}"]).await.1;
+    assert_eq!(machine.trim(), addr_b);
+    assert_eq!(a.cli(&["display-message", "-p", "-t", "wa", "[#{pane_machine}]"]).await.1.trim(), "[]");
+    // Not told on: a machine copying this one sees this one's sessions only.
+    let (_, j, _) = a.cli(&["show-changes", "-S", "-J"]).await;
+    assert!(!j.contains("wb@"), "{j}");
 
     // A first handshake message recorded and sent again is refused, as is
     // one too old (this machine's own key, a fixed ephemeral key: the same
@@ -7817,10 +7860,15 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     // All of it taken back: the stream ends, and a new one is refused.
     assert_eq!(b.cli(&["link-allow", &addr_a, "--none"]).await.0, 0);
     a.wait_for_cli("refused again", &["show-mirror"], |_, out| out.contains("does not have all of this machine")).await;
-    // Stopped: nothing copied.
+    // Its sessions stay as last seen while it is down; stopped, nothing is
+    // copied, its sessions are gone, and it is not copied again by itself.
+    assert_eq!(a.cli(&["has-session", "-t", &format!("{addr_b}/wb")]).await.0, 0);
     let (code, out, _) = a.cli(&["link-mirror", &addr_b, "--stop"]).await;
     assert!(code == 0 && out.contains("stopped"), "{out}");
     assert_eq!(a.cli(&["show-mirror"]).await.1.trim(), "");
+    assert_ne!(a.cli(&["has-session", "-t", &format!("{addr_b}/wb")]).await.0, 0);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(a.cli(&["show-mirror"]).await.1.trim(), "", "stopped stays stopped");
     let (code, _, err) = a.cli(&["show-mirror", "-t", "%1", "127.0.0.9:1"]).await;
     assert!(code != 0 && err.contains("not paired"), "{err}");
     a.cli(&["kill-server"]).await;

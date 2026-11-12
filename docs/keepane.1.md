@@ -294,13 +294,22 @@ read-only (`q` closes it); it asks through `link-view` (the screen, or
 (the pane here is put in `passthrough`; F12 gives the keys back);
 `link-view -c` and `link-keys -c` name that client. `prefix d` there ends
 it; a client not asked for in 15 seconds is let go there and made again.
-`keepane link mirror <host:port>` (`link-mirror`) keeps a copy of every
-session there, for a machine that gave this one `--full`: one connection
-to its web port, encrypted (Noise IK with the two machines' link keys),
-protobuf inside; the copy starts from a snapshot of every pane and takes
-each change after it, and after a dropped connection goes on from the last
-change it had (`--stop` ends it). `show-mirror` (`[host:port] [-t pane]
-[-J]`) lists the copies, one copy's sessions, or a pane's screen in it.
+Every paired machine is copied by itself, and one that gave this one
+`--full` answers: one connection to its web port, encrypted (Noise IK
+with the two machines' link keys), protobuf inside; the copy starts from
+a snapshot of every pane and takes each change after it, and after a
+dropped connection goes on from the last change it had. One that says no
+is asked again once a minute; `keepane link mirror <host:port>`
+(`link-mirror`) asks again now, `--stop` stops copying it. Its sessions
+are sessions here, named `name@host:port`: attached to, looked at and
+typed into (the keys go to the pane there; while the connection is down
+they are let go and counted), named in commands as `host:port/name` and
+`host:port/%N` (its pane N); `#{pane_machine}` is that `host:port` in
+them. A split, a kill, a resize, a rename of one is refused: its shape
+is that machine's, and looking at it never resizes it there. They are
+not saved, and machines that copy this one do not see them.
+`show-mirror` (`[host:port] [-t pane] [-J]`) lists the copies, one copy's
+sessions, or a pane's screen in it.
 `trace-message` of a message sent there asks
 that machine what became of it (queued, delivered, done or failed, a shell
 command's output; `-w` waits there). `keepane link remove <host:port>`

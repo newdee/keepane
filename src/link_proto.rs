@@ -44,7 +44,7 @@ pub struct Answer {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct ToServer {
-    #[prost(oneof = "to_server::Kind", tags = "1")]
+    #[prost(oneof = "to_server::Kind", tags = "1, 2")]
     pub kind: Option<to_server::Kind>,
 }
 
@@ -53,6 +53,8 @@ pub mod to_server {
     pub enum Kind {
         #[prost(message, tag = "1")]
         Ping(super::Ping),
+        #[prost(message, tag = "2")]
+        Input(super::Input),
     }
 }
 
@@ -77,6 +79,18 @@ pub mod to_client {
 /// Still there (each side says it when it has said nothing for a while).
 #[derive(Clone, PartialEq, Message)]
 pub struct Ping {}
+
+/// What is typed into a pane of the copy, for the pane it copies (by its
+/// id there): bytes as the program reads them, put in by the copy's own
+/// keys (the copy's model has the same modes as the original's). A keepane
+/// of 0.61 or before reads it as nothing.
+#[derive(Clone, PartialEq, Message)]
+pub struct Input {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub bytes: Vec<u8>,
+}
 
 #[derive(Clone, PartialEq, Message)]
 pub struct Entry {

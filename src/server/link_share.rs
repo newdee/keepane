@@ -97,15 +97,20 @@ impl Server {
     }
 
     /// Whether a request of that machine may reach the pane: `peer.full` as
-    /// the request's network leaves it (`link_inbound`).
+    /// the request's network leaves it (`link_inbound`). A pane of a third
+    /// machine copied here (`mirrored`) is that machine's to give: never.
     pub(super) fn may_reach(&self, peer: &Peer, pid: PaneId) -> bool {
+        if self.find_pane(pid).is_none_or(|p| p.remote.is_some()) {
+            return false;
+        }
         (peer.full && self.place_of(pid).is_some()) || self.pane_shared_with(&peer.key, pid)
     }
 
-    /// The panes that machine may reach, in the order of the sessions.
+    /// The panes that machine may reach, in the order of the sessions; none
+    /// of a third machine's copied here.
     pub(super) fn reachable_panes(&self, peer: &Peer) -> Vec<PaneId> {
         let mut out = Vec::new();
-        for s in &self.sessions {
+        for s in self.sessions.iter().filter(|s| s.remote.is_none()) {
             for w in &s.windows {
                 for p in &w.panes {
                     if peer.full
@@ -192,6 +197,15 @@ impl Server {
         n
     }
 
+    /// The session a spot is in.
+    fn spot_session(&self, spot: Spot) -> Option<SessionId> {
+        match spot {
+            Spot::Session(sid) => Some(sid),
+            Spot::Window(wid) => self.sessions.iter().find(|s| s.windows.iter().any(|w| w.id == wid)).map(|s| s.id),
+            Spot::Pane(pid) => self.session_of_pane(pid),
+        }
+    }
+
     /// `link-share` and `link-unshare`.
     pub(super) fn link_share(&mut self, cid: Option<ClientId>, addr: &str, targets: &[String], share: bool) -> Outcome {
         // What a pane may not do: let another machine in. Taking back is
@@ -233,6 +247,15 @@ impl Server {
         share: bool,
         all: bool,
     ) -> Outcome {
+        // A third machine's session copied here (`mirrored`) is that
+        // machine's to share: never given on from here.
+        if share
+            && let Some(r) = spots.iter().filter_map(|s| self.spot_session(*s)).find_map(|sid| {
+                self.session(sid).and_then(|s| s.remote.as_ref().map(|r| (s.name.clone(), r.addr.clone())))
+            })
+        {
+            return Outcome::Error(format!("{} is a session of {}: only that machine can share it", r.0, r.1));
+        }
         let by = self.by(cid);
         let addr = peer.addr.clone();
         let labels: Vec<String> = spots.iter().filter_map(|s| self.spot_label(*s)).collect();

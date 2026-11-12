@@ -322,6 +322,16 @@ x86_64):
 brew install newdee/tap/keepane
 ```
 
+Or by its short name, the tap added and keepane trusted once (Homebrew
+6 and later load a formula of a tap not their own only once it is
+trusted; `brew trust --formula` trusts this one, not the whole tap):
+
+```bash
+brew tap newdee/tap
+brew trust --formula newdee/tap/keepane   # Homebrew 6 and later
+brew install keepane
+```
+
 `brew upgrade keepane` takes a new version. Or from the
 [releases page](https://github.com/newdee/keepane/releases):
 `keepane-v<version>-linux-x86_64.tar.gz` (a static build that runs on any
@@ -1537,8 +1547,8 @@ and panes themselves, so a name used again by something new is not shared;
 they go into the saves and come back with `resume`.
 
 `--full` is all of it: every pane, typed into too (`keepane link watch`),
-every session, attached to (`keepane link attach`) and copied over to
-it whole (`keepane link mirror`), its messages run in `shell` panes, and
+every session, attached to (`keepane link attach`) and shown there as
+its own (`keepane link mirror`), its messages run in `shell` panes, and
 it may start panes and send commits and projects here.
 Plain HTTP can be read
 by anyone on the network, so `--full` is taken only over Tailscale (or from
@@ -1568,9 +1578,24 @@ keepane trace-message 12 -w 60                 # a message sent there: what beca
 keepane link capture -S 100 100.64.0.3:7681/%worker   # what a pane there shows (shared with this machine)
 keepane link watch 100.64.0.3:7681/%worker            # that pane, live, in this terminal
 keepane link attach 100.64.0.3:7681 work              # that session, as if attached there (--full)
-keepane link mirror 100.64.0.3:7681                   # a copy of every session there, kept here (--full)
+keepane link mirror 100.64.0.3:7681                   # copy it again now (--stop: no copy)
 keepane show-mirror 100.64.0.3:7681                   # what the copy holds (-t %3: a pane's screen)
 ```
+
+Every session of a machine that gave this one `--full` is a session here
+too, named after it: `work@100.64.0.3:7681`. Each paired machine is
+copied by itself over an encrypted connection; one that has not given
+`--full` says no, and is asked again once a minute. Such a session is
+attached to, switched to, looked at and typed into as any other, with
+this machine's keys, theme and copy mode; what is typed goes to the pane
+there (while the connection is down it is let go, and `show-mirror`
+counts it). `100.64.0.3:7681/work` names it in a command,
+`100.64.0.3:7681/%3` its pane 3, and `#{pane_machine}` is
+`100.64.0.3:7681` in it. Its shape is that machine's: a split, a kill or
+a resize is refused here, and looking at it never resizes it there. A
+terminal smaller than the session shows part of it, panned as for any
+session too big for it. It is not saved here, and the machines
+that copy this one do not see it.
 
 A pane of another machine opens live here: Enter on it in the chart of
 `C-b w` opens a window watching it (Enter again goes to that window while

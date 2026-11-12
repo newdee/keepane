@@ -198,8 +198,9 @@ pub enum Cmd {
         /// ends, where what it printed stops, and the command itself.
         json: bool,
     },
-    /// `link-mirror <machine> [--stop]`: keep a copy of that machine's sessions
-    /// here, up to date over a link stream (docs/design/link.md, decision 17).
+    /// `link-mirror <machine> [--stop]`: copy that machine's sessions again now
+    /// (every paired machine is copied by itself), or stop copying them; its
+    /// sessions are sessions here (docs/design/link.md, decision 17).
     LinkMirror {
         addr: String,
         stop: bool,

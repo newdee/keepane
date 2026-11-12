@@ -105,6 +105,16 @@ impl Enter {
     }
 }
 
+/// A pane of another machine kept here (`Pane::remote`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemotePane {
+    /// Its id there.
+    pub id: u32,
+    /// The bytes of its output its model here has been fed: where the next
+    /// output starts.
+    pub at: u64,
+}
+
 /// vt100 callbacks: collects terminal replies ConPTY expects from a real
 /// terminal, the window title and bells.
 #[derive(Default)]
@@ -618,9 +628,10 @@ pub struct Pane {
     /// Bumped by `respawn`; events from an older generation are ignored.
     pub generation: u32,
     pub parser: vt100::Parser<Callbacks>,
-    master: Box<dyn MasterPty + Send>,
+    /// None for a pane of another machine (`remote`): no console here.
+    master: Option<Box<dyn MasterPty + Send>>,
     writer: Box<dyn Write + Send>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
+    killer: Option<Box<dyn ChildKiller + Send + Sync>>,
     /// Kill-on-close job holding the shell and everything it started, so a
     /// dead pane never leaves orphans (tmux's SIGHUP-the-process-group).
     job: Option<crate::platform::process::Tree>,
@@ -737,6 +748,11 @@ pub struct Pane {
     /// What changed in its terminal since the server last looked: for the
     /// journal (`super::journal`), which another machine copies it from.
     pub changes: super::journal::PaneChanges,
+    /// A pane of another machine, kept here as a copy (docs/design/link.md,
+    /// decision 17): its id there. No program runs here; what it prints
+    /// comes over the link stream (`link_mirror`), and keys typed into it
+    /// go there.
+    pub remote: Option<RemotePane>,
     /// Where the output of a command that ends in the piece being taken
     /// ends (`split_at_marks`): the byte the shell's word of it starts at.
     output_end: Option<u64>,
@@ -1005,9 +1021,9 @@ impl Pane {
             id,
             generation,
             parser: vt100::Parser::new_with_callbacks(rows, cols, history, Callbacks::default()),
-            master: pair.master,
+            master: Some(pair.master),
             writer,
-            killer,
+            killer: Some(killer),
             job,
             title: String::new(),
             program_title: None,
@@ -1058,6 +1074,7 @@ impl Pane {
             shell_history: None,
             changes: super::journal::PaneChanges::new(cols, rows),
             output_end: None,
+            remote: None,
         };
         // Before anything the program prints: the server reads that only
         // after this returns.
@@ -1065,6 +1082,132 @@ impl Pane {
             pane.process_output(text.as_bytes());
         }
         Ok(pane)
+    }
+
+    /// A pane of another machine (`remote`): `parser` its terminal model, a
+    /// copy of the one there; `writer` takes what is typed into it there.
+    /// What it is told about itself (`command`, `title`, `cwd`) comes from
+    /// that machine's shape.
+    pub fn remote(
+        id: PaneId,
+        remote: RemotePane,
+        parser: vt100::Parser<Callbacks>,
+        writer: Box<dyn Write + Send>,
+        tx: Sender<PaneEvent>,
+    ) -> Pane {
+        let (rows, cols) = parser.screen().size();
+        Pane {
+            slave: None,
+            pending: None,
+            tx,
+            id,
+            generation: 0,
+            parser,
+            master: None,
+            writer,
+            killer: None,
+            job: None,
+            title: String::new(),
+            program_title: None,
+            command: String::new(),
+            argv: Vec::new(),
+            cwd: None,
+            announced: false,
+            replay_done: false,
+            exit_code: None,
+            clock: false,
+            passthrough: false,
+            clock_turns: 0,
+            clock_pick: None,
+            git_base: None,
+            enter: None,
+            clock_anim: None,
+            clock_lines: None,
+            clock_over: None,
+            output_bytes: 0,
+            copy: None,
+            bell: false,
+            rang: false,
+            cols,
+            rows,
+            pipe: None,
+            recorder: None,
+            pid: None,
+            spawned_at: std::time::Instant::now(),
+            last_output: std::time::Instant::now(),
+            output_count: 0,
+            marks: std::collections::VecDeque::new(),
+            finished: Vec::new(),
+            log_to: None,
+            logged: 0,
+            log_hold: std::collections::VecDeque::new(),
+            log_hold_since: None,
+            log_buf: String::new(),
+            died_at: None,
+            actor: Default::default(),
+            prompted: false,
+            syntax: Default::default(),
+            delivered_line: None,
+            delivered_text: None,
+            settle: false,
+            shell_history: None,
+            changes: super::journal::PaneChanges::new(cols, rows),
+            output_end: None,
+            remote: Some(remote),
+        }
+    }
+
+    /// Output of a pane of another machine (`remote`), from where its model
+    /// here was: into the model. What the model answers (a cursor report) is
+    /// the program there's, which had its own answer: dropped. Its title and
+    /// directory come with that machine's shape.
+    pub fn feed_remote(&mut self, bytes: &[u8]) {
+        self.parser.process(bytes);
+        if let Some(r) = self.remote.as_mut() {
+            r.at += bytes.len() as u64;
+        }
+        let cb = self.parser.callbacks_mut();
+        let bell = std::mem::take(&mut cb.bell);
+        *cb = Callbacks { colours: cb.colours, ..Default::default() };
+        if bell {
+            self.bell = true;
+            self.rang = true;
+        }
+        if !bytes.is_empty() {
+            self.last_output = std::time::Instant::now();
+        }
+    }
+
+    /// A new model for a pane of another machine (a reset there, a screen
+    /// sent whole), fed `at` bytes of output.
+    pub fn set_remote_model(&mut self, parser: vt100::Parser<Callbacks>, at: u64) {
+        self.parser = parser;
+        let (rows, cols) = self.parser.screen().size();
+        (self.cols, self.rows) = (cols, rows);
+        if let Some(r) = self.remote.as_mut() {
+            r.at = at;
+        }
+        if let Some(c) = &mut self.copy {
+            c.cx = c.cx.min(cols - 1);
+            c.cy = c.cy.min(rows - 1);
+        }
+    }
+
+    /// Where the next output of a pane of another machine starts.
+    pub fn set_remote_at(&mut self, at: u64) {
+        if let Some(r) = self.remote.as_mut() {
+            r.at = at;
+        }
+    }
+
+    /// The size a pane of another machine is there.
+    pub fn set_remote_size(&mut self, cols: u16, rows: u16) {
+        (self.cols, self.rows) = (cols, rows);
+        self.parser.screen_mut().set_size(rows, cols);
+        if let Some(c) = &mut self.copy {
+            c.cx = c.cx.min(cols - 1);
+            c.cy = c.cy.min(rows - 1);
+        }
     }
 
     /// Whether the process that just ran was the printer of a resumed pane's
@@ -1085,7 +1228,7 @@ impl Pane {
         // The program is in; the printer may go (it waits for this).
         let _ = std::fs::remove_file(&p.path);
         self.pid = pid;
-        self.killer = killer;
+        self.killer = Some(killer);
         self.job = job;
         self.exit_code = None;
         self.died_at = None;
@@ -1992,6 +2135,11 @@ impl Pane {
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        // A pane of another machine is the size it is there
+        // (`set_remote_size`): looking at it never resizes it.
+        if self.remote.is_some() {
+            return;
+        }
         let cols = cols.max(1);
         let rows = rows.max(1);
         if cols == self.cols && rows == self.rows {
@@ -2004,7 +2152,9 @@ impl Pane {
         if let Some(r) = self.recorder.as_mut() {
             r.event("r", &format!("{cols}x{rows}"));
         }
-        if let Err(e) = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }) {
+        if let Some(m) = &self.master
+            && let Err(e) = m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        {
             log::warn!("pane {} resize failed: {e}", self.id);
         }
         if let Some(c) = &mut self.copy {
@@ -2018,7 +2168,9 @@ impl Pane {
         // Dropping the job terminates every process in it; the killer covers
         // the (unlikely) case where the job could not be created.
         self.job = None;
-        let _ = self.killer.kill();
+        if let Some(k) = self.killer.as_mut() {
+            let _ = k.kill();
+        }
     }
 
     pub fn screen(&self) -> &vt100::Screen {
@@ -2193,8 +2345,10 @@ impl Drop for Pane {
         // Field drop order would close the ConPTY before the job; kill first so
         // ClosePseudoConsole never waits on a live process tree.
         self.job = None;
-        if self.exit_code.is_none() {
-            let _ = self.killer.kill();
+        if self.exit_code.is_none()
+            && let Some(k) = self.killer.as_mut()
+        {
+            let _ = k.kill();
         }
     }
 }

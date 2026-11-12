@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use super::{ClientId, OUTPUT_QUEUE, Outcome, Server};
+use super::{ClientId, OUTPUT_QUEUE, Outcome, Server, SessionId};
 use crate::command::{Cmd, Target};
 use crate::ipc::{ClientMsg, KeyRecord, ServerMsg};
 use crate::link::Peer;
@@ -79,6 +79,26 @@ impl Server {
     /// `POST /link/attach`: a client attached to a session here (the one
     /// named, else the one used last) for a machine with all of this one.
     /// Its id comes back, with the session's name.
+    /// The session another machine attaches to: the one named, else the
+    /// one used last; this machine's own, never a third machine's copied
+    /// here (`mirrored`), which is not this one's to give.
+    pub(super) fn session_to_attach(&self, target: Option<&Target>) -> Result<SessionId, String> {
+        let sid = match target {
+            None => self
+                .sessions
+                .iter()
+                .filter(|s| s.remote.is_none())
+                .max_by_key(|s| s.last_used)
+                .map(|s| s.id)
+                .ok_or_else(|| "no sessions".to_string())?,
+            Some(_) => self.resolve_session(target, None)?,
+        };
+        match self.session(sid) {
+            Some(s) if s.remote.is_none() => Ok(sid),
+            _ => Err("no such session".into()),
+        }
+    }
+
     pub(super) fn link_attach_in(&mut self, body: &str, nonce: &str, peer: &Peer) -> Outcome {
         if let Some(no) = self.need_full(nonce, peer, "attach to sessions") {
             return no;
@@ -89,7 +109,7 @@ impl Server {
         if target.as_ref().is_some_and(|t| t.remote.is_some()) {
             return self.link_answer(nonce, 400, "session: a session is named as this machine knows it".into());
         }
-        let sid = match self.resolve_session(target.as_ref(), None) {
+        let sid = match self.session_to_attach(target.as_ref()) {
             Ok(s) => s,
             Err(e) => return self.link_answer(nonce, 404, e),
         };

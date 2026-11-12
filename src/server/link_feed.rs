@@ -45,6 +45,9 @@ pub struct Feed {
     pub rx: mpsc::UnboundedReceiver<FeedItem>,
     /// What waits in `rx`, as `FeedItem::cost` counts it.
     pub queued: Arc<AtomicUsize>,
+    /// What the machine typed into its copy of a pane (`link_proto::Input`):
+    /// to the server, which puts it into the pane.
+    pub input: Box<dyn Fn(u32, Vec<u8>) + Send + Sync>,
 }
 
 pub enum FeedItem {
@@ -120,6 +123,9 @@ impl Server {
             Some(port) => format!("{}:{port}", ask.peer),
             None => ask.peer.to_string(),
         };
+        // A paired machine that may not copy this one asks now and then by
+        // itself (`mirror_peers` there): nothing to tell anyone about.
+        let quiet = peer.is_some() && replayed.is_none();
         let refused = refused_here.or(replayed).or_else(|| may_stream(peer.as_ref(), ask.peer, &addr).err());
         let (since, epoch) = (opening.hello.since, opening.hello.epoch);
         let answer =
@@ -132,8 +138,10 @@ impl Server {
             }
         };
         let (Some(keys), Some(peer)) = (keys, peer) else {
-            if let Some(why) = refused {
-                self.link_refused(&addr, &why);
+            match refused {
+                Some(why) if quiet => log::info!("link stream from {addr} refused: {why}"),
+                Some(why) => self.link_refused(&addr, &why),
+                None => {}
             }
             let _ = ask.reply.send(StreamReply { msg2, open: None });
             return;
@@ -169,7 +177,11 @@ impl Server {
             &format!(",\"addr\":{},\"key\":{}", js(&addr), js(&peer.key)),
         );
         self.feeds.push(sub);
-        let _ = ask.reply.send(StreamReply { msg2, open: Some((keys, Feed { rx, queued })) });
+        let (events, key) = (self.events.clone(), peer.key.clone());
+        let input = Box::new(move |pane, bytes| {
+            let _ = events.send(super::Event::StreamInput(key.clone(), pane, bytes));
+        });
+        let _ = ask.reply.send(StreamReply { msg2, open: Some((keys, Feed { rx, queued, input })) });
     }
 
     /// Send every feed what changed since it was last sent to; end those
@@ -205,6 +217,31 @@ impl Server {
             true
         });
         self.feeds = feeds;
+    }
+
+    /// Keys typed into a machine's copy of pane `pane` (`link_proto::Input`):
+    /// into the pane, as if typed here, while that machine is fed (it has
+    /// all of this one: `stream_push` ends the feed of one that no longer
+    /// has). A pane of a third machine copied here is not this one's to
+    /// give: no further.
+    pub(super) fn stream_input(&mut self, key: &str, pane: u32, bytes: &[u8]) {
+        if !self.feeds.iter().any(|s| s.key == key && !s.tx.is_closed()) {
+            return;
+        }
+        let Some(p) = self.find_pane_mut(pane).filter(|p| p.remote.is_none()) else { return };
+        if p.exit_code.is_none() {
+            p.type_input(bytes);
+        }
+    }
+
+    /// A machine fed, for a test: its feed's other end.
+    #[cfg(test)]
+    pub(super) fn feed_for_test(&mut self, key: &str) -> mpsc::UnboundedReceiver<FeedItem> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let ip = IpAddr::from([127, 0, 0, 1]);
+        let queued = Arc::new(AtomicUsize::new(0));
+        self.feeds.push(Subscriber { key: key.into(), ip, addr: "127.0.0.1:1".into(), tx, queued, next: 0 });
+        rx
     }
 
     /// The keys of the machines fed now, for `link list`.

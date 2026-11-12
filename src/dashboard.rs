@@ -61,7 +61,7 @@ pub fn needs_yes(argv: &[String]) -> bool {
 }
 
 /// `list-panes -F` for the board: one pane a line, tab-separated.
-pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}\t#{pane_state}\t#{pane_ssh_host}";
+pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}\t#{pane_state}\t#{pane_ssh_host}\t#{pane_machine}";
 
 /// The agent a pane runs, its figures as the `agent_*` formats write them.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -177,6 +177,9 @@ pub struct PaneRow {
     /// What it is up to, in the server's word (`pane_state`); empty from a
     /// server too old to say.
     pub state_word: String,
+    /// The machine whose pane it is, for one copied here (`#{pane_machine}`):
+    /// its directory is there.
+    pub machine: String,
 }
 
 impl PaneRow {
@@ -218,6 +221,7 @@ impl PaneRow {
                 .collect::<Vec<_>>()
                 .join(" "),
             state_word: f.get(31).copied().unwrap_or_default().to_string(),
+            machine: f.get(33).copied().unwrap_or_default().to_string(),
         })
     }
 
@@ -755,7 +759,8 @@ impl Board {
         if self.layout().files.is_none() {
             return;
         }
-        if let Some(r) = self.chosen_row().cloned() {
+        // A pane of another machine is in a directory there: not followed.
+        if let Some(r) = self.chosen_row().cloned().filter(|r| r.machine.is_empty()) {
             self.files.follow(&r.id, &r.path);
         }
         self.files.read();
@@ -3389,6 +3394,7 @@ mod tests {
             agent_mem: "120M".into(),
             agent_tools: "4".into(),
             agent_turns: "2".into(),
+            pane_machine: "10.0.0.2:7681".into(),
             ..Default::default()
         };
         let segs = crate::format::expand(
@@ -3399,7 +3405,7 @@ mod tests {
             chrono::Local::now(),
         );
         let r = PaneRow::parse(&crate::format::plain(&segs)).unwrap();
-        assert_eq!(r.id, "%7");
+        assert_eq!((r.id.as_str(), r.machine.as_str()), ("%7", "10.0.0.2:7681"));
         let a = r.agent.unwrap();
         let got = [&a.kind, &a.model, &a.cost, &a.tokens, &a.context, &a.cpu, &a.mem, &a.tools, &a.turns];
         assert_eq!(got, ["codex", "gpt-5.5", "$0.06", "27k", "5%", "3%", "120M", "4", "2"]);
@@ -3523,6 +3529,15 @@ mod tests {
         std::fs::remove_file(dir.join("a.txt")).unwrap();
         b.refresh_files();
         assert!(matches!(&b.detail, Some(Detail::File(p)) if p != &dir.join("a.txt")), "{:?}", b.detail);
+        // A pane of another machine (`#{pane_machine}`) is in a directory
+        // there: the browsing stays where it was.
+        b.rows[0].machine = "10.0.0.2:7681".into();
+        b.rows[0].path = dir.join("sub").to_string_lossy().into_owned();
+        b.refresh_files();
+        assert_eq!(b.files.dir.as_deref(), Some(dir.as_path()));
+        b.rows[0].machine.clear();
+        b.refresh_files();
+        assert_eq!(b.files.dir.as_deref(), Some(dir.join("sub").as_path()), "this machine's: followed");
         // Away to the panes: the tab that was there.
         b.key(Key::ch('1'));
         assert_eq!((b.focus, b.tab), (Panel::Panes, tab));

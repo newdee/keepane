@@ -5800,3 +5800,51 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 窄于 70 列时文件树占满宽度，看不到右边的预览。
 - 演示图：重拍时 tour 失败，录制脚本 `tests/demo_frames.rs` 还按旧标题 `[0] %` 找所选 pane（我只在 src 和文档里查过 `[0]`，漏了这里；整个 tests 目录只有这一处），改成 `[4] %` 后 messages、agents、tour 深浅各一全部重拍（24 个文件）。
 - 发布：v0.61.0（tag 在 5f931b3，其 CI 通过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（bfad27f）；winget 新开 PR #478436（第一次推送卡在 SSH，结束那次的进程后重推成功）。
+
+## 185. 跨机器第 3 阶段 3a：另一台的 session 是本机的 session（看和打字）
+
+- 用户要求："开始做第3阶段吧"。第 3 阶段的定法（2026-11-12）：显示给了本机 `--full` 的机器的全部 session；对方的 session 当本机 session，名字后面标 host:port；A：只看不改尺寸。分两步发布：3a 看和打字，3b 结构命令映射成对方的操作。
+- 香农六法：相似问题（tmux control mode：客户端用对方的结构自己画）；换说法（"本地 session 的一种来源"，而不是"一个特殊视图"：多数命令自动可用，只需排除和拒绝）；结构分析（pane 无 PTY、shape 对账、目标解析、按键回传、排除点、安全）；逆向（从"C 借 A 碰 B"的失败往回推：所有对外出口都要排除副本）。
+- 做法见 docs/design/link.md 第 17 条第 3 步 3a。要点：
+  - `Pane::remote`（`master`、`killer` 可选，写入端送 `ToServer::Input`）；`Session::remote`、`Window::remote`；新模块 `mirrored.rs` 按每次形状对账，`link_mirror.rs` 把模型改存本地窗格。
+  - 自动复制每台配对的机器，被拒后一分钟再问，`--stop` 记住；对方把配对机器的这种拒绝只记日志。
+  - `host:port/名字`、`host:port/%N` 解析到副本；裸名字不指副本。
+  - 拒绝改形状的命令（`exec` 入口 + `split_pane`/`new_window` 底层）；`relayout`、`resize_session`、`Pane::resize` 对副本无效。
+  - 排除：journal、保存、`kill-session -a`、server 存活判定、`may_reach`、`reachable_panes`、link attach、消息投递；`#{pane_machine}`；dashboard 文件树不跟随远程 pane。
+- 修 bug 定性：不是 bug 修复（新功能）。实现中发现的 `send-message` 绕过 `mail_target` 是同一个"出口未排除副本"的共性问题：全仓搜了按 pane id 投递、对外列 pane、attach、打字的路径，一起排除。
+- 新 bug 风险评估：
+  - 行为改变：配对的机器之间会自动建连接（以前要 `link mirror`）；不给 `--full` 的一方每分钟收到一次握手，只记日志不提示。
+  - 0.60/0.61 的对方读不懂 `Input`，在副本里打的字被丢掉（protobuf 未知字段忽略）。
+  - 本机自己的 session 都没了时 server 退出，不管有没有副本（以前副本不是 session，行为不变）。
+  - `link attach` 不带名字时取本机自己最近用的 session（以前取所有 session 里最近的；以前没有副本，行为不变）。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 0 | 实现 | 单元测试抓到 `send-message -t %副本id` 能把消息投进副本再转发成按键（`send_message` 自己调 `resolve`，改走 `mail_target`）；`stream_input` 测试原先没有订阅者，第一道检查就返回，没测到第二层（加 `feed_for_test`）；第 2 阶段 e2e 按新语义改（被拒后一分钟、授权后 `link-mirror` 立刻重连），并加看、打字、拒绝、尺寸、`#{pane_machine}`、`kill-session -a`、停止后不再自动复制 | 实现中，不计 |
+| 1 | 机制存活 | 28 个变异抓到 23 个。漏：`attach` 最近 session 的过滤（第二道检查兜住，测试只看 is_err，改为核对文本）、本机所选窗格保持（测试里对方活动窗格恰好相同）、Size 变化未测；`kill -a`、停止后不再复制只有 e2e 覆盖（用 e2e 单独验，均抓到）。另：第一次运行时 xerj 索引进程映射着源文件，恢复写入失败，`journal.rs` 留在变异状态（手动恢复，脚本改为重试 + 逐字节核对） | 有发现，不计 |
+| 2 | 不变量（所有入口） | 发现：对方缩放 X 而本机选着 Y 时，画的是 X、键打进看不见的 Y，本机 select-pane 还会改缩放标志（改为缩放是对方状态，画本机选的窗格）；鼠标拖边框直接改副本布局；结构图 Enter 的 `new_window` 不经 `exec`，会往副本 session 加窗口；`split_pane`/`new_window` 底层无守卫（都加上，测试覆盖） | 有发现，不计 |
+| 3 | 代码正确性（错误、资源、并发） | 审：重连替换旧 Mirror 时 Drop 中止旧任务，旧轮次消息按 round 丢弃；快照先读全部模型再动；`place` 的减法不下溢、溢出饱和；空窗口已过滤。发现：连接断开期间在副本里打的字堆在无界通道里，重连才清（断开几小时还在粘贴会一直涨）；改为重连前的等待里边等边丢（`wait_dropping`，测试覆盖） | 有发现，不计 |
+| 4 | 边界与退化输入 | 新测试：乱码布局、无窗口 session、无窗格窗口、尺寸 0/99999、重复 session id、1×1 客户端：不崩，每个窗格在布局、窗口、位置里各一份，尺寸都在 1–1000，之后正常形状把一切改回。Windows 629 + 11 + 159，Linux 613 + 156。发现：Linux 的 `fmt --check` 报加最后一个测试后没格式化（流程漏了先跑 fmt） | 有发现，不计 |
+| 5 | 机制存活 | 34 个变异：32 个抓到；2 个锚点过期（代码在第 2、3 轮改了，脚本没跟上）；漏 1 个：重连循环里被拒后的等待改回普通 sleep（断线时的按键又会堆积），调用点没有测试。改：按键收发放进 `Typed`，断线时丢掉的按键计数，`show-mirror` 显示「N keys let go」；新测试对着只回 403 的本地端口跑真正的 `mirror_task`，打 3 个键，计数到 3。另：改文档时 PowerShell 把中文弯引号当成字符串引号，设计文档一句被截（已修，之后只用「」和单引号字符串） | 有发现，不计 |
+| 6 | 静态一致（文档对代码） | 34 个变异全抓到。审文档：中英文 README 代码块结尾的围栏写成两个反引号、段尾多一个反引号（PowerShell 替换时反引号转义算错）；man 页一处反引号跨行放错；`link_mirror.rs` 模块注释还写着由 `link mirror` 启动（现在自动）。都已改。无用代码：新加的类型、函数、字段都有调用方（`clippy -D warnings` 通过） | 有发现，不计 |
+| 7 | 真实环境 | 三台临时 server：A 复制 B（`show-mirror`：live，1 snapshots，0 restarts；A 的 `list-sessions` 有 `wb@127.0.0.1:49765 [100x30]`）；C 的 60×15 窗格里用真实客户端 attach `host:port/wb`：画面裁剪、状态栏名字带地址；在 C 里打的字到了 B（B 屏幕上命令和输出各一次）；`C-b %` 被拒并说明原因；B 仍 100x30；B 分屏后 A 的副本两个窗格 50x29 / 49x29、C 的画面跟着变，B 的窗格尺寸不变。Windows 630 + 11 + 159，Linux 614 + 156 | 干净（1/3） |
+| 8 | 可复现 | 副本单元测试 Windows 20/20、Linux 20/20（每次 10 个）；第 3 阶段 e2e Windows 5/5、Linux 5/5（循环带 `timeout -s KILL`）；dashboard 测试 43 个通过 | 干净（2/3） |
+| 9 | 不变量（终版复审） | 逐个查不经 `exec` 的入口：自动改名（无）、agents（要 pid，副本没有）、命令完成事件（副本不喂标记）。发现：`link share` 和结构图里按 `s` 能把副本的 session/窗格标成"已共享"（`may_reach` 拦着，实际碰不到，但界面说已共享）；`history_paths` 给副本窗格安排历史文件（设计列了排除，没做）。都改了，测试覆盖 | 有发现，不计（清零） |
+| 10 | 机制存活 | 36 个变异全抓到（加：副本被共享、副本记历史）。期间按用户要求改了 README 的 brew 安装（只动文档，在本轮测试之前）。Windows 630 + 11 + 159，Linux 614 + 156 | 干净（1/3） |
+| 11 | 静态一致（文档对代码） | 逐句核设计文档 3a 段、README 中英、man、帮助、tmux-parity。发现：设计文档说 `relayout` 对副本"什么都不做"（第 2 轮后它会恢复对方的缩放）；排除清单漏写第 9 轮加的不共享、不记历史，以及 `#{pane_machine}`、文件树不跟随。已补。README 的 brew 两种写法按官方 Tap Trust 文档核过 | 有发现，不计（清零） |
+| 12 | 可复现 | 代码自第 10 轮未变（只改文档）。Windows 全量两遍：630/11/159 两遍相同；Linux 全量两遍：fmt、clippy 通过，614/156 两遍相同 | 干净（1/3） |
+| 13 | 静态一致复核 | 设计文档 3a 段 30 条说法逐条在代码里找到对应处（每条 grep 命中 ≥1）；代码块围栏成对（README 104/104、设计文档 6）。发现：man 页重排时并出一行 98 列（规则 ≤76），已重排，README 和 man 新增行现在都 ≤76 | 有发现，不计（清零） |
+| 14 | 真实环境（Linux） | 三台 Linux 临时 server：A 复制 B（live，1 snapshots，0 restarts）；A 的 `list-sessions` 有 `wb@127.0.0.1:43265 [100x30]`；C 的 60×15 窗格里 attach：状态栏名字带地址；打的字到了 B（命令和输出各一次）；B 仍 100x30；`C-b %` 被拒；B 分屏后副本 50x29 / 49x29；`link mirror --stop` 后副本 session 消失，C 的客户端被断开并说明原因。Windows 630 + 11 + 159，Linux 614 + 156 | 干净（1/3） |
+| 16 | 边界与极端配置（真实程序） | A 上依次 `pane-frames on`、`pane-border-status top/bottom`、`status off/on`、`status-position top`，C 缩到 12×4、放大到 220×60：都不崩，B 不变。发现：改这些选项后副本窗口不重新摆放（`resize_session` 对副本直接返回），状态栏移到顶上时第 0 行被窗格盖住。改：窗口记下对方给的位置（`RemoteWindow::placed`），`relayout` 每次按新的窗口区和 chrome 重新摆放，`resize_session` 对副本只重新摆放、不改尺寸；测试覆盖（改 `status-position top` 后窗格下移一行、`status off` 回到第 0 行，session 和窗格尺寸不变），真实程序复看正确 | 有发现，不计（清零） |
+| 17 | 机制存活 | 37 个变异全抓到（加：改选项后副本不重新摆放；锚点按第 16 轮的代码更新）。Windows 631 + 11 + 159，Linux 615 + 156 | 干净（1/3） |
+| 18 | 真实环境复看（摆放改后） | Windows：A 上 `pane-frames on`、`pane-border-status top/bottom`、`status off/on`、`status-position top`，C 12×4 和 220×60：不崩；状态栏在顶上时副本从第 1 行开始；本机开 frames 而对方没开时按对方的格子画（文档写明按两边 chrome 相同摆放），不画花。Linux：三台 server 全流程同第 14 轮（看、打字、拒绝、尺寸、分屏跟随、停止后断开）。Windows 631 + 11 + 159，Linux 615 + 156 | 干净（2/3） |
+| 19 | 可复现 | 副本测试（`link_mirror` + `mirrored`，12 个）Windows 20/20、Linux 20/20；第 3 阶段 e2e Windows 5/5、Linux 5/5。Windows 631 + 11 + 159，Linux 615 + 156 | 干净（3/3），验收通过 |
+
+- 另：按用户要求改了 README 的 Homebrew 安装（用户说"README 改成 tap 两行，跟 3a 一起发，也保留原来的写法"）。按官方 Tap Trust 文档核实：Homebrew 6 起只写 `brew tap` 再 `brew install keepane` 会因未信任 tap 被拒，所以短名写法是三行（`brew tap newdee/tap`、`brew trust --formula newdee/tap/keepane`、`brew install keepane`），原来的 `brew install newdee/tap/keepane` 放在第一（只信任这一个 formula，新旧版本都能用）；已向用户说明。网站 `docs/index.html` 未改。
+- 遗留：
+  - 结构命令（split、kill、resize……）只能在那台机器上做（3b 映射成对方的操作）。
+  - 两边 chrome 不同（一边开 `pane-frames`、另一边没开）时按对方的格子画，本机的框或边框行可能没有位置。
+  - 结构图（`C-b w`）里对方机器的条目和本机的副本 session 同时出现；对着对方 session 按 Enter 仍开 `link attach`（第 4 阶段改走新通路）。
+  - 正在连接（握手的几秒）里打的字丢掉的那一处（`Typed::let_go`）只有审查覆盖，没有测试。
+  - 副本窗格不跑 `wait-output`、`pane-ready` 这类等输出的命令（输出不经本机的窗格事件）。
+  - 一个给了本机 `--full` 的机器可以发很多 session、窗格让本机建模型（每个窗格最多 1000×1000），信任配对机器。
