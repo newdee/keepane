@@ -5724,3 +5724,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - `clear-history` 不接受 `-t`（tmux 接受）。
   - 日志常开，最多占 8 MiB 内存。
   - WSL 里两个卡在 D 状态的测试进程要 `wsl --shutdown` 才能清掉（会关掉所有 WSL 会话，由用户决定）；在那之前 WSL 里 `ps` 会卡住。
+- 发布：v0.59.0（tag 在 4d505e6，其 CI 通过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（37ff6b5）；winget 新开 PR #478227。
