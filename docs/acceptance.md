@@ -5799,3 +5799,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 预览只能上下滚动，长行截断，不折行。
   - 窄于 70 列时文件树占满宽度，看不到右边的预览。
 - 演示图：重拍时 tour 失败，录制脚本 `tests/demo_frames.rs` 还按旧标题 `[0] %` 找所选 pane（我只在 src 和文档里查过 `[0]`，漏了这里；整个 tests 目录只有这一处），改成 `[4] %` 后 messages、agents、tour 深浅各一全部重拍（24 个文件）。
+- 发布：v0.61.0（tag 在 5f931b3，其 CI 通过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（bfad27f）；winget 新开 PR #478436（第一次推送卡在 SSH，结束那次的进程后重推成功）。
