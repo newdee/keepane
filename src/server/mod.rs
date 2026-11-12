@@ -14,6 +14,7 @@ mod gitstate;
 mod hints;
 pub mod import;
 pub mod input;
+mod journal;
 mod keyhint;
 pub mod layout;
 mod link_agents;
@@ -1303,6 +1304,8 @@ pub struct Server {
     /// The next id for one of those: from 2^31 on, out of the way of the
     /// connections' ids, which count up from 1.
     next_remote_client: ClientId,
+    /// Every change, numbered, for copies on other machines (decision 17).
+    journal: journal::Journal,
     /// What is shared with which paired machine (`link-share`): the keys of
     /// those machines, by the session, window or pane shared. Ids are never
     /// used twice, so a mark outlives nothing it was put on.
@@ -1445,6 +1448,9 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
                 while let Ok(ev) = rx.try_recv() {
                     srv.handle(ev);
                 }
+                // What the batch changed, for the journal: looked at once
+                // per batch, before anything else can change.
+                srv.journal_look();
             }
             // At most one frame per FRAME: panes printing flat out would
             // otherwise be redrawn for every read (measured: half a core
@@ -1726,6 +1732,7 @@ impl Server {
             remote_views: HashMap::new(),
             remote_clients: HashMap::new(),
             next_remote_client: link_attach::FIRST_ID,
+            journal: journal::Journal::default(),
             link_shares: HashMap::new(),
             link_lists: HashMap::new(),
             next_link_list: 0,
@@ -2507,6 +2514,7 @@ impl Server {
                     let finished = std::mem::take(&mut p.finished);
                     let rang = std::mem::take(&mut p.rang);
                     let replaying = p.is_pending();
+                    let look = p.changes.cost() >= journal::LOOK_AT;
                     // A resumed pane: its saved output has all been printed
                     // (the printer's marker arrived); its program starts now,
                     // in the same console, while the printer still holds it.
@@ -2515,6 +2523,10 @@ impl Server {
                         && let Err(e) = p.start_pending()
                     {
                         log::warn!("pane %{id}: cannot start after the replay: {e:#}");
+                    }
+                    if look {
+                        // Before it keeps more than it may (journal::LOOK_AT).
+                        self.journal_look();
                     }
                     if let Some(command) = slow {
                         // Say it once per pipe: a command that cannot keep up
@@ -6530,7 +6542,10 @@ impl Server {
                     // vt100 has no explicit clear; re-create the parser at the same size.
                     let (rows, cols) = p.screen().size();
                     let mut fresh = vt100::Parser::new_with_callbacks(rows, cols, hist, pane::Callbacks::default());
-                    fresh.process(&p.screen().state_formatted());
+                    let state = p.screen().state_formatted();
+                    fresh.process(&state);
+                    // A copy elsewhere makes its model again the same way.
+                    p.note(journal::PaneChange::Reset { cols, rows, bytes: state });
                     // What scrolled off so far is logged by the old parser;
                     // the new one counts its lines from where it starts.
                     if p.log_to.is_some() {
@@ -6545,6 +6560,16 @@ impl Server {
                 Outcome::Ok
             }
             Cmd::ListDone { after, json } => Outcome::Text(self.list_done(after, json)),
+            Cmd::ShowChanges { since, target, json, snapshot } => {
+                let pane = match target {
+                    Some(t) => match self.resolve(Some(&t), cid) {
+                        Ok((_, _, pid)) => Some(pid),
+                        Err(e) => return Outcome::Error(e),
+                    },
+                    None => None,
+                };
+                Outcome::Text(self.show_changes(since, pane, json, snapshot))
+            }
             Cmd::ListMarks { target, json } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,

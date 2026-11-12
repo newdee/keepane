@@ -11573,6 +11573,151 @@ async fn a_pane_made_for_an_agent_is_the_one_it_asked_for_whatever_hooks_do() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `show-changes` (docs/design/link.md, decision 17): the server's changes
+/// in order, numbered, asked for after a number; a command the shell ran
+/// labelled on its bytes; and a copy that starts from the snapshot and is
+/// fed the changes after it shows what the pane shows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_fed_the_changes_after_a_snapshot_shows_what_the_pane_shows() {
+    use serde_json::Value;
+    let h = Harness::start("changes").await;
+    let (code, _, err) = h.cli(&[&["new", "-d", "-s", "ch", "-x", "100", "-y", "30"], HOOKED_SHELL].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    at_hooked_prompt(&h, "ch:0.0").await;
+    let id = pane_id(&h, "ch:0.0").await;
+    let json = |out: &str| serde_json::from_str::<Value>(out).unwrap_or_else(|e| panic!("{e}: {out}"));
+    let bytes = |v: &Value| keepane::link::unb64(v.as_str().unwrap()).unwrap();
+
+    // Where a copy starts: every pane's screen, and the number it is at.
+    let (_, out, _) = h.cli(&["show-changes", "-S", "-J"]).await;
+    let snap = json(&out);
+    let start = snap["seq"].as_u64().unwrap();
+    let mine = snap["panes"].as_array().unwrap().iter().find(|p| p["id"].as_u64() == Some(u64::from(id))).unwrap();
+    let (cols, rows) = (mine["cols"].as_u64().unwrap() as u16, mine["rows"].as_u64().unwrap() as u16);
+    let mut copy = vt100::Parser::new(rows, cols, 0);
+    copy.process(&bytes(&mine["screen"]));
+    let mut at = mine["at"].as_u64().unwrap();
+
+    // A command, a resize, and a second window.
+    h.cli(&["send-keys", "-t", "ch:0.0", "echo journal-ok", "Enter"]).await;
+    h.wait_for_cli("the command labelled", &["show-changes", "-J", "-s", &start.to_string()], |_, out| {
+        out.contains("\"command_end\":{\"command\":\"echo journal-ok\"")
+    })
+    .await;
+    h.cli(&["resize-window", "-t", "ch", "-x", "90", "-y", "25"]).await;
+    h.cli(&["new-window", "-d", "-t", "ch"]).await;
+    h.wait_joined("ch:0.0", "the prompt back", |t| t.matches("journal-ok").count() >= 2).await;
+    // The changes after the snapshot, fed to the copy.
+    let (_, out, _) = h.cli(&["show-changes", "-J", "-s", &start.to_string()]).await;
+    let got = json(&out);
+    assert_eq!(got["gap"], false);
+    let entries = got["entries"].as_array().unwrap();
+    assert!(entries.windows(2).all(|w| w[0]["seq"].as_u64() < w[1]["seq"].as_u64()), "in order");
+    assert!(entries.iter().all(|e| e["seq"].as_u64().unwrap() > start), "only after the number");
+    let shapes: Vec<&Value> = entries.iter().filter_map(|e| e.get("shape")).collect();
+    let windows = |s: &Value| s["sessions"][0]["windows"].as_array().unwrap().len();
+    assert_eq!(shapes.last().map(|s| windows(s)), Some(2), "the second window in the shape");
+    for e in entries.iter().filter(|e| e["pane"].as_u64() == Some(u64::from(id))) {
+        if let Some(o) = e.get("output") {
+            assert_eq!(o["at"].as_u64(), Some(at), "each output where the one before ended");
+            let b = bytes(&o["bytes"]);
+            at += b.len() as u64;
+            copy.process(&b);
+        } else if let Some(s) = e.get("size") {
+            copy.screen_mut().set_size(s["rows"].as_u64().unwrap() as u16, s["cols"].as_u64().unwrap() as u16);
+        } else if let Some(r) = e.get("reset") {
+            copy = vt100::Parser::new(r["rows"].as_u64().unwrap() as u16, r["cols"].as_u64().unwrap() as u16, 0);
+            copy.process(&bytes(&r["bytes"]));
+        }
+    }
+    let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", "ch:0.0"]).await;
+    let trim = |s: &str| s.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim_end().to_string();
+    // Row by row, as capture-pane prints them (contents() joins wrapped rows).
+    let rows = copy.screen().rows(0, copy.screen().size().1).collect::<Vec<_>>().join("\n");
+    assert_eq!(trim(&rows), trim(&screen), "the copy shows what the pane shows");
+    assert_eq!(copy.screen().size(), (24, 90), "its size too (the status line takes a row)");
+    // One pane's only: no other pane's changes, the shapes still.
+    let (_, out, _) = h.cli(&["show-changes", "-J", "-s", &start.to_string(), "-t", "ch:0.0"]).await;
+    let one = json(&out);
+    assert!(
+        one["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e.get("shape").is_some() || e["pane"].as_u64() == Some(u64::from(id)))
+    );
+    // Read as a list.
+    let (_, out, _) = h.cli(&["show-changes", "-s", &start.to_string()]).await;
+    assert!(out.contains(&format!("%{id} command ends: echo journal-ok")), "{out}");
+
+    let last = |out: &str| json(out)["last"].as_u64().unwrap().to_string();
+    let pane_changes = |out: &str, pane: u32, kind: &str| -> Vec<Value> {
+        json(out)["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["pane"].as_u64() == Some(u64::from(pane)))
+            .filter_map(|e| e.get(kind).cloned())
+            .collect()
+    };
+    // More than a pane keeps between two looks of the server (1 MiB),
+    // printed between two asks: still every byte, since the server looks
+    // after every batch of events, not only when asked.
+    let (_, out, _) = h.cli(&["show-changes", "-J"]).await;
+    let before = last(&out);
+    let flood = if cfg!(windows) {
+        "1..24000 | % { 'flood-line-' + $_ + ('.' * 60) }; 'flood-done'"
+    } else {
+        "for i in $(seq 1 24000); do printf 'flood-line-%s%060d\\n' $i 0; done; echo flood-done"
+    };
+    h.cli(&["send-keys", "-t", "ch:0.0", flood, "Enter"]).await;
+    h.wait_joined("ch:0.0", "the flood printed", |t| t.lines().any(|l| l.trim() == "flood-done")).await;
+    let (_, out, _) = h.cli(&["show-changes", "-J", "-s", &before, "-t", "ch:0.0"]).await;
+    let printed: usize = pane_changes(&out, id, "output").iter().map(|o| bytes(&o["bytes"]).len()).sum();
+    assert!(pane_changes(&out, id, "reset").is_empty(), "not its screen in place of what it printed");
+    assert!(printed > 1_500_000, "every byte: {printed}");
+    // Taken when printed, not when asked: each change carries the time the
+    // server took it, and the server takes them after every batch (a
+    // command nobody asked about since, then a second's wait).
+    let quiet = last(&out);
+    h.cli(&["send-keys", "-t", "ch:0.0", "echo taken-when-printed", "Enter"]).await;
+    h.wait_joined("ch:0.0", "it printed", |t| t.matches("taken-when-printed").count() >= 2).await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let asked = chrono::Utc::now().timestamp_millis();
+    let (_, out, _) = h.cli(&["show-changes", "-J", "-s", &quiet, "-t", "ch:0.0"]).await;
+    let newest = json(&out)["entries"].as_array().unwrap().iter().filter_map(|e| e["at"].as_i64()).max().unwrap();
+    assert!(newest <= asked - 800, "taken {} ms before it was asked for", asked - newest);
+    // Its history cleared: its model made again, fed its screen.
+    let before = last(&out);
+    // (It takes no -t: the current pane, ch:0.0.)
+    let (code, _, err) = h.cli(&["clear-history"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["show-changes", "-J", "-s", &before]).await;
+    let resets = pane_changes(&out, id, "reset");
+    assert_eq!(resets.len(), 1, "{out}");
+    assert!(String::from_utf8_lossy(&bytes(&resets[0]["bytes"])).contains("flood-done"));
+    // A pane killed and brought back: its screen, since a copy lost it.
+    h.cli(&["split-window", "-d", "-t", "ch:0"]).await;
+    let second = pane_id(&h, "ch:0.1").await;
+    h.wait_for_cli("the new pane known", &["show-changes", "-J"], |_, out| {
+        out.contains(&format!("\"pane\":{second},"))
+    })
+    .await;
+    h.cli(&["kill-pane", "-t", &format!("%{second}")]).await;
+    let (_, out, _) = h.cli(&["show-changes", "-J"]).await;
+    let before = last(&out);
+    let (code, _, err) = h.cli(&["undo-kill"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["show-changes", "-J", "-s", &before]).await;
+    assert_eq!(pane_changes(&out, second, "reset").len(), 1, "{out}");
+    let (code, _, err) = h.cli(&["show-changes", "-s", "nope"]).await;
+    assert!(code != 0 && err.contains("bad number"), "{err}");
+    // The biggest number there is: nothing after it, no error.
+    let (code, out, err) = h.cli(&["show-changes", "-J", "-s", &u64::MAX.to_string()]).await;
+    assert!(code == 0 && json(&out)["entries"].as_array().unwrap().is_empty(), "{out}{err}");
+    h.cli(&["kill-server"]).await;
+}
+
 /// Whether `list-marks -J` output has a command that is `command` exactly
 /// (the prompt not in it).
 fn has_command(json: &str, command: &str) -> bool {

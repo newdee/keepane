@@ -198,6 +198,15 @@ pub enum Cmd {
         /// ends, where what it printed stops, and the command itself.
         json: bool,
     },
+    /// `show-changes [-J] [-S] [-s seq] [-t pane]`: the server's changes after
+    /// number `seq` (docs/design/link.md, decision 17), one pane's with `-t`;
+    /// `-S`: every pane's screen now instead, where a copy starts.
+    ShowChanges {
+        since: Option<u64>,
+        target: Option<Target>,
+        json: bool,
+        snapshot: bool,
+    },
     /// `status-line [-J] [-t session]`: the session's status line as drawn,
     /// for a script or the phone page; `-J`: its parts and their colours.
     StatusLine {
@@ -1139,6 +1148,19 @@ impl fmt::Display for Cmd {
                 f.write_str("list-marks")?;
                 if *json {
                     f.write_str(" -J")?;
+                }
+                fmt_target(f, target)
+            }
+            Cmd::ShowChanges { since, target, json, snapshot } => {
+                f.write_str("show-changes")?;
+                if *json {
+                    f.write_str(" -J")?;
+                }
+                if *snapshot {
+                    f.write_str(" -S")?;
+                }
+                if let Some(s) = since {
+                    write!(f, " -s {s}")?;
                 }
                 fmt_target(f, target)
             }
@@ -2489,6 +2511,7 @@ pub const COMMANDS: &[&str] = &[
     "list-commands",
     "list-keys",
     "list-marks",
+    "show-changes",
     "list-agents",
     "ssh-hosts",
     "trace-pane",
@@ -2636,6 +2659,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("list-commands", &[]),
     ("list-keys", &[]),
     ("list-marks", &["-J", "-t"]),
+    ("show-changes", &["-J", "-S", "-s", "-t"]),
     ("list-agents", &["-J"]),
     ("ssh-hosts", &["-J"]),
     ("trace-pane", &["-J", "-t"]),
@@ -3091,6 +3115,26 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             a.none_left(n)?;
             Cmd::ListMarks { target, json }
+        }
+        "show-changes" => {
+            let (mut since, mut target, mut json, mut snapshot) = (None, None, false, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-J" => json = true,
+                    "-S" => snapshot = true,
+                    "-s" => {
+                        let v = a.value("-s")?;
+                        since = Some(v.parse().map_err(|_| format!("show-changes: bad number '{v}'"))?);
+                    }
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            if snapshot && (since.is_some() || target.is_some()) {
+                return Err("show-changes: -S is every pane's screen now: no -s or -t with it".into());
+            }
+            Cmd::ShowChanges { since, target, json, snapshot }
         }
         "status-line" => {
             let (mut target, mut json) = (None, false);
@@ -5088,6 +5132,14 @@ mod tests {
         assert_eq!(p("show-task 12"), Cmd::ShowTask { id: 12, json: false });
         assert_eq!(p("list-marks -J -t %3"), Cmd::ListMarks { target: Some(Target::parse("%3")), json: true });
         assert_eq!(p("list-marks"), Cmd::ListMarks { target: None, json: false });
+        assert_eq!(
+            p("show-changes -s 12 -J -t %3"),
+            Cmd::ShowChanges { since: Some(12), target: Some(Target::parse("%3")), json: true, snapshot: false }
+        );
+        assert_eq!(p("show-changes -S"), Cmd::ShowChanges { since: None, target: None, json: false, snapshot: true });
+        assert!(parse_line("show-changes -s x").unwrap_err().contains("bad number"));
+        assert!(parse_line("show-changes -S -s 3").unwrap_err().contains("no -s or -t"));
+        assert!(parse_line("show-changes -S -t %1").unwrap_err().contains("no -s or -t"));
         assert_eq!(p("list-agents -J"), Cmd::ListAgents { json: true });
         assert_eq!(p("list-agents"), Cmd::ListAgents { json: false });
         assert_eq!(p("status-line -J -t work"), Cmd::StatusLine { target: Some(Target::parse("work")), json: true });
@@ -5097,7 +5149,16 @@ mod tests {
         assert_eq!(p("ssh-hosts"), Cmd::SshHosts { json: false });
         assert_eq!(p("choose-ssh"), Cmd::ChooseSsh);
         assert!(parse_line("ssh-hosts -x").is_err() && parse_line("choose-ssh x").is_err());
-        let all = ["trace-message 5 -w 3 -J", "show-task 12 -J", "show-task 12", "list-marks -J -t %3", "list-marks"];
+        let all = [
+            "trace-message 5 -w 3 -J",
+            "show-task 12 -J",
+            "show-task 12",
+            "list-marks -J -t %3",
+            "list-marks",
+            "show-changes -J -s 4 -t %2",
+            "show-changes -J -S",
+            "show-changes",
+        ];
         for s in all.into_iter().chain([
             "list-agents -J",
             "list-agents",

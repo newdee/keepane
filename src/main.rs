@@ -52,6 +52,7 @@ On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (pr
 History (what panes printed, a file a day, 30 days):  choose-history [-s text] (prefix /; -s or / there: every day's lines that hold it)
   view [-n LINE] [-s TEXT] FILE   (the log's pager: at a line, a search set)
   list-marks [-J] [-t pane]   (the commands a pane ran, with their times; prefix C-t shows them on the lines; -J as JSON, with each one's lines)
+  show-changes [-J] [-S] [-s N] [-t pane]   (this server's changes, numbered: shapes, what panes printed, the commands and full-screen programs in it; -S every pane's screen now)
   choose-marks   (prefix Y: every pane's commands, newest first; Enter goes there, y copies the output, r runs it again)
   copy-output [-p] [-t pane]   (what the last command printed, to a buffer and the clipboard; -p prints it; prefix y)
   hints   (prefix F: label paths, addresses and hashes on screen; a label copies, in capitals opens; hint-open)

@@ -95,6 +95,10 @@ log too, each hit with its day and line), `choose-history` and `view`
 (what panes printed, a file a day; `choose-history -s text`, `/` in it,
 the lines of every day that hold it, each opened at its line, which `view -n
 LINE -s TEXT` does), `list-marks` (the commands a pane ran; `-J` as JSON, with the lines each takes),
+`show-changes` (this server's changes, numbered: the sessions' shape,
+what each pane printed, and, as labels on that, the commands its shell
+ran and the full-screen programs; `-s N` those after change N, `-t` one
+pane's, `-J` as JSON, `-S` every pane's screen now instead),
 `choose-marks` (the commands every pane's shell ran, newest first: Enter
 goes to one in copy mode, `y` copies what it printed, `r` runs it again),
 `shell-history` (a pane's own shell history, the messages delivered to it

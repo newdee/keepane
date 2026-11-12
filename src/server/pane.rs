@@ -322,6 +322,55 @@ pub fn still_reads(now: &str, then: &str, cols: u16) -> bool {
     end < then.len() && !now.is_empty() && now == then[..end].trim_end()
 }
 
+/// A shell's word that a command started (OSC 133;C, 633;C).
+const COMMAND_STARTS: [&[u8]; 2] = [b"\x1b]133;C", b"\x1b]633;C"];
+/// A shell's word that one ended: OSC 133;D, 633;D, and the PowerShell
+/// hook's report (`OSC 7777;keepane-cmd`).
+const COMMAND_ENDS: [&[u8]; 3] = [b"\x1b]133;D", b"\x1b]633;D", b"\x1b]7777;keepane-cmd;"];
+
+/// `bytes` cut right after each shell word that a command starts, so what
+/// was typed is read off the screen as it was then (the program may take
+/// the screen in the same read: `vim`); and right before each word that one
+/// ended, so where its output ends is known (`Pane::output_end`). What the
+/// end's word says is still read after the rest of the read: ConPTY may
+/// blank a line and draw it again within one (measured: reading it right
+/// after the PowerShell hook's report lost 2 commands in 10). A word cut
+/// across two reads stays whole: the terminal model keeps its place between
+/// them, it is just not cut there.
+pub fn split_at_marks(bytes: &[u8]) -> Vec<&[u8]> {
+    let at = |i: usize, words: &[&[u8]]| bytes[i] == 0x1b && words.iter().any(|w| bytes[i..].starts_with(w));
+    let mut pieces = Vec::new();
+    let (mut from, mut i) = (0, 0);
+    while i < bytes.len() {
+        if at(i, &COMMAND_ENDS) && i > from {
+            pieces.push(&bytes[from..i]);
+            from = i;
+        } else if at(i, &COMMAND_STARTS) {
+            // Its end: BEL, or ST (ESC \).
+            let end = (i + 2..bytes.len()).find_map(|j| match bytes[j] {
+                0x07 => Some(j + 1),
+                0x1b if bytes.get(j + 1) == Some(&b'\\') => Some(j + 2),
+                _ => None,
+            });
+            let Some(end) = end else { break };
+            pieces.push(&bytes[from..end]);
+            (from, i) = (end, end);
+            continue;
+        }
+        i += 1;
+    }
+    if from < bytes.len() {
+        pieces.push(&bytes[from..]);
+    }
+    pieces
+}
+
+/// Whether a piece (`split_at_marks`) starts with a shell's word that a
+/// command ended.
+fn starts_with_end(piece: &[u8]) -> bool {
+    COMMAND_ENDS.iter().any(|w| piece.starts_with(w))
+}
+
 /// Log text a pane gathers before handing it to the writer.
 const LOG_BATCH: usize = 32 * 1024;
 
@@ -685,6 +734,12 @@ pub struct Pane {
     /// gives what that pane ran. None for a pane that is not an interactive
     /// PowerShell.
     pub shell_history: Option<String>,
+    /// What changed in its terminal since the server last looked: for the
+    /// journal (`super::journal`), which another machine copies it from.
+    pub changes: super::journal::PaneChanges,
+    /// Where the output of a command that ends in the piece being taken
+    /// ends (`split_at_marks`): the byte the shell's word of it starts at.
+    output_end: Option<u64>,
     /// The pty's slave side, kept only while a program is still to be
     /// started in it (a resumed pane printing its saved output first).
     slave: Option<Box<dyn portable_pty::SlavePty + Send>>,
@@ -1001,6 +1056,8 @@ impl Pane {
             delivered_text: None,
             settle: false,
             shell_history: None,
+            changes: super::journal::PaneChanges::new(cols, rows),
+            output_end: None,
         };
         // Before anything the program prints: the server reads that only
         // after this returns.
@@ -1211,7 +1268,32 @@ impl Pane {
 
     /// Feed process output into the terminal model; answer any queries.
     pub fn process_output(&mut self, bytes: &[u8]) {
+        // Cut where a command starts and where one ends (`split_at_marks`):
+        // what was typed, and where its output ends, are known exactly.
+        let pieces = split_at_marks(bytes);
+        if pieces.is_empty() {
+            // Nothing new: what the model was fed before is still taken.
+            self.process_piece(bytes);
+        }
+        for piece in pieces {
+            self.process_piece(piece);
+        }
+    }
+
+    fn process_piece(&mut self, bytes: &[u8]) {
+        // A command that ends in this piece ends where the piece starts.
+        self.output_end = starts_with_end(bytes).then_some(self.changes.at);
+        let fullscreen = self.parser.screen().alternate_screen();
         self.parser.process(bytes);
+        // For the journal: after the bytes went in, so a pane that is told
+        // only its screen (too much kept) is told the screen with them.
+        if !bytes.is_empty() {
+            let at = self.changes.at;
+            self.note(super::journal::PaneChange::Output { at, bytes: bytes.to_vec() });
+        }
+        if self.parser.screen().alternate_screen() != fullscreen {
+            self.note(super::journal::PaneChange::Fullscreen { on: !fullscreen });
+        }
         let cb = self.parser.callbacks_mut();
         if let Some(t) = cb.title.take()
             && self.program_title.as_deref() != Some(t.as_str())
@@ -1248,6 +1330,14 @@ impl Pane {
             let s = self.parser.screen();
             self.logged = self.logged.max(s.scrolled_total() + u64::from(s.cursor_position().0));
         }
+        self.output_end = None;
+    }
+
+    /// Keep a change for the journal; its screen instead, when it keeps too
+    /// many (`journal::PaneChanges::push`).
+    pub fn note(&mut self, change: super::journal::PaneChange) {
+        let parser = &self.parser;
+        self.changes.push(change, || parser.screen().state_formatted());
     }
 
     /// Fold what the shell said into the pane's marks.
@@ -1300,7 +1390,12 @@ impl Pane {
                     };
                     if let (Some(m), Some(typed)) = (self.marks.back_mut(), typed) {
                         m.start = Some(t);
-                        m.command = typed;
+                        m.command = typed.clone();
+                        // Not the commands a resumed pane prints back.
+                        if !self.is_pending() {
+                            let (cwd, at) = (self.cwd.clone(), self.changes.at);
+                            self.note(super::journal::PaneChange::CommandStart { command: typed, cwd, at });
+                        }
                     }
                 }
                 MarkEvent::End(t, code) => {
@@ -1370,7 +1465,18 @@ impl Pane {
                     let secs = (end - start).num_milliseconds().max(0) as u64 / 1000;
                     let command = m.command.clone();
                     let failed = exit.is_some_and(|c| c != 0);
-                    self.finished.push(Finished { command, secs, failed, exit: exit.filter(|_| exact) });
+                    self.finished.push(Finished {
+                        command: command.clone(),
+                        secs,
+                        failed,
+                        exit: exit.filter(|_| exact),
+                    });
+                    if !self.is_pending() {
+                        // Where the shell said it ended; else (its word cut
+                        // across two reads) the end of what came so far.
+                        let at = self.output_end.unwrap_or(self.changes.at);
+                        self.note(super::journal::PaneChange::CommandEnd { command, exit, secs, at });
+                    }
                 }
             }
             // Gone already (scrolled past the history, or cleared): the
@@ -1894,6 +2000,7 @@ impl Pane {
         self.cols = cols;
         self.rows = rows;
         self.parser.screen_mut().set_size(rows, cols);
+        self.note(super::journal::PaneChange::Size { cols, rows });
         if let Some(r) = self.recorder.as_mut() {
             r.event("r", &format!("{cols}x{rows}"));
         }
@@ -2624,6 +2731,156 @@ mod tests {
         let mut q = quiet_pane(40, 6, 100);
         q.process_output(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\false\x1b]133;C\x1b\\\r\n\x1b]133;D;3\x1b\\");
         assert_eq!((q.finished[0].failed, q.finished[0].exit), (true, Some(3)));
+    }
+
+    /// What the journal is told of a pane: every byte, in order, with where
+    /// it starts; its sizes; and, as labels on the bytes, the commands its
+    /// shell ran and the full-screen programs that took the screen. A
+    /// terminal model fed the bytes the same way draws the same screen.
+    #[test]
+    fn the_journal_is_told_every_byte_and_what_the_bytes_were() {
+        use super::super::journal::PaneChange as C;
+        let (a, b, c) = ("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07");
+        let mut p = quiet_pane(40, 6, 100);
+        p.changes.take();
+        let chunks = [
+            format!("{a}$ {b}"),
+            format!("ls -l{c}\r\nfile-a\r\n"),
+            "file-b\r\n\x1b]133;D;2\x07".to_string(),
+            format!("{a}$ {b}vim{c}\r\n\x1b[?1049h\x1b[2J\x1b[Hediting"),
+            "\x1b[?1049l\x1b]133;D;0\x07".to_string(),
+        ];
+        for ch in &chunks {
+            p.process_output(ch.as_bytes());
+        }
+        p.resize(30, 6);
+        let got = p.changes.take();
+        let labels: Vec<String> = got
+            .iter()
+            .filter_map(|ch| match ch {
+                C::Output { .. } => None,
+                C::CommandStart { command, .. } => Some(format!("start {command}")),
+                C::CommandEnd { command, exit, .. } => Some(format!("end {command} {exit:?}")),
+                C::Fullscreen { on } => Some(format!("full {on}")),
+                C::Size { cols, rows } => Some(format!("size {cols}x{rows}")),
+                C::Reset { .. } => Some("reset".into()),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "start ls -l",
+                "end ls -l Some(2)",
+                "start vim",
+                "full true",
+                "full false",
+                "end vim Some(0)",
+                "size 30x6"
+            ]
+        );
+        // The bytes: all of them, in order, each where the one before ended.
+        let mut at = 0;
+        let mut all = Vec::new();
+        for ch in &got {
+            if let C::Output { at: from, bytes } = ch {
+                assert_eq!(*from, at);
+                at += bytes.len() as u64;
+                all.extend_from_slice(bytes);
+            }
+        }
+        assert_eq!(all, chunks.concat().into_bytes());
+        // A command's output is the bytes between its start and its end.
+        let span = |name: &str| {
+            let s = got.iter().find_map(|ch| match ch {
+                C::CommandStart { command, at, .. } if command == name => Some(*at),
+                _ => None,
+            });
+            let e = got.iter().find_map(|ch| match ch {
+                C::CommandEnd { command, at, .. } if command == name => Some(*at),
+                _ => None,
+            });
+            (s.unwrap() as usize, e.unwrap() as usize)
+        };
+        let (s, e) = span("ls -l");
+        assert_eq!(String::from_utf8_lossy(&all[s..e]), "\r\nfile-a\r\nfile-b\r\n", "exactly what it printed");
+        let (s, e) = span("vim");
+        assert!(String::from_utf8_lossy(&all[s..e]).ends_with("\x1b[?1049l"), "up to the shell's word");
+        // A copy fed the same bytes at the same sizes has the same screen.
+        let mut copy = vt100::Parser::new(6, 40, 100);
+        copy.process(&all);
+        copy.screen_mut().set_size(6, 30);
+        assert_eq!(copy.screen().contents_formatted(), p.screen().contents_formatted());
+    }
+
+    /// A read is cut right after each shell word that a command starts, and
+    /// right before each that one ended; nowhere else.
+    #[test]
+    fn a_read_is_cut_where_a_command_starts_and_ends() {
+        let cut = |s: &str| {
+            split_at_marks(s.as_bytes()).iter().map(|p| String::from_utf8_lossy(p).into_owned()).collect::<Vec<_>>()
+        };
+        assert_eq!(cut("plain \x1b]0;title\x07 text"), ["plain \x1b]0;title\x07 text"], "not a shell mark");
+        assert_eq!(cut("$ vim\x1b]133;C\x07\x1b[?1049h"), ["$ vim\x1b]133;C\x07", "\x1b[?1049h"]);
+        assert_eq!(cut("a\x1b]633;C\x1b\\b"), ["a\x1b]633;C\x1b\\", "b"]);
+        let prompt = "\x1b]133;A\x1b\\$ \x1b]133;B\x07x\x1b]7777;keepane-prompt\x1b\\";
+        assert_eq!(cut(prompt), [prompt], "a prompt: not cut");
+        // Before a word that a command ended, the PowerShell report too.
+        assert_eq!(cut("out\x1b]133;D;0\x07$ "), ["out", "\x1b]133;D;0\x07$ "]);
+        assert_eq!(cut("\x1b]633;D\x07"), ["\x1b]633;D\x07"], "nothing before it: one piece");
+        assert_eq!(
+            cut("x\x1b]7777;keepane-cmd;1;2;1\x1b\\\x1b]133;A\x1b\\"),
+            ["x", "\x1b]7777;keepane-cmd;1;2;1\x1b\\\x1b]133;A\x1b\\"]
+        );
+        assert_eq!(cut("ls\x1b]133;C\x07\x1b]133;D;0\x07"), ["ls\x1b]133;C\x07", "\x1b]133;D;0\x07"]);
+        assert_eq!(cut("ls\x1b]133;C"), ["ls\x1b]133;C"], "its end in the next read: not cut");
+        assert!(cut("").is_empty());
+    }
+
+    /// A command whose program takes the screen in the same read as the
+    /// shell's word that it started (`vim`) is still told by what was typed:
+    /// it was read off the shell's screen, not the program's.
+    #[test]
+    fn a_command_whose_program_takes_the_screen_at_once_is_still_named() {
+        let (a, b, c) = ("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07");
+        let mut p = quiet_pane(40, 6, 100);
+        p.process_output(format!("{a}$ {b}vim notes{c}\r\n\x1b[?1049h\x1b[2J\x1b[Hediting").as_bytes());
+        p.process_output(format!("\x1b[?1049l\x1b]133;D;0\x07{a}$ {b}").as_bytes());
+        assert_eq!(p.finished.len(), 1, "{:?}", p.marks);
+        assert_eq!(p.finished[0].command, "vim notes");
+    }
+
+    /// A command that printed nothing, its end in the same read as the next
+    /// prompt, printed nothing: the prompt is not its output.
+    #[test]
+    fn a_command_that_printed_nothing_has_no_output() {
+        use super::super::journal::PaneChange as C;
+        let (a, b, c) = ("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07");
+        let mut p = quiet_pane(40, 6, 100);
+        // (bash: the Enter is echoed, then PS0 says the command starts.)
+        p.process_output(format!("{a}$ {b}true\r\n{c}\x1b]133;D;0\x07{a}me@host:~/a/long/path$ {b}").as_bytes());
+        let got = p.changes.take();
+        let start = got.iter().find_map(|ch| matches!(ch, C::CommandStart { .. }).then_some(ch.clone()));
+        let end = got.iter().find_map(|ch| matches!(ch, C::CommandEnd { .. }).then_some(ch.clone()));
+        match (start, end) {
+            (Some(C::CommandStart { at: s, .. }), Some(C::CommandEnd { at: e, exit, .. })) => {
+                assert_eq!((e - s, exit), (0, Some(0)));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(p.finished[0].command, "true", "named as before");
+    }
+
+    /// The commands a resumed pane prints back are not told again as run.
+    #[test]
+    fn a_resumed_pane_printing_back_tells_no_commands() {
+        use super::super::journal::PaneChange as C;
+        let (a, b, c) = ("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07");
+        let mut p = quiet_pane(40, 6, 100);
+        p.pending = Some(PendingStart { argv: Vec::new(), dir: None, env: Vec::new(), path: Default::default() });
+        p.process_output(format!("{a}$ {b}make{c}\r\nok\r\n\x1b]133;D;0\x07").as_bytes());
+        let got = p.changes.take();
+        assert!(got.iter().all(|ch| matches!(ch, C::Output { .. } | C::Reset { .. })), "{got:?}");
+        assert!(got.iter().any(|ch| matches!(ch, C::Output { .. })), "the bytes still go");
     }
 
     /// A command wider than the pane (after a long prompt, a long folder or
