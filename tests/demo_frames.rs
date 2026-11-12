@@ -914,7 +914,7 @@ fn record_tour() {
         // Row by row: ConPTY marks its rows wrapped, so `contents()` runs
         // the whole screen together.
         let chosen = |s: &vt100::Screen| {
-            s.rows(0, TOUR_COLS).any(|l| l.split("[0] %").nth(1).is_some_and(|t| t.contains(&format!(" {name} "))))
+            s.rows(0, TOUR_COLS).any(|l| l.split("[4] %").nth(1).is_some_and(|t| t.contains(&format!(" {name} "))))
         };
         for _ in 0..8 {
             if chosen(rec.parser.screen()) {

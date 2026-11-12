@@ -165,7 +165,7 @@ its program (or its agent's cost and context, the total in the title), under
 named columns, each colour saying one thing (free green, busy yellow,
 messages waiting blue, a context red as it fills); in a narrow window the
 least needed columns give way first; `[2]` the chosen pane's inbox; `[3]` the tasks. On the right,
-`[0]` the chosen pane: its address, directory, pid, how long it has run, what
+`[4]` the chosen pane: its address, directory, pid, how long it has run, what
 it says it is doing, and then its screen live (with its colours), its
 scrollback, its events, its agent's trace (below), its directory in git
 (the Git tab: the branch and its upstream, what is changed, the latest
@@ -173,15 +173,23 @@ commits and branches; in a directory outside a repository, its files two
 levels down), or the message or task under the cursor: moving onto
 one in `[2]` or `[3]` shows it at once, laid out (its stage on its colour, who
 sent it to whom, when each step came, then its text and what it printed; a
-task, its messages joined down the left). Tab, `1 2 3 0` and `h`/`l` move
+task, its messages joined down the left). Tab, `0 1 2 3 4` and `h`/`l` move
 between panels, `j`/`k` within one, `g`/`G` (or Home/End) to its first or
 last row (the top or bottom on the right), `[`/`]` change what the right
 side shows;
 the mouse clicks and scrolls; `?` lists every key. From 150 columns wide, a
-column on the far left shows how the machine is doing, every second: CPU
-(a bar, its last 24 seconds, each core), memory, swap, disk and network
-a second, temperature, power, battery and processes, as far as the system
-says them.
+column on the far left holds `[0]` the chosen pane's directory over how the
+machine is doing, every second: CPU (a bar, its last 24 seconds, each
+core), memory, swap, disk and network a second, temperature, power,
+battery and processes, as far as the system says them. In `[0]`, `j`/`k`
+move, `h` goes up a directory and `l` into one, as in mini.files; what is
+under the cursor shows on the right (a directory's entries, a file's text
+with its line numbers, the first 256 KiB of it; a binary file only by its
+size), and `l` on a file scrolls it; `.` shows hidden entries and `-`
+goes back to the pane's directory, which `[0]` follows when another pane
+is chosen or this one changes directory. Narrower, `0` puts `[0]` in place
+of the left column while it is focused. (Up to 0.60 the right side was
+`[0]`; it is `[4]` now.)
 
 It also acts. On a pane: `s` sends it a message, `r` renames it, `m`
 changes its work mode, `R` marks it ready (unsticks it), `o` goes there

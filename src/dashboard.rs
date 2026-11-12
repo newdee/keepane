@@ -2,9 +2,11 @@
 //! (docs/design/dashboard.md). On the left, [1] every pane (its mode,
 //! whether it is free, its inbox, how long it has been quiet, its
 //! program), [2] the chosen pane's inbox and [3] the tasks; on the right,
-//! [0] the chosen pane: its screen live, its scrollback, its events, or one
-//! message or task in full. Opened by prefix v in a popup, or run in any
-//! terminal.
+//! [4] the chosen pane: its screen live, its scrollback, its events, or one
+//! message, task or file in full. Leftmost, from 150 columns, [0] the
+//! chosen pane's directory (`files`) over how the machine is doing;
+//! narrower, [0] takes the left column while focused. Opened by prefix v in
+//! a popup, or run in any terminal.
 //!
 //! It can act as well as watch: send a pane a message, rename it, change
 //! its work mode, mark it ready, go to it, close it, and delete or move
@@ -19,6 +21,7 @@ use crate::keys::{Key, KeyCode};
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
+mod files;
 mod gitview;
 mod machine;
 
@@ -385,6 +388,8 @@ impl TaskRow {
 /// The panels, in the order Tab goes through them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
+    /// `[0]`: the chosen pane's directory (`files`).
+    Files,
     Panes,
     Inbox,
     Tasks,
@@ -443,6 +448,8 @@ impl Tab {
 pub enum Detail {
     Message(String),
     Task(String),
+    /// A file or directory picked in `[0] Files`, read here.
+    File(std::path::PathBuf),
 }
 
 /// A line being typed at the bottom.
@@ -518,6 +525,8 @@ pub struct Board {
     /// How the machine is doing: the column on the left, when there is
     /// room for it.
     pub machine: machine::Machine,
+    /// `[0]`: the directory browsed.
+    pub files: files::Files,
 }
 
 /// Visible width of text that may hold SGR sequences.
@@ -689,8 +698,12 @@ impl Rect {
 }
 
 struct Layout {
-    /// How the machine is doing, leftmost, when there is room.
+    /// How the machine is doing, leftmost, when there is room, under
+    /// `files`.
     machine: Option<Rect>,
+    /// `[0]`: over the machine's column; without one, in place of the
+    /// left column while it is focused.
+    files: Option<Rect>,
     panes: Option<Rect>,
     inbox: Option<Rect>,
     tasks: Option<Rect>,
@@ -732,7 +745,23 @@ impl Board {
             trace_all: false,
             scroll_most: std::cell::Cell::new(0),
             machine: machine::Machine::default(),
+            files: files::Files::default(),
         }
+    }
+
+    /// `[0]` on screen: it follows the chosen pane (a new one, or a `cd`
+    /// there) and reads its directory again.
+    pub fn refresh_files(&mut self) {
+        if self.layout().files.is_none() {
+            return;
+        }
+        if let Some(r) = self.chosen_row().cloned() {
+            self.files.follow(&r.id, &r.path);
+        }
+        self.files.read();
+        // What is under the cursor may have changed without a key (the
+        // entry gone, the pane gone elsewhere): the right side with it.
+        self.follow();
     }
 
     /// Whether the machine's column is on screen (it is read only then).
@@ -743,6 +772,10 @@ impl Board {
     /// The main panel's lines when the board reads them itself, not from
     /// the server: the Git tab's (`git` the program to ask).
     pub fn local_main(&self, git: Option<&std::path::Path>) -> Option<Vec<String>> {
+        if let (Tab::Detail, Some(Detail::File(path))) = (self.tab, &self.detail) {
+            let width = self.layout().main.map_or(80, |r| r.inner_w());
+            return Some(files::preview(path, width, self.files.hidden));
+        }
         if self.tab != Tab::Git {
             return None;
         }
@@ -825,7 +858,8 @@ impl Board {
             return match &self.detail {
                 Some(Detail::Message(m)) => Some(owned(&["trace-message", m, "-J"])),
                 Some(Detail::Task(t)) => Some(owned(&["show-task", t, "-J"])),
-                None => None,
+                // Read here (`local_main`).
+                Some(Detail::File(_)) | None => None,
             };
         }
         let id = self.chosen_id()?;
@@ -865,10 +899,13 @@ impl Board {
     }
 
     fn cycle(&mut self, back: bool) {
-        const ORDER: [Panel; 4] = [Panel::Panes, Panel::Inbox, Panel::Tasks, Panel::Main];
+        const ORDER: [Panel; 5] = [Panel::Files, Panel::Panes, Panel::Inbox, Panel::Tasks, Panel::Main];
         let at = ORDER.iter().position(|p| *p == self.focus).unwrap_or(0);
         let to = if back { (at + ORDER.len() - 1) % ORDER.len() } else { (at + 1) % ORDER.len() };
         self.focus_on(ORDER[to]);
+        if self.focus == Panel::Files {
+            self.refresh_files();
+        }
     }
 
     fn switch_tab(&mut self, by: isize) {
@@ -911,6 +948,7 @@ impl Board {
     /// right at once, no Enter. Back on the panes, the tab that was there.
     fn follow(&mut self) {
         let want = match self.focus {
+            Panel::Files => self.files.picked().map(Detail::File),
             Panel::Inbox => self.picked_message().map(|m| Detail::Message(m.id.clone())),
             Panel::Tasks => {
                 self.tasks.get(self.task_pick).filter(|t| !t.id.is_empty()).map(|t| Detail::Task(t.id.clone()))
@@ -973,20 +1011,25 @@ impl Board {
                 self.cycle(k.shift);
                 return Action::Redraw;
             }
-            KeyCode::Char(c @ ('1' | '2' | '3' | '0')) if plain => {
+            KeyCode::Char(c @ ('0' | '1' | '2' | '3' | '4')) if plain => {
                 self.focus_on(match c {
+                    '0' => Panel::Files,
                     '1' => Panel::Panes,
                     '2' => Panel::Inbox,
                     '3' => Panel::Tasks,
                     _ => Panel::Main,
                 });
+                if c == '0' {
+                    self.refresh_files();
+                }
                 return Action::Redraw;
             }
-            KeyCode::Char('l') | KeyCode::Right if plain => {
+            // In [0], h and l walk the directories (`files_key`).
+            KeyCode::Char('l') | KeyCode::Right if plain && self.focus != Panel::Files => {
                 self.focus_on(Panel::Main);
                 return Action::Redraw;
             }
-            KeyCode::Char('h') | KeyCode::Left if plain => {
+            KeyCode::Char('h') | KeyCode::Left if plain && self.focus != Panel::Files => {
                 self.focus_on(self.left);
                 return Action::Redraw;
             }
@@ -1045,11 +1088,34 @@ impl Board {
             return Action::Redraw;
         }
         match self.focus {
+            Panel::Files => self.files_key(k.code),
             Panel::Panes => self.pane_key(k.code),
             Panel::Inbox => self.inbox_key(k.code),
             Panel::Tasks => self.task_key(k.code),
             Panel::Main => self.main_key(k.code),
         }
+    }
+
+    /// `[0]`: j/k move, h up a directory, l into one (on a file: its
+    /// preview, to scroll), `.` hidden entries, `-` back to the pane's
+    /// directory.
+    fn files_key(&mut self, code: KeyCode) -> Action {
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => self.files.step(1),
+            KeyCode::Up | KeyCode::Char('k') => self.files.step(-1),
+            KeyCode::Home | KeyCode::Char('g') => self.files.step(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.files.step(isize::MAX / 2),
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::BSpace => self.files.up(),
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+                if !self.files.enter() && self.files.picked().is_some() {
+                    self.focus_on(Panel::Main);
+                }
+            }
+            KeyCode::Char('.') => self.files.toggle_hidden(),
+            KeyCode::Char('-') => self.files.back(),
+            _ => {}
+        }
+        Action::Redraw
     }
 
     fn pane_key(&mut self, code: KeyCode) -> Action {
@@ -1236,6 +1302,7 @@ impl Board {
         let (x, y) = (m.x.max(0) as usize, m.y.max(0) as usize);
         let layout = self.layout();
         let at = [
+            (Panel::Files, layout.files),
             (Panel::Panes, layout.panes),
             (Panel::Inbox, layout.inbox),
             (Panel::Tasks, layout.tasks),
@@ -1247,6 +1314,7 @@ impl Board {
         if m.flags & WHEELED != 0 {
             let up = (m.buttons >> 16) as i16 > 0;
             match panel {
+                Panel::Files => self.files.step(if up { -1 } else { 1 }),
                 Panel::Main => self.scroll_by(if up { 3 } else { -3 }),
                 Panel::Panes => self.step_pane(if up { -1 } else { 1 }),
                 Panel::Inbox => {
@@ -1273,6 +1341,13 @@ impl Board {
         let row = y.checked_sub(rect.y + 1).filter(|r| *r < rect.inner_h());
         let Some(row) = row else { return Action::Redraw };
         match panel {
+            Panel::Files => {
+                let room = rect.inner_h().saturating_sub(usize::from(self.files.more > 0));
+                let start = window_start(self.files.pick, self.files.entries.len(), room);
+                if start + row < self.files.entries.len().min(start + room) {
+                    self.files.pick = start + row;
+                }
+            }
             Panel::Panes => {
                 let (start, heading, table) = self.pane_table(rect.inner_h(), rect.inner_w());
                 // The heading row is not a pane.
@@ -1307,12 +1382,21 @@ impl Board {
         let (w, h) = (usize::from(self.cols), usize::from(self.height));
         let body = h.saturating_sub(1);
         if w < 12 || body < 6 {
-            return Layout { machine: None, panes: None, inbox: None, tasks: None, main: None };
+            return Layout { machine: None, files: None, panes: None, inbox: None, tasks: None, main: None };
         }
         // The machine's column first, when there is room: the rest is laid
         // out beside it as it would be without.
         let mx = if w >= MACHINE_AT { MACHINE_W } else { 0 };
-        let machine = (mx > 0).then_some(Rect { x: 0, y: 0, w: mx, h: body });
+        // Files over the machine's rows: those as many as it has (each core
+        // block row is one), up to half the height; Files the rest.
+        let (files, machine) = if mx > 0 {
+            let need = self.machine.lines(MACHINE_W - 2).len() + 2;
+            let sys_h = need.clamp(3, (body / 2).max(3)).min(body.saturating_sub(3));
+            let files_h = body - sys_h;
+            (Some(Rect { x: 0, y: 0, w: mx, h: files_h }), Some(Rect { x: 0, y: files_h, w: mx, h: sys_h }))
+        } else {
+            (None, None)
+        };
         let w = w - mx;
         let narrow = w < NARROW;
         let (left_w, main) = if narrow {
@@ -1324,7 +1408,13 @@ impl Board {
             (lw, Some(Rect { x: mx + lw, y: 0, w: w - lw, h: body }))
         };
         if narrow && self.focus == Panel::Main {
-            return Layout { machine, panes: None, inbox: None, tasks: None, main };
+            return Layout { machine, files, panes: None, inbox: None, tasks: None, main };
+        }
+        // No machine's column to be over: Files takes the left column while
+        // it is focused.
+        if files.is_none() && self.focus == Panel::Files {
+            let files = Some(Rect { x: mx, y: 0, w: left_w, h: body });
+            return Layout { machine, files, panes: None, inbox: None, tasks: None, main };
         }
         // Inbox and tasks a quarter each (3 rows at least), the panes the rest.
         let small = (body / 4).max(3);
@@ -1334,6 +1424,7 @@ impl Board {
         let rect = |y, h| (h >= 3).then_some(Rect { x: mx, y, w: left_w, h });
         Layout {
             machine,
+            files,
             panes: rect(0, panes_h),
             inbox: rect(panes_h, inbox_h),
             tasks: rect(panes_h + inbox_h, tasks_h),
@@ -1449,6 +1540,23 @@ impl Board {
         boxed(&title, "", lines, r, focused)
     }
 
+    fn files_box(&self, r: Rect) -> Vec<String> {
+        let focused = self.focus == Panel::Files;
+        // The end of the path, which says where it is: its start goes first.
+        // (Whether hidden entries show is on the keys' line: a 30 columns
+        // title has no room for it beside the path.)
+        let room = r.w.saturating_sub(5 + "[0] Files ".len());
+        let title = format!("[0] Files {}", tail(&self.files.where_(), room));
+        // A column for the row's marker (`row_line`).
+        let lines = self
+            .files
+            .rows(r.inner_h(), r.inner_w().saturating_sub(1))
+            .into_iter()
+            .map(|(picked, l)| row_line(&l, picked, focused, r.inner_w()))
+            .collect();
+        boxed(&title, "", lines, r, focused)
+    }
+
     fn inbox_box(&self, r: Rect) -> Vec<String> {
         let who = self.chosen_row().map(|p| if p.name.is_empty() { p.id.clone() } else { format!("%{}", p.name) });
         let title = format!("[2] Inbox {} · {}", who.unwrap_or_default(), self.inbox.len());
@@ -1554,7 +1662,7 @@ impl Board {
                 }
                 head.push(format!("{} {}", label("doing:"), p.doing()));
                 // The mode and the state when they say something.
-                let mut title = format!("[0] {}{name}", p.id);
+                let mut title = format!("[4] {}{name}", p.id);
                 for word in [p.mode.as_str(), p.state()] {
                     if !matches!(word, "normal" | "-" | "") {
                         title.push_str(&format!(" · {word}"));
@@ -1562,13 +1670,13 @@ impl Board {
                 }
                 (title, head)
             }
-            None => ("[0] no panes".to_string(), Vec::new()),
+            None => ("[4] no panes".to_string(), Vec::new()),
         };
         if self.tab == Tab::Detail {
             // The view has its own heading.
             head = match &self.detail {
                 Some(_) => Vec::new(),
-                None => vec!["\x1b[2mPick a message ([2]) or a task ([3]): it shows here\x1b[0m".into()],
+                None => vec!["\x1b[2mPick a file ([0]), a message ([2]) or a task ([3]): it shows here\x1b[0m".into()],
             };
         }
         if self.tab == Tab::Trace {
@@ -1636,6 +1744,10 @@ impl Board {
             return format!("\x1b[1m {n}\x1b[0m");
         }
         let keys = match self.focus {
+            Panel::Files if self.files.hidden => {
+                "j/k move  h/l up/into  g/G first/last  . hide hidden  - pane's directory"
+            }
+            Panel::Files => "j/k move  h/l up/into  g/G first/last  . show hidden  - pane's directory",
             Panel::Panes => {
                 "j/k pane  g/G first/last  Enter screen  s send  r rename  m mode  R ready  o go there  x close"
             }
@@ -1646,7 +1758,7 @@ impl Board {
             Panel::Main if self.tab == Tab::Trace => "j/k scroll  g/G top/bottom  e every turn  [/] tab  h back",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
-        let all = "Tab/1230 panel  T trace  / filter  ? keys  q quit";
+        let all = "Tab/01234 panel  T trace  / filter  ? keys  q quit";
         format!(" {}  {}  {}", key_hints(keys), paint("2", "│"), key_hints(all))
     }
 
@@ -1670,7 +1782,8 @@ impl Board {
         // The machine's column, then the left one, then the main panel: each
         // row is put together left to right.
         let (p, i, t, m) = (layout.panes, layout.inbox, layout.tasks, layout.main);
-        let mc = layout.machine;
+        let (mc, fr) = (layout.machine, layout.files);
+        place(fr, fr.map(|r| self.files_box(r)).unwrap_or_default());
         place(mc, mc.map(|r| boxed("System", "", self.machine.lines(r.inner_w()), r, false)).unwrap_or_default());
         place(p, p.map(|r| self.panes_box(r)).unwrap_or_default());
         place(i, i.map(|r| self.inbox_box(r)).unwrap_or_default());
@@ -1939,6 +2052,25 @@ fn owned(xs: &[&str]) -> Vec<String> {
     xs.iter().map(|x| x.to_string()).collect()
 }
 
+/// The last `width` columns of `s`, a `…` first when that is not all of it.
+fn tail(s: &str, width: usize) -> String {
+    if width_of(s) <= width {
+        return s.to_string();
+    }
+    let mut out: Vec<char> = Vec::new();
+    let mut used = 1;
+    for c in s.chars().rev() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.reverse();
+    format!("…{}", out.into_iter().collect::<String>())
+}
+
 /// The first of `len` lines to show in `rows` so that line `at` is in view.
 fn window_start(at: usize, len: usize, rows: usize) -> usize {
     if rows == 0 || len <= rows {
@@ -2045,11 +2177,17 @@ fn help_lines() -> Vec<String> {
         "",
         "[3] Tasks    j / k pick (its steps shown right), Enter scroll them",
         "",
-        "[0] The chosen pane: Screen, Scrollback, Events, Trace, Git, Detail",
+        "[4] The chosen pane: Screen, Scrollback, Events, Trace, Git, Detail",
         "  j / k      scroll                  g / G   top / bottom",
         "  Git: its directory's branch, changes and commits; outside a repository, its files",
         "",
-        "System (leftmost, from 150 columns): CPU, each core, memory, swap, disk, network,",
+        "[0] Files: the chosen pane's directory (leftmost from 150 columns; narrower, it takes",
+        "  the left column while focused); what is under the cursor shows on the right",
+        "  j / k      move                    g / G   first / last",
+        "  h          up a directory          l, Enter  into one (a file: scroll it)",
+        "  .          hidden entries          -       back to the pane's directory",
+        "",
+        "System (under [0], from 150 columns): CPU, each core, memory, swap, disk, network,",
         "  temperature, power, battery, processes: this machine, every second",
         "",
         "Asks first: deleting a message, closing a pane, switching a pane to shell.",
@@ -2388,6 +2526,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                     (crate::sysinfo::counters(), crate::sysinfo::system(), crate::sysinfo::hostname());
                 board.machine.sample(now, std::time::Instant::now(), system, host);
             }
+            board.refresh_files();
             match (board.local_main(git.as_deref()), board.main_query()) {
                 (Some(l), _) => board.set_main(l),
                 (None, Some(q)) => board.set_main(lines(ask(&q))),
@@ -2904,14 +3043,17 @@ mod tests {
     #[test]
     fn panels_and_tabs_are_gone_through() {
         let mut b = board();
-        let order: Vec<Panel> = (0..4)
+        let order: Vec<Panel> = (0..5)
             .map(|_| {
                 b.key(Key::plain(KeyCode::Tab));
                 b.focus
             })
             .collect();
-        assert_eq!(order, [Panel::Inbox, Panel::Tasks, Panel::Main, Panel::Panes]);
+        assert_eq!(order, [Panel::Inbox, Panel::Tasks, Panel::Main, Panel::Files, Panel::Panes]);
         b.key(Key::with_shift(KeyCode::Tab));
+        assert_eq!(b.focus, Panel::Files);
+        b.key(Key::ch('1'));
+        b.key(Key::ch('4'));
         assert_eq!(b.focus, Panel::Main);
         b.key(Key::ch('h'));
         assert_eq!(b.focus, Panel::Panes, "h goes back to the left panel it came from");
@@ -2962,7 +3104,7 @@ mod tests {
             "[1] Panes  3 · 1 busy · 2 queued",
             "[2] Inbox %lead",
             "[3] Tasks",
-            "[0] %1 lead · ai · busy",
+            "[4] %1 lead · ai · busy",
             "Screen  Scrollback  Events  Trace  Git  Detail",
             "pid 4242 · up 16m · quiet 1m",
             "tester",
@@ -2972,7 +3114,7 @@ mod tests {
         // Narrower: the title whole on the border, every tab on the row
         // under it, closer, then by short names.
         let at = |w: usize| b.main_box(Rect { x: 0, y: 0, w, h: 8 }).iter().map(|l| strip(l)).collect::<Vec<_>>();
-        assert!(at(40)[0].contains("[0] %1 lead · ai · busy"), "{:?}", at(40));
+        assert!(at(40)[0].contains("[4] %1 lead · ai · busy"), "{:?}", at(40));
         assert!(at(120)[1].contains("Screen  Scrollback  Events  Trace  Git  Detail"), "{:?}", at(120));
         assert!(at(43)[1].contains("Screen Scrollback Events Trace Git Detail"), "{:?}", at(43));
         assert!(at(42)[1].contains("Screen Back Ev Trace Git Det"), "{:?}", at(42));
@@ -3072,7 +3214,7 @@ mod tests {
             ("1;34m", "[1]"),
             ("1;34m", "work"),
             ("1;36m", "j/k"),
-            ("1;36m", "Tab/1230"),
+            ("1;36m", "Tab/01234"),
         ] {
             assert!(f.contains(&format!("\x1b[{sgr}{what}\x1b[0m")), "{what} in \\x1b[{sgr}");
         }
@@ -3128,7 +3270,7 @@ mod tests {
         // A `normal` pane's title has no placeholders for its mode and state.
         b.chosen = Some("%3".into());
         let text = screen(&b).join("\n");
-        assert!(text.contains("[0] %3 ─") && !text.contains("normal ·"), "{text}");
+        assert!(text.contains("[4] %3 ─") && !text.contains("normal ·"), "{text}");
     }
 
     /// From 150 columns the machine's column is leftmost, 30 wide, the rest
@@ -3142,7 +3284,10 @@ mod tests {
         assert_eq!(b.layout().panes.map(|r| r.x), Some(0));
         b.resize(150, 30);
         let l = b.layout();
-        assert_eq!(l.machine, Some(Rect { x: 0, y: 0, w: 30, h: 29 }));
+        // [0] Files over it, the machine as tall as its lines (one, before
+        // it is read: 3 with its borders).
+        assert_eq!(l.files, Some(Rect { x: 0, y: 0, w: 30, h: 26 }));
+        assert_eq!(l.machine, Some(Rect { x: 0, y: 26, w: 30, h: 3 }));
         assert_eq!((l.panes.map(|r| r.x), l.main.map(|r| r.x)), (Some(30), Some(30 + 60)));
         let t0 = std::time::Instant::now();
         let reading = |busy: u64| crate::sysinfo::Counters {
@@ -3155,6 +3300,11 @@ mod tests {
         b.machine.sample(reading(500), t0 + Duration::from_secs(1), sys, "box".into());
         let text = screen(&b).join("\n");
         assert!(text.contains("╭─System") && text.contains("box up 1h") && text.contains("MEM"), "{text}");
+        assert!(text.contains("╭─[0] Files"), "{text}");
+        // Read, it takes the rows its lines want, Files the rest.
+        let (f, m) = (b.layout().files.unwrap(), b.layout().machine.unwrap());
+        assert_eq!((f.h + m.h, m.y), (29, f.h));
+        assert_eq!(m.h, b.machine.lines(28).len() + 2, "as many rows as it has lines");
         for cols in [150u16, 151, 180, 240] {
             b.resize(cols, 30);
             assert!(screen(&b).iter().all(|l| width_of(l) == usize::from(cols)), "{cols}");
@@ -3292,9 +3442,91 @@ mod tests {
         let mut b = board();
         b.resize(60, 20);
         assert!(screen(&b).join("\n").contains("[1] Panes") && !screen(&b).join("\n").contains("[0] "));
+        b.key(Key::ch('4'));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[4] %1") && !text.contains("[1] Panes"), "{text}");
+        // [0]: in place of the left column, while focused.
         b.key(Key::ch('0'));
         let text = screen(&b).join("\n");
-        assert!(text.contains("[0] %1") && !text.contains("[1] Panes"), "{text}");
+        assert!(text.contains("[0] Files") && !text.contains("[1] Panes"), "{text}");
+        b.key(Key::ch('1'));
+        assert!(!screen(&b).join("\n").contains("[0] Files"));
+    }
+
+    /// `[0] Files`: the chosen pane's directory, walked with h/j/k/l; what
+    /// is under the cursor shows on the right (a directory's entries, a
+    /// file's lines), read here; on a file, l scrolls it, h comes back;
+    /// leaving, the tab that was there comes back. The mouse picks too.
+    #[test]
+    fn files_walk_the_chosen_panes_directory_and_show_what_is_picked() {
+        assert_eq!(tail("~/a/long/path/here", 9), "…ath/here");
+        assert_eq!(tail("short", 9), "short");
+        assert_eq!(tail("/中文/目录", 6), "…/目录");
+        let dir = std::env::temp_dir().join(format!("keepane-board-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello there\n").unwrap();
+        std::fs::write(dir.join(".dot"), "").unwrap();
+        let mut b = board();
+        b.resize(160, 30);
+        b.rows[0].path = dir.to_string_lossy().into_owned();
+        b.chosen = Some("%1".into());
+        let tab = b.tab;
+        b.key(Key::ch('0'));
+        assert_eq!((b.focus, b.files.dir.as_deref()), (Panel::Files, Some(dir.as_path())));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("sub/"), "listed on the left");
+        // A file's size whole beside it (the row's marker takes a column).
+        assert!(text.contains("12B│"), "{text}");
+        // The end of the path in the title, which says where: its start goes.
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let title = screen(&b)[0].chars().take(30).collect::<String>();
+        assert!(title.contains("[0] Files …") && title.contains(&name[name.len() - 8..]), "{title}");
+        // The directory under the cursor, on the right.
+        assert_eq!((b.tab, b.detail.clone()), (Tab::Detail, Some(Detail::File(dir.join("sub")))));
+        assert_eq!(b.main_query(), None, "read here, not asked of the server");
+        let shown = b.local_main(None).unwrap().iter().map(|l| strip(l)).collect::<Vec<_>>();
+        assert!(shown[1].contains("0 directories, 0 files"), "{shown:?}");
+        // A file: its lines.
+        b.key(Key::ch('j'));
+        b.set_main(b.local_main(None).unwrap());
+        assert!(screen(&b).join("\n").contains("1 hello there"), "{}", screen(&b).join("\n"));
+        // l on a file: its preview takes the keys; h comes back.
+        b.key(Key::ch('l'));
+        assert_eq!((b.focus, b.tab), (Panel::Main, Tab::Detail));
+        b.key(Key::ch('h'));
+        assert_eq!(b.focus, Panel::Files);
+        // Into the directory and back up, the cursor on it.
+        b.key(Key::ch('k'));
+        b.key(Key::ch('l'));
+        assert_eq!((b.focus, b.files.dir.as_deref()), (Panel::Files, Some(dir.join("sub").as_path())));
+        b.key(Key::ch('h'));
+        assert_eq!(b.files.picked(), Some(dir.join("sub")));
+        // Hidden entries, by hand; the keys' line says which way it is.
+        assert!(!b.files.entries.iter().any(|e| e.name == ".dot"));
+        assert!(strip(&b.foot()).contains(". show hidden"));
+        b.key(Key::ch('.'));
+        assert!(b.files.entries.iter().any(|e| e.name == ".dot"));
+        assert!(strip(&b.foot()).contains(". hide hidden"));
+        let title = screen(&b)[0].chars().take(30).collect::<String>();
+        assert!(title.contains(&name[name.len() - 8..]), "the path still in the title: {title}");
+        // The mouse: a click on the third row picks it.
+        let r = b.layout().files.unwrap();
+        b.mouse(&MouseRecord { x: (r.x + 2) as i16, y: (r.y + 3) as i16, buttons: 1, ctrl: 0, flags: 0 });
+        assert_eq!((b.focus, b.files.pick), (Panel::Files, 2));
+        // The entry under the cursor gone (no key since): the right side
+        // follows the cursor where it is now.
+        b.files.pick = b.files.entries.iter().position(|e| e.name == "a.txt").unwrap();
+        b.key(Key::ch('k'));
+        b.key(Key::ch('j'));
+        assert_eq!(b.detail, Some(Detail::File(dir.join("a.txt"))));
+        std::fs::remove_file(dir.join("a.txt")).unwrap();
+        b.refresh_files();
+        assert!(matches!(&b.detail, Some(Detail::File(p)) if p != &dir.join("a.txt")), "{:?}", b.detail);
+        // Away to the panes: the tab that was there.
+        b.key(Key::ch('1'));
+        assert_eq!((b.focus, b.tab), (Panel::Panes, tab));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

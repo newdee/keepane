@@ -70,7 +70,7 @@ Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   trace-pane [-J] [-t pane]   (what the pane's agent did, step by step; the dashboard's Trace tab)
   ssh-hosts [-J]   choose-ssh   (prefix @: the machines ssh reached from the panes, ~/.ssh/config and known_hosts; Enter connects or goes there, s splits, d removes)
   status-line [-J] [-t session]   (the status line as drawn, for a script; -J its parts and colours, as the phone page draws it)
-  dashboard (prefix v: panes, inboxes, tasks and the chosen pane's screen; act on them; ? keys)   setup [claude|codex|gemini|cursor|opencode] [--install]
+  dashboard (prefix v: panes, inboxes, tasks, the chosen pane's screen and directory; act on them; ? keys)   setup [claude|codex|gemini|cursor|opencode] [--install]
 Panes on other machines (both run `keepane web`; docs/design/link.md):
   link add <its keepane web address>   (pair, like SSH keys, once, both ways)   link list   link panes host:port
   send-message --to host:port/%name text   trace-message id (asks there too)   link info host:port
