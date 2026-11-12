@@ -5766,3 +5766,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - 只共享（没有 `--full`）的机器不能建副本，仍用 `link watch`。
   - 快照不含解析器读到一半的转义序列（只在两次读取之间拍）。
   - 本机渲染（第 3 阶段）和 attach 改走新通路（第 4 阶段）未做；第 3 阶段显示给了 `--full` 的机器的全部 session（用户已定）。
+- 发布：v0.60.0（tag 在 eb15023，其 CI 通过）。Release 成功，13 个文件；Homebrew 3 个 sha256 与发布文件一致；manifests 已拉取（3e9e98e）；winget 新开 PR #478326（fork 的 master 落后时建 tree 报 base_tree 无效，先 `gh repo sync newdee/winget-pkgs` 再建；PR 因 TLS 超时单独创建）。
