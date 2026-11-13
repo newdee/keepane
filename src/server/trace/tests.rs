@@ -311,18 +311,37 @@ fn the_steps_merged_for_the_pane() {
 #[test]
 fn a_long_transcript_keeps_its_latest_turns() {
     let mut s = Steps::default();
+    // The first turn starts a server in the background that runs on.
+    s.feed(Kind::Claude, &claude_prompt(0.0, "serve"));
+    s.feed(
+        Kind::Claude,
+        &claude_reply(
+            0.5,
+            "r-bg",
+            serde_json::json!([tool_use(
+                "dev",
+                "Bash",
+                serde_json::json!({"command": "pnpm dev", "run_in_background": true})
+            )]),
+            Some("tool_use"),
+        ),
+    );
+    s.feed(Kind::Claude, &claude_result(0.6, "dev", false, "Command running in background with ID: b1"));
     for i in 0..1600 {
-        let t = f64::from(i) * 3.0;
+        let t = 1.0 + f64::from(i) * 3.0;
         s.feed(Kind::Claude, &claude_prompt(t, &format!("turn {i}")));
         s.feed(Kind::Claude, &claude_reply(t + 1.0, &format!("r{i}"), serde_json::json!([]), Some("end_turn")));
     }
     assert!(s.spans.len() <= MOST);
-    assert_eq!(s.spans.last().unwrap().parent.as_deref(), Some("turn-1600"));
+    assert_eq!(s.spans.last().unwrap().parent.as_deref(), Some("turn-1601"));
     let first = s.spans.iter().find(|x| x.kind == SpanKind::Turn).unwrap();
-    assert!(first.name != "turn 0", "the oldest let go");
-    assert!(
-        s.spans.iter().all(|x| x.kind == SpanKind::Turn || s.spans.iter().any(|t| Some(&t.id) == x.parent.as_ref()))
-    );
+    assert!(first.name != "turn 0" && first.name != "serve", "the oldest let go");
+    // What still runs in the background stays, its turn gone.
+    let dev = s.spans.iter().find(|x| x.id == "dev").expect("still listed");
+    assert!(dev.end.is_none() && !s.spans.iter().any(|t| Some(&t.id) == dev.parent.as_ref()));
+    assert!(s.spans.iter().all(|x| x.kind == SpanKind::Turn
+        || x.id == "dev"
+        || s.spans.iter().any(|t| Some(&t.id) == x.parent.as_ref())));
 }
 
 /// Each agent's tools by kind; what a tool was given, short; durations.
@@ -330,7 +349,9 @@ fn a_long_transcript_keeps_its_latest_turns() {
 fn tools_by_kind_and_what_they_were_given() {
     for (name, kind) in [
         ("Read", SpanKind::Read),
-        ("WebSearch", SpanKind::Read),
+        ("WebSearch", SpanKind::Net),
+        ("WebFetch", SpanKind::Net),
+        ("web_search", SpanKind::Net),
         ("grep_files", SpanKind::Read),
         ("Edit", SpanKind::Edit),
         ("apply_patch", SpanKind::Edit),
@@ -338,9 +359,20 @@ fn tools_by_kind_and_what_they_were_given() {
         ("PowerShell", SpanKind::Run),
         ("exec_command", SpanKind::Run),
         ("Task", SpanKind::Agent),
+        ("Agent", SpanKind::Agent),
+        ("Workflow", SpanKind::Agent),
+        ("Skill", SpanKind::Skill),
         ("TodoWrite", SpanKind::Tool),
         ("mcp__xerj__xerj_search", SpanKind::Tool),
+        ("mcp__xerj__xerj_memory_store", SpanKind::Memory),
+        ("mcp__memory__create_entities", SpanKind::Memory),
+        ("mcp__claude-in-chrome__navigate", SpanKind::Browser),
+        ("mcp__playwright__browser_click", SpanKind::Browser),
         ("mcp__fs__read", SpanKind::Read),
+        ("mcp__fetch__fetch", SpanKind::Net),
+        // Only an MCP server's name says browser or memory: a tool of
+        // Claude Code's own by that word is not.
+        ("memory", SpanKind::Tool),
     ] {
         assert_eq!(SpanKind::of_tool(name), kind, "{name}");
     }
@@ -457,4 +489,265 @@ fn every_turn_is_named_by_what_began_it() {
     assert_eq!(given("<bash-input>ls -la</bash-input>"), Some("! ls -la".into()));
     assert_eq!(given("<bash-stdout>total 0</bash-stdout><bash-stderr></bash-stderr>"), None);
     assert_eq!(given("<ide-opened-file>x</ide-opened-file>"), Some("ide opened file".into()));
+}
+
+/// Why a tool failed, when the transcript says: the person said no
+/// (`denied`), a `PreToolUse` hook stopped it (`hook: …`, its first line);
+/// any other failure says nothing more.
+#[test]
+fn a_refusal_says_who_stopped_the_tool() {
+    let reject = serde_json::json!({"type": "user", "timestamp": at(3.0), "toolUseResult": "User rejected tool use",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true,
+        "content": "The user doesn't want to proceed with this tool use. The tool use was rejected."}]}})
+    .to_string();
+    let s = fed(
+        Kind::Claude,
+        &[
+            claude_prompt(0.0, "change it"),
+            claude_reply(
+                1.0,
+                "m1",
+                serde_json::json!([
+                    tool_use("t1", "Edit", serde_json::json!({"file_path": "a.rs"})),
+                    tool_use("t2", "Edit", serde_json::json!({"file_path": "CLAUDE.md"})),
+                    tool_use("t3", "Bash", serde_json::json!({"command": "false"}))
+                ]),
+                Some("tool_use"),
+            ),
+            reject,
+            claude_result(3.1, "t2", true, "PreToolUse:Edit hook error: CLAUDE.md is protected\nsecond line"),
+            claude_result(3.2, "t3", true, "exit code 1"),
+        ],
+    );
+    let why: Vec<(&str, bool, &str)> = s
+        .spans
+        .iter()
+        .filter(|x| x.kind == SpanKind::Edit || x.kind == SpanKind::Run)
+        .map(|x| (x.id.as_str(), x.failed, x.why.as_str()))
+        .collect();
+    assert_eq!(why, [("t1", true, "denied"), ("t2", true, "hook: CLAUDE.md is protected"), ("t3", true, "")]);
+    assert!(tree(&s.spans, ms_at(9.0)).iter().any(|l| l.contains("failed (denied)")));
+}
+
+/// A tool run in the background: its answer only says it began, and its
+/// turn ending does not end it; the task's notification does (from the
+/// person's line, or one queued while the agent worked), one not completed
+/// failed with its state. The model is at work meanwhile, not held up.
+#[test]
+fn a_background_task_runs_until_its_notification() {
+    let note = |t: f64, id: &str, status: &str| {
+        serde_json::json!({"type": "user", "timestamp": at(t), "turnOrigin": "task_notification", "message": {
+            "role": "user", "content": format!("<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>{status}</status>\n<summary>Background command \"tests\" {status}</summary>\n</task-notification>")}})
+        .to_string()
+    };
+    let queued =
+        serde_json::json!({"type": "attachment", "timestamp": at(30.0), "attachment": {"type": "queued_command",
+        "prompt": "<task-notification>\n<tool-use-id>t2</tool-use-id>\n<status>killed</status>\n</task-notification>"}})
+        .to_string();
+    let mut s = fed(
+        Kind::Claude,
+        &[
+            claude_prompt(0.0, "run the tests"),
+            claude_reply(
+                1.0,
+                "m1",
+                serde_json::json!([
+                    tool_use("t1", "Bash", serde_json::json!({"command": "cargo test", "run_in_background": true})),
+                    tool_use("t2", "Bash", serde_json::json!({"command": "serve", "run_in_background": true}))
+                ]),
+                Some("tool_use"),
+            ),
+            claude_result(1.2, "t1", false, "Command running in background with ID: b1"),
+            claude_result(1.3, "t2", false, "Command running in background with ID: b2"),
+        ],
+    );
+    let t1 = |s: &Steps| s.spans.iter().find(|x| x.id == "t1").cloned().unwrap();
+    assert!(t1(&s).background && t1(&s).end.is_none(), "began, goes on");
+    assert_eq!(s.thinking(), Some(ms_at(1.3)), "the model works meanwhile");
+    s.feed(Kind::Claude, &claude_reply(2.0, "m2", serde_json::json!([{"type": "text"}]), Some("end_turn")));
+    assert_eq!((s.running(), t1(&s).end), (None, None), "the turn is over, the task is not");
+    s.feed(Kind::Claude, &note(20.0, "t1", "completed"));
+    assert_eq!((t1(&s).end, t1(&s).failed), (Some(ms_at(20.0)), false));
+    // It still names the turn the agent then begins.
+    s.feed(Kind::Claude, &claude_reply(21.0, "m3", serde_json::json!([{"type": "text"}]), None));
+    let turn = s.spans.iter().find(|x| Some(x.id.as_str()) == s.running()).unwrap();
+    assert_eq!(turn.name, "Background command \"tests\" completed");
+    s.feed(Kind::Claude, &queued);
+    let t2 = s.spans.iter().find(|x| x.id == "t2").unwrap();
+    assert_eq!((t2.end, t2.failed, t2.why.as_str()), (Some(ms_at(30.0)), true, "killed"));
+    // One that failed to begin ends at its answer.
+    let mut b = fed(
+        Kind::Claude,
+        &[
+            claude_prompt(0.0, "x"),
+            claude_reply(
+                1.0,
+                "m1",
+                serde_json::json!([tool_use(
+                    "t9",
+                    "Bash",
+                    serde_json::json!({"command": "nope", "run_in_background": true})
+                )]),
+                Some("tool_use"),
+            ),
+        ],
+    );
+    b.feed(Kind::Claude, &claude_result(1.5, "t9", true, "could not start"));
+    assert_eq!(b.spans.last().unwrap().end, Some(ms_at(1.5)));
+}
+
+/// Still running in the background, its turn too old to be shown: kept,
+/// and the text tree says it.
+#[test]
+fn a_background_task_outlives_the_turns_shown() {
+    let mut lines = vec![
+        claude_prompt(0.0, "first"),
+        claude_reply(
+            1.0,
+            "m1",
+            serde_json::json!([tool_use(
+                "bg",
+                "Bash",
+                serde_json::json!({"command": "watch", "run_in_background": true})
+            )]),
+            Some("tool_use"),
+        ),
+        claude_result(1.1, "bg", false, "running"),
+        claude_reply(2.0, "m2", serde_json::json!([{"type": "text"}]), Some("end_turn")),
+    ];
+    for i in 0..3 {
+        let t = 10.0 + f64::from(i) * 10.0;
+        lines.push(claude_prompt(t, &format!("turn {i}")));
+        lines.push(claude_reply(t + 1.0, &format!("r{i}"), serde_json::json!([{"type": "text"}]), Some("end_turn")));
+    }
+    let s = fed(Kind::Claude, &lines);
+    let spans = merge(&[&s], &[], 2, ms_at(60.0));
+    assert!(!spans.iter().any(|x| x.kind == SpanKind::Turn && x.name == "first"), "an old turn");
+    assert!(spans.iter().any(|x| x.name == "Bash" && x.background), "{spans:?}");
+    assert!(tree(&spans, ms_at(60.0)).iter().any(|l| l.contains("watch") && l.ends_with("background running")));
+}
+
+/// The hooks the agent ran, as steps of the turn with no time of their
+/// own: one that failed says why (without its colours); one that added
+/// context says so; none before a turn (the session's start).
+#[test]
+fn hooks_are_steps_of_their_turn() {
+    let hook =
+        |t: f64, a: Value| serde_json::json!({"type": "attachment", "timestamp": at(t), "attachment": a}).to_string();
+    let s = fed(
+        Kind::Claude,
+        &[
+            hook(
+                0.0,
+                serde_json::json!({"type": "hook_success", "hookName": "SessionStart:startup", "hookEvent": "SessionStart"}),
+            ),
+            claude_prompt(1.0, "go"),
+            hook(
+                1.1,
+                serde_json::json!({"type": "hook_additional_context", "hookName": "UserPromptSubmit", "content": ["be brief"]}),
+            ),
+            hook(
+                2.0,
+                serde_json::json!({"type": "hook_non_blocking_error", "hookName": "PostToolUse:Write",
+                "stderr": "Failed with non-blocking status code: \u{1b}[31;1mOut-File: no path\u{1b}[0m\r\nmore"}),
+            ),
+            hook(3.0, serde_json::json!({"type": "hook_cancelled", "hookName": "Stop"})),
+        ],
+    );
+    let hooks: Vec<(&str, &str, bool, &str, Option<i64>)> = s
+        .spans
+        .iter()
+        .filter(|x| x.kind == SpanKind::Hook)
+        .map(|x| (x.name.as_str(), x.detail.as_str(), x.failed, x.why.as_str(), x.end))
+        .collect();
+    assert_eq!(
+        hooks,
+        [
+            ("UserPromptSubmit", "added context", false, "", Some(ms_at(1.1))),
+            (
+                "PostToolUse:Write",
+                "",
+                true,
+                "Failed with non-blocking status code: Out-File: no path",
+                Some(ms_at(2.0))
+            ),
+            ("Stop", "", true, "cancelled", Some(ms_at(3.0))),
+        ]
+    );
+    assert!(s.spans.iter().filter(|x| x.kind == SpanKind::Hook).all(|x| x.parent.as_deref() == Some("turn-1")));
+    assert_eq!(s.thinking(), Some(ms_at(1.0)), "a hook does not move where the model began");
+}
+
+/// A model call on another model than the one before says from which.
+#[test]
+fn a_model_switch_says_from_which() {
+    let reply = |t: f64, id: &str, model: &str, stop: Option<&str>| {
+        serde_json::json!({"type": "assistant", "timestamp": at(t), "message": {
+            "id": id, "model": model, "content": [{"type": "text"}], "stop_reason": stop, "usage": {"output_tokens": 1}}})
+        .to_string()
+    };
+    let s = fed(
+        Kind::Claude,
+        &[
+            claude_prompt(0.0, "a"),
+            reply(1.0, "m1", "claude-opus-5-5", Some("end_turn")),
+            claude_prompt(2.0, "b"),
+            reply(3.0, "m2", "claude-opus-5-5", Some("end_turn")),
+            claude_prompt(4.0, "c"),
+            reply(5.0, "m3", "claude-fable-5-2", Some("end_turn")),
+        ],
+    );
+    let models: Vec<&str> = s.spans.iter().filter(|x| x.kind == SpanKind::Model).map(|x| x.detail.as_str()).collect();
+    assert_eq!(models, ["", "", "from claude-opus-5-5"]);
+}
+
+/// A background task stopped by the agent (`TaskStop`, naming the task's
+/// id its tool's answer gave) ends there, not failed: no notification
+/// comes for it. The agent started again (`SessionStart`): what ran in the
+/// background of the run before ended with it.
+#[test]
+fn a_background_task_ends_when_stopped_or_the_agent_restarts() {
+    let hook = |t: f64, event: &str| {
+        serde_json::json!({"type": "attachment", "timestamp": at(t), "attachment": {
+            "type": "hook_success", "hookName": format!("{event}:resume"), "hookEvent": event}})
+        .to_string()
+    };
+    let s = fed(
+        Kind::Claude,
+        &[
+            claude_prompt(0.0, "serve it"),
+            claude_reply(
+                1.0,
+                "m1",
+                serde_json::json!([
+                    tool_use(
+                        "dev",
+                        "PowerShell",
+                        serde_json::json!({"command": "pnpm dev", "run_in_background": true})
+                    ),
+                    tool_use("w", "Bash", serde_json::json!({"command": "watch", "run_in_background": true}))
+                ]),
+                Some("tool_use"),
+            ),
+            claude_result(
+                1.1,
+                "dev",
+                false,
+                "Command running in background with ID: bqb37cnuz. Output is being written to: x",
+            ),
+            claude_result(1.2, "w", false, "Command running in background with ID: b2. Output"),
+            claude_reply(
+                5.0,
+                "m2",
+                serde_json::json!([tool_use("stop", "TaskStop", serde_json::json!({"task_id": "bqb37cnuz"}))]),
+                Some("tool_use"),
+            ),
+            claude_result(5.1, "stop", false, "stopped"),
+            claude_reply(6.0, "m3", serde_json::json!([{"type": "text"}]), Some("end_turn")),
+            hook(50.0, "SessionStart"),
+        ],
+    );
+    let get = |id: &str| s.spans.iter().find(|x| x.id == id).unwrap();
+    assert_eq!((get("dev").end, get("dev").failed), (Some(ms_at(5.0)), false), "stopped by the agent");
+    assert_eq!((get("w").end, get("w").failed), (Some(ms_at(50.0)), false), "gone with the run before");
 }

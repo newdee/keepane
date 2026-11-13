@@ -12725,6 +12725,29 @@ async fn a_panes_agent_is_read_from_its_transcript() {
     assert!(tree[0].starts_with("turn run the tests ") && tree[0].ends_with(" running"), "{tree:?}");
     assert_eq!(&tree[1..3], ["  model claude-opus-5-5 3.0s", "  run Bash cargo test 6.0s failed"]);
 
+    // It waits on the person (its permission hook runs `pane-wait`): said
+    // with the steps, until something newer happens.
+    let (code, _, err) = h.cli(&["pane-wait", "-t", "ag", "Claude needs your permission to use Bash"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = h.cli(&["trace-pane", "-J", "-t", "ag"]).await;
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["waiting"]["text"], "waits for you: Claude needs your permission to use Bash", "{out}");
+    let (_, tree, _) = h.cli(&["trace-pane", "-t", "ag"]).await;
+    assert_eq!(tree.lines().last(), Some("waits for you: Claude needs your permission to use Bash"), "{tree}");
+    let later =
+        (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let next = serde_json::json!({"type": "assistant", "timestamp": later, "message": {"id": "m4", "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": "allowed, going on"}], "usage": {"output_tokens": 5}}});
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{next}\n").as_bytes()))
+        .unwrap();
+    h.wait_for_cli("waiting no more", &["trace-pane", "-J", "-t", "ag"], |_, out| {
+        serde_json::from_str::<serde_json::Value>(out).is_ok_and(|v| v["waiting"].is_null())
+    })
+    .await;
+
     // The agent gone: no agent.
     let shell: Vec<String> = PROMPT_SHELL.split(' ').map(String::from).collect();
     let (code, _, err) = h.cli(&args(&["respawn-pane", "-k", "-t", "ag"], &shell)).await;

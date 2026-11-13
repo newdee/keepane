@@ -998,6 +998,13 @@ impl Server {
                 "%{pid} runs no agent keepane reads (Claude Code, Codex, pi, Cursor CLI)"
             ));
         };
+        // What it waits on you for, while nothing happened since it said so.
+        let latest = a.trace.iter().map(|s| s.end.unwrap_or(s.start).max(s.start)).max().unwrap_or(0);
+        let waiting = self
+            .pane_ref(pid)
+            .and_then(|p| p.actor.waiting.as_ref())
+            .filter(|(_, at)| *at >= latest)
+            .map(|(text, at)| serde_json::json!({ "text": text, "at": at }));
         if json {
             let v = serde_json::json!({
                 "pane": format!("%{pid}"),
@@ -1006,11 +1013,15 @@ impl Server {
                 "cost": a.cost.map(|c| (c * 1e6).round() / 1e6),
                 "tokens": a.usage.tokens.total(),
                 "now": now,
+                "waiting": waiting,
                 "spans": a.trace.iter().map(super::trace::Span::json).collect::<Vec<_>>(),
             });
             return super::Outcome::Text(v.to_string());
         }
-        let lines = super::trace::tree(&a.trace, now);
+        let mut lines = super::trace::tree(&a.trace, now);
+        if let Some(w) = waiting {
+            lines.push(w["text"].as_str().unwrap_or_default().to_string());
+        }
         if lines.is_empty() { super::Outcome::Ok } else { super::Outcome::Text(lines.join("\n")) }
     }
     pub(super) fn agents_seen(&mut self, stats: HashMap<PaneId, Stats>) {

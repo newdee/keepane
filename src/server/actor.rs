@@ -408,6 +408,10 @@ pub struct Actor {
     /// keepane's prompt hook has been heard here at least once: a shell
     /// pane without it (cmd) cannot be told free.
     prompts_heard: bool,
+    /// What the program last said it waits on you for (`pane-wait`, from
+    /// an agent's permission hook), and when (milliseconds since 1970):
+    /// the Trace shows it while nothing newer happened.
+    pub waiting: Option<(String, i64)>,
 }
 
 impl Actor {

@@ -2597,6 +2597,9 @@ struct Step {
     start: i64,
     end: Option<i64>,
     failed: bool,
+    /// Why it failed (`denied`, `hook: …`, a background task's state).
+    why: String,
+    background: bool,
     tokens: u64,
 }
 
@@ -2612,15 +2615,24 @@ impl Step {
             start: v["start"].as_i64().unwrap_or(0),
             end: v["end"].as_i64(),
             failed: v["failed"].as_bool() == Some(true),
+            why: s("why"),
+            background: v["background"].as_bool() == Some(true),
             tokens: v["tokens"].as_u64().unwrap_or(0),
         }
     }
 }
 
+/// The kinds of steps, in the order the colours' key and a turn's sums
+/// name them.
+const STEP_KINDS: [&str; 11] =
+    ["model", "read", "edit", "run", "agent", "net", "browser", "skill", "memory", "hook", "tool"];
+
 /// A step's colour and the character its bar is drawn in, by its kind:
 /// the model magenta, reading cyan, changing files yellow, running a
-/// command blue, another agent green, any other tool plain; a step that
-/// failed red. The characters differ too, for a terminal of one colour.
+/// command blue, another agent green, the web and a browser in the bright
+/// cyan and blue, a skill and a memory in the bright magenta and yellow, a
+/// hook faint, any other tool plain; a step that failed red. The
+/// characters differ too, for a terminal of one colour.
 fn step_look(kind: &str, failed: bool) -> (&'static str, &'static str) {
     let (sgr, ch) = match kind {
         "model" => ("35", "█"),
@@ -2628,9 +2640,38 @@ fn step_look(kind: &str, failed: bool) -> (&'static str, &'static str) {
         "edit" => ("33", "▓"),
         "run" => ("34", "▓"),
         "agent" => ("32", "▒"),
+        "net" => ("96", "▒"),
+        "browser" => ("94", "▒"),
+        "skill" => ("95", "▓"),
+        "memory" => ("93", "▓"),
+        "hook" => ("2", "·"),
         _ => ("37", "▓"),
     };
     (if failed { "31" } else { sgr }, ch)
+}
+
+/// The steps under `parent`, theirs too: every one of a turn, a subagent's
+/// with its call's.
+fn steps_under<'a>(steps: &'a [Step], parent: &str, out: &mut Vec<&'a Step>) {
+    for s in steps.iter().filter(|s| s.parent.as_deref() == Some(parent)) {
+        out.push(s);
+        steps_under(steps, &s.id, out);
+    }
+}
+
+/// A turn's steps summed by kind, the most first: `read 12 · run 4`; the
+/// model's calls left out (every turn has them).
+fn turn_sums(steps: &[Step], turn: &str) -> String {
+    let mut under = Vec::new();
+    steps_under(steps, turn, &mut under);
+    let mut sums: Vec<(&str, usize)> = STEP_KINDS
+        .iter()
+        .filter(|k| **k != "model")
+        .map(|k| (*k, under.iter().filter(|s| s.kind == *k).count()))
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    sums.sort_by_key(|s| std::cmp::Reverse(s.1));
+    sums.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · ")
 }
 
 /// The Trace tab: the pane's agent's latest turns as a waterfall, from
@@ -2650,8 +2691,16 @@ pub fn trace_view(json: &str, width: usize, all: bool) -> Vec<String> {
     let now = v["now"].as_i64().unwrap_or(0);
     let steps: Vec<Step> = v["spans"].as_array().map(|a| a.iter().map(Step::parse).collect()).unwrap_or_default();
     let calls = steps.iter().filter(|s| s.kind == "model").count();
-    let tools = steps.iter().filter(|s| !matches!(s.kind.as_str(), "model" | "turn")).count();
-    let failed = steps.iter().filter(|s| s.failed).count();
+    let tools = steps.iter().filter(|s| !matches!(s.kind.as_str(), "model" | "turn" | "hook")).count();
+    // What failed in the latest turn: kept till your next message. A hook
+    // that failed is counted apart: one broken hook fails at every tool,
+    // and would bury what the agent's own steps did.
+    let (failed, hooks_failed) = steps.iter().rfind(|s| s.kind == "turn").map_or((0, 0), |t| {
+        let mut under = Vec::new();
+        steps_under(&steps, &t.id, &mut under);
+        let hooks = under.iter().filter(|s| s.failed && s.kind == "hook").count();
+        (under.iter().filter(|s| s.failed).count() - hooks, hooks)
+    });
     let cost = v["cost"].as_f64().map(crate::format::human_dollars).unwrap_or_default();
     let mut out = vec![format!(
         "{}  {}  {}  {} {}  {} {calls}  {} {tools}{}",
@@ -2664,8 +2713,13 @@ pub fn trace_view(json: &str, width: usize, all: bool) -> Vec<String> {
         dim("tools"),
         if failed > 0 { format!("  {}", paint("31", &format!("✗ {failed} failed"))) } else { String::new() },
     )];
-    let key: Vec<String> = ["model", "read", "edit", "run", "agent", "tool"]
+    if hooks_failed > 0 {
+        out[0].push_str(&format!("  {}", paint("2;31", &format!("hooks ✗ {hooks_failed}"))));
+    }
+    // The colours' key: the kinds these turns hold (the model always).
+    let key: Vec<String> = STEP_KINDS
         .iter()
+        .filter(|k| **k == "model" || steps.iter().any(|s| s.kind == **k))
         .map(|k| {
             let (sgr, ch) = step_look(k, false);
             format!("{} {k}", paint(sgr, ch))
@@ -2673,6 +2727,19 @@ pub fn trace_view(json: &str, width: usize, all: bool) -> Vec<String> {
         .chain([format!("{} waiting", dim("░")), format!("{} failed", paint("31", "✗"))])
         .collect();
     out.push(key.join("  "));
+    // What it waits on you for (a permission it asks): first, it is why
+    // nothing moves.
+    if let Some(w) = v["waiting"]["text"].as_str() {
+        let since = v["waiting"]["at"].as_i64().map(|at| format!(" · {}", took(now - at))).unwrap_or_default();
+        out.push(paint("1;33", &format!("⏸ {w}{since}")));
+    }
+    // What still runs in the background, whichever turn began it.
+    for s in steps.iter().filter(|s| s.background && s.end.is_none()) {
+        let (sgr, _) = step_look(&s.kind, false);
+        let what = if s.detail.is_empty() { s.name.as_str() } else { s.detail.as_str() };
+        let label = format!("{} {} {}", dim("in the background"), paint(&format!("1;{sgr}"), "▶"), what);
+        out.push(format!("{} {}", fit(&label, width.saturating_sub(8)), fit_right(&took(now - s.start), 7)));
+    }
     let turns: Vec<&Step> = steps.iter().filter(|s| s.kind == "turn").collect();
     if turns.is_empty() {
         out.push(dim("No turn yet."));
@@ -2694,7 +2761,9 @@ pub fn trace_view(json: &str, width: usize, all: bool) -> Vec<String> {
             _ => String::new(),
         };
         let name = if turn.name.is_empty() { "(a turn)" } else { turn.name.as_str() };
-        let head = format!("{} {}{state}", if open { "▾" } else { "▸" }, paint("1", name));
+        let sums = turn_sums(&steps, &turn.id);
+        let sums = if sums.is_empty() { String::new() } else { format!("  {}", dim(&sums)) };
+        let head = format!("{} {}{state}{sums}", if open { "▾" } else { "▸" }, paint("1", name));
         out.push(format!("{} {}", fit(&head, width.saturating_sub(dur_w + 1)), fit_right(&took(total), dur_w)));
         if !open {
             continue;
@@ -2759,17 +2828,50 @@ fn trace_rows(
     out: &mut Vec<String>,
 ) {
     use crate::server::trace::took;
-    for s in steps.iter().filter(|s| s.parent.as_deref() == Some(parent)) {
+    let kids: Vec<&Step> = steps.iter().filter(|s| s.parent.as_deref() == Some(parent)).collect();
+    // One a row may stand for others like it: over, not failed, nothing
+    // under it, not the model's nor an agent's (those say most).
+    let folds = |s: &Step| {
+        s.end.is_some()
+            && !s.failed
+            && !s.background
+            && !matches!(s.kind.as_str(), "model" | "turn" | "agent")
+            && !steps.iter().any(|x| x.parent.as_deref() == Some(s.id.as_str()))
+    };
+    let mut i = 0;
+    while i < kids.len() {
+        // Three or more of a kind in a row: one row, the last of them.
+        let mut j = i + 1;
+        if folds(kids[i]) {
+            while j < kids.len() && folds(kids[j]) && kids[j].kind == kids[i].kind {
+                j += 1;
+            }
+        }
+        let group = if j - i >= 3 { &kids[i..j] } else { &kids[i..=i] };
+        let (first, s) = (group[0], group[group.len() - 1]);
+        // All begun at once (one reply's calls): `×N`; one after another:
+        // `+N` more than the one shown.
+        let more = match group.len() {
+            1 => String::new(),
+            n if group.iter().all(|g| g.start == first.start) => format!(" ×{n}"),
+            n => format!(" +{}", n - 1),
+        };
         let (sgr, ch) = step_look(&s.kind, s.failed);
         let end = s.end.unwrap_or(now);
-        // Which model; a command as a prompt shows it (whichever shell).
+        // Which model (and the one before it, on a switch); a command as a
+        // prompt shows it (whichever shell).
+        let switched = s.detail.strip_prefix("from ").filter(|_| s.kind == "model");
         let name = match s.kind.as_str() {
             "model" => {
                 let m = model_short(if s.name.is_empty() { model } else { &s.name });
-                if m.is_empty() { "model" } else { m }
+                let m = if m.is_empty() { "model" } else { m };
+                match switched {
+                    Some(from) => format!("◆ {} → {m}", model_short(from)),
+                    None => m.to_string(),
+                }
             }
-            "run" => "$",
-            _ => s.name.as_str(),
+            "run" => "$".to_string(),
+            _ => s.name.clone(),
         };
         let what = match s.kind.as_str() {
             "model" if s.end.is_none() => "thinking".to_string(),
@@ -2777,18 +2879,26 @@ fn trace_rows(
             "model" => String::new(),
             // A file: its end, which says which.
             "read" | "edit" if !s.detail.contains([' ', '*', '?']) && s.detail.contains(['/', '\\']) => {
-                path_tail(&s.detail, label_w.saturating_sub(2 * depth + width_of(name) + 2))
+                path_tail(&s.detail, label_w.saturating_sub(2 * depth + width_of(&name) + 2 + width_of(&more)))
             }
             // A command run with nothing said of it: the tool.
             "run" if s.detail.is_empty() => s.name.clone(),
             _ => s.detail.clone(),
         };
-        let mark = if s.failed { format!(" {}", paint("31", "✗")) } else { String::new() };
-        let label = format!("{}{}{mark} {}", "  ".repeat(depth), paint(sgr, name), paint("2", &what));
-        let mut row = format!("{} {}", fit(&label, label_w), fit_right(&took(end - s.start), dur_w));
+        let mut mark = String::new();
+        if s.failed {
+            let why = if s.why.is_empty() { String::new() } else { format!(" {}", s.why) };
+            mark = format!(" {}", paint("31", &format!("✗{why}")));
+        }
+        if s.background {
+            mark.push_str(&format!(" {}", paint("2", "bg")));
+        }
+        let name = if switched.is_some() { paint("33", &name) } else { paint(sgr, &name) };
+        let label = format!("{}{name}{mark} {}{}", "  ".repeat(depth), paint("2", &what), paint("1", &more));
+        let mut row = format!("{} {}", fit(&label, label_w), fit_right(&took(end - first.start), dur_w));
         if bar_w >= 10 {
             let at = |t: i64| ((t - t0).clamp(0, total) as f64 / total as f64 * bar_w as f64) as usize;
-            let from = at(s.start).min(bar_w - 1);
+            let from = at(first.start).min(bar_w - 1);
             let to = at(end).max(from + 1).min(bar_w);
             let running = s.end.is_none();
             let bar = ch.repeat(to - from);
@@ -2798,6 +2908,7 @@ fn trace_rows(
         }
         out.push(row);
         trace_rows(steps, &s.id, depth + 1, (t0, total), (now, model), (label_w, dur_w, bar_w), out);
+        i += group.len();
     }
 }
 /// An event log line, short: time, what, the gist.
@@ -4175,6 +4286,82 @@ mod tests {
         assert!(strip(&event_line(done)).ends_with("failed    #14 failed"));
         assert!(event_line(done).contains("\x1b[31m"), "a failure in red");
         assert_eq!(event_line("not json"), "not json");
+    }
+
+    /// The Trace tells what holds an agent up and keeps long turns short:
+    /// what it waits on you for, first; what still runs in the background;
+    /// why a step failed (`denied`, a hook); a model switch; three or more
+    /// steps of a kind in a row as one row (`+N` one after another, `×N`
+    /// all at once); each turn's steps summed by kind; the key only the
+    /// kinds there are; the failures of the latest turn only.
+    #[test]
+    fn the_trace_says_what_holds_the_agent_up_and_folds_the_rest() {
+        let span = |id: &str, parent: Option<&str>, kind: &str, name: &str, detail: &str, s: i64, e: Option<i64>| {
+            serde_json::json!({"id": id, "parent": parent, "kind": kind, "name": name, "detail": detail,
+                "start": s, "end": e, "failed": false, "why": "", "background": false, "tokens": 0})
+        };
+        let mut spans = vec![
+            span("t1", None, "turn", "older", "", 0, Some(5_000)),
+            span("x0", Some("t1"), "run", "Bash", "make", 1_000, Some(2_000)),
+            span("t2", None, "turn", "fix it", "", 10_000, None),
+            span("m1", Some("t2"), "model", "claude-opus-5-5", "", 10_000, Some(11_000)),
+            span("m2", Some("t2"), "model", "claude-fable-5-2", "from claude-opus-5-5", 11_000, Some(12_000)),
+            // Four reads one after another, then three at once.
+            span("r1", Some("t2"), "read", "Read", "a.rs", 12_000, Some(13_000)),
+            span("r2", Some("t2"), "read", "Read", "b.rs", 13_000, Some(14_000)),
+            span("r3", Some("t2"), "read", "Read", "c.rs", 14_000, Some(15_000)),
+            span("r4", Some("t2"), "read", "Read", "d.rs", 15_000, Some(16_000)),
+            span("e1", Some("t2"), "edit", "Edit", "x.rs", 16_000, Some(17_000)),
+            span("g1", Some("t2"), "net", "WebFetch", "https://a", 17_000, Some(18_000)),
+            span("g2", Some("t2"), "net", "WebFetch", "https://b", 17_000, Some(19_000)),
+            span("g3", Some("t2"), "net", "WebFetch", "https://c", 17_000, Some(20_000)),
+            span("d1", Some("t2"), "edit", "Edit", "CLAUDE.md", 20_000, Some(21_000)),
+            span("d2", Some("t2"), "edit", "Edit", "y.rs", 21_000, Some(22_000)),
+            span("bg", Some("t1"), "run", "Bash", "cargo test", 2_000, None),
+            span("hk", Some("t2"), "hook", "PostToolUse:Write", "", 22_500, Some(22_500)),
+        ];
+        spans[16]["failed"] = serde_json::json!(true);
+        spans[16]["why"] = serde_json::json!("Out-File: no path");
+        spans[0]["end"] = serde_json::json!(5_000);
+        spans[13]["failed"] = serde_json::json!(true);
+        spans[13]["why"] = serde_json::json!("hook: CLAUDE.md is protected");
+        spans[14]["failed"] = serde_json::json!(true);
+        spans[14]["why"] = serde_json::json!("denied");
+        spans[1]["failed"] = serde_json::json!(true); // the older turn's: not counted
+        spans[15]["background"] = serde_json::json!(true);
+        let doc = serde_json::json!({"agent": "claude", "model": "opus", "now": 30_000,
+            "waiting": {"text": "waits for you: Claude needs your permission to use Bash", "at": 25_000},
+            "spans": spans});
+        let raw = trace_view(&doc.to_string(), 120, false);
+        let text: Vec<String> = raw.iter().map(|l| strip(l)).collect();
+        let row =
+            |what: &str| text.iter().find(|l| l.contains(what)).unwrap_or_else(|| panic!("{what}: {text:#?}")).clone();
+        assert!(text[0].contains("✗ 2 failed  hooks ✗ 1"), "the latest turn's, a hook's apart: {}", text[0]);
+        assert!(text[1].contains("net") && text[1].contains("hook") && !text[1].contains("browser"), "{}", text[1]);
+        assert!(row("PostToolUse:Write").contains("✗ Out-File: no path"), "{}", row("PostToolUse:Write"));
+        assert!(text[2].starts_with("⏸ waits for you: Claude needs your permission to use Bash · 5.0s"), "{text:#?}");
+        assert!(raw[2].contains("\x1b[1;33m"), "{:?}", raw[2]);
+        assert!(
+            text[3].starts_with("in the background ▶ cargo test") && text[3].trim_end().ends_with("28s"),
+            "{text:#?}"
+        );
+        assert!(row("▾ fix it").contains("read 4 · edit 3 · net 3"), "{}", row("▾ fix it"));
+        assert!(row("→").contains("◆ opus-5-5 → fable-5-2"), "{}", row("→"));
+        // Four reads in a row: the last, `+3`, from the first's start.
+        assert!(row("d.rs").contains("Read d.rs +3") && row("d.rs").contains(" 4.0s"), "{}", row("d.rs"));
+        assert!(!text.iter().any(|l| l.contains("a.rs") || l.contains("c.rs")), "folded");
+        // Three fetched at once: `×3`.
+        assert!(row("https://c").contains("WebFetch https://c ×3"), "{}", row("https://c"));
+        // Failed: never folded, each with why.
+        assert!(row("CLAUDE.md").contains("✗ hook: CLAUDE.md is protected"), "{}", row("CLAUDE.md"));
+        assert!(row("y.rs").contains("✗ denied"), "{}", row("y.rs"));
+        assert!(row("x.rs").starts_with("  Edit x.rs"), "two edits apart: not folded: {}", row("x.rs"));
+        // Nothing waited on, none in the background: neither line.
+        let mut plain = doc.clone();
+        plain["waiting"] = serde_json::Value::Null;
+        plain["spans"][15]["end"] = serde_json::json!(29_000);
+        let text: Vec<String> = trace_view(&plain.to_string(), 120, false).iter().map(|l| strip(l)).collect();
+        assert!(!text.iter().any(|l| l.starts_with('⏸') || l.starts_with("in the background")), "{text:#?}");
     }
 
     /// The Trace tab: what it asks for; the figures and the colours' key;

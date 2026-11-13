@@ -464,6 +464,10 @@ impl Server {
         } else {
             format!("waits for you: {}", text.trim())
         };
+        // Kept for the Trace whatever `done-events` tells.
+        if let Some(p) = self.find_pane_mut(pid) {
+            p.actor.waiting = Some((text.clone(), chrono::Utc::now().timestamp_millis()));
+        }
         self.pane_done(pid, Kind::Wait, text, Ended::default());
         Outcome::Ok
     }

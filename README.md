@@ -280,7 +280,7 @@ live (read every two seconds):
 ```
 claude  claude-opus-5-5  $2.50  41k tokens  model calls 3  tools 4  ✗ 1 failed
 ▸ add the share command                                            5.0s
-▾ fix the test running                                            1m40s
+▾ fix the test running  read 2 · run 1 · agent 1                  1m40s
                                          0              50s          1m40s
   opus-5-5 1.2k tokens             10s  █████
   Read …\src\share.rs              10s       █████
@@ -291,21 +291,33 @@ claude  claude-opus-5-5  $2.50  41k tokens  model calls 3  tools 4  ✗ 1 failed
 ```
 
 Each kind has its colour: the model magenta, reading and searching cyan,
-changing files yellow, running a command blue, another agent green, any
-other tool plain, a step that failed red with `✗`; a step still running is
-bold and ends in `▶`. A model call shows its model, a command follows a
-`$` as typed, a file its end. A turn is named by your prompt, else by what
-began it: a background task done (its summary), a `!` command, a scheduled
-task, another session's message. A Claude subagent's steps sit under the
-call that started it. The latest turn is open, the earlier ones a line each
-(`e` opens every one); after a turn, how long the agent has waited for you.
+changing files yellow, running a command blue, another agent green, the
+web and a browser bright cyan and blue, a skill and a memory bright
+magenta and yellow, a hook faint, any other tool plain, a step that failed
+red with `✗` and why when the transcript says (`denied`: you said no;
+`hook: …`: a hook stopped it); a step still running is bold and ends in
+`▶`. The key names the model and the kinds there are. A model call shows
+its model (`◆ opus-5-5 → fable-5-2` on a switch), a command follows a `$`
+as typed, a file its end. Three or more finished steps of a kind in a row
+(not the model's, an agent's, a failed or a background one) are one row:
+the last, with `+N` (one after another) or `×N` (all at once). A turn is
+named by your prompt, else by what began it: a background task done (its
+summary), a `!` command, a scheduled task, another session's message;
+beside it, its steps summed (`read 12 · run 4 · net 1`). A Claude
+subagent's steps sit under the call that started it. On top: what the
+agent waits on you for (a permission it asks, from `keepane setup`'s
+hook), and what still runs in the background, until its task says it is
+done, the agent stops it or the agent starts again; the failures of the
+latest turn are counted, a hook's apart. The latest turn is open, the
+earlier ones a line each (`e` opens every one); after a turn, how long the
+agent has waited for you.
 The tab shows the bottom, the latest step, as more come (`g` the top, `G`
-back). A line is
-written when what it tells is over, so a model call shows once its reply is
-in: while a turn runs and no tool does, the model is at work since the last
-step (`thinking`). `keepane trace-pane -t <pane>` prints the same as a tree,
-`-J` as JSON (each step's kind, name, what it was given, start and end in
-milliseconds, parent).
+back). A line is written when what it tells is over, so a model call
+shows once its reply is in: while a turn runs and no tool does, the model
+is at work since the last step (`thinking`). `keepane trace-pane -t
+<pane>` prints the same as a tree, `-J` as JSON (each step's kind, name,
+what it was given, start and end in milliseconds, parent, why it failed,
+background; and what it waits for).
 
 Only agents in keepane's panes are read. An agent elsewhere (another
 terminal, an editor) working in the same directory at the same time writes

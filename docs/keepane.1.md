@@ -116,9 +116,13 @@ the left), `list-agents` (the Claude Code, Codex, pi
 and Cursor CLI the panes run: model, cost, tokens, context, CPU, memory;
 Cursor's CPU and memory only; `-J` as JSON),
 `trace-pane` (what a pane's agent did, step by step: its latest turns, each
-call of the model and each tool, from when to when, failed or not; a tree,
-or `-J` JSON; the dashboard's Trace tab (`T`) draws it as a waterfall,
-each kind in its colour, the latest step in sight, `e` opening every turn),
+call of the model, each tool and hook, from when to when, failed or not
+and why (`denied`, `hook: …`), what runs in the background, what it waits
+on you for; a tree, or `-J` JSON; the dashboard's Trace tab (`T`) draws it
+as a waterfall, each kind in its colour, three or more finished tool
+steps of a kind in a row as one row (`+N`, `×N` at once; not a failed or
+background one), each turn's steps summed, the latest step in sight, `e`
+opening every turn),
 `status-line` (a session's status line as drawn; `-J` its parts, their colours
 and each window's pane, which the phone page draws under the screen),
 `choose-ssh` (prefix `@`: the machines `ssh` reached, connected ones first,

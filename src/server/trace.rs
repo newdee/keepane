@@ -16,14 +16,24 @@ use std::collections::HashMap;
 pub enum SpanKind {
     Turn,
     Model,
-    /// Reading and searching: files, the web.
+    /// Reading and searching files.
     Read,
     /// Changing files.
     Edit,
     /// Running a command.
     Run,
-    /// Another agent (a Claude subagent).
+    /// Another agent (a Claude subagent, a workflow of them).
     Agent,
+    /// The web: a page fetched, a search.
+    Net,
+    /// A browser driven (an MCP server for Chrome, Playwright…).
+    Browser,
+    /// A skill loaded.
+    Skill,
+    /// A memory kept or recalled (a memory MCP server's tools).
+    Memory,
+    /// A hook the agent ran (`attachment` lines): no time of its own.
+    Hook,
     /// Any other tool (a to-do list, an MCP server's).
     Tool,
 }
@@ -37,24 +47,39 @@ impl SpanKind {
             SpanKind::Edit => "edit",
             SpanKind::Run => "run",
             SpanKind::Agent => "agent",
+            SpanKind::Net => "net",
+            SpanKind::Browser => "browser",
+            SpanKind::Skill => "skill",
+            SpanKind::Memory => "memory",
+            SpanKind::Hook => "hook",
             SpanKind::Tool => "tool",
         }
     }
 
     /// A tool's kind by its name, as Claude Code, Codex and pi call their
-    /// tools (an MCP tool by its own name, after the server's).
+    /// tools (an MCP tool by its own name, after the server's; a browser or
+    /// memory server by either).
     pub fn of_tool(name: &str) -> SpanKind {
         let lower = name.to_ascii_lowercase();
         let n = lower.rsplit("__").next().unwrap_or(&lower);
+        let mcp = lower.starts_with("mcp__");
+        if mcp && ["chrome", "browser", "playwright", "puppeteer"].iter().any(|b| lower.contains(b)) {
+            return SpanKind::Browser;
+        }
+        if mcp && lower.contains("memory") {
+            return SpanKind::Memory;
+        }
         match n {
-            "read" | "grep" | "glob" | "ls" | "find" | "search" | "webfetch" | "websearch" | "web_search"
-            | "notebookread" | "read_file" | "list_dir" | "grep_files" | "view_image" | "toolsearch" => SpanKind::Read,
+            "webfetch" | "websearch" | "web_search" | "fetch" => SpanKind::Net,
+            "read" | "grep" | "glob" | "ls" | "find" | "search" | "notebookread" | "read_file" | "list_dir"
+            | "grep_files" | "view_image" | "toolsearch" => SpanKind::Read,
             "edit" | "multiedit" | "write" | "notebookedit" | "apply_patch" | "write_file" | "str_replace" => {
                 SpanKind::Edit
             }
             "bash" | "bashoutput" | "killshell" | "powershell" | "shell" | "exec_command" | "local_shell"
             | "local_shell_call" | "write_stdin" | "unified_exec" => SpanKind::Run,
-            "task" | "agent" => SpanKind::Agent,
+            "task" | "agent" | "workflow" => SpanKind::Agent,
+            "skill" => SpanKind::Skill,
             _ => SpanKind::Tool,
         }
     }
@@ -74,16 +99,40 @@ pub struct Span {
     pub start: i64,
     pub end: Option<i64>,
     pub failed: bool,
+    /// Why it failed, when the transcript says: `denied` (the person said
+    /// no), `hook: …` (a hook stopped it), a background task's end
+    /// (`killed`); empty otherwise.
+    pub why: String,
+    /// Run in the background (`run_in_background`): over when its task is
+    /// done, not when the tool answers nor when its turn ends.
+    pub background: bool,
     /// Tokens the model wrote (a model call).
     pub tokens: u64,
 }
 
 impl Span {
+    /// A step that starts now; the rest as most steps are.
+    fn new(id: String, parent: Option<String>, kind: SpanKind, name: String, start: i64) -> Span {
+        Span {
+            id,
+            parent,
+            kind,
+            name,
+            detail: String::new(),
+            start,
+            end: None,
+            failed: false,
+            why: String::new(),
+            background: false,
+            tokens: 0,
+        }
+    }
+
     pub fn json(&self) -> Value {
         serde_json::json!({
             "id": self.id, "parent": self.parent, "kind": self.kind.word(), "name": self.name,
             "detail": self.detail, "start": self.start, "end": self.end, "failed": self.failed,
-            "tokens": self.tokens,
+            "why": self.why, "background": self.background, "tokens": self.tokens,
         })
     }
 }
@@ -109,6 +158,11 @@ pub struct Steps {
     pending: Option<String>,
     /// The model Codex says its turn runs on (its replies do not name it).
     model: String,
+    /// The model the last call was on, to tell a switch.
+    last_model: String,
+    /// A background task's id (`b1`, as its tool's answer says it) to the
+    /// step that began it: a `TaskStop` names the task.
+    task_of: HashMap<String, String>,
 }
 
 /// A transcript line's time, milliseconds since 1970.
@@ -186,7 +240,9 @@ impl Steps {
             self.reindex();
             return;
         };
-        self.spans.retain(|s| s.id != first && s.parent.as_deref() != Some(&first));
+        // What it began in the background and still runs stays listed.
+        self.spans
+            .retain(|s| (s.background && s.end.is_none()) || (s.id != first && s.parent.as_deref() != Some(&first)));
         self.reindex();
     }
 
@@ -209,17 +265,7 @@ impl Steps {
         self.end_turn(t, false);
         self.turns += 1;
         let id = format!("turn-{}", self.turns);
-        self.add(Span {
-            id: id.clone(),
-            parent: None,
-            kind: SpanKind::Turn,
-            name: short(prompt, 100),
-            detail: String::new(),
-            start: t,
-            end: None,
-            failed: false,
-            tokens: 0,
-        });
+        self.add(Span::new(id.clone(), None, SpanKind::Turn, short(prompt, 100), t));
         self.turn = Some(id);
         self.last = t;
     }
@@ -228,7 +274,12 @@ impl Steps {
     /// whatever of it still runs with it.
     fn end_turn(&mut self, t: i64, cut: bool) {
         let Some(id) = self.turn.take() else { return };
-        for s in self.spans.iter_mut().filter(|s| s.end.is_none() && (s.id == id || s.parent.as_deref() == Some(&id))) {
+        // What runs in the background goes on: its task says when it is over.
+        for s in self
+            .spans
+            .iter_mut()
+            .filter(|s| s.end.is_none() && !s.background && (s.id == id || s.parent.as_deref() == Some(&id)))
+        {
             s.end = Some(t.max(s.start));
             if cut && s.id == id {
                 s.detail = "interrupted".into();
@@ -269,44 +320,103 @@ impl Steps {
         }
         let turn = self.turn_at(t);
         let n = self.spans.len();
-        self.add(Span {
-            id: key.unwrap_or_else(|| format!("m-{t}-{n}")),
-            parent: Some(turn),
-            kind: SpanKind::Model,
-            name: model.to_string(),
-            detail: String::new(),
-            start: self.last.min(t),
-            end: Some(t),
-            failed: false,
-            tokens,
-        });
+        let mut s =
+            Span::new(key.unwrap_or_else(|| format!("m-{t}-{n}")), Some(turn), SpanKind::Model, model.into(), 0);
+        s.start = self.last.min(t);
+        s.end = Some(t);
+        s.tokens = tokens;
+        // On another model than the call before: from which.
+        if !model.is_empty() {
+            if !self.last_model.is_empty() && self.last_model != model {
+                s.detail = format!("from {}", self.last_model);
+            }
+            self.last_model = model.to_string();
+        }
+        self.add(s);
         self.last = t;
     }
 
     /// A tool called at `t`.
     fn tool(&mut self, t: i64, id: &str, name: &str, input: &Value) {
+        // Stopping a background task (Claude Code's `TaskStop`, `KillShell`):
+        // no notification comes, so its step ends here.
+        if matches!(name, "TaskStop" | "KillShell" | "KillBash")
+            && let Some(task) = ["task_id", "shell_id", "bash_id"].iter().find_map(|k| input[*k].as_str())
+            && let Some(step) = self.task_of.get(task).cloned()
+            && let Some(s) = self.get_mut(&step).filter(|s| s.end.is_none())
+        {
+            s.end = Some(t.max(s.start));
+        }
         let turn = self.turn_at(t);
-        self.add(Span {
-            id: id.to_string(),
-            parent: Some(turn),
-            kind: SpanKind::of_tool(name),
-            name: name.to_string(),
-            detail: detail_of(input),
-            start: t,
-            end: None,
-            failed: false,
-            tokens: 0,
-        });
+        let mut s = Span::new(id.to_string(), Some(turn), SpanKind::of_tool(name), name.to_string(), t);
+        s.detail = detail_of(input);
+        s.background = input["run_in_background"].as_bool() == Some(true);
+        self.add(s);
         self.last = t;
     }
 
-    /// A tool's answer came at `t`.
-    fn answered(&mut self, t: i64, id: &str, failed: bool) {
-        if let Some(s) = self.get_mut(id) {
+    /// A tool's answer came at `t` (`why` it failed, when it says). One run
+    /// in the background answers that it began: it goes on, unless that
+    /// failed.
+    fn answered(&mut self, t: i64, id: &str, failed: bool, why: String) {
+        if let Some(s) = self.get_mut(id)
+            && (!s.background || failed)
+        {
             s.end = Some(t.max(s.start));
             s.failed = failed;
+            s.why = why;
         }
         self.last = t;
+    }
+
+    /// A background task over (`<task-notification>`): the step that began
+    /// it ends; one that did not complete failed, its state said.
+    fn background_done(&mut self, t: i64, text: &str) {
+        let inner = |tag: &str| {
+            let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+            let start = text.find(&open)? + open.len();
+            Some(text[start..start + text[start..].find(&close)?].trim().to_string())
+        };
+        let Some(id) = inner("tool-use-id") else { return };
+        let status = inner("status").unwrap_or_default();
+        if let Some(s) = self.get_mut(&id).filter(|s| s.end.is_none()) {
+            s.end = Some(t.max(s.start));
+            s.failed = !status.is_empty() && status != "completed";
+            if s.failed {
+                s.why = status;
+            }
+        }
+    }
+
+    /// A hook the agent ran (an `attachment` line), in the turn running: a
+    /// step with no time; one that failed or was cancelled, said why.
+    fn hook(&mut self, t: i64, a: &Value) {
+        // The agent started again (a new run on this transcript): what ran
+        // in the background of the run before went with it.
+        if a["hookEvent"] == "SessionStart" {
+            for s in self.spans.iter_mut().filter(|s| s.background && s.end.is_none()) {
+                s.end = Some(t.max(s.start));
+            }
+        }
+        let Some(turn) = self.turn.clone() else { return };
+        let kind = a["type"].as_str().unwrap_or_default();
+        let name = a["hookName"].as_str().or_else(|| a["hookEvent"].as_str()).unwrap_or("hook");
+        let n = self.spans.len();
+        let mut s = Span::new(format!("h-{t}-{n}"), Some(turn), SpanKind::Hook, name.to_string(), t);
+        s.end = Some(t);
+        match kind {
+            "hook_non_blocking_error" | "hook_cancelled" => {
+                s.failed = true;
+                let said = a["stderr"].as_str().or_else(|| a["content"].as_str()).unwrap_or_default();
+                s.why = short(&strip_ansi(said), 100);
+                if s.why.is_empty() {
+                    s.why = if kind == "hook_cancelled" { "cancelled".into() } else { "error".into() };
+                }
+            }
+            "hook_additional_context" => s.detail = "added context".into(),
+            _ => {}
+        }
+        self.add(s);
     }
 
     /// One transcript line.
@@ -328,6 +438,11 @@ impl Steps {
             // starts a turn of its own: a scheduled one.
             Some("user") if v["isMeta"].as_bool() != Some(true) || v["turnOrigin"].is_string() => {
                 if let Value::String(s) = &m["content"] {
+                    // A background task over: its step ends (and the line
+                    // still begins the turn it starts, below).
+                    if s.trim_start().starts_with("<task-notification>") {
+                        self.background_done(t, s);
+                    }
                     // Typed (`human`, `sdk`): the prompt, as it is. Begun
                     // by something else: by what (`(scheduled) …`), another
                     // session's message by who sent it.
@@ -357,7 +472,14 @@ impl Steps {
                                 let agent: String = agent.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
                                 self.agent_of.insert(id.to_string(), agent);
                             }
-                            self.answered(t, id, b["is_error"].as_bool() == Some(true));
+                            let failed = b["is_error"].as_bool() == Some(true);
+                            let why = if failed { refusal(&text, &v["toolUseResult"]) } else { String::new() };
+                            // A background task begun: its id, for a stop.
+                            if let Some(task) = text.split("in background with ID: ").nth(1) {
+                                let task: String = task.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                                self.task_of.insert(task, id.to_string());
+                            }
+                            self.answered(t, id, failed, why);
                         }
                         Some("text") => {
                             if let Some(s) = b["text"].as_str() {
@@ -399,8 +521,18 @@ impl Steps {
             // What came while the agent worked, given to it once it could
             // take it (your message, a background task done): it begins the
             // turn when none runs; one that runs goes on.
-            Some("attachment") if v["attachment"]["type"] == "queued_command" && self.turn.is_none() => {
+            Some("attachment") if v["attachment"]["type"].as_str().is_some_and(|k| k.starts_with("hook_")) => {
+                self.hook(t, &v["attachment"]);
+            }
+            Some("attachment") if v["attachment"]["type"] == "queued_command" => {
                 let text = v["attachment"]["prompt"].as_str().unwrap_or_default().trim_start();
+                // A background task over, told while the agent worked.
+                if text.starts_with("<task-notification>") {
+                    self.background_done(t, text);
+                }
+                if self.turn.is_some() {
+                    return;
+                }
                 if text.starts_with('<') {
                     if let Some(why) = given(text) {
                         self.begin(t, &why);
@@ -469,7 +601,7 @@ impl Steps {
             }
             (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
                 let id = p["call_id"].as_str().unwrap_or_default();
-                self.answered(t, id, codex_failed(&p["output"]));
+                self.answered(t, id, codex_failed(&p["output"]), String::new());
             }
             _ => {}
         }
@@ -507,9 +639,12 @@ impl Steps {
                     Some(stop) => self.end_turn(t, stop == "aborted"),
                 }
             }
-            Some("toolResult") => {
-                self.answered(t, m["toolCallId"].as_str().unwrap_or_default(), m["isError"].as_bool() == Some(true))
-            }
+            Some("toolResult") => self.answered(
+                t,
+                m["toolCallId"].as_str().unwrap_or_default(),
+                m["isError"].as_bool() == Some(true),
+                String::new(),
+            ),
             _ => {}
         }
     }
@@ -518,8 +653,11 @@ impl Steps {
     /// the last step.
     pub fn thinking(&self) -> Option<i64> {
         let turn = self.turn.as_deref()?;
-        let tool_running =
-            self.spans.iter().any(|s| s.end.is_none() && s.kind != SpanKind::Turn && s.parent.as_deref() == Some(turn));
+        // One in the background does not hold the model up.
+        let tool_running = self
+            .spans
+            .iter()
+            .any(|s| s.end.is_none() && !s.background && s.kind != SpanKind::Turn && s.parent.as_deref() == Some(turn));
         (!tool_running).then_some(self.last)
     }
 
@@ -568,6 +706,44 @@ fn given(text: &str) -> Option<String> {
     }
 }
 
+/// Why a Claude tool failed, when its answer says it was stopped: `denied`
+/// (the person said no), `hook: <reason>` (a `PreToolUse` hook); empty for
+/// any other failure.
+fn refusal(text: &str, result: &Value) -> String {
+    let first = text.trim_start();
+    if result.as_str() == Some("User rejected tool use") || first.starts_with("The user doesn't want to proceed") {
+        return "denied".into();
+    }
+    if first.starts_with("PreToolUse:")
+        && let Some((_, reason)) = first.split_once(" hook error: ")
+    {
+        return format!("hook: {}", short(reason, 100));
+    }
+    String::new()
+}
+
+/// `s` without its terminal colours (a hook's stderr carries them).
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                // Up to the final byte of the sequence.
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Whether a Codex tool's output says it failed: an exit code not 0.
 fn codex_failed(output: &Value) -> bool {
     let text = match output {
@@ -601,26 +777,23 @@ pub fn merge(own: &[&Steps], helpers: &[(String, &Steps)], turns: usize, now: i6
             out.push(Span { id: renamed(fi, &s.id), parent: s.parent.as_ref().map(|p| renamed(fi, p)), ..s.clone() });
         }
         if let (Some(turn), Some(since)) = (steps.running(), steps.thinking()) {
-            out.push(Span {
-                id: renamed(fi, "thinking"),
-                parent: Some(renamed(fi, turn)),
-                kind: SpanKind::Model,
-                name: String::new(),
-                detail: String::new(),
-                start: since.min(now),
-                end: None,
-                failed: false,
-                tokens: 0,
-            });
+            out.push(Span::new(
+                renamed(fi, "thinking"),
+                Some(renamed(fi, turn)),
+                SpanKind::Model,
+                String::new(),
+                since.min(now),
+            ));
         }
     }
-    // The latest turns only, and their steps.
+    // The latest turns only, and their steps; what still runs in the
+    // background stays, whichever turn began it.
     let mut keep: Vec<String> = out.iter().filter(|s| s.kind == SpanKind::Turn).map(|s| s.id.clone()).collect();
     let cut = keep.len().saturating_sub(turns);
     keep.drain(..cut);
     out.retain(|s| match s.kind {
         SpanKind::Turn => keep.contains(&s.id),
-        _ => s.parent.as_ref().is_some_and(|p| keep.contains(p)),
+        _ => (s.background && s.end.is_none()) || s.parent.as_ref().is_some_and(|p| keep.contains(p)),
     });
     // Each agent call's id, by the subagent it started.
     let mut call_of: HashMap<String, String> = HashMap::new();
@@ -674,11 +847,17 @@ pub fn tree(spans: &[Span], now: i64) -> Vec<String> {
                 line.push(' ');
             }
             line.push_str(&took(s.end.unwrap_or(now) - s.start));
+            if s.background {
+                line.push_str(" background");
+            }
             if s.end.is_none() {
                 line.push_str(" running");
             }
             if s.failed {
                 line.push_str(" failed");
+                if !s.why.is_empty() {
+                    line.push_str(&format!(" ({})", s.why));
+                }
             }
             out.push(line);
             walk(spans, Some(&s.id), depth + 1, now, out);
@@ -686,6 +865,12 @@ pub fn tree(spans: &[Span], now: i64) -> Vec<String> {
     }
     let mut out = Vec::new();
     walk(spans, None, 0, now, &mut out);
+    // Still in the background, begun in a turn no longer shown.
+    for s in spans.iter().filter(|s| {
+        s.background && s.end.is_none() && s.parent.as_ref().is_some_and(|p| !spans.iter().any(|x| &x.id == p))
+    }) {
+        out.push(format!("{} {} {} {} background running", s.kind.word(), s.name, s.detail, took(now - s.start)));
+    }
     out
 }
 #[cfg(test)]
