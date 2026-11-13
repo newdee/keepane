@@ -583,7 +583,8 @@ fn record_fix() {
 }
 
 /// The ninth recording: a session at work, the server gone as a reboot
-/// takes it, and `keepane resume` bringing it all back.
+/// takes it, and a plain `keepane` bringing it all back (a server that
+/// starts restores the saved sessions, `restore-on-start`).
 #[test]
 #[ignore = "recording, not an assertion; run with --ignored"]
 fn record_resume() {
@@ -621,13 +622,10 @@ fn record_resume() {
     rec.type_line("keepane kill-server");
     rec.wait_for("back in the plain shell", |s| s.contents().contains("server exited"), 20);
     rec.hold(3);
-    rec.type_line("# after the reboot: nothing running. What can come back:");
-    rec.hold(2);
-    rec.type_line(&format!("keepane -L {socket} list-saved"));
-    rec.wait_for("the saved session", |s| s.contents().contains("work"), 10);
-    rec.hold(6);
+    rec.type_line("# after the reboot: nothing running. Start keepane again:");
+    rec.hold(3);
     // Everything back: the panes, their names and folders, what they showed.
-    rec.type_line(&format!("keepane -L {socket} resume"));
+    rec.type_line(&format!("keepane -L {socket}"));
     rec.wait_for("resumed", |s| s.contents().contains("Finished release") && s.contents().contains("0:pwsh*"), 30);
     rec.hold(10);
     rec.still("resume");

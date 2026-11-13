@@ -65,12 +65,12 @@ const ZH = {
   "c3.title": "关掉终端，程序照常运行",
   "c3.sub": "<kbd>C-b d</kbd> 脱离，里面的程序照常跑。换个终端窗口敲 <code>keepane attach</code> 就接回来了。",
   "c3.caption":
-    "三个 pane 在干活，用 <kbd>C-b C-s</kbd> 保存；server 像重启时那样没了；<code>keepane resume</code> 把各个 pane、它们的名字和目录、原来显示的内容都带回来。",
+    "三个 pane 在干活，用 <kbd>C-b C-s</kbd> 保存；server 像重启时那样没了；再运行一次 <code>keepane</code>，各个 pane、它们的名字和目录、原来显示的内容都回来了。",
   "c3.p1":
-    "重启电脑之后也能恢复。每个 session 的布局一有变化就存到它自己的文件里，<code>keepane resume</code> 会恢复窗口、分屏布局，以及每个 pane 的命令和目录。",
+    "重启电脑之后也能恢复。每个 session 的布局一有变化就存到它自己的文件里，下次 server 启动时会恢复窗口、分屏布局，以及每个 pane 的命令和目录。",
   "c3.p2":
     "文件里还存着每个 pane 输出过的内容：<code>save-history</code> 默认保留最后 500 行，设成 <code>all</code> 就保留全部回滚内容，颜色也在。恢复出来的 pane 显示的是原来的输出，而不是一个空提示符。",
-  "c3.p3": "<code>keepane list-saved</code> 列出能恢复的 session，<code>keepane resume work</code> 只恢复这一个。",
+  "c3.p3": "<code>keepane list-saved</code> 列出保存的 session；手动 kill 掉的不会自己回来，<code>keepane resume work</code> 能把它找回。",
 
   "c35.title": "你没看着的时候，那个任务跑完了",
   "c35.sub":

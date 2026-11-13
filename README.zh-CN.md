@@ -87,6 +87,8 @@ keepane send-message --to %lead --task 12 "还有一件事"
 
 按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组，列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序（跑 agent 的写 agent 的花费和上下文，标题里是总花费）。每列上方写着列名；颜色各表达一个意思（空闲绿、忙黄、有消息排队蓝、上下文越满越红）；窗口窄时，最不要紧的列先让位；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[4]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件、agent 的 trace、它所在目录的 git 情况（Git 标签页：分支和上游、改了哪些文件、最近的提交和分支；不在仓库里的目录，显示两层文件树），或光标所在的消息、任务：在 `[2]`、`[3]` 里移到哪一条，右边立刻排好版显示它（状态用颜色标出，谁发给谁，每一步的时间，然后是正文和执行输出；任务则把每条消息按时间连成一列）。Tab、`0 1 2 3 4`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`g`/`G`（或 Home/End）跳到第一行 / 最后一行（右边是到顶 / 到底），`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。窗口宽 150 列以上时，最左边多一列：上面是 `[0]` 所选 pane 的目录，下面每秒显示本机的状态：CPU（总占用、最近 24 秒的曲线、每个核）、内存、交换区、每秒磁盘和网络流量、温度、功率、电池、进程数，系统给得出哪些就显示哪些。在 `[0]` 里像 mini.files 那样走：`j`/`k` 移动，`h` 回上级目录，`l` 进入目录；光标所在的东西显示在右边（目录列出内容，文件显示带行号的文本，最多前 256 KiB；二进制文件只显示大小），在文件上按 `l` 可以滚动它；`.` 显示或隐藏隐藏文件，`-` 回到 pane 的目录。换了所选 pane、或这个 pane 换了目录，`[0]` 跟着走。窗口更窄时，按 `0` 让 `[0]` 临时占据左边那一栏。（0.60 及以前右边是 `[0]`，现在是 `[4]`。）
 
+按 `>` 翻到第二页（`<` 翻回；底栏写着 `page 1/2` 或 `page 2/2`，窗口窄得放不下所有按键时也保留它）：`[0]` 和系统信息不变，`[1]` 列出这台机器分享出去的东西（`keepane share`，见下文），每个标出 `active`、`missing`（文件暂时不在）、`stopped`、`expired` 或 `used`（一次性，已被下载），还有剩余时间和下载次数；`[2]` 是这些分享经历的事，最新的在前；`[4]` 是所选的那个：链接、谁打开过、经历的事、扫码用的二维码。在 `[0]` 按 `S` 分享光标所在的东西（选时长、是否一次性，要确认）；在 `[1]` 上 `x` 停止一个（`X` 全部）、`e` 延长（链接不变）、`r` 换新链接重新分享、`y` 复制链接、`a` 显示或隐藏已结束的。分享、停止、重新分享都要先确认。
+
 也能直接操作。对 pane：`s` 发消息、`r` 改名、`m` 改工作模式、`R` 标记就绪（解卡）、`o` 跳过去（顺带关掉弹窗）、`x` 关掉。对收件箱：`d` 删除排队消息（`u` 撤销）、`K`/`J` 上下移、`t` 放到最前、Enter 进到右边滚动阅读。关 pane、删消息、把 pane 切到 `shell`（从此收到的文字会被当命令执行）这三样会先确认。设计见 [docs/design/dashboard.md](docs/design/dashboard.md)。
 
 ### agent 用了多少、花了多少
@@ -432,11 +434,11 @@ pane 的输出也可保存到磁盘（`log-history`，默认开）：每个 pane
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-resume-light.gif">
     <img src="docs/img/keepane-resume.gif" width="880"
-         alt="一个三块的 session：git status、名为 builder 的编译、服务器日志；C-b C-s 保存；server 像重启时那样停掉；keepane list-saved 列出这个 session，keepane resume 把各块、它们的名字和目录、原来显示的内容都带回来">
+         alt="一个三块的 session：git status、名为 builder 的编译、服务器日志；C-b C-s 保存；server 像重启时那样停掉；再运行一次 keepane，各块、它们的名字和目录、原来显示的内容都回来了">
   </picture>
 </p>
 
-每个 session 的结构（有哪些窗口、每个窗口怎么分的、每块里跑的是什么命令、在哪个目录）都会存成一个文件，放在 `%LOCALAPPDATA%\keepane\sessions` 下面。结构一变就存一次，`kill-server` 的时候也存。所以不管是重启、崩溃还是手滑 `kill-session`，文件都还在。session 里最后一个程序退出（比如在最后一个 shell 里敲了 `exit`）时，它的保存文件 10 秒后删掉（机器正在关机时不删）；`C-b w` 里按 `D` 或用 `delete-saved` 可以手动删掉。所以：
+每个 session 的结构（有哪些窗口、每个窗口怎么分的、每块里跑的是什么命令、在哪个目录）都会存成一个文件，放在 `%LOCALAPPDATA%\keepane\sessions` 下面（用 `-L 名字` 启动的 server 存在旁边的 `sessions-名字` 里，各存各的，不会把别的 server 的 session 恢复过来）。结构一变就存一次，`kill-server` 的时候也存。所以不管是重启还是崩溃，文件都还在；手滑 `kill-session` 也不怕，存档只是挪到一边：下次启动和直接运行 `keepane` 都不会带回它，`resume` 或 `resume 名字` 能找回。session 里最后一个程序退出（比如在最后一个 shell 里敲了 `exit`）时，它的保存文件 10 秒后删掉（机器正在关机时不删）；`C-b w` 里按 `D` 或用 `delete-saved` 可以手动删掉。所以：
 
 ```powershell
 keepane resume              # 把存过的 session 全恢复出来，进第一个
@@ -446,9 +448,9 @@ keepane delete-saved old    # 不要了
 keepane save-session -a     # 现在就把每个 session 各存一遍（prefix C-s 也是这样）
 ```
 
-直接运行 `keepane` 也会接着用：有 session 在跑，就进最近用的那个；一个都没在跑，就把存档全恢复出来，进最近存的那个；什么都没有才新开一个（`keepane new` 总是新开）。所以反复打开 keepane 不会攒下一堆空 session，下次恢复时也不会冒出来。
+直接运行 `keepane` 也会接着用：有 session 在跑，就进最近用的那个；一个都没在跑，就把存档全恢复出来（手动 kill 掉的除外），进最近存的那个；什么都没有才新开一个（`keepane new` 总是新开）。所以反复打开 keepane 不会攒下一堆空 session，下次恢复时也不会冒出来。
 
-恢复出来的是布局、每个 pane 的启动命令、所在目录，还有每块屏幕上最后 `save-history` 行（默认 500 行；`set -g save-history all` 把整段 scrollback 连颜色一起存下来）的输出。程序当时跑到哪是回不来的，谁也做不到。存档是自动的：布局一变就存，pane 上的文字每 30 秒存一次，Windows 关机、重启、注销时再整个存一遍（server 会把关机拖住那一瞬间）；Linux 和 macOS 上 server 收到 SIGTERM 或 SIGHUP 时也一样。想让 server 一启动就自己恢复，配置里写 `set -g restore-on-start on`；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
+恢复出来的是布局、每个 pane 的启动命令、所在目录，还有每块屏幕上最后 `save-history` 行（默认 500 行；`set -g save-history all` 把整段 scrollback 连颜色一起存下来）的输出。程序当时跑到哪是回不来的，谁也做不到。存档是自动的：布局一变就存，pane 上的文字每 30 秒存一次，Windows 关机、重启、注销时再整个存一遍（server 会把关机拖住那一瞬间）；Linux 和 macOS 上 server 收到 SIGTERM 或 SIGHUP 时也一样。`kill-session` 会把这个 session 的存档挪到一边：下次启动和直接运行 `keepane` 时它都不会自己回来，`resume` 或 `resume 名字` 仍能找回，`list-saved` 会标出它是被 kill 的。server 一启动就会自己恢复所有保存的 session，不管是怎么启动的（`keepane`、`keepane new -s x`、登录自启动），所以不会在存档旁边另起一个同名的新 session：`work` 有存档时，`keepane new -s work` 会说它已存在（加 `-A` 就进入它）。`set -g restore-on-start off` 改为只在 `resume` 时恢复；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
 
 重启后恢复出来的 session、窗口、pane 编号（`$1`、`@3`、`%4`）不变。server 把计数器存在存档目录里（`next-id`），所以同一台机器上一个编号只会给一个 pane：脚本或别的机器记着 `%4`，找到的就是那个 pane，或者找不到。同一个 server 运行期间先 kill 再恢复的 session 会拿新编号；编号已被占用时也拿新编号。
 
@@ -605,11 +607,13 @@ keepane web --bind 192.168.1.23,10.0.0.5     # 多张网卡：每个地址都监
 keepane share report.pdf            # 分享一个文件：打印二维码和链接
 keepane share ~/photos --for 2h     # 分享一个文件夹（下载为 photos.zip），2 小时内有效
 keepane share build.log --once      # 完整下载一次后失效
-keepane share                       # 列出正在分享的（也可以加 -l）
+keepane share                       # 列出正在分享的（也可以加 -l；-l -J 输出 JSON）
 keepane share stop 2                # 取消一个；--all 取消全部
+keepane share extend 2 --for 7d     # 延长，链接不变
+keepane share again 2               # 同一个东西换一个新链接
 ```
 
-每次分享有自己的链接（一个随机令牌，不是手机页面的密钥）：拿到链接的人只能下载这一个东西，别的什么都看不到。默认 24 小时有效，`--for` 可以改（`30m`、`2h`、`7d`；`0` 表示一直有效，直到取消或 server 退出）。文件原样下载，下载中断后能从断开的地方接着下；文件夹边读边打成 zip 下载（里面的符号链接不打包）。分享的东西一律作为下载发出，不会被浏览器当作网页打开。链接用的是手机页面的地址和端口：手机页面没开时，`share` 会把它打开（只到 server 退出为止）。每次分享、谁在下载、什么时候下完，状态栏都会提示；pane 里的 agent 发起的分享也一样。和手机页面一样是普通 HTTP：在不信任的网络上请走 Tailscale。设计稿：[docs/design/share.md](docs/design/share.md)。
+每次分享有自己的链接（一个随机令牌，不是手机页面的密钥）：拿到链接的人只能下载这一个东西，别的什么都看不到。默认 24 小时有效，`--for` 可以改（`30m`、`2h`、`7d`；`0` 表示一直有效，直到取消）。文件原样下载，下载中断后能从断开的地方接着下；文件夹边读边打成 zip 下载（里面的符号链接不打包）。分享的东西一律作为下载发出，不会被浏览器当作网页打开。链接用的是手机页面的地址和端口：手机页面没开时，`share` 会把它打开。每次分享、谁在下载、什么时候下完，状态栏都会提示；pane 里的 agent 发起的分享也一样。：在不信任的网络上请走 Tailscale。设计稿：[docs/design/share.md](docs/design/share.md)。
 
 ## pane 完成时通知你
 

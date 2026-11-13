@@ -1686,6 +1686,15 @@ fn default_root_bindings() -> HashMap<Key, Binding> {
     HashMap::from([(Key::plain(KeyCode::F(12)), Binding { cmd, repeat: false })])
 }
 
+/// A save put aside by a kill (`from`, in `killed/`), its session back:
+/// to `to`, where a start finds it again. Moved only once the session is
+/// back, so a resume that fails leaves it aside.
+fn unshelve(from: &std::path::Path, to: &std::path::Path) {
+    if let Err(e) = std::fs::rename(from, to) {
+        log::warn!("move {} back: {e}", from.display());
+    }
+}
+
 impl Server {
     fn new(
         pane_tx: std::sync::mpsc::Sender<PaneEvent>,
@@ -1693,15 +1702,20 @@ impl Server {
         events: mpsc::UnboundedSender<Event>,
     ) -> Server {
         // A unit test's server keeps it in a file of its own, not the user's.
+        // Its saved sessions and shares too: a directory of its own.
+        let mut opts = Options::default();
         let web_on = if cfg!(test) {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            std::env::temp_dir().join(format!("keepane-web-on-{}-{n}", std::process::id()))
+            let tmp = std::env::temp_dir();
+            opts.sessions_dir =
+                tmp.join(format!("keepane-unit-sessions-{}-{n}", std::process::id())).to_string_lossy().into_owned();
+            tmp.join(format!("keepane-web-on-{}-{n}", std::process::id()))
         } else {
             crate::web::on_path(&socket)
         };
         Server {
-            opts: Options::default(),
+            opts,
             prefix_binds: default_bindings(),
             root_binds: default_root_bindings(),
             prompt_history: PromptHistory::default(),
@@ -1886,9 +1900,19 @@ impl Server {
 
     // ------------------------------------------------------------- resurrect
 
+    /// An option's value as `show-options` gives it: `sessions-dir` unset is
+    /// this server's own directory (it depends on the socket), the others
+    /// as the options hold them.
+    fn option_value(&self, name: &str) -> Option<String> {
+        if name == "sessions-dir" {
+            return Some(self.sessions_dir().to_string_lossy().into_owned());
+        }
+        self.opts.get(name)
+    }
+
     fn sessions_dir(&self) -> PathBuf {
         if self.opts.sessions_dir.is_empty() {
-            crate::resurrect::default_dir()
+            crate::resurrect::default_dir(&self.socket)
         } else {
             PathBuf::from(expand_home(&self.opts.sessions_dir))
         }
@@ -2149,28 +2173,54 @@ impl Server {
         Ok((sid, problems))
     }
 
-    /// Restore every saved session whose name is free.
-    fn restore_all(&mut self, size: Option<(u16, u16)>) -> (Vec<SessionId>, Vec<String>) {
+    /// Restore every saved session whose name is free; with `killed_too`
+    /// (`resume` asked by hand) the ones put aside by `kill-session` as well,
+    /// back where a start finds them. A start and a bare `keepane` leave
+    /// those.
+    fn restore_all(&mut self, size: Option<(u16, u16)>, killed_too: bool) -> (Vec<SessionId>, Vec<String>) {
         let mut created = Vec::new();
         let mut problems = Vec::new();
         let mut files = Vec::new();
-        for (name, _, path) in crate::resurrect::list(&self.sessions_dir()) {
+        let dir = self.sessions_dir();
+        // Each save with where it goes once its session is back: one put
+        // aside by a kill, to the sessions directory again.
+        let mut saved: Vec<(String, String, PathBuf, Option<PathBuf>)> =
+            crate::resurrect::list(&dir).into_iter().map(|(n, at, p)| (n, at, p, None)).collect();
+        if killed_too {
+            for (name, at, path) in crate::resurrect::list(&self.killed_dir()) {
+                if saved.iter().any(|(n, ..)| *n == name) || self.sessions.iter().any(|s| s.name == name) {
+                    continue;
+                }
+                let back = dir.join(path.file_name().unwrap_or_default());
+                if back.exists() {
+                    problems.push(format!("resume {name}: {} is another session's", back.display()));
+                    continue;
+                }
+                saved.push((name, at, path, Some(back)));
+            }
+            // The newest first, as `list` gives them: `resume` attaches to it.
+            saved.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        }
+        for (name, _, path, back) in saved {
             if self.sessions.iter().any(|s| s.name == name) {
                 continue;
             }
             match crate::resurrect::SavedFile::load(&path) {
-                Ok(f) => files.push(f.session),
+                Ok(f) => files.push((f.session, path, back)),
                 Err(e) => problems.push(e),
             }
         }
         // Every file's numbers are reserved before any session is made, so
         // the first one's new windows and panes take none of the others'.
-        self.reserve_ids(files.iter().flat_map(|s| s.ids()));
-        for ss in &files {
+        self.reserve_ids(files.iter().flat_map(|(s, ..)| s.ids()));
+        for (ss, path, back) in &files {
             match self.restore_saved(ss, size) {
                 Ok((sid, p)) => {
                     created.push(sid);
                     problems.extend(p);
+                    if let Some(back) = back {
+                        unshelve(path, back);
+                    }
                 }
                 Err(e) => problems.push(e),
             }
@@ -2325,7 +2375,7 @@ impl Server {
         // The environment as set-environment last left it, before any pane.
         self.load_environment();
         if (self.opts.restore_on_start || self.force_restore) && self.sessions.is_empty() {
-            let (created, problems) = self.restore_all(None);
+            let (created, problems) = self.restore_all(None, false);
             log::info!("restore-on-start: {} session(s)", created.len());
             for p in problems {
                 log::warn!("restore-on-start: {p}");
@@ -2335,6 +2385,8 @@ impl Server {
         // when the server ended (unless the config served it already).
         if self.opts.restore_on_start || self.force_restore {
             self.web_resume();
+            // And what was shared, on the same links.
+            self.shares_resume();
         }
     }
 
@@ -4265,7 +4317,7 @@ impl Server {
                     if !self.sessions.is_empty() {
                         return self.exec(Cmd::AttachSession { target: None, detach_others: false }, cid);
                     }
-                    let (created, problems) = self.restore_all(Some((cols, rows)));
+                    let (created, problems) = self.restore_all(Some((cols, rows)), false);
                     for p in &problems {
                         log::warn!("resume: {p}");
                     }
@@ -4281,6 +4333,20 @@ impl Server {
                         return Outcome::Ok;
                     }
                     return self.exec(Cmd::AttachSession { target: Some(Target::parse(n)), detach_others: false }, cid);
+                }
+                // A name a save holds that is not running (`restore-on-start`
+                // off): `-A` brings that one back; otherwise it is taken.
+                if let Some(n) = &name
+                    && crate::resurrect::find(&self.sessions_dir(), n).is_some()
+                    && !self.forget_after.iter().any(|(f, _)| f == n)
+                    && attach_existing
+                {
+                    return self.exec(Cmd::RestoreSession { name: Some(n.clone()), attach: !detached }, cid);
+                }
+                if let Some(n) = &name
+                    && let Err(e) = self.name_unsaved(n)
+                {
+                    return Outcome::Error(e);
                 }
                 let cwd = cwd.or_else(|| self.client_cwd(cid));
                 match self.new_session(name, window_name, cwd.as_deref(), &argv, cols, rows) {
@@ -4568,7 +4634,12 @@ impl Server {
                         .filter(|id| (*id == sid) != all_but)
                         .collect();
                     for v in victims {
+                        let name = self.session(v).map(|s| s.name.clone());
                         self.kill_session(v, "session killed");
+                        // Killed by hand: not back by itself at the next start.
+                        if let Some(name) = name {
+                            self.shelve_saved(&name);
+                        }
                     }
                     Outcome::Ok
                 }
@@ -4629,17 +4700,30 @@ impl Server {
                         if let Some(s) = self.sessions.iter().find(|s| s.name == *n) {
                             (Vec::new(), Vec::new(), Some(s.id))
                         } else {
-                            let Some(path) = crate::resurrect::find(&dir, n) else {
+                            let Some((path, killed)) = self.saved_file(n) else {
                                 return Outcome::Error(format!("no saved session named {n} (see list-saved)"));
                             };
+                            // Put aside by a kill: back where a start finds
+                            // it, once the session is back.
+                            let back = killed.then(|| dir.join(path.file_name().unwrap_or_default()));
+                            if let Some(b) = &back
+                                && b.exists()
+                            {
+                                return Outcome::Error(format!("resume {n}: {} is another session's", b.display()));
+                            }
                             match self.restore_session_file(&path, size) {
-                                Ok((sid, p)) => (vec![sid], p, Some(sid)),
+                                Ok((sid, p)) => {
+                                    if let Some(b) = &back {
+                                        unshelve(&path, b);
+                                    }
+                                    (vec![sid], p, Some(sid))
+                                }
                                 Err(e) => return Outcome::Error(e),
                             }
                         }
                     }
                     None => {
-                        let (c, p) = self.restore_all(size);
+                        let (c, p) = self.restore_all(size, true);
                         let first = c.first().copied().or_else(|| self.resolve_session(None, cid).ok());
                         (c, p, first)
                     }
@@ -4830,12 +4914,28 @@ impl Server {
             Cmd::ListSaved => {
                 let dir = self.sessions_dir();
                 let running: Vec<String> = self.sessions.iter().map(|s| s.name.clone()).collect();
-                let lines: Vec<String> = crate::resurrect::list(&dir)
+                let saved = |(n, at, _): (String, String, PathBuf), killed: bool| {
+                    let at = at.get(..19).unwrap_or(&at).replace('T', " ");
+                    let how = if running.contains(&n) {
+                        " (running)"
+                    } else if killed {
+                        " (killed: resume brings it back)"
+                    } else {
+                        ""
+                    };
+                    format!("{n}: saved {at}{how}")
+                };
+                let kept = crate::resurrect::list(&dir);
+                // One put aside under a name saved again since: `resume`
+                // takes the newer, so the older is not listed.
+                let killed: Vec<_> = crate::resurrect::list(&self.killed_dir())
                     .into_iter()
-                    .map(|(n, at, _)| {
-                        let at = at.get(..19).unwrap_or(&at).replace('T', " ");
-                        format!("{n}: saved {at}{}", if running.contains(&n) { " (running)" } else { "" })
-                    })
+                    .filter(|(n, _, _)| !kept.iter().any(|(k, _, _)| k == n))
+                    .collect();
+                let lines: Vec<String> = kept
+                    .into_iter()
+                    .map(|f| saved(f, false))
+                    .chain(killed.into_iter().map(|f| saved(f, true)))
                     .collect();
                 if lines.is_empty() {
                     Outcome::Text(format!("no saved sessions in {}", dir.display()))
@@ -4844,15 +4944,19 @@ impl Server {
                 }
             }
             Cmd::DeleteSaved { name } => {
-                let dir = self.sessions_dir();
                 if self.opts.autosave && self.sessions.iter().any(|s| s.name == name) {
                     // Autosave would write it right back on the next tick.
                     return Outcome::Error(format!("session {name} is running; kill it first (or set autosave off)"));
                 }
-                match crate::resurrect::find(&dir, &name) {
+                match self.saved_file(&name).map(|(p, _)| p) {
                     Some(p) => match std::fs::remove_file(&p) {
                         Ok(()) => {
                             self.last_saved.remove(&p.to_string_lossy().into_owned());
+                            // An older one put aside under that name goes too,
+                            // or it would be listed (and resumed) in its place.
+                            if let Some(k) = crate::resurrect::find(&self.killed_dir(), &name) {
+                                let _ = std::fs::remove_file(&k);
+                            }
                             Outcome::Ok
                         }
                         Err(e) => Outcome::Error(format!("{}: {e}", p.display())),
@@ -4866,6 +4970,9 @@ impl Server {
                 }
                 if self.sessions.iter().any(|s| s.name == name) {
                     return Outcome::Error(format!("duplicate session: {name}"));
+                }
+                if let Err(e) = self.name_unsaved(&name) {
+                    return Outcome::Error(e);
                 }
                 match self.resolve_session(target.as_ref(), cid) {
                     Ok(sid) => {
@@ -6115,7 +6222,7 @@ impl Server {
             },
             Cmd::SetOption { name, value, append, target } if append && name != "synchronize-panes" => {
                 // `set -a`: add to what is there (tmux appends the text).
-                let current = self.opts.get(&name).unwrap_or_default();
+                let current = self.option_value(&name).unwrap_or_default();
                 self.exec(Cmd::SetOption { name, value: format!("{current}{value}"), append: false, target }, cid)
             }
             Cmd::SetOption { name, value, target, .. } if name == "synchronize-panes" => {
@@ -6788,7 +6895,7 @@ impl Server {
                 Outcome::Text(if value_only { v.to_string() } else { format!("synchronize-panes {v}") })
             }
             Cmd::ShowOptions { name, value_only, quiet } => match name {
-                Some(n) => match self.opts.get(&n) {
+                Some(n) => match self.option_value(&n) {
                     Some(v) => Outcome::Text(if value_only { v } else { format!("{n} {}", crate::command::quote(&v)) }),
                     None if quiet => Outcome::Text(String::new()),
                     None => Outcome::Error(format!("unknown option: {n}")),
@@ -6796,7 +6903,7 @@ impl Server {
                 None => {
                     let mut lines: Vec<String> = crate::config::SHOWABLE
                         .iter()
-                        .filter_map(|n| self.opts.get(n).map(|v| format!("{n} {}", crate::command::quote(&v))))
+                        .filter_map(|n| self.option_value(n).map(|v| format!("{n} {}", crate::command::quote(&v))))
                         .collect();
                     // Window-scoped, so it is not in the table, but leaving it
                     // out of the listing hides an option that can be set.
@@ -8677,8 +8784,61 @@ impl Server {
         }
     }
 
+    /// Where the saves of sessions killed by hand go: a start's restore
+    /// does not look there, `resume` does.
+    fn killed_dir(&self) -> PathBuf {
+        self.sessions_dir().join("killed")
+    }
+
+    /// A session killed by hand (`kill-session`): its save put aside, so it
+    /// does not come back by itself at the next start; `resume NAME` brings
+    /// it back.
+    fn shelve_saved(&mut self, name: &str) {
+        let Some(p) = crate::resurrect::find(&self.sessions_dir(), name) else { return };
+        let dir = self.killed_dir();
+        let to = dir.join(p.file_name().unwrap_or_default());
+        let moved = std::fs::create_dir_all(&dir).and_then(|()| std::fs::rename(&p, &to));
+        match moved {
+            Ok(()) => {
+                self.last_saved.remove(&p.to_string_lossy().into_owned());
+                log::info!("the save of session {name} put aside (killed)");
+            }
+            Err(e) => log::warn!("put aside {}: {e}", p.display()),
+        }
+    }
+
+    /// The save of session `name`, as a start would bring it back, or put
+    /// aside by a kill (then true).
+    fn saved_file(&self, name: &str) -> Option<(PathBuf, bool)> {
+        crate::resurrect::find(&self.sessions_dir(), name)
+            .map(|p| (p, false))
+            .or_else(|| crate::resurrect::find(&self.killed_dir(), name).map(|p| (p, true)))
+    }
+
+    /// A name a new or renamed session may take: not one a save holds that
+    /// is not running (`restore-on-start off`), which its autosave would
+    /// write over. A session that ended by itself just now (its save to be
+    /// forgotten soon) lets its name go at once.
+    fn name_unsaved(&mut self, name: &str) -> Result<(), String> {
+        if let Some(i) = self.forget_after.iter().position(|(n, _)| n == name) {
+            self.forget_after.remove(i);
+            self.forget_saved(name);
+            return Ok(());
+        }
+        match crate::resurrect::find(&self.sessions_dir(), name) {
+            Some(_) => Err(format!(
+                "duplicate session: {name} is saved (`resume {name}` brings it back, `delete-saved {name}` forgets it)"
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// Remove a session's save file, so that `resume` does not bring it back.
     fn forget_saved(&mut self, name: &str) {
+        // Put aside by a kill too: that goes as well.
+        if let Some(p) = crate::resurrect::find(&self.killed_dir(), name) {
+            let _ = std::fs::remove_file(&p);
+        }
         if let Some(p) = crate::resurrect::find(&self.sessions_dir(), name) {
             match std::fs::remove_file(&p) {
                 Ok(()) => {
@@ -11419,6 +11579,27 @@ fn clock_kind(opts: &Options, p: &Pane) -> Option<clockanim::Kind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With no `sessions-dir` set, each server saves in its own directory,
+    /// by its socket, and `show-options` says which; one set is kept as is.
+    /// (Read only: nothing is written there.)
+    #[test]
+    fn a_server_saves_in_the_directory_of_its_socket() {
+        if crate::legacy::var("KEEPANE_SESSIONS_DIR").is_some_and(|d| !d.is_empty()) {
+            return; // moved by the environment for every server alike
+        }
+        for (socket, dir) in [("default", "sessions"), ("lab", "sessions-lab")] {
+            let (pane_tx, _p) = std::sync::mpsc::channel::<PaneEvent>();
+            let (events, _e) = tokio::sync::mpsc::unbounded_channel::<Event>();
+            let mut s = Server::new(pane_tx, socket.into(), events);
+            s.opts.sessions_dir.clear();
+            let want = crate::logger::log_dir().join(dir);
+            assert_eq!(s.sessions_dir(), want, "{socket}");
+            assert_eq!(s.option_value("sessions-dir"), Some(want.to_string_lossy().into_owned()));
+            s.opts.sessions_dir = "/somewhere".into();
+            assert_eq!(s.option_value("sessions-dir").as_deref(), Some("/somewhere"));
+        }
+    }
 
     /// An overlay longer than its rows moves with the reader's keys, a line,
     /// a page, half a page, to either end, and never past them; any other

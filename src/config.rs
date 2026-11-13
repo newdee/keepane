@@ -581,7 +581,7 @@ impl Default for Options {
             pending_plugins: Vec::new(),
             user: Vec::new(),
             autosave: true,
-            restore_on_start: false,
+            restore_on_start: true,
             sessions_dir: String::new(),
             window_size: "latest".into(),
             default_terminal: "xterm-256color".into(),
@@ -1303,13 +1303,9 @@ impl Options {
             "plugin-path" => self.plugin_path.clone(),
             "autosave" => onoff(self.autosave),
             "restore-on-start" => onoff(self.restore_on_start),
-            "sessions-dir" => {
-                if self.sessions_dir.is_empty() {
-                    crate::resurrect::default_dir().to_string_lossy().into_owned()
-                } else {
-                    self.sessions_dir.clone()
-                }
-            }
+            // Empty: the server's own, which depends on its socket
+            // (`Server::option_value` shows that).
+            "sessions-dir" => self.sessions_dir.clone(),
             "window-size" => self.window_size.clone(),
             "default-terminal" => self.default_terminal.clone(),
             "pane-timestamps" => onoff(self.pane_timestamps),
@@ -1424,6 +1420,16 @@ pub use crate::platform::shell::{PROMPT_HOOK, which, with_shell_integration};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server that starts brings back what the last one had (its saved
+    /// sessions, its shares, the phones' page) unless told not to.
+    #[test]
+    fn a_start_restores_by_default() {
+        let mut o = Options::default();
+        assert!(o.restore_on_start);
+        o.set("restore-on-start", "off").unwrap();
+        assert!(!o.restore_on_start);
+    }
 
     /// Everything `show-options` lists has a value, and that value is
     /// something `set` takes back unchanged: the output is a valid config.

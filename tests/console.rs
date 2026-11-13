@@ -10,8 +10,37 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// The sessions directory of the test that asks: one a test (libtest runs
+/// each on a thread named after it). A session a test's server saves as it
+/// ends keeps its name taken (`new -s t`: "t is saved"), and a test that ends
+/// removes its directory, so a directory shared by the tests made one's
+/// outcome hang on which others ran before it. What earlier runs left goes
+/// once it is an hour old (a run going on beside this one keeps its own).
 fn sessions_dir() -> String {
-    std::env::temp_dir().join(format!("keepane-console-sessions-{}", std::process::id())).to_string_lossy().into_owned()
+    static SWEPT: std::sync::Once = std::sync::Once::new();
+    SWEPT.call_once(|| {
+        let mine = format!("keepane-console-sessions-{}-", std::process::id());
+        for e in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let age = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+            if name.starts_with("keepane-console-sessions-")
+                && !name.starts_with(&mine)
+                && age.is_some_and(|a| a > Duration::from_secs(3600))
+            {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    });
+    let test: String = std::thread::current()
+        .name()
+        .unwrap_or("main")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    std::env::temp_dir()
+        .join(format!("keepane-console-sessions-{}-{test}", std::process::id()))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// An empty config file for the servers these tests start, so what they
@@ -19,9 +48,11 @@ fn sessions_dir() -> String {
 /// changes the status line they look for). The first config file that
 /// exists wins, so this has to be a file, not a path to nothing.
 fn empty_config() -> String {
-    let p = std::env::temp_dir().join(format!("keepane-console-empty-{}.conf", std::process::id()));
+    // Nothing but: what a test's earlier server saved not brought back by
+    // the next one it starts.
+    let p = std::env::temp_dir().join(format!("keepane-console-base-{}.conf", std::process::id()));
     if !p.exists() {
-        std::fs::write(&p, "").unwrap();
+        std::fs::write(&p, "set -g restore-on-start off\n").unwrap();
     }
     p.to_string_lossy().into_owned()
 }
@@ -716,7 +747,9 @@ fn a_server_started_inside_a_job_outlives_it_when_the_job_allows() {
         let alive = || keepane().args(["-L", &socket, "ls"]).output().unwrap().status.success();
         let job = Job::new(breakaway_ok);
         let line = format!(
-            "set \"KEEPANE=\"&& set \"KEEPANE_PANE=\"&& set \"KEEPANE_SESSIONS_DIR={}\"&& set \"KEEPANE_CONFIG={}\"&& \"{}\" -L {} new -d -s t cmd.exe",
+            // A session of its own each time: the one before is saved as its
+            // server ends, which keeps its name.
+            "set \"KEEPANE=\"&& set \"KEEPANE_PANE=\"&& set \"KEEPANE_SESSIONS_DIR={}\"&& set \"KEEPANE_CONFIG={}\"&& \"{}\" -L {} new -d -s t-{breakaway_ok} cmd.exe",
             sessions_dir(),
             empty_config(),
             env!("CARGO_BIN_EXE_keepane"),

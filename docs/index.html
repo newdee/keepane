@@ -176,10 +176,10 @@ keepane link attach 192.168.1.20:7681 work</code></pre>
           </p>
         </header>
         <figure class="stage">
-          <img src="img/keepane-resume.gif" width="880" loading="lazy" alt="A session of three panes is saved, the server stops as a reboot stops it, keepane list-saved shows the session, and keepane resume brings back the panes, their names and folders and what they showed" />
+          <img src="img/keepane-resume.gif" width="880" loading="lazy" alt="A session of three panes is saved, the server stops as a reboot stops it, and a plain keepane started again brings back the panes, their names and folders and what they showed" />
           <figcaption data-i18n="c3.caption">
-            Three panes at work, saved with <kbd>C-b C-s</kbd>; the server gone as a reboot takes it; <code>keepane resume</code>
-            brings back the panes, their names and folders, and what they showed.
+            Three panes at work, saved with <kbd>C-b C-s</kbd>; the server gone as a reboot takes it; <code>keepane</code>
+            started again brings back the panes, their names and folders, and what they showed.
           </figcaption>
         </figure>
         <div class="pair">
@@ -187,9 +187,9 @@ keepane link attach 192.168.1.20:7681 work</code></pre>
           <figure class="shot"><img src="img/attach.png" alt="The same layout after attaching again" loading="lazy" /></figure>
         </div>
         <ul class="points">
-          <li data-i18n="c3.p1">Sessions survive a reboot too. Each one is saved to its own file whenever its layout changes, and <code>keepane resume</code> brings back the windows, the pane layout, and each pane's command and directory.</li>
+          <li data-i18n="c3.p1">Sessions survive a reboot too. Each one is saved to its own file whenever its layout changes, and the next server to start brings back the windows, the pane layout, and each pane's command and directory.</li>
           <li data-i18n="c3.p2">The file also keeps what each pane printed: <code>save-history</code> stores the last 500 lines by default, or the whole scrollback with <code>all</code>, colours included. A resumed pane shows its old output instead of an empty prompt.</li>
-          <li data-i18n="c3.p3"><code>keepane list-saved</code> shows what can be restored, and <code>keepane resume work</code> restores just that session.</li>
+          <li data-i18n="c3.p3"><code>keepane list-saved</code> shows what is saved; a session you killed stays down until <code>keepane resume work</code> brings it back.</li>
         </ul>
       </section>
 

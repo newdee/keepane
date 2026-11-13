@@ -201,14 +201,11 @@ impl Harness {
         let _ = std::fs::remove_dir_all(keepane::link::dir(&socket));
         // An empty config, not the machine's `~/.keepane.conf`: a theme there
         // changes the status line these tests read.
-        let config = if config_text.is_empty() {
-            std::env::temp_dir().join(format!("keepane-test-empty-{}.conf", std::process::id()))
-        } else {
-            std::env::temp_dir().join(format!("keepane-test-{name}-{}.conf", std::process::id()))
-        };
-        if !config_text.is_empty() || !config.exists() {
-            std::fs::write(&config, config_text).unwrap();
-        }
+        // The saved sessions of other tests (in the directory every server
+        // starts with, before a test points `sessions-dir` elsewhere) are not
+        // brought back: a test that wants a restore says so.
+        let config = std::env::temp_dir().join(format!("keepane-test-{name}-{}.conf", std::process::id()));
+        std::fs::write(&config, format!("set -g restore-on-start off\n{config_text}")).unwrap();
         let options = keepane::server::RunOptions { force_restore: false, config: Some(config) };
         let server = tokio::spawn(async move {
             if let Err(e) = keepane::server::run_with(s, options).await {
@@ -1239,6 +1236,11 @@ async fn a_bare_keepane_goes_into_what_is_there() {
     // notes saved last.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     h.cli(&["save-session", "-t", "notes"]).await;
+    // One saved and then killed by hand: put aside, not brought back below.
+    h.cli(&["new", "-d", "-s", "dropped"]).await;
+    h.cli(&["save-session", "-t", "dropped"]).await;
+    h.cli(&["kill-session", "-t", "dropped"]).await;
+    assert_eq!(files(), 3, "put aside, out of the sessions directory");
     h.cli(&["kill-server"]).await;
 
     // A new server: nothing runs, three are saved: all back, into notes.
@@ -2038,13 +2040,20 @@ async fn choose_tree_kills_or_forgets_a_session() {
         }
         assert_ne!(shutdowns(), before, "the save of a session that ended stayed: {}", saved().await);
     }
-    assert!(forgotten, "a shutdown came in every attempt"); // kill-server keeps every save: here and keepme come back.
+    assert!(forgotten, "a shutdown came in every attempt");
+    // kill-server keeps every save: here comes back at the next start;
+    // keepme, killed by hand, is put aside (resume brings it back); gone is
+    // nowhere.
     h.cli(&["kill-server"]).await;
-    let out = std::fs::read_dir(&h.sessions_dir)
-        .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>())
-        .unwrap_or_default();
-    assert!(out.iter().any(|f| f.starts_with("here")) && out.iter().any(|f| f.starts_with("keepme")), "{out:?}");
-    assert!(!out.iter().any(|f| f.starts_with("gone")), "{out:?}");
+    let files = |d: &std::path::Path| {
+        std::fs::read_dir(d)
+            .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let (out, aside) = (files(&h.sessions_dir), files(&h.sessions_dir.join("killed")));
+    assert!(out.iter().any(|f| f.starts_with("here")) && !out.iter().any(|f| f.starts_with("keepme")), "{out:?}");
+    assert!(aside.iter().any(|f| f.starts_with("keepme")), "{aside:?}");
+    assert!(!out.iter().chain(&aside).any(|f| f.starts_with("gone")), "{out:?} {aside:?}");
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn choose_tree_degenerate_sizes_and_wide_names() {
@@ -5820,6 +5829,128 @@ async fn fetch(url: &str, method: &str, extra: &str) -> (u16, String, Vec<u8>) {
     (status, head, out[end + 4..].to_vec())
 }
 
+/// What a server had comes back when the next one starts
+/// (`restore-on-start`, on unless turned off): its sessions, and its
+/// shares on the same links; a share ended before is still listed, ended.
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_and_shares_come_back_when_a_server_starts() {
+    let a = Harness::start("keep").await;
+    let kept = a.sessions_dir.clone();
+    let files = kept.with_extension("files");
+    let _ = std::fs::remove_dir_all(&files);
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("notes.txt"), "kept").unwrap();
+    a.cli(&["new", "-d", "-s", "kept"]).await;
+    a.cli(&["new", "-d", "-s", "gone"]).await;
+    assert_eq!(a.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await.0, 0);
+    let (code, out, err) = a.cli_at(&files, &["share", "notes.txt"]).await;
+    assert_eq!(code, 0, "{err}");
+    let token = out.split("/s/").nth(1).map(|t| t[..22].to_string()).expect(&out);
+    let (code, _, err) = a.cli_at(&files, &["share", "notes.txt", "--for", "1h"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(a.cli(&["share", "stop", "2"]).await.0, 0);
+    a.wait_for_cli("saved", &["list-saved"], |_, out| out.contains("kept: saved") && out.contains("gone: saved")).await;
+    // Killed by hand: its save put aside, listed so.
+    assert_eq!(a.cli(&["kill-session", "-t", "gone"]).await.0, 0);
+    let (_, saved, _) = a.cli(&["list-saved"]).await;
+    assert!(saved.contains("gone: saved") && saved.contains("(killed: resume brings it back)"), "{saved}");
+    a.cli(&["kill-server"]).await;
+
+    // The next server, reading that sessions directory at start.
+    let dir = kept.to_string_lossy().replace('\\', "/");
+    let config = format!("set -g sessions-dir \"{dir}\"\nset -g restore-on-start on\nweb-start -p 0 -b 127.0.0.1\n");
+    let b = Harness::start_with("keep2", &config).await;
+    // (The harness points each server at a folder of its own after it starts.)
+    b.cli(&["set", "-g", "sessions-dir", &kept.to_string_lossy()]).await;
+    let (_, sessions, _) = b.cli(&["list-sessions"]).await;
+    assert!(sessions.contains("kept:"), "the session back: {sessions}");
+    assert!(!sessions.contains("gone:"), "the one killed stays down: {sessions}");
+    // `resume` asked by hand brings back every saved one, killed too, and
+    // its save is back where a start finds it.
+    let (code, out, err) = b.cli(&["restore-session"]).await;
+    assert!(code == 0 && out.starts_with("restored 1 session"), "{out} {err}");
+    assert!(b.cli(&["list-sessions"]).await.1.contains("gone:"), "resumed");
+    assert!(
+        keepane::resurrect::find(&kept.join("killed"), "gone").is_none()
+            && keepane::resurrect::find(&kept, "gone").is_some(),
+        "its save moved back"
+    );
+    let (_, saved, _) = b.cli(&["list-saved"]).await;
+    assert!(saved.contains("gone: saved") && !saved.contains("(killed"), "{saved}");
+    // Killed again, back by name. A resume that fails (a damaged save)
+    // leaves it aside, not where the next start would bring it back.
+    assert_eq!(b.cli(&["kill-session", "-t", "gone"]).await.0, 0);
+    let aside = keepane::resurrect::find(&kept.join("killed"), "gone").expect("put aside");
+    let good = std::fs::read_to_string(&aside).unwrap();
+    let mut bad: serde_json::Value = serde_json::from_str(&good).unwrap();
+    bad["session"]["windows"] = serde_json::json!([]);
+    std::fs::write(&aside, bad.to_string()).unwrap();
+    for resume in [&["resume", "gone"][..], &["restore-session"]] {
+        let (_, out, err) = b.cli(resume).await;
+        assert!(format!("{out}{err}").contains("has no windows"), "{resume:?}: {out} {err}");
+        assert!(aside.exists() && keepane::resurrect::find(&kept, "gone").is_none(), "{resume:?}: still aside");
+    }
+    std::fs::write(&aside, good).unwrap();
+    let (code, _, err) = b.cli(&["resume", "gone"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(b.cli(&["list-sessions"]).await.1.contains("gone:"), "resumed by name");
+    // Killed again, its name is free for a new one; listed once, the new.
+    assert_eq!(b.cli(&["kill-session", "-t", "gone"]).await.0, 0);
+    let (code, _, err) = b.cli(&["new", "-d", "-s", "gone"]).await;
+    assert_eq!(code, 0, "{err}");
+    let fresh = keepane::resurrect::file_for(&kept, "gone");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !fresh.exists() {
+        assert!(Instant::now() < deadline, "the new one saved");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(keepane::resurrect::find(&kept.join("killed"), "gone").is_some(), "the old one still put aside");
+    let (_, saved, _) = b.cli(&["list-saved"]).await;
+    assert_eq!(saved.lines().filter(|l| l.starts_with("gone:")).count(), 1, "{saved}");
+    // Forgotten: both saves go, the older one put aside too.
+    b.cli(&["set", "-g", "autosave", "off"]).await;
+    let (code, _, err) = b.cli(&["delete-saved", "gone"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, saved, _) = b.cli(&["list-saved"]).await;
+    assert!(!saved.contains("gone:"), "{saved}");
+    assert!(keepane::resurrect::find(&kept.join("killed"), "gone").is_none(), "the one put aside forgotten too");
+    let (_, list, _) = b.cli(&["share", "-l"]).await;
+    assert!(list.starts_with("1  file  until ") && list.contains(&format!("/s/{token}")), "on the same link: {list}");
+    let (_, j, _) = b.cli(&["share", "-l", "-J"]).await;
+    let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+    let states: Vec<_> =
+        v["shares"].as_array().unwrap().iter().map(|s| (s["id"].clone(), s["state"].clone())).collect();
+    assert_eq!(states, [(1.into(), "active".into()), (2.into(), "stopped".into())], "{j}");
+    let (_, said, _) = b.cli(&["show-messages"]).await;
+    assert!(said.contains("share: 1 share(s) back on their links"), "{said}");
+    b.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&files);
+}
+
+/// With `restore-on-start off`, a saved session not running keeps its
+/// name: a new session or a rename may not take it (its autosave would
+/// write over the save); `new -A` brings that one back instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_session_not_running_keeps_its_name() {
+    let a = Harness::start("named").await;
+    let kept = a.sessions_dir.clone();
+    a.cli(&["new", "-d", "-s", "work"]).await;
+    a.wait_for_cli("saved", &["list-saved"], |_, out| out.contains("work: saved")).await;
+    a.cli(&["kill-server"]).await;
+    let dir = kept.to_string_lossy().replace('\\', "/");
+    let b = Harness::start_with("named2", &format!("set -g sessions-dir \"{dir}\"\n")).await;
+    b.cli(&["set", "-g", "sessions-dir", &kept.to_string_lossy()]).await;
+    assert!(!b.cli(&["list-sessions"]).await.1.contains("work:"), "not restored: the option is off");
+    let (code, _, err) = b.cli(&["new", "-d", "-s", "work"]).await;
+    assert!(code != 0 && err.contains("work is saved") && err.contains("resume work"), "{err}");
+    b.cli(&["new", "-d", "-s", "other"]).await;
+    let (code, _, err) = b.cli(&["rename-session", "-t", "other", "work"]).await;
+    assert!(code != 0 && err.contains("work is saved"), "{err}");
+    let (code, _, err) = b.cli(&["new", "-A", "-d", "-s", "work"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(b.cli(&["list-sessions"]).await.1.contains("work:"), "-A brought the saved one back");
+    b.cli(&["kill-server"]).await;
+}
 /// A file and a folder shared (`share`) and fetched over HTTP as a browser
 /// would: the file byte for byte, a range of it, a range past its end, its
 /// head alone; the folder as a zip this machine's own tool unpacks to the

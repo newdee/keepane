@@ -177,15 +177,25 @@ impl SavedFile {
     }
 }
 
-/// Default directory of the auto-saved sessions (`KEEPANE_SESSIONS_DIR` wins,
-/// which is how the tests keep their servers out of the real one).
-pub fn default_dir() -> PathBuf {
+/// Default directory of the auto-saved sessions of the server on `socket`
+/// (`KEEPANE_SESSIONS_DIR` wins, which is how the tests keep their servers
+/// out of the real one). Each server its own: the default one `sessions`,
+/// one started with `-L NAME` `sessions-NAME` beside it, so that a server
+/// that starts never brings back (and runs a second time) another one's
+/// sessions, nor serves its shares.
+pub fn default_dir(socket: &str) -> PathBuf {
     if let Some(d) = crate::legacy::var("KEEPANE_SESSIONS_DIR")
         && !d.is_empty()
     {
         return PathBuf::from(d);
     }
-    crate::logger::log_dir().join("sessions")
+    crate::logger::log_dir().join(dir_name(socket))
+}
+
+/// The name of that directory in the data directory (a socket's name may
+/// hold what a file name may not).
+fn dir_name(socket: &str) -> String {
+    if socket == "default" { "sessions".into() } else { format!("sessions-{}", crate::histlog::safe_name(socket)) }
 }
 
 /// File for a session name (names are free-form; the file name is not).
@@ -273,6 +283,16 @@ mod tests {
                 },
             ],
         })
+    }
+
+    /// Each server keeps its own saves: the default one where they always
+    /// were, a named one (`-L`) beside it, its name made fit for a path.
+    #[test]
+    fn each_server_saves_in_a_directory_of_its_own() {
+        assert_eq!(dir_name("default"), "sessions");
+        assert_eq!(dir_name("lab"), "sessions-lab");
+        assert_eq!(dir_name("a/b:c"), "sessions-a_b_c");
+        assert_eq!(dir_name("..."), "sessions-_", "never the data directory's parent");
     }
 
     #[test]

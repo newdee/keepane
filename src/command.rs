@@ -152,15 +152,18 @@ pub struct MenuItem {
 /// What `share` is asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShareWhat {
-    List,
+    /// `-J`: every share, ended ones too, as JSON (the dashboard's page 2).
+    List { json: bool },
     /// `for_secs`: None is the default (24 hours), Some(0) no end.
-    Add {
-        path: String,
-        for_secs: Option<u64>,
-        once: bool,
-    },
+    Add { path: String, for_secs: Option<u64>, once: bool },
     /// One by its number, or every one (None).
     Stop(Option<u32>),
+    /// `share extend ID [--for TIME]`: a share's time set again from now
+    /// (its link the same, even one whose time was up).
+    Extend { id: u32, for_secs: Option<u64> },
+    /// `share again ID`: the same file or folder shared on a new link (the
+    /// old one ends).
+    Again(u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1833,7 +1836,16 @@ impl fmt::Display for Cmd {
             Cmd::WebStatus => f.write_str("web-status"),
             Cmd::WebStop => f.write_str("web-stop"),
             Cmd::WebResume => f.write_str("web-resume"),
-            Cmd::Share(ShareWhat::List) => f.write_str("share -l"),
+            Cmd::Share(ShareWhat::List { json }) => f.write_str(if *json { "share -l -J" } else { "share -l" }),
+            Cmd::Share(ShareWhat::Extend { id, for_secs }) => {
+                write!(f, "share extend {id}")?;
+                match for_secs {
+                    Some(0) => f.write_str(" --for 0"),
+                    Some(s) => write!(f, " --for {s}s"),
+                    None => Ok(()),
+                }
+            }
+            Cmd::Share(ShareWhat::Again(id)) => write!(f, "share again {id}"),
             Cmd::Share(ShareWhat::Add { path, for_secs, once }) => {
                 write!(f, "share {}", quote(path))?;
                 if let Some(s) = for_secs {
@@ -4323,11 +4335,13 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::WebStart(o)
         }
         "share" => {
-            let usage = "share PATH [--for TIME] [--once] | share [-l] | share stop ID|--all";
-            let (mut words, mut for_secs, mut once, mut list, mut all) = (Vec::new(), None, false, false, false);
+            let usage = "share PATH [--for TIME] [--once] | share [-l [-J]] | share stop ID|--all | share extend ID [--for TIME] | share again ID";
+            let (mut words, mut for_secs, mut once, mut list, mut all, mut json) =
+                (Vec::new(), None, false, false, false, false);
             while let Some(w) = a.next() {
                 match w {
                     "-l" => list = true,
+                    "-J" => json = true,
                     "--once" => once = true,
                     "--all" => all = true,
                     "--for" => {
@@ -4340,8 +4354,19 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 }
             }
             let adding = once || for_secs.is_some();
+            let number =
+                |id: &str| id.parse::<u32>().map_err(|_| format!("{n}: '{id}' is not a share's number (share -l)"));
+            if json && !(words.is_empty() && !adding && !all) {
+                return Err(format!("{n}: -J goes with -l"));
+            }
             match words.as_slice() {
-                [] if !adding && !all => Cmd::Share(ShareWhat::List),
+                [] if !adding && !all => Cmd::Share(ShareWhat::List { json }),
+                [extend, id] if extend == "extend" && !once && !all && !list => {
+                    Cmd::Share(ShareWhat::Extend { id: number(id)?, for_secs })
+                }
+                [again, id] if again == "again" && !adding && !all && !list => {
+                    Cmd::Share(ShareWhat::Again(number(id)?))
+                }
                 [stop] if stop == "stop" && all && !adding && !list => Cmd::Share(ShareWhat::Stop(None)),
                 [stop, id] if stop == "stop" && !all && !adding && !list => {
                     let id = id.parse().map_err(|_| format!("{n} stop: '{id}' is not a share's number (share -l)"))?;

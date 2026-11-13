@@ -26,10 +26,11 @@ message does is in an event log.
 
 With no command, `keepane` goes into what is there (`new-session -A` with no
 name): the session used last; with none running, every saved session back
-and the one saved last; with nothing at all, a new session. `keepane new`
-always starts a new one. A command name can be cut to any unambiguous prefix (`keepane att`,
-`keepane splitw -h`). Run inside a pane, a command goes to the server that
-pane belongs to, as tmux's do with `$TMUX`.
+(not those killed by hand) and the one saved last; with nothing at all, a
+new session. `keepane new` always starts a new one. A command name can be
+cut to any unambiguous prefix (`keepane att`, `keepane splitw -h`). Run
+inside a pane, a command goes to the server that pane belongs to, as
+tmux's do with `$TMUX`.
 
 This page is `docs/keepane.1.md` in keepane's repository, and
 `keepane man` prints it as it is written (Markdown, for people and for
@@ -145,10 +146,17 @@ whose prompt hook was never heard), exited, or `-`.
 
 ### Resuming after a reboot
 
-Sessions save themselves to the data directory. `resume`, `list-saved`,
-`save-session`, `restore-session`, `delete-saved`, `set-cwd`. Sessions,
-windows and panes come back with their numbers; the counter is kept in
-`next-id` there, so no number is given out twice.
+Sessions save themselves to the data directory (`sessions`; a server
+started with `-L NAME` to `sessions-NAME`, each its own), and a server
+that starts brings them all back (`restore-on-start`, on by default; then
+a new or renamed session may not take a saved name that is not running,
+which `new -A` resumes instead). `kill-session` puts a session's save aside
+(`killed/` there): not back at the next start nor with a bare `keepane`,
+`resume` or `resume NAME` brings it back, `list-saved` marks it
+killed. `resume`, `list-saved`, `save-session`, `restore-session`,
+`delete-saved`, `set-cwd`. Sessions, windows and panes come back with
+their numbers; the counter is kept in `next-id` there, so no number is
+given out twice.
 
 ### Options, keys and scripting
 
@@ -252,9 +260,18 @@ attachment`, and every answer carries `Content-Security-Policy: sandbox`:
 nothing is shown as a page on the page's address. A link that ended, was
 stopped or never was answers 404; a download under way goes on. With the
 page off, `share` serves it, as it was last served (else as `keepane web`
-does), for as long as the server runs (not kept for a restore). `keepane
-share` (or `-l`) lists what is shared; `share stop ID` or `share stop
---all` ends them. Each share, the first download from each address and
+does). `keepane share` (or `-l`) lists what is shared, `-l -J` every
+share as JSON with the ended ones (state `active`, `missing` while its
+file is gone, `stopped`, `expired`, `used`; its links, who opened it,
+what happened to it); `share stop ID` or `share stop --all` ends them;
+`share extend ID [--for TIME]` sets its time from now on the same link,
+an expired one coming back; `share again ID` shares the same thing on a
+new link, the old one ending. The list is kept in `share/shares.json` in
+the sessions directory, written on every change: a server that restores
+the sessions at start (`restore-on-start`) brings each share whose time
+is not up back on its token, serving the page for them, and says so (and
+when the page's port is not the one a link was given on). The last 100
+ended shares are kept. Each share, the first download from each address and
 each whole download are said on the status line and kept in
 `show-messages`. The page asks the server `web-share-open` (a token and the
 address asking) for what a link shares, and tells it `web-share-sent` (the

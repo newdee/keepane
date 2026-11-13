@@ -52,10 +52,10 @@ set -g monitor-bell on
 # keep a pane whose program exited, so a job that died leaves its output
 # set -g remain-on-exit on
 
-# resume after a reboot: sessions autosave; `keepane resume [name]` brings them back
+# resume after a reboot: sessions autosave and come back when the server starts
 set -g autosave on
 set -g save-history 500           # lines of each pane restored with the session (0: none, all: the whole scrollback)
-# set -g restore-on-start on      # a fresh server restores everything by itself
+# set -g restore-on-start off     # leave them to `keepane resume [name]` instead
 # set -g sessions-dir ~/.keepane/sessions
 
 # plugins: directories under plugin-path holding <name>.keepane

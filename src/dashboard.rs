@@ -24,6 +24,7 @@ use unicode_width::UnicodeWidthChar;
 mod files;
 mod gitview;
 mod machine;
+mod shares;
 
 /// The only server commands the dashboard sends to look.
 pub const QUERIES: &[&str] = &[
@@ -36,6 +37,8 @@ pub const QUERIES: &[&str] = &[
     "trace-pane",
     "show-task",
     "web-status",
+    // `share -l -J`: page 2.
+    "share",
 ];
 /// The only ones it sends to change anything.
 pub const ACTIONS: &[&str] = &[
@@ -47,6 +50,8 @@ pub const ACTIONS: &[&str] = &[
     "kill-pane",
     "drop-message",
     "move-message",
+    // Page 2: stop, extend, again; `S` in [0] shares.
+    "share",
 ];
 
 /// Whether `argv` is a change that waits for a yes: deleting a queued
@@ -56,6 +61,8 @@ pub fn needs_yes(argv: &[String]) -> bool {
         Some("kill-pane") => true,
         Some("drop-message") => argv.get(1).is_some_and(|a| a != "-u"),
         Some("set-work-mode") => argv.last().is_some_and(|m| m == "shell"),
+        // A link handed out (a new one, or one more), or one ended.
+        Some("share") => !matches!(argv.get(1).map(String::as_str), Some("-l" | "extend")),
         _ => false,
     }
 }
@@ -398,6 +405,10 @@ pub enum Panel {
     Inbox,
     Tasks,
     Main,
+    /// Page 2's `[1]`: what this machine shares.
+    Shares,
+    /// Page 2's `[2]`: what happened to the shares.
+    Activity,
 }
 
 /// What the main panel shows of the chosen pane.
@@ -473,6 +484,10 @@ enum Dialog {
     Mode { to: String, pick: usize },
     /// Every key, in the main panel.
     Help,
+    /// How long to share a file or folder for (`S` in [0]), and once or not.
+    ShareFor { path: String, pick: usize, once: bool },
+    /// How long a share goes on for from now (`e` on page 2).
+    Extend { id: u32, pick: usize },
 }
 
 const MODES: [&str; 3] = ["normal", "shell", "ai"];
@@ -531,7 +546,18 @@ pub struct Board {
     pub machine: machine::Machine,
     /// `[0]`: the directory browsed.
     pub files: files::Files,
+    /// The page shown: 1 the panes, 2 the shares (`<` / `>`; `PAGES` in all).
+    pub page: u8,
+    /// Page 2: the shares (`share -l -J`), the one picked, whether the
+    /// ended ones show, and how far [2] is scrolled.
+    pub shares: Vec<shares::ShareRow>,
+    pub share_pick: usize,
+    pub shares_ended: bool,
+    pub activity_top: usize,
 }
+
+/// The board's pages: the panes, the shares.
+const PAGES: u8 = 2;
 
 /// Visible width of text that may hold SGR sequences.
 fn width_of(s: &str) -> usize {
@@ -712,6 +738,9 @@ struct Layout {
     inbox: Option<Rect>,
     tasks: Option<Rect>,
     main: Option<Rect>,
+    /// Page 2's middle column, in place of panes, inbox and tasks.
+    shares: Option<Rect>,
+    activity: Option<Rect>,
 }
 
 /// Below this width, only the focused side is shown.
@@ -750,6 +779,11 @@ impl Board {
             scroll_most: std::cell::Cell::new(0),
             machine: machine::Machine::default(),
             files: files::Files::default(),
+            page: 1,
+            shares: Vec::new(),
+            share_pick: 0,
+            shares_ended: true,
+            activity_top: 0,
         }
     }
 
@@ -837,6 +871,116 @@ impl Board {
             .flatten();
     }
 
+    /// Page 2's list, as `share -l -J` gave it; the share picked stays
+    /// picked (by its number) when others come and go.
+    pub fn set_shares(&mut self, json: &str) {
+        let picked = self.share_picked().map(|s| s.id);
+        self.shares = shares::parse(json);
+        let shown = self.shares_shown();
+        self.share_pick = picked
+            .and_then(|id| shown.iter().position(|s| s.id == id))
+            .unwrap_or(self.share_pick.min(shown.len().saturating_sub(1)));
+        // [2] scrolled past what there is now (a shorter list): its last.
+        self.activity_top = self.activity_top.min(shares::activity(&self.shares).len().saturating_sub(1));
+    }
+
+    /// The shares [1] lists: the ended ones too, unless `a` hid them.
+    fn shares_shown(&self) -> Vec<&shares::ShareRow> {
+        self.shares.iter().filter(|s| self.shares_ended || s.running()).collect()
+    }
+
+    fn share_picked(&self) -> Option<&shares::ShareRow> {
+        self.shares_shown().get(self.share_pick).copied()
+    }
+
+    /// `<` / `>`: the other page. The focus stays on [0] or [4]; from a list
+    /// it goes to the other page's first.
+    fn turn_page(&mut self) {
+        self.page = self.page % PAGES + 1;
+        let to = match (self.page, self.focus) {
+            (_, Panel::Files | Panel::Main) => self.focus,
+            (2, _) => Panel::Shares,
+            _ => Panel::Panes,
+        };
+        self.focus_on(to);
+        self.scroll = 0;
+    }
+
+    /// Page 2's [1]: j/k pick, `x` stop (`X` all), `e` extend, `r` share
+    /// again on a new link, `y` copy its link, `a` the ended ones shown or
+    /// not, Enter its detail.
+    fn share_key(&mut self, code: KeyCode) -> Action {
+        let n = self.shares_shown().len();
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => self.share_pick = (self.share_pick + 1).min(n.saturating_sub(1)),
+            KeyCode::Up | KeyCode::Char('k') => self.share_pick = self.share_pick.saturating_sub(1),
+            KeyCode::Home | KeyCode::Char('g') => self.share_pick = 0,
+            KeyCode::End | KeyCode::Char('G') => self.share_pick = n.saturating_sub(1),
+            KeyCode::Enter => self.focus_on(Panel::Main),
+            KeyCode::Char('a') => {
+                self.shares_ended = !self.shares_ended;
+                self.share_pick = 0;
+            }
+            KeyCode::Char('X') => {
+                let running = self.shares.iter().filter(|s| s.running()).count();
+                if running > 0 {
+                    return self.act(
+                        format!("stop all {running} share(s)? Their links stop working."),
+                        owned(&["share", "stop", "--all"]),
+                    );
+                }
+                self.note = Some("nothing is shared".into());
+            }
+            KeyCode::Char(c @ ('x' | 'e' | 'r' | 'y')) => {
+                let Some(s) = self.share_picked().cloned() else { return Action::Redraw };
+                let id = s.id.to_string();
+                match c {
+                    'x' if s.running() => {
+                        return self.act(
+                            format!("stop share {id} ({})? Its link stops working.", s.name),
+                            owned(&["share", "stop", &id]),
+                        );
+                    }
+                    'x' => self.note = Some(format!("share {id} has ended already")),
+                    'e' if matches!(s.state.as_str(), "stopped" | "used") => {
+                        self.note = Some(format!("share {id} has ended for good: r shares it on a new link"));
+                    }
+                    'e' => self.dialog = Some(Dialog::Extend { id: s.id, pick: 1 }),
+                    'r' => {
+                        let old = if s.running() { " Its old link stops working." } else { "" };
+                        return self.act(
+                            format!("share {} again on a new link?{old}", s.name),
+                            owned(&["share", "again", &id]),
+                        );
+                    }
+                    _ => match s.links.first() {
+                        Some(link) => {
+                            self.note = Some(match crate::clipboard::set_text(link) {
+                                Ok(()) => format!("copied: {link}"),
+                                Err(e) => format!("not copied ({e}): {link}"),
+                            });
+                        }
+                        None => self.note = Some(format!("share {id} has no link now")),
+                    },
+                }
+            }
+            _ => {}
+        }
+        Action::Redraw
+    }
+
+    /// Page 2's [2]: j/k scroll what happened.
+    fn activity_key(&mut self, code: KeyCode) -> Action {
+        let n = shares::activity(&self.shares).len();
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => self.activity_top = (self.activity_top + 1).min(n.saturating_sub(1)),
+            KeyCode::Up | KeyCode::Char('k') => self.activity_top = self.activity_top.saturating_sub(1),
+            KeyCode::Home | KeyCode::Char('g') => self.activity_top = 0,
+            KeyCode::End | KeyCode::Char('G') => self.activity_top = n.saturating_sub(1),
+            _ => {}
+        }
+        Action::Redraw
+    }
     pub fn set_main(&mut self, lines: Vec<String>) {
         let mut lines = lines;
         // A screen's blank rows below its last line say nothing.
@@ -904,10 +1048,12 @@ impl Board {
     }
 
     fn cycle(&mut self, back: bool) {
-        const ORDER: [Panel; 5] = [Panel::Files, Panel::Panes, Panel::Inbox, Panel::Tasks, Panel::Main];
-        let at = ORDER.iter().position(|p| *p == self.focus).unwrap_or(0);
-        let to = if back { (at + ORDER.len() - 1) % ORDER.len() } else { (at + 1) % ORDER.len() };
-        self.focus_on(ORDER[to]);
+        const ONE: [Panel; 5] = [Panel::Files, Panel::Panes, Panel::Inbox, Panel::Tasks, Panel::Main];
+        const TWO: [Panel; 4] = [Panel::Files, Panel::Shares, Panel::Activity, Panel::Main];
+        let order: &[Panel] = if self.page == 2 { &TWO } else { &ONE };
+        let at = order.iter().position(|p| *p == self.focus).unwrap_or(0);
+        let to = if back { (at + order.len() - 1) % order.len() } else { (at + 1) % order.len() };
+        self.focus_on(order[to]);
         if self.focus == Panel::Files {
             self.refresh_files();
         }
@@ -924,7 +1070,7 @@ impl Board {
     fn scroll_by(&mut self, up: isize) {
         // Up is away from the bottom for what is read from the bottom, and
         // back towards the top for what is read from the top.
-        let by = if self.tab.read_up() { up } else { -up };
+        let by = if self.page == 1 && self.tab.read_up() { up } else { -up };
         // As far as the last frame drawn has lines beyond its rows: at the
         // top (or the bottom) a page of lines still shows, never none.
         let most = self.scroll_most.get();
@@ -967,7 +1113,7 @@ impl Board {
                 self.last_follow = None;
                 return;
             }
-            Panel::Main => return,
+            Panel::Main | Panel::Shares | Panel::Activity => return,
         };
         let now = Some((self.focus, want.clone()));
         if self.last_follow == now {
@@ -1016,12 +1162,18 @@ impl Board {
                 self.cycle(k.shift);
                 return Action::Redraw;
             }
+            KeyCode::Char('<' | '>') if !k.ctrl && !k.alt => {
+                self.turn_page();
+                return Action::Redraw;
+            }
             KeyCode::Char(c @ ('0' | '1' | '2' | '3' | '4')) if plain => {
-                self.focus_on(match c {
-                    '0' => Panel::Files,
-                    '1' => Panel::Panes,
-                    '2' => Panel::Inbox,
-                    '3' => Panel::Tasks,
+                self.focus_on(match (c, self.page) {
+                    ('0', _) => Panel::Files,
+                    ('1', 2) => Panel::Shares,
+                    ('2' | '3', 2) => Panel::Activity,
+                    ('1', _) => Panel::Panes,
+                    ('2', _) => Panel::Inbox,
+                    ('3', _) => Panel::Tasks,
                     _ => Panel::Main,
                 });
                 if c == '0' {
@@ -1098,6 +1250,8 @@ impl Board {
             Panel::Inbox => self.inbox_key(k.code),
             Panel::Tasks => self.task_key(k.code),
             Panel::Main => self.main_key(k.code),
+            Panel::Shares => self.share_key(k.code),
+            Panel::Activity => self.activity_key(k.code),
         }
     }
 
@@ -1118,6 +1272,14 @@ impl Board {
             }
             KeyCode::Char('.') => self.files.toggle_hidden(),
             KeyCode::Char('-') => self.files.back(),
+            // Share what is under the cursor: for how long first.
+            KeyCode::Char('S') => match self.files.picked() {
+                Some(p) => {
+                    self.dialog =
+                        Some(Dialog::ShareFor { path: p.to_string_lossy().into_owned(), pick: 1, once: false })
+                }
+                None => self.note = Some("nothing here to share".into()),
+            },
             _ => {}
         }
         Action::Redraw
@@ -1269,12 +1431,61 @@ impl Board {
             Dialog::Help => Action::Redraw,
             Dialog::Confirm { argv, .. } => {
                 if k.code == KeyCode::Char('y') && !k.ctrl && !k.alt {
+                    // Shared from [0]: page 2, where it is listed.
+                    let shared = argv.first().is_some_and(|c| c == "share")
+                        && !matches!(argv.get(1).map(String::as_str), Some("stop" | "again" | "extend" | "-l"));
+                    if shared && self.page == 1 {
+                        self.turn_page();
+                        self.focus_on(Panel::Shares);
+                    }
                     Action::Run(argv)
                 } else {
                     self.note = Some("left as it was".into());
                     Action::Redraw
                 }
             }
+            Dialog::ShareFor { path, pick, once } => match k.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.dialog = Some(Dialog::ShareFor { path, pick: (pick + 1).min(shares::FOR.len() - 1), once });
+                    Action::Redraw
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.dialog = Some(Dialog::ShareFor { path, pick: pick.saturating_sub(1), once });
+                    Action::Redraw
+                }
+                KeyCode::Char('o') => {
+                    self.dialog = Some(Dialog::ShareFor { path, pick, once: !once });
+                    Action::Redraw
+                }
+                KeyCode::Enter => {
+                    let (said, value) = shares::FOR[pick];
+                    let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
+                    let mut argv = owned(&["share", &path, "--for", value]);
+                    if once {
+                        argv.push("--once".into());
+                    }
+                    let once = if once { ", once" } else { "" };
+                    self.act(format!("share {name} for {said}{once}? Anyone with the link can download it."), argv)
+                }
+                _ => {
+                    self.note = Some("not shared".into());
+                    Action::Redraw
+                }
+            },
+            Dialog::Extend { id, pick } => match k.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.dialog = Some(Dialog::Extend { id, pick: (pick + 1).min(shares::FOR.len() - 1) });
+                    Action::Redraw
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.dialog = Some(Dialog::Extend { id, pick: pick.saturating_sub(1) });
+                    Action::Redraw
+                }
+                KeyCode::Enter => {
+                    Action::Run(owned(&["share", "extend", &id.to_string(), "--for", shares::FOR[pick].1]))
+                }
+                _ => Action::Redraw,
+            },
             Dialog::Mode { to, pick } => match k.code {
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.dialog = Some(Dialog::Mode { to, pick: (pick + 1).min(MODES.len() - 1) });
@@ -1312,6 +1523,8 @@ impl Board {
             (Panel::Inbox, layout.inbox),
             (Panel::Tasks, layout.tasks),
             (Panel::Main, layout.main),
+            (Panel::Shares, layout.shares),
+            (Panel::Activity, layout.activity),
         ]
         .into_iter()
         .find_map(|(p, r)| r.filter(|r| r.holds(x, y)).map(|r| (p, r)));
@@ -1335,6 +1548,12 @@ impl Board {
                     } else {
                         (self.task_pick + 1).min(self.tasks.len().saturating_sub(1))
                     }
+                }
+                Panel::Shares => {
+                    self.share_key(if up { KeyCode::Up } else { KeyCode::Down });
+                }
+                Panel::Activity => {
+                    self.activity_key(if up { KeyCode::Up } else { KeyCode::Down });
                 }
             }
             return Action::Redraw;
@@ -1378,7 +1597,14 @@ impl Board {
                     self.task_pick = start + row;
                 }
             }
-            Panel::Main => {}
+            Panel::Shares => {
+                let n = self.shares_shown().len();
+                let start = window_start(self.share_pick, n, rect.inner_h());
+                if start + row < n {
+                    self.share_pick = start + row;
+                }
+            }
+            Panel::Main | Panel::Activity => {}
         }
         Action::Redraw
     }
@@ -1387,7 +1613,16 @@ impl Board {
         let (w, h) = (usize::from(self.cols), usize::from(self.height));
         let body = h.saturating_sub(1);
         if w < 12 || body < 6 {
-            return Layout { machine: None, files: None, panes: None, inbox: None, tasks: None, main: None };
+            return Layout {
+                machine: None,
+                files: None,
+                panes: None,
+                inbox: None,
+                tasks: None,
+                main: None,
+                shares: None,
+                activity: None,
+            };
         }
         // The machine's column first, when there is room: the rest is laid
         // out beside it as it would be without.
@@ -1413,13 +1648,31 @@ impl Board {
             (lw, Some(Rect { x: mx + lw, y: 0, w: w - lw, h: body }))
         };
         if narrow && self.focus == Panel::Main {
-            return Layout { machine, files, panes: None, inbox: None, tasks: None, main };
+            return Layout {
+                machine,
+                files,
+                panes: None,
+                inbox: None,
+                tasks: None,
+                main,
+                shares: None,
+                activity: None,
+            };
         }
         // No machine's column to be over: Files takes the left column while
         // it is focused.
         if files.is_none() && self.focus == Panel::Files {
             let files = Some(Rect { x: mx, y: 0, w: left_w, h: body });
-            return Layout { machine, files, panes: None, inbox: None, tasks: None, main };
+            return Layout {
+                machine,
+                files,
+                panes: None,
+                inbox: None,
+                tasks: None,
+                main,
+                shares: None,
+                activity: None,
+            };
         }
         // Inbox and tasks a quarter each (3 rows at least), the panes the rest.
         let small = (body / 4).max(3);
@@ -1427,6 +1680,20 @@ impl Board {
         let inbox_h = small.min(body.saturating_sub(panes_h));
         let tasks_h = body.saturating_sub(panes_h + inbox_h);
         let rect = |y, h| (h >= 3).then_some(Rect { x: mx, y, w: left_w, h });
+        // Page 2: the shares two thirds, what happened to them the rest.
+        if self.page == 2 {
+            let shares_h = (body * 2 / 3).max(3).min(body);
+            return Layout {
+                machine,
+                files,
+                panes: None,
+                inbox: None,
+                tasks: None,
+                main,
+                shares: rect(0, shares_h),
+                activity: rect(shares_h, body - shares_h),
+            };
+        }
         Layout {
             machine,
             files,
@@ -1434,6 +1701,8 @@ impl Board {
             inbox: rect(panes_h, inbox_h),
             tasks: rect(panes_h + inbox_h, tasks_h),
             main,
+            shares: None,
+            activity: None,
         }
     }
 
@@ -1562,6 +1831,64 @@ impl Board {
         boxed(&title, "", lines, r, focused)
     }
 
+    /// Page 2's [1]: the shares, how each stands, how long each has left,
+    /// how often each went.
+    fn shares_box(&self, r: Rect) -> Vec<String> {
+        let focused = self.focus == Panel::Shares;
+        let shown = self.shares_shown();
+        let running = self.shares.iter().filter(|s| s.running()).count();
+        let ended = self.shares.len() - running;
+        let title = if self.shares_ended {
+            format!("[1] Shares  {running} active · {ended} ended")
+        } else {
+            format!("[1] Shares  {running} active · ended hidden")
+        };
+        let now_ms = self.now * 1000;
+        let start = window_start(self.share_pick, shown.len(), r.inner_h());
+        let mut lines: Vec<String> = shown
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(r.inner_h())
+            .map(|(i, s)| {
+                row_line(&s.line(now_ms, r.inner_w().saturating_sub(1)), i == self.share_pick, focused, r.inner_w())
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(paint("2", "nothing shared: S in [0] shares a file or a folder"));
+        }
+        boxed(&title, "", lines, r, focused)
+    }
+
+    /// Page 2's [2]: what happened to the shares, the latest first.
+    fn activity_box(&self, r: Rect) -> Vec<String> {
+        let focused = self.focus == Panel::Activity;
+        let mut lines: Vec<String> =
+            shares::activity(&self.shares).into_iter().skip(self.activity_top).take(r.inner_h()).collect();
+        if lines.is_empty() {
+            lines.push(paint("2", "nothing yet"));
+        }
+        boxed("[2] Activity", "", lines, r, focused)
+    }
+
+    /// Page 2's [4]: the share picked, in full.
+    fn share_box(&self, r: Rect) -> Vec<String> {
+        let focused = self.focus == Panel::Main;
+        let Some(s) = self.share_picked() else {
+            let lines = vec![
+                paint("2", "no share picked"),
+                String::new(),
+                paint("2", "S in [0] shares the file or folder there"),
+            ];
+            return boxed("[4] Share", "", lines, r, focused);
+        };
+        let title = format!("[4] share {} · {} ── {}", s.id, s.name, strip(&s.state_styled()));
+        let all = s.detail(self.now * 1000, r.inner_w());
+        let most = all.len().saturating_sub(r.inner_h());
+        self.scroll_most.set(most);
+        let lines = all.into_iter().skip(self.scroll.min(most)).take(r.inner_h()).collect();
+        boxed(&title, "", lines, r, focused)
+    }
     fn inbox_box(&self, r: Rect) -> Vec<String> {
         let who = self.chosen_row().map(|p| if p.name.is_empty() { p.id.clone() } else { format!("%{}", p.name) });
         let title = format!("[2] Inbox {} · {}", who.unwrap_or_default(), self.inbox.len());
@@ -1743,6 +2070,17 @@ impl Board {
                     .collect::<String>();
                 return format!("\x1b[1mwork mode for {to}:\x1b[0m{modes}  j/k · Enter · Esc");
             }
+            Some(Dialog::ShareFor { path, pick, once }) => {
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+                let once = if *once { "\x1b[7m once \x1b[0m" } else { " once " };
+                return format!(
+                    "\x1b[1mshare {name} for:\x1b[0m{}  {once}  j/k · o once · Enter · Esc",
+                    choices(*pick)
+                );
+            }
+            Some(Dialog::Extend { id, pick }) => {
+                return format!("\x1b[1mshare {id} goes on for:\x1b[0m{}  j/k · Enter · Esc", choices(*pick));
+            }
             _ => {}
         }
         if let Some(n) = &self.note {
@@ -1750,9 +2088,13 @@ impl Board {
         }
         let keys = match self.focus {
             Panel::Files if self.files.hidden => {
-                "j/k move  h/l up/into  g/G first/last  . hide hidden  - pane's directory"
+                "j/k move  h/l up/into  g/G first/last  . hide hidden  - pane's directory  S share"
             }
-            Panel::Files => "j/k move  h/l up/into  g/G first/last  . show hidden  - pane's directory",
+            Panel::Files => "j/k move  h/l up/into  g/G first/last  . show hidden  - pane's directory  S share",
+            Panel::Shares => {
+                "j/k pick  g/G first/last  Enter detail  x stop  X stop all  e extend  r again  y copy link  a ended"
+            }
+            Panel::Activity => "j/k scroll  g/G latest/oldest",
             Panel::Panes => {
                 "j/k pane  g/G first/last  Enter screen  s send  r rename  m mode  R ready  o go there  x close"
             }
@@ -1763,8 +2105,23 @@ impl Board {
             Panel::Main if self.tab == Tab::Trace => "j/k scroll  g/G top/bottom  e every turn  [/] tab  h back",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
-        let all = "Tab/01234 panel  T trace  / filter  ? keys  q quit";
-        format!(" {}  {}  {}", key_hints(keys), paint("2", "│"), key_hints(all))
+        let all = if self.page == 2 {
+            "Tab/0124 panel  ? keys  q quit"
+        } else {
+            "Tab/01234 panel  T trace  / filter  ? keys  q quit"
+        };
+        // Which page of how many, by the key that turns it, the number bold.
+        let page = format!("{} page {}/{PAGES}", paint("1;36", "</>"), paint("1", &self.page.to_string()));
+        let bar = paint("2", "│");
+        let full = format!(" {}  {bar}  {page}  {}", key_hints(keys), key_hints(all));
+        let w = usize::from(self.cols);
+        if width_of(&full) <= w {
+            return full;
+        }
+        // Too narrow for it all: the page stays, at the right end.
+        let tail = format!("  {bar}  {page}");
+        let head = format!(" {}  {bar}  {}", key_hints(keys), key_hints(all));
+        format!("{}{tail}", fit(&head, w.saturating_sub(width_of(&tail))))
     }
 
     /// Everything on screen, as the bytes that draw it: every row exactly
@@ -1793,7 +2150,13 @@ impl Board {
         place(p, p.map(|r| self.panes_box(r)).unwrap_or_default());
         place(i, i.map(|r| self.inbox_box(r)).unwrap_or_default());
         place(t, t.map(|r| self.tasks_box(r)).unwrap_or_default());
-        place(m, m.map(|r| self.main_box(r)).unwrap_or_default());
+        place(layout.shares, layout.shares.map(|r| self.shares_box(r)).unwrap_or_default());
+        place(layout.activity, layout.activity.map(|r| self.activity_box(r)).unwrap_or_default());
+        if self.page == 2 {
+            place(m, m.map(|r| self.share_box(r)).unwrap_or_default());
+        } else {
+            place(m, m.map(|r| self.main_box(r)).unwrap_or_default());
+        }
         let mut s = String::from("\x1b[?25l");
         for (y, row) in rows.iter().chain(std::iter::once(&self.foot())).enumerate() {
             s.push_str(&format!("\x1b[{};1H", y + 1));
@@ -2084,6 +2447,15 @@ fn window_start(at: usize, len: usize, rows: usize) -> usize {
     at.saturating_sub(rows - 1).min(len - rows)
 }
 
+/// The times a share is given for, as a menu line, `pick` reversed.
+fn choices(pick: usize) -> String {
+    shares::FOR
+        .iter()
+        .enumerate()
+        .map(|(i, (said, _))| if i == pick { format!("\x1b[7m {said} \x1b[0m") } else { format!(" {said} ") })
+        .collect()
+}
+
 /// A list line, marked when it is the one picked: reversed in the focused
 /// panel, bold with a marker otherwise.
 fn row_line(line: &str, picked: bool, focused: bool, width: usize) -> String {
@@ -2159,7 +2531,8 @@ fn boxed(title: &str, right: &str, lines: Vec<String>, r: Rect, focused: bool) -
 fn help_lines() -> Vec<String> {
     [
         "Everywhere",
-        "  Tab / Shift+Tab, 1 2 3 0, h / l   change panel",
+        "  Tab / Shift+Tab, 0-4, h / l       change panel (page 2: 0 1 2 4)",
+        "  < / >                             page 1 (the panes) / page 2 (what is shared)",
         "  [ / ]                             change the tab on the right",
         "  T                                 the trace of the pane's agent",
         "  PgUp / PgDn, C-b / C-f            page the right panel (C-u / C-d half a page;",
@@ -2191,11 +2564,23 @@ fn help_lines() -> Vec<String> {
         "  j / k      move                    g / G   first / last",
         "  h          up a directory          l, Enter  into one (a file: scroll it)",
         "  .          hidden entries          -       back to the pane's directory",
+        "  S          share it (how long, once or not; asks)",
+        "",
+        "Page 2 (< / >): [0] and System as on page 1",
+        "[1] Shares: what this machine shares, ended ones too (kept like the sessions)",
+        "  j / k      pick one (shown right)  Enter   scroll it",
+        "  x          stop it (asks)          X       stop them all (asks)",
+        "  e          extend it, same link    r       share it again on a new link (asks)",
+        "  y          copy its link           a       show / hide the ended ones",
+        "  states: active, missing (its file is gone), stopped, expired, used (for once, it went)",
+        "[2] Activity: what happened to the shares, the latest first; j / k scroll",
+        "[4] The share picked: its link, time, who opened it, its story, the code to scan",
         "",
         "System (under [0], from 150 columns): CPU, each core, memory, swap, disk, network,",
         "  temperature, power, battery, processes: this machine, every second",
         "",
-        "Asks first: deleting a message, closing a pane, switching a pane to shell.",
+        "Asks first: deleting a message, closing a pane, switching a pane to shell, sharing,",
+        "  stopping a share, sharing one again.",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -2532,10 +2917,15 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                 board.machine.sample(now, std::time::Instant::now(), system, host);
             }
             board.refresh_files();
-            match (board.local_main(git.as_deref()), board.main_query()) {
-                (Some(l), _) => board.set_main(l),
-                (None, Some(q)) => board.set_main(lines(ask(&q))),
-                (None, None) => board.set_main(Vec::new()),
+            // Page 2 reads the shares; its [4] is drawn from them, asked of nothing.
+            if board.page == 2 {
+                board.set_shares(&ask(&owned(&["share", "-l", "-J"])).1);
+            } else {
+                match (board.local_main(git.as_deref()), board.main_query()) {
+                    (Some(l), _) => board.set_main(l),
+                    (None, Some(q)) => board.set_main(lines(ask(&q))),
+                    (None, None) => board.set_main(Vec::new()),
+                }
             }
             console.write_str(&board.frame());
             // A key, or a second without one: then the board is read again.
@@ -3541,6 +3931,124 @@ mod tests {
         // Away to the panes: the tab that was there.
         b.key(Key::ch('1'));
         assert_eq!((b.focus, b.tab), (Panel::Panes, tab));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Page 2 (`<` / `>`): [0] and the machine as on page 1, the shares and
+    /// what happened to them in the middle, the one picked on the right;
+    /// each change asks first but extending, and sharing from [0] turns to it.
+    #[test]
+    fn page_two_lists_the_shares_and_acts_on_them_with_a_yes() {
+        let json = r#"{"served":true,"shares":[
+            {"id":3,"state":"active","kind":"file","name":"report.pdf","path":"/r.pdf","created":1000000,"until":9000000,
+             "once":false,"sent":2,"seen":["10.0.0.9"],"from":"%1","links":["http://10.0.0.5:7681/s/abc"],"port":7681,
+             "port_moved":false,"ended":null,"events":[[1000000,"shared"],[1500000,"opened by 10.0.0.9"]]},
+            {"id":1,"state":"expired","kind":"folder","name":"logs","path":"/logs","created":10,"until":20,"once":false,
+             "sent":0,"seen":[],"from":null,"links":[],"port":0,"port_moved":false,"ended":20,"events":[[20,"its time was up"]]}]}"#;
+        let mut b = board();
+        b.resize(160, 30);
+        // The page shown, of how many, by the key that turns it.
+        assert!(strip(&b.foot()).contains("</> page 1/2"), "{}", strip(&b.foot()));
+        b.key(Key::ch('>'));
+        assert_eq!((b.page, b.focus), (2, Panel::Shares));
+        assert!(strip(&b.foot()).contains("</> page 2/2") && b.foot().contains("\x1b[1m2\x1b[0m/2"));
+        b.set_shares(json);
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[1] Shares  1 active · 1 ended") && text.contains("[2] Activity"), "{text}");
+        assert!(
+            text.contains("[4] share 3 · report.pdf ── active") && text.contains("http://10.0.0.5:7681/s/abc"),
+            "{text}"
+        );
+        assert!(
+            text.contains("opened by 10.0.0.9") && text.contains("[0] Files") && !text.contains("[1] Panes"),
+            "{text}"
+        );
+        assert!(strip(&b.foot()).contains("x stop"));
+        // Too narrow for every key: the page still shows, at the right end.
+        b.resize(50, 30);
+        let foot = strip(&b.foot());
+        assert!(foot.ends_with("│  </> page 2/2") && width_of(&foot) == 50, "{foot:?}");
+        b.resize(160, 30);
+        // [4] reads from the top: j goes down it.
+        b.key(Key::ch('4'));
+        b.key(Key::ch('j'));
+        assert_eq!(b.scroll, 1, "scrolled down");
+        b.key(Key::ch('g'));
+        // Numbers and Tab go round page 2's panels.
+        b.key(Key::ch('2'));
+        assert_eq!(b.focus, Panel::Activity);
+        b.key(Key::plain(KeyCode::Tab));
+        assert_eq!(b.focus, Panel::Main);
+        b.key(Key::ch('1'));
+        // Stop: asks, then runs.
+        assert_eq!(b.key(Key::ch('x')), Action::Redraw);
+        assert!(strip(&b.foot()).contains("stop share 3 (report.pdf)?"));
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["share", "stop", "3"])));
+        // Extend: for how long, then runs (no yes: the link stays the same).
+        b.key(Key::ch('e'));
+        b.key(Key::ch('j'));
+        assert_eq!(b.key(Key::plain(KeyCode::Enter)), Action::Run(owned(&["share", "extend", "3", "--for", "7d"])));
+        // The expired one: extended on its link; again: a new one, asked.
+        b.key(Key::ch('j'));
+        assert_eq!(b.share_picked().map(|s| s.id), Some(1));
+        b.key(Key::ch('r'));
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["share", "again", "1"])));
+        b.key(Key::ch('x'));
+        assert!(b.note.as_deref().unwrap_or_default().contains("ended already"));
+        // The ended ones hidden, then shown.
+        b.key(Key::ch('a'));
+        assert_eq!(b.shares_shown().len(), 1);
+        assert!(strip(&screen(&b).join("\n")).contains("ended hidden"));
+        b.key(Key::ch('a'));
+        // [2] scrolled to its last, then a shorter list: it still shows what
+        // there is, not "nothing yet".
+        b.key(Key::ch('2'));
+        b.key(Key::ch('G'));
+        assert_eq!(b.activity_top, 2);
+        b.set_shares(
+            &json
+                .replace(r#",[1500000,"opened by 10.0.0.9"]"#, "")
+                .replace(r#""events":[[20,"its time was up"]]"#, r#""events":[]"#),
+        );
+        assert_eq!(b.activity_top, 0);
+        let text = strip(&screen(&b).join("\n"));
+        assert!(text.contains("3 report.pdf  shared") && !text.contains("nothing yet"), "{text}");
+        b.set_shares(json);
+        b.key(Key::ch('1'));
+        // A click on a row picks it.
+        let r = b.layout().shares.unwrap();
+        b.mouse(&MouseRecord { x: (r.x + 3) as i16, y: (r.y + 1) as i16, buttons: 1, ctrl: 0, flags: 0 });
+        assert_eq!(b.share_pick, 0);
+        // Back to page 1: the panes.
+        b.key(Key::ch('<'));
+        assert_eq!((b.page, b.focus), (1, Panel::Panes));
+        // Shared from [0]: for how long, once or not, asked; then page 2.
+        let dir = std::env::temp_dir().join(format!("keepane-board-share-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        b.rows[0].path = dir.to_string_lossy().into_owned();
+        b.chosen = Some("%1".into());
+        b.key(Key::ch('0'));
+        b.refresh_files();
+        b.key(Key::ch('S'));
+        b.key(Key::ch('k'));
+        b.key(Key::ch('o'));
+        assert!(strip(&b.foot()).contains("share a.txt for:"), "{}", strip(&b.foot()));
+        b.key(Key::plain(KeyCode::Enter));
+        assert!(
+            strip(&b.foot()).contains("share a.txt for 1 hour, once? Anyone with the link"),
+            "{}",
+            strip(&b.foot())
+        );
+        let path = dir.join("a.txt").to_string_lossy().into_owned();
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["share", &path, "--for", "1h", "--once"])));
+        assert_eq!((b.page, b.focus), (2, Panel::Shares));
+        // What these send is what the dashboard may send, each asking but extend.
+        for argv in [owned(&["share", "-l", "-J"]), owned(&["share", "stop", "3"])] {
+            assert!(QUERIES.contains(&argv[0].as_str()) && ACTIONS.contains(&argv[0].as_str()));
+        }
+        assert!(needs_yes(&owned(&["share", "stop", "3"])) && needs_yes(&owned(&["share", "/x", "--for", "1h"])));
+        assert!(!needs_yes(&owned(&["share", "extend", "3"])) && !needs_yes(&owned(&["share", "-l", "-J"])));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

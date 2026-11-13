@@ -196,7 +196,20 @@ changes its work mode, `R` marks it ready (unsticks it), `o` goes there
 (and closes the popup), `x` closes it. In the inbox: `d` deletes a queued
 message (`u` brings it back), `K`/`J` move it, `t` puts it first, Enter
 moves into it to scroll. Closing a pane, deleting a message and switching a pane
-to `shell` (where what it gets is run) ask first. The design:
+to `shell` (where what it gets is run) ask first.
+
+`>` turns to page 2 (`<` back; the bottom line says `page 1/2` or
+`page 2/2`, and keeps it when too narrow for every key): `[0]` and the
+machine stay, `[1]` lists what this machine shares (`keepane share`,
+below), each `active`, `missing` (its file gone for now), `stopped`,
+`expired` or `used` (for once, and it went), with its time left and how
+often it went; `[2]` what happened to them, the latest first; `[4]` the
+one picked: its link, who opened it, its story and the code to scan. `S`
+in `[0]` shares what is under the cursor (for how long, once or not,
+asked); on `[1]`, `x` stops one (`X` every one), `e` extends it on the
+same link, `r` shares it again on a new link, `y` copies its link, `a`
+hides or shows the ended ones. Sharing, stopping and sharing again ask
+first. The design:
 [docs/design/dashboard.md](docs/design/dashboard.md).
 
 ### What the agents use and cost
@@ -864,17 +877,20 @@ session is not kept, because the session ends with it.
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-resume-light.gif">
     <img src="docs/img/keepane-resume.gif" width="880"
-         alt="A session of three panes: git status, a build named builder, a server log; C-b C-s saves it; the server is stopped as a reboot stops it; keepane list-saved shows the session, and keepane resume brings back the panes, their names and folders and what they showed">
+         alt="A session of three panes: git status, a build named builder, a server log; C-b C-s saves it; the server is stopped as a reboot stops it; a plain keepane started again brings back the panes, their names and folders and what they showed">
   </picture>
 </p>
 
 Every session is saved to its own file under `%LOCALAPPDATA%\keepane\sessions`
 whenever its shape changes (windows, panes, layout, names, start commands
-and directories) and when the server exits. A reboot, a crash or a
-`kill-session` does not lose that file. A session whose last program exits
-(you typed `exit` in its last shell) forgets it 10 seconds later, unless the
-machine is shutting down; `D` in `C-b w` or `delete-saved` forgets one by
-hand. So:
+and directories) and when the server exits; a server started with `-L
+NAME` keeps its own in `sessions-NAME` beside it, so one never brings back
+another's sessions. A reboot or a crash does not lose that file. `kill-session` puts it aside: the session does not come
+back by itself at the next start (nor with a bare `keepane`), `resume`
+or `resume NAME` still brings it back, and `list-saved` says it was
+killed. A session whose last program exits (you typed `exit` in its last
+shell) forgets it 10 seconds later, unless the machine is shutting down;
+`D` in `C-b w` or `delete-saved` forgets one by hand. So:
 
 ```powershell
 keepane resume              # bring back every saved session, attach to the first
@@ -885,10 +901,11 @@ keepane save-session -a     # save each session to its own file now (prefix C-s)
 ```
 
 A bare `keepane` resumes too: with sessions running it goes into the one
-used last, with none running it brings back every saved one and goes into
-the one saved last, and only with nothing at all does it start a new one
-(`keepane new` always does). So starting keepane again and again does not
-pile up empty sessions that come back on the next resume.
+used last, with none running it brings back every saved one (not those
+killed by hand) and goes into the one saved last, and only with nothing at
+all does it start a new one (`keepane new` always does). So starting
+keepane again and again does not pile up empty sessions that come back on
+the next resume.
 
 Resuming recreates the pane tree, puts back the last `save-history` lines
 each pane had on screen (500 by default; `set -g save-history all` keeps
@@ -898,9 +915,13 @@ were doing does not come back; no multiplexer can do that. Saving happens
 by itself: the tree whenever it changes, the pane text every 30 seconds,
 and everything once more when Windows shuts down, restarts or you log
 off (the server holds the shutdown up for the moment that takes), or when
-the server is sent SIGTERM or SIGHUP on Linux and macOS. `set -g
-restore-on-start on` makes a fresh server restore everything by itself;
-`set -g autosave off` turns saving off; `sessions-dir` moves the files.
+the server is sent SIGTERM or SIGHUP on Linux and macOS. A server that
+starts brings every saved session back by itself, however it was started
+(`keepane`, `keepane new -s x`, at logon), so no session is made beside
+saved ones not running: `keepane new -s work` with `work` saved says it
+exists (`-A` attaches to it). `set -g restore-on-start off` leaves that
+to `resume`; `set -g autosave off` turns saving off; `sessions-dir` moves
+the files.
 
 Sessions, windows and panes keep their numbers (`$1`, `@3`, `%4`) when
 they come back after a restart. The server keeps its counter in the
@@ -1287,20 +1308,34 @@ phone, or open the link on another machine, and it downloads.
 keepane share report.pdf            # a file: a code to scan and a link
 keepane share ~/photos --for 2h     # a folder (as photos.zip), for 2 hours
 keepane share build.log --once      # gone after one whole download
-keepane share                       # what is shared (or -l)
+keepane share                       # what is shared (or -l; -l -J as JSON)
 keepane share stop 2                # end one; --all ends every one
+keepane share extend 2 --for 7d     # longer, on the same link
+keepane share again 2               # the same thing on a new link
 ```
 
 Each share has a link of its own (a random token, not the phone page's
 key): whoever has it can download that one thing and see nothing else. A
 share lasts 24 hours unless `--for` says (`30m`, `2h`, `7d`; `0` until it
-is stopped or the server ends). A file downloads as it is, and a download
+is stopped). A file downloads as it is, and a download
 cut off carries on where it stopped; a folder downloads as a zip written
 while it is read (links in it are left out). Whatever is shared is sent as
 a download, never shown as a page. The link is on the phone page's address
-and port: when that is off, `share` turns it on (only until the server
-ends). The status line says each share, who downloads it and when it went,
-also when an agent in a pane shares something. Plain HTTP, like the page:
+and port: when that is off, `share` turns it on. The status line says each
+share, who downloads it and when it went, also when an agent in a pane
+shares something.
+
+The list of shares is kept like the saved sessions (`share/shares.json`
+in the sessions directory). While no server runs no link works; the next
+server to start brings each share back on the same link (with the
+sessions, `restore-on-start`), the page served for them. The address
+may change with the network (a Tailscale address does not), and the link
+stays only on the same port: the status line says when it moved. A share
+whose time ran out meanwhile has ended. `share extend` brings an expired
+one back on its link; a stopped one, or one that went once, is shared
+again only on a new link (`share again`). The last 100 ended shares stay
+listed, each with how it ended and what happened to it. Page 2 of the
+dashboard (`prefix v`, then `>`) shows them all. Plain HTTP, like the page:
 across a network you do not trust, use Tailscale. The design:
 [docs/design/share.md](docs/design/share.md).
 
