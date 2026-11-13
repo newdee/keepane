@@ -13681,14 +13681,21 @@ async fn files_sent_from_the_page_go_under_the_panes_folder() {
     let (code, body) = http(addr, "GET", &format!("/api/upload-info?pane={q}"), "k", "").await;
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
     assert_eq!((code, v["max"].as_u64()), (200, Some(2 << 30)), "{body}");
-    assert_eq!(std::path::Path::new(v["dir"].as_str().unwrap_or_default()), up.as_path());
+    // The same place, however written: macOS's temp folder is under /var,
+    // a link to /private/var, and the pane's directory comes resolved.
+    let same = |got: &str, want: &std::path::Path| {
+        let got = std::path::Path::new(got);
+        let real = |p: &std::path::Path| p.parent().and_then(|d| std::fs::canonicalize(d).ok());
+        got.file_name() == want.file_name() && real(got).is_some() && real(got) == real(want)
+    };
+    assert!(same(v["dir"].as_str().unwrap_or_default(), &up), "{body}");
     // Byte for byte, more than one read's worth.
     let data: Vec<u8> = (0..300_000u32).map(|i| (i * 31 % 251) as u8).collect();
     let (code, body) = send(addr, "k", "report.pdf", data.clone(), data.len()).await;
     assert_eq!(code, 200, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!((v["name"].as_str(), v["bytes"].as_u64()), (Some("report.pdf"), Some(300_000)));
-    assert_eq!(std::path::Path::new(v["path"].as_str().unwrap()), up.join("report.pdf").as_path());
+    assert!(same(v["path"].as_str().unwrap(), &up.join("report.pdf")), "{body}");
     assert!(std::fs::read(up.join("report.pdf")).unwrap() == data, "the same bytes");
     // The name taken: the next free one, the first left as it was.
     let (code, body) = send(addr, "k", "report.pdf", b"second".to_vec(), 6).await;
