@@ -34,6 +34,9 @@ $w = Join-Path $repo "target\debug\keepane.exe"
 New-Item -ItemType Directory -Force $Work | Out-Null
 $tmp = (Resolve-Path $Work).Path
 $env:KEEPANE_SESSIONS_DIR = Join-Path $tmp "sessions"
+# A server that starts brings back the saved sessions (restore-on-start):
+# the last run's must not be there, or they come back beside these.
+Remove-Item -Recurse -Force $env:KEEPANE_SESSIONS_DIR -ErrorAction SilentlyContinue
 $env:KEEPANE_CONFIG = Join-Path $tmp "empty.conf"
 # The light pictures have the light terminal theme too.
 Set-Content $env:KEEPANE_CONFIG $(if ($Light) { "set -g theme paper" } else { "" })

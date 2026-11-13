@@ -1064,7 +1064,7 @@ function Composer({
                   ? t("Enter runs", "回车执行")
                   : t("Enter types", "回车填入")
           }
-          className="max-h-32 min-h-10 flex-1 resize-none font-term text-base"
+          className="max-h-32 min-h-10 flex-1 resize-none font-term text-base placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap"
           autoCapitalize="off"
           autoComplete="off"
           autoCorrect="off"

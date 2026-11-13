@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pageText, test } from "../e2e/fixtures.ts";
 import { DIR, kp, page, paneNumber, portOf, show, token, withOption } from "../e2e/keepane.ts";
+import { phone } from "../e2e/phone.ts";
 
 const FILE = "tests/fixtures/notes.txt";
 
@@ -35,4 +36,15 @@ test("a file from the page lands in the pane's folder", async ({ app, browser, s
   await browser.reload();
   await expect(browser.locator("#upload")).toHaveAccessibleName(`上传文件到 ${path.join(cwd, "uploads")}`);
   fs.rmSync(into, { recursive: true, force: true });
+  // On a phone held upright the box is narrower beside the paper clip: its
+  // hint stays on one line (cut at the edge), no second line half shown.
+  const finger = await phone(browser);
+  await expect(browser.locator("#text")).toBeVisible();
+  const lines = () =>
+    browser.evaluate(() => {
+      const t = document.querySelector<HTMLTextAreaElement>("#text")!;
+      return t.value === "" && t.scrollHeight <= t.clientHeight + 1;
+    });
+  await expect.poll(lines).toBe(true);
+  await finger.close();
 });
