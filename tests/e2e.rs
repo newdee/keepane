@@ -13624,3 +13624,137 @@ async fn a_feishu_app_tells_the_panes_and_takes_answers() {
     assert!(h.cli(&["feishu-status"]).await.1.starts_with("feishu: off"));
     h.cli(&["kill-server"]).await;
 }
+
+/// A file sent from the phone page (`POST /api/upload`) for a pane: written
+/// under its directory's `uploads` (`web-upload-dir`), byte for byte, read
+/// as it comes; a name taken gets ` (1)`; a path in the name keeps only its
+/// last part; past `web-upload-max` refused before a byte is read; cut
+/// short, nothing left; a read-only page refuses; an absolute folder is
+/// used as it is; the status line says each one.
+#[tokio::test(flavor = "multi_thread")]
+async fn files_sent_from_the_page_go_under_the_panes_folder() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = Harness::start("upload").await;
+    let dir = h.sessions_dir.with_extension("up");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "up", "-c", &dir.to_string_lossy()]).await;
+    assert_eq!(code, 0, "{err}");
+    let pane = h.cli(&["display", "-p", "-t", "up", "#{pane_id}"]).await.1.trim().to_string();
+    let q = pane.replace('%', "%25");
+    let socket = h.socket.clone();
+    let serve = |read_only: bool| {
+        let socket = socket.clone();
+        async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let state = std::sync::Arc::new(keepane::web::State::new(&socket, "k", read_only));
+            tokio::spawn(keepane::web::serve(listener, state));
+            addr
+        }
+    };
+    let addr = serve(false).await;
+    // Sent: the head, then `sent` of the body (all of it unless cut short),
+    // for a body said to be `length` long.
+    let send = |addr: std::net::SocketAddr, key: &str, name: &str, body: Vec<u8>, length: usize| {
+        let head = format!(
+            "POST /api/upload?pane={q}&name={name} HTTP/1.1\r\nHost: phone\r\nX-Keepane-Key: {key}\r\nContent-Length: {length}\r\n\r\n"
+        );
+        async move {
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            s.write_all(head.as_bytes()).await.unwrap();
+            for chunk in body.chunks(7000) {
+                if s.write_all(chunk).await.is_err() {
+                    break;
+                }
+            }
+            let _ = s.shutdown().await;
+            let mut out = Vec::new();
+            let _ = s.read_to_end(&mut out).await;
+            let text = String::from_utf8_lossy(&out).into_owned();
+            let status: u16 = text.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0);
+            (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
+        }
+    };
+    let up = dir.join("uploads");
+    // Where it would go, asked first.
+    let (code, body) = http(addr, "GET", &format!("/api/upload-info?pane={q}"), "k", "").await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    assert_eq!((code, v["max"].as_u64()), (200, Some(2 << 30)), "{body}");
+    assert_eq!(std::path::Path::new(v["dir"].as_str().unwrap_or_default()), up.as_path());
+    // Byte for byte, more than one read's worth.
+    let data: Vec<u8> = (0..300_000u32).map(|i| (i * 31 % 251) as u8).collect();
+    let (code, body) = send(addr, "k", "report.pdf", data.clone(), data.len()).await;
+    assert_eq!(code, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((v["name"].as_str(), v["bytes"].as_u64()), (Some("report.pdf"), Some(300_000)));
+    assert_eq!(std::path::Path::new(v["path"].as_str().unwrap()), up.join("report.pdf").as_path());
+    assert!(std::fs::read(up.join("report.pdf")).unwrap() == data, "the same bytes");
+    // The name taken: the next free one, the first left as it was.
+    let (code, body) = send(addr, "k", "report.pdf", b"second".to_vec(), 6).await;
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(std::fs::read(up.join("report (1).pdf")).unwrap(), b"second");
+    assert_eq!(std::fs::read(up.join("report.pdf")).unwrap().len(), 300_000);
+    // A path in the name: its last part, in the folder, not above it.
+    let (code, body) = send(addr, "k", "..%2F..%2Fevil.txt", b"x".to_vec(), 1).await;
+    assert_eq!(code, 200, "{body}");
+    assert!(
+        up.join("evil.txt").exists()
+            && !dir.join("evil.txt").exists()
+            && !dir.parent().unwrap().join("evil.txt").exists()
+    );
+    // Too big: refused before it is read, nothing written.
+    h.cli(&["set", "-g", "web-upload-max", "1K"]).await;
+    let (code, body) = send(addr, "k", "big.bin", vec![1u8; 2000], 2000).await;
+    assert!(code == 413 && body.contains("web-upload-max"), "{code} {body}");
+    assert!(!up.join("big.bin").exists());
+    h.cli(&["set", "-g", "web-upload-max", "2G"]).await;
+    // Cut short: what came is not kept.
+    let (code, body) = send(addr, "k", "cut.bin", vec![2u8; 100], 10_000).await;
+    assert!(code == 400 && body.contains("cut short"), "{code} {body}");
+    assert!(!up.join("cut.bin").exists(), "nothing left of it");
+    // No name, a wrong key, a pane there is not. Refused with a body still
+    // coming (half a megabyte): the answer gets through all the same (its
+    // body read first, else the connection is reset and no answer comes).
+    assert_eq!(send(addr, "k", "..", b"x".to_vec(), 1).await.0, 400);
+    assert!(matches!(send(addr, "nope", "a.txt", b"x".to_vec(), 1).await.0, 401 | 403));
+    for _ in 0..3 {
+        let (code, body) = send(addr, "nope", "a.txt", vec![3u8; 500_000], 500_000).await;
+        assert!(matches!(code, 401 | 403), "a wrong key, a big body: {code} {body}");
+    }
+    // No length said (a body sent in chunks): refused, no empty file
+    // standing for it.
+    {
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "POST /api/upload?pane={q}&name=chunked.txt HTTP/1.1\r\nHost: phone\r\nX-Keepane-Key: k\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+        );
+        s.write_all(head.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out).await;
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 411"), "{text}");
+        assert!(!up.join("chunked.txt").exists());
+    }
+    let (code, _) = http(addr, "GET", "/api/upload-info?pane=%25999", "k", "").await;
+    assert_eq!(code, 404);
+    // A read-only page writes nothing.
+    let ro = serve(true).await;
+    assert_eq!(send(ro, "k", "ro.txt", b"x".to_vec(), 1).await.0, 403);
+    assert_eq!(http(ro, "GET", &format!("/api/upload-info?pane={q}"), "k", "").await.0, 403);
+    assert!(!up.join("ro.txt").exists());
+    // An absolute folder: there, whatever the pane's directory.
+    let elsewhere = dir.with_extension("elsewhere");
+    let _ = std::fs::remove_dir_all(&elsewhere);
+    h.cli(&["set", "-g", "web-upload-dir", &elsewhere.to_string_lossy()]).await;
+    let (code, body) = send(addr, "k", "abs.txt", b"abs".to_vec(), 3).await;
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(std::fs::read(elsewhere.join("abs.txt")).unwrap(), b"abs");
+    // Each one said.
+    let (_, said, _) = h.cli(&["show-messages"]).await;
+    assert!(said.contains(&format!("{pane}: received report.pdf (")) && said.contains("from 127.0.0.1"), "{said}");
+    assert!(said.contains("received report (1).pdf") && said.contains("received abs.txt"), "{said}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}

@@ -247,6 +247,18 @@ N): `{"%3": [...]}`, the last N lines each pane printed, oldest first,
 prompts passed over as `#{pane_last_line}` passes them: a keepane command
 of the page's, not for people.
 
+The page's paper clip, by the box, sends files into the pane's folder:
+`web-upload-dir` (default `uploads`) under the pane's directory, or that
+folder when it is absolute, made when it is not there. Each file is the
+body of `POST /api/upload?pane=%N&name=…` with its `Content-Length`,
+written as it comes, never over a file there (`report (1).pdf`), its
+name's last part only, at most 200 bytes; one past
+`web-upload-max` (default 2G) is refused before a byte is read, one cut
+short is not kept, a `--read-only` page and a pane copied from another
+machine take none. `GET /api/upload-info?pane=%N` says where they would
+go and how big one may be. The server is told each with `web-uploaded`
+(a keepane command of the page's) and says it on the status line.
+
 `keepane share PATH [--for TIME] [--once]` (the server command `share`)
 gives out a file or a folder by a link on the phone page's address and port,
 `http://host:port/s/TOKEN`, and prints it with a QR code: one link a

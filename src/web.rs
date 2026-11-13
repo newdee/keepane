@@ -397,6 +397,13 @@ pub struct Request {
     /// What of a shared file a download carried on asks for (`Range`).
     pub range: Option<String>,
     pub body: Vec<u8>,
+    /// An upload's (`POST /api/upload`) whole length (`Content-Length`):
+    /// `body` holds only what came with the head, the rest is read as it is
+    /// written to its file. 0 for any other request (its body is whole).
+    pub length: usize,
+    /// It said how long its body is (`Content-Length`): an upload must, or
+    /// what it sends could not be told from nothing.
+    pub sized: bool,
 }
 
 impl Request {
@@ -434,11 +441,13 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
         _ => bail!("not an HTTP request"),
     };
     let (mut length, mut key, mut headers, mut gzip, mut range) = (0usize, None, Vec::new(), false, None);
+    let mut sized = false;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else { continue };
         let value = value.trim();
         if name.eq_ignore_ascii_case("content-length") {
             length = value.parse().context("bad Content-Length")?;
+            sized = true;
         } else if name.eq_ignore_ascii_case("accept-encoding") {
             gzip = value.split(',').any(|e| e.split(';').next().is_some_and(|e| e.trim().eq_ignore_ascii_case("gzip")));
         } else if name.eq_ignore_ascii_case("range") {
@@ -452,11 +461,14 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
             headers.push((name.to_ascii_lowercase(), value.to_string()));
         }
     }
-    if length > if target.starts_with("/link/") { MAX_LINK_BODY } else { MAX_BODY } {
+    // A file sent in (`/api/upload`): its body is read as it is written,
+    // never whole; its limit is the server's (`web-upload-max`).
+    let upload = method == "POST" && (target == "/api/upload" || target.starts_with("/api/upload?"));
+    if !upload && length > if target.starts_with("/link/") { MAX_LINK_BODY } else { MAX_BODY } {
         bail!("request body too large");
     }
     let mut body = buf[head_end + 4..].to_vec();
-    while body.len() < length {
+    while !upload && body.len() < length {
         let n = r.read(&mut chunk).await?;
         if n == 0 {
             bail!("body cut short");
@@ -464,6 +476,7 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
         body.extend_from_slice(&chunk[..n]);
     }
     body.truncate(length);
+    let length = if upload { length } else { 0 };
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let query = query
         .split('&')
@@ -473,7 +486,7 @@ pub async fn read_request<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<R
             (percent_decode(k), percent_decode(v))
         })
         .collect();
-    Ok(Some(Request { method, path: percent_decode(path), query, key, headers, gzip, range, body }))
+    Ok(Some(Request { method, path: percent_decode(path), query, key, headers, gzip, range, body, length, sized }))
 }
 
 /// `%XX` escapes and `+` for a space, as a browser writes a query; a `%`
@@ -527,6 +540,27 @@ async fn connection(mut stream: TcpStream, peer: IpAddr, state: &State) -> Resul
             return Ok(());
         }
     };
+    // A file sent in for a pane: its body read as it is written.
+    if req.method == "POST" && req.path == "/api/upload" {
+        let (r, read) = upload(&mut stream, &req, peer, state).await;
+        // Refused before its body was read: what is left of a small one is
+        // read first, else closing on it unread resets the connection and
+        // the browser never sees why (a large one: it does not, the page
+        // asks `upload-info` first).
+        let left = req.length.saturating_sub(req.body.len());
+        if !read && left > 0 && left <= DRAIN_MAX {
+            let mut sink = vec![0u8; 16 * 1024];
+            let mut left = left;
+            while left > 0 {
+                match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut sink[..left.min(16 * 1024)])).await
+                {
+                    Ok(Ok(n)) if n > 0 => left -= n,
+                    _ => break,
+                }
+            }
+        }
+        return write_response(&mut stream, &r).await;
+    }
     // The one answer that is not a single response: a pane's screen, sent
     // again each time it changes, for as long as the phone keeps looking.
     if req.method == "GET" && req.path == "/api/watch" {
@@ -1039,6 +1073,22 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
         }
+        // Where a file sent for this pane would go and how big it may be,
+        // before it is sent; why not, for another machine's pane.
+        (true, "/api/upload-info") => {
+            let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
+                return Response::text(400, "pane: %N");
+            };
+            if state.read_only {
+                return Response::text(403, "read-only: nothing is written from here");
+            }
+            match upload_place(state, pane).await {
+                Ok((dir, max)) => {
+                    Response::json(format!("{{\"dir\":{},\"max\":{max}}}", json_str(&dir.to_string_lossy())))
+                }
+                Err(refused) => refused,
+            }
+        }
         (true, "/api/status") => {
             // A session's status line as the terminal draws it (`status-line
             // -J`): its parts, their colours, each window's label and pane.
@@ -1333,6 +1383,228 @@ fn is_pane_id(p: &str) -> bool {
     p.len() > 1 && p.starts_with('%') && p[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
+/// How long an upload may go without a byte before it counts as cut short.
+const UPLOAD_IDLE: Duration = Duration::from_secs(60);
+
+/// The most of a refused upload's body read (and dropped) before the
+/// answer, so that the answer gets through.
+const DRAIN_MAX: usize = 1024 * 1024;
+
+/// A file's name as it may be written here: its last part only (`/` and
+/// `\` both separate), no control characters nor those Windows refuses, no
+/// dots or spaces at its end; a name Windows keeps for a device (`CON`,
+/// `nul.txt`) with `_` before it. None for no name left (`..`, empty).
+fn upload_name(raw: &str) -> Option<String> {
+    let last = raw.rsplit(['/', '\\']).next().unwrap_or_default().trim();
+    if last.is_empty() || last.chars().all(|c| c == '.') {
+        return None;
+    }
+    let mut name = crate::histlog::safe_name(last);
+    if name.chars().all(|c| c == '_' || c == '.') {
+        return None;
+    }
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    if device {
+        name.insert(0, '_');
+    }
+    // A name every file system takes (Linux: 255 bytes; ` (12)` may come):
+    // 200 bytes at most, cut at a character, its extension kept when short.
+    const MOST: usize = 200;
+    if name.len() > MOST {
+        let ext = name.rfind('.').map(|i| &name[i..]).filter(|e| e.len() <= 16).unwrap_or("");
+        let mut stem = String::new();
+        for c in name[..name.len() - ext.len()].chars() {
+            if stem.len() + c.len_utf8() + ext.len() > MOST {
+                break;
+            }
+            stem.push(c);
+        }
+        name = format!("{stem}{ext}");
+    }
+    Some(name)
+}
+
+/// The names to try for `name`, the first free one taken: `report.pdf`,
+/// then `report (1).pdf`, `report (2).pdf`…
+fn upload_names(name: &str) -> impl Iterator<Item = String> + '_ {
+    // The extension: after the last dot, not a leading one (`.env` has none).
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    std::iter::once(name.to_string()).chain((1..).map(move |n| format!("{stem} ({n}){ext}")))
+}
+
+/// Where a pane's uploads go: `web-upload-dir` under its directory (or as
+/// it is, when absolute), and how big one may be (`web-upload-max`). A
+/// refusal for a pane of another machine, or one whose directory is not
+/// known.
+async fn upload_place(state: &State, pane: &str) -> Result<(std::path::PathBuf, u64), Response> {
+    let s = state.socket.as_str();
+    let ask_pane = ["display-message", "-p", "-t", pane, "#{pane_current_path}\t#{pane_machine}"];
+    let ask_dir = ["show-options", "-gv", "web-upload-dir"];
+    let ask_max = ["show-options", "-gv", "web-upload-max"];
+    let (pane_info, dir, max) = tokio::join!(
+        crate::client::query(s, &ask_pane),
+        crate::client::query(s, &ask_dir),
+        crate::client::query(s, &ask_max),
+    );
+    let pane_info = match pane_info {
+        Ok((0, out, _)) => out,
+        Ok((_, _, err)) => return Err(Response::text(404, err.trim())),
+        Err(e) => return Err(Response::text(500, &format!("{e:#}"))),
+    };
+    let mut fields = pane_info.trim_end_matches(['\r', '\n']).split('\t');
+    let (cwd, machine) = (fields.next().unwrap_or_default(), fields.next().unwrap_or_default());
+    let dir = match dir {
+        Ok((0, out, _)) => out,
+        _ => String::new(),
+    };
+    let max = match max {
+        Ok((0, out, _)) => out,
+        _ => String::new(),
+    };
+    upload_dir(pane, cwd, machine, &dir, &max).map_err(|(status, why)| Response::text(status, &why))
+}
+
+/// Where `pane`'s uploads go, from its directory (`cwd`), the machine it is
+/// on (`machine`: empty for this one), `web-upload-dir` and
+/// `web-upload-max` as `show-options` gives them (empty: their defaults,
+/// `uploads` and 2G). A refusal (its status and words) for another
+/// machine's pane, or a relative folder under a directory not known.
+fn upload_dir(
+    pane: &str,
+    cwd: &str,
+    machine: &str,
+    dir: &str,
+    max: &str,
+) -> Result<(std::path::PathBuf, u64), (u16, String)> {
+    if !machine.is_empty() {
+        return Err((400, format!("{pane} is a pane of {machine}: a file is written only to this machine's")));
+    }
+    let dir = if dir.trim().is_empty() { "uploads".to_string() } else { crate::server::expand_home(dir.trim()) };
+    let max = crate::config::size_bytes(max.trim()).filter(|m| *m > 0).unwrap_or(2 << 30);
+    let dir = std::path::PathBuf::from(dir);
+    if dir.is_absolute() {
+        return Ok((dir, max));
+    }
+    if cwd.is_empty() {
+        return Err((400, format!("{pane}: its directory is not known (web-upload-dir is relative)")));
+    }
+    Ok((std::path::Path::new(cwd).join(dir), max))
+}
+
+/// `POST /api/upload?pane=%N&name=…`: the body a file, written under the
+/// pane's `web-upload-dir`, never over another (`name (1).ext`), read as
+/// it is written; refused on a read-only page, past `web-upload-max`
+/// (before a byte is read), for another machine's pane. Cut short: what
+/// was written goes. The server says it on the status line.
+async fn upload(stream: &mut TcpStream, req: &Request, peer: IpAddr, state: &State) -> (Response, bool) {
+    let mut read = false;
+    let r = upload_into(stream, req, peer, state, &mut read).await;
+    (r, read)
+}
+
+/// [`upload`]'s work; `read` set once its body is being read.
+async fn upload_into(stream: &mut TcpStream, req: &Request, peer: IpAddr, state: &State, read: &mut bool) -> Response {
+    if let Some(refused) = check_key(req, peer, state) {
+        return refused;
+    }
+    if state.read_only {
+        return Response::text(403, "read-only: nothing is written from here");
+    }
+    // Its length said (a body sent in chunks has none): else an empty file
+    // would stand for whatever was sent.
+    if !req.sized {
+        return Response::text(411, "Content-Length: a file is sent with its length");
+    }
+    let Some(pane) = req.param("pane").filter(|p| is_pane_id(p)) else {
+        return Response::text(400, "pane: %N");
+    };
+    let Some(name) = req.param("name").and_then(upload_name) else {
+        return Response::text(400, "name: a file's name");
+    };
+    let (dir, max) = match upload_place(state, pane).await {
+        Ok(p) => p,
+        Err(refused) => return refused,
+    };
+    if req.length as u64 > max {
+        return Response::text(
+            413,
+            &format!(
+                "{} is more than web-upload-max ({})",
+                crate::sysinfo::human_bytes(req.length as u64),
+                crate::sysinfo::human_bytes(max)
+            ),
+        );
+    }
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return Response::text(500, &format!("{}: {e}", dir.display()));
+    }
+    // The first free name, made new (never one there, even one another
+    // upload has just taken).
+    let mut taken = None;
+    for candidate in upload_names(&name).take(1000) {
+        let path = dir.join(&candidate);
+        match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&path).await {
+            Ok(f) => {
+                taken = Some((path, candidate, f));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Response::text(500, &format!("{}: {e}", path.display())),
+        }
+    }
+    let Some((path, written_as, mut file)) = taken else {
+        return Response::text(409, &format!("{name}: no free name for it in {}", dir.display()));
+    };
+    *read = true;
+    let wrote = async {
+        use tokio::io::AsyncWriteExt;
+        let first = req.body.len().min(req.length);
+        file.write_all(&req.body[..first]).await?;
+        let mut left = req.length - first;
+        let mut buf = vec![0u8; 64 * 1024];
+        while left > 0 {
+            let want = left.min(buf.len());
+            let n = match tokio::time::timeout(UPLOAD_IDLE, stream.read(&mut buf[..want])).await {
+                Ok(r) => r?,
+                Err(_) => anyhow::bail!("nothing came for {} s", UPLOAD_IDLE.as_secs()),
+            };
+            if n == 0 {
+                anyhow::bail!("cut short: {} of {} bytes came", req.length - left, req.length);
+            }
+            file.write_all(&buf[..n]).await?;
+            left -= n;
+        }
+        file.flush().await?;
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(e) = wrote {
+        drop(file);
+        let _ = tokio::fs::remove_file(&path).await;
+        return Response::text(400, &format!("{e:#}"));
+    }
+    drop(file);
+    let shown = path.to_string_lossy().into_owned();
+    let _ = crate::client::query(
+        &state.socket,
+        &["web-uploaded", pane, &shown, &req.length.to_string(), &peer.to_string()],
+    )
+    .await;
+    Response::json(format!(
+        "{{\"path\":{},\"name\":{},\"bytes\":{}}}",
+        json_str(&shown),
+        json_str(&written_as),
+        req.length
+    ))
+}
+
 /// A button's key: one of the named keys, or Ctrl with a letter (`C-c`).
 fn is_named_key(k: &str) -> bool {
     // Ctrl with a letter, Alt with a letter or digit (the page's Ctrl and
@@ -1493,6 +1765,8 @@ mod tests {
             gzip: false,
             range: None,
             body: Vec::new(),
+            length: 0,
+            sized: false,
         }
     }
 
@@ -1573,6 +1847,78 @@ mod tests {
         assert!(is_named_key("Enter") && is_named_key("BTab") && is_named_key("C-c"));
         assert!(!is_named_key("-X") && !is_named_key("C-") && !is_named_key("C-cc") && !is_named_key("kill-server"));
         assert_eq!(json_str("a\"b\\c\nd\u{1}"), r#""a\"b\\c\nd\u0001""#);
+    }
+
+    /// A file sent in (`POST /api/upload`): its head read, its body not
+    /// (only what came with the head), its length kept, past the 64 KB a
+    /// request may otherwise hold; a GET of `/api/upload-info` is a request
+    /// like any other.
+    #[tokio::test]
+    async fn an_uploads_body_is_left_to_read_as_it_is_written() {
+        let raw = b"POST /api/upload?pane=%252&name=a.bin HTTP/1.1\r\nContent-Length: 1000000\r\nX-Keepane-Key: k\r\n\r\nfirst";
+        let r = read_request(&mut &raw[..]).await.unwrap().unwrap();
+        assert_eq!((r.path.as_str(), r.param("name"), r.length), ("/api/upload", Some("a.bin"), 1_000_000));
+        assert_eq!(r.body, b"first", "only what came with the head");
+        let small =
+            read_request(&mut &b"POST /api/send HTTP/1.1\r\nContent-Length: 2\r\n\r\nhi"[..]).await.unwrap().unwrap();
+        assert_eq!((small.body.as_slice(), small.length), (&b"hi"[..], 0));
+        let info = format!("POST /api/upload-info HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1);
+        assert!(read_request(&mut info.as_bytes()).await.is_err(), "not an upload: bounded");
+    }
+
+    /// What a sent file may be called here: its last part, safe on Windows,
+    /// never a device's name nor nothing; and the names tried when it is
+    /// taken.
+    #[test]
+    fn an_uploaded_file_gets_a_safe_name_never_over_another() {
+        for (raw, want) in [
+            ("report.pdf", Some("report.pdf")),
+            (r"C:\Users\x\photo.jpg", Some("photo.jpg")),
+            ("../../etc/passwd", Some("passwd")),
+            ("a:b*c?.txt", Some("a_b_c_.txt")),
+            ("notes. ", Some("notes")),
+            ("CON", Some("_CON")),
+            ("nul.txt", Some("_nul.txt")),
+            ("com1.log", Some("_com1.log")),
+            ("console.txt", Some("console.txt")),
+            ("中文 文件.md", Some("中文 文件.md")),
+            ("..", None),
+            ("dir/", None),
+            ("  ", None),
+            ("\u{1}\u{2}", None),
+        ] {
+            assert_eq!(upload_name(raw).as_deref(), want, "{raw:?}");
+        }
+        // Too long for a file system: 200 bytes at most, cut at a
+        // character, the extension kept.
+        let cut = upload_name(&format!("{}.pdf", "长".repeat(300))).unwrap();
+        assert_eq!(cut, format!("{}.pdf", "长".repeat(65)), "65 × 3 bytes + 4");
+        assert_eq!(upload_name(&"x".repeat(400)).unwrap(), "x".repeat(200));
+        assert_eq!(upload_name(&format!("{}.pdf", "a".repeat(199))).unwrap().len(), 200);
+        let tries: Vec<String> = upload_names("report.pdf").take(3).collect();
+        assert_eq!(tries, ["report.pdf", "report (1).pdf", "report (2).pdf"]);
+        let tries: Vec<String> = upload_names(".env").take(2).collect();
+        assert_eq!(tries, [".env", ".env (1)"]);
+        let tries: Vec<String> = upload_names("archive.tar.gz").take(2).collect();
+        assert_eq!(tries, ["archive.tar.gz", "archive.tar (1).gz"]);
+    }
+
+    /// Where a pane's uploads go: `uploads` under its directory unless told,
+    /// an absolute folder as it is (its directory then not needed), the
+    /// limit as shown or 2G; another machine's pane, or a relative folder
+    /// with no directory known, refused.
+    #[test]
+    fn a_panes_uploads_go_under_its_directory_and_never_to_another_machine() {
+        let here = std::env::temp_dir();
+        let abs = here.join("keepane-in").to_string_lossy().into_owned();
+        let cwd = here.join("proj").to_string_lossy().into_owned();
+        assert_eq!(upload_dir("%1", &cwd, "", "", ""), Ok((here.join("proj").join("uploads"), 2 << 30)));
+        assert_eq!(upload_dir("%1", &cwd, "", "in", "300M\n"), Ok((here.join("proj").join("in"), 300 << 20)));
+        assert_eq!(upload_dir("%1", "", "", &abs, "1G"), Ok((here.join("keepane-in"), 1 << 30)));
+        let (status, why) = upload_dir("%1", &cwd, "10.0.0.2:7681", "", "").unwrap_err();
+        assert!(status == 400 && why.contains("pane of 10.0.0.2:7681"), "{why}");
+        let (status, why) = upload_dir("%1", "", "", "uploads", "").unwrap_err();
+        assert!(status == 400 && why.contains("directory is not known"), "{why}");
     }
 
     #[tokio::test]

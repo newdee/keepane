@@ -46,6 +46,7 @@ import { draftOf, keepDraft } from "../draft";
 import { ContextMenu, type MenuAt } from "./ContextMenu";
 import { ConfirmClose, History, type Sent } from "./Sheets";
 import { StatusBar, StatusFit, StatusPanel } from "./StatusBar";
+import { useUploads } from "./Upload";
 
 // Buttons: what they show, what they send (a named key, `=` text, `@` the
 // page's own: Ctrl, Alt). The usual ones, then the rest.
@@ -857,6 +858,8 @@ function Composer({
   const timer = useRef<number | undefined>(undefined);
   // Ctrl, Alt, Shift held for the next key (button or typed): their letters.
   const [held, setHeld] = useState("");
+  // Files from this device into the pane's folder.
+  const uploads = useUploads(id);
   const [more, setMore] = useStored<boolean | number>("keepane-more-keys", false);
   const [sent, setSentState] = useStored<Sent[]>("keepane-sent", []);
   const [histOpen, setHistOpen] = useState(false);
@@ -1028,12 +1031,14 @@ function Composer({
         <div className="flex shrink-0 gap-1">{KEYS.filter(([, k]) => PINNED.includes(k)).map(keyBtn)}</div>
       </div>
       {more ? <div className="flex flex-wrap gap-1 pb-1.5">{MORE_KEYS.map(keyBtn)}</div> : null}
+      {uploads.panel}
       <div className="flex items-end gap-1.5">
         {exit}
         <Button isIconOnly variant="ghost" size="sm" className="mb-0.5 pointer-coarse:size-11" aria-label={t("Sent before", "发过的命令")}
           onPress={() => !bounced("hist") && setHistOpen(true)}>
           <HistoryIcon className="size-4.5" />
         </Button>
+        {uploads.button}
         <Button isIconOnly variant={more ? "secondary" : "ghost"} size="sm" className="mb-0.5 pointer-coarse:size-11" aria-label={t("More keys", "更多按键")}
           onPress={() => setMore(!more)}>
           <Ellipsis className="size-4.5" />

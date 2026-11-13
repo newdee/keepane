@@ -568,6 +568,8 @@ keepane web
 
 在 shell 或 ai 模式的 pane 里，输入框旁边的信封按钮让发送变成发消息：内容进这个 pane 的收件箱，发送者是 user，和别的消息一样排队（同 `send-message`）。⋯ 菜单和卡片的菜单可以设置 pane 怎么处理收到的消息：normal 留着等，shell 在提示符下执行，ai 交给 agent。视图菜单里还能在输出里查找（含查找内容的行会标出来，用 ↑ ↓ 切换）、复制屏幕文字、调整字号（也可以双指缩放屏幕，每台设备各自记住）。顶部的 + 在你的主目录开一个新 session。程序已经退出的 pane（开了 `remain-on-exit`）会写出退出码，点“重新运行”再启动一次。全屏程序（默认设置下的 Codex、pi，还有 vim）不留历史：在它的屏幕上上下滑动，会像电脑上的滚轮一样让它自己滚动，pane 标题栏会注明。
 
+输入框旁边的 📎 把手机上的文件传到这个 pane 的文件夹：默认是 pane 当前目录下的 `uploads`（没有就新建），也可以 `set -g web-upload-dir <文件夹>`（相对路径放在 pane 的目录下，绝对路径就是所有 pane 都放那里）。可以一次选几个文件，逐个上传并显示进度，传完显示完整路径，旁边有复制按钮（不会往 pane 里打字）。同名文件不会被覆盖，新的那个存成 `report (1).pdf`。单个文件最大 `web-upload-max`（默认 2G）；每收到一个，状态栏都会说一声，并写明来自哪个地址。用 `--read-only` 启动的页面没有这个按钮；从别的机器复制过来的 pane 不能上传（文件会落到这台机器上）。和页面本身一样走普通 HTTP：在不信任的网络里请用 Tailscale 地址。
+
 同一个页面也能在电脑浏览器里用：宽屏时左边是 pane 列表，右边是 pane。左上角的按钮把列表收成一条窄栏（每个 pane 一个按钮），再按一次展开；触屏上在列表上左滑收起，在窄栏上右滑展开。右上角的开关切换页面的日间和夜间：毛玻璃滑块划过去，里面的光斑聚成太阳或月亮。旁边的菜单里还有“跟随系统”（每台设备各自记住），也能选终端主题（`theme`，见“主题”一节）：终端主题是电脑上的，电脑的终端会跟着变，所有页面里的 pane 也都按它显示。同一个菜单还能选页面的语言：跟随系统（系统是中文就显示中文，否则英文）、中文或英文。开关左边显示到电脑的往返时间（如 `23 ms`，100 ms 以下绿点，300 ms 以下黄点，再高或连不上是红点和“离线”），pane 工具栏里的全屏按钮只留下屏幕和输入框，浏览器支持时铺满整个屏幕（iPhone 上铺满整个页面）；输入框旁边的按钮或浏览器自己的退出全屏都能回来，旁边的列表按钮可以不退出全屏直接换到别的 pane。（页面由 `web/` 构建，用 React 和 HeroUI，打包成一个文件编进 keepane。）
 
 <p align="center">
@@ -863,6 +865,8 @@ set -g animation off              # 不要焦点框飞过去的动画（animatio
 set -g clock-mode-animation bars  # 时钟下方：pulse、matrix、bars、fire、starfield、sharks、bonsai、sea、cat、dino、penguins、synthwave、fireworks、random（默认）、cycle 或 off
 set -g clock-mode-look dots       # 用 dots、blocks 或 binary 字符画；plain（默认）用动画自己的字符
 set -g clock-mode-zones "Asia/Shanghai,America/Los_Angeles"  # 时钟日期下方显示其他地方的时间（IANA 名称，也可以只写城市：tokyo）
+set -g web-upload-dir uploads     # 手机网页 📎 上传的文件放哪里：pane 目录下（写绝对路径就固定放那里）
+set -g web-upload-max 2G          # 单个文件最大多少（字节，或带 K、M、G）
 
 bind | split-window -h
 bind - split-window -v

@@ -200,6 +200,11 @@ pub struct Options {
     pub link_push_limit: u64,
     /// The most a `send-agents` pack may be, compressed (sent and taken in).
     pub link_agents_limit: u64,
+    /// Where a file sent from the phone page goes (`web-upload-dir`): under
+    /// the pane's directory when relative.
+    pub web_upload_dir: String,
+    /// The largest file the phone page takes (`web-upload-max`).
+    pub web_upload_max: u64,
     /// Keep what happens to messages and panes in a JSON Lines file a day.
     pub event_log: bool,
     /// Days the event log keeps.
@@ -381,23 +386,32 @@ pub fn parse_zones(value: &str) -> Result<Vec<chrono_tz::Tz>, String> {
     Ok(zones)
 }
 
-/// A size in bytes, written plainly or with K or M.
+/// A size in bytes, written plainly or with K, M or G.
 fn parse_size(name: &str, value: &str, lo: u64, hi: u64) -> Result<u64, String> {
     let v = value.trim();
     let (digits, mult) = match v.chars().last().map(|c| c.to_ascii_uppercase()) {
         Some('K') => (&v[..v.len() - 1], 1024),
         Some('M') => (&v[..v.len() - 1], 1024 * 1024),
+        Some('G') => (&v[..v.len() - 1], 1024 * 1024 * 1024),
         _ => (v, 1),
     };
     match digits.parse::<u64>().ok().and_then(|n| n.checked_mul(mult)) {
         Some(n) if (lo..=hi).contains(&n) => Ok(n),
-        _ => Err(format!("bad {name} '{value}' (bytes, K or M; {} to {})", size_name(lo), size_name(hi))),
+        _ => Err(format!("bad {name} '{value}' (bytes, K, M or G; {} to {})", size_name(lo), size_name(hi))),
     }
+}
+
+/// A size as `show-options` gives it (`2G`, `300M`, bytes), in bytes.
+pub fn size_bytes(value: &str) -> Option<u64> {
+    parse_size("", value, 0, u64::MAX).ok()
 }
 
 /// A size the way `parse_size` reads it back, in the largest unit it fits.
 fn size_name(n: u64) -> String {
-    if n >= 1024 * 1024 && n.is_multiple_of(1024 * 1024) {
+    const G: u64 = 1024 * 1024 * 1024;
+    if n >= G && n.is_multiple_of(G) {
+        format!("{}G", n / G)
+    } else if n >= 1024 * 1024 && n.is_multiple_of(1024 * 1024) {
         format!("{}M", n / (1024 * 1024))
     } else if n >= 1024 && n.is_multiple_of(1024) {
         format!("{}K", n / 1024)
@@ -503,6 +517,8 @@ pub const SHOWABLE: &[&str] = &[
     "link-clone-dir",
     "link-push-limit",
     "link-agents-limit",
+    "web-upload-dir",
+    "web-upload-max",
     "hint-open",
     "theme",
     "window-style",
@@ -615,6 +631,8 @@ impl Default for Options {
             link_clone_dir: "~/keepane".into(),
             link_push_limit: 200 * 1024 * 1024,
             link_agents_limit: 1024 * 1024 * 1024,
+            web_upload_dir: "uploads".into(),
+            web_upload_max: 2 * 1024 * 1024 * 1024,
             event_log: true,
             event_log_days: 30,
             event_log_max: 20 * 1024 * 1024,
@@ -806,6 +824,8 @@ pub const KNOWN: &[&str] = &[
     "update-check",
     "visual-activity",
     "visual-bell",
+    "web-upload-dir",
+    "web-upload-max",
     "window-size",
     "window-status-current-format",
     "window-status-format",
@@ -1150,6 +1170,14 @@ impl Options {
             "link-agents-limit" => {
                 self.link_agents_limit = parse_size(name, value, 1024 * 1024, 16 * 1024 * 1024 * 1024)?
             }
+            "web-upload-dir" => {
+                let v = value.trim();
+                if v.is_empty() {
+                    return Err(format!("{name}: a folder (relative: under the pane's directory)"));
+                }
+                self.web_upload_dir = v.to_string();
+            }
+            "web-upload-max" => self.web_upload_max = parse_size(name, value, 1024, 64 * 1024 * 1024 * 1024)?,
             "done-webhook" => {
                 let v = value.trim();
                 let ok = v.is_empty()
@@ -1331,6 +1359,8 @@ impl Options {
             "link-clone-dir" => self.link_clone_dir.clone(),
             "link-push-limit" => size_name(self.link_push_limit),
             "link-agents-limit" => size_name(self.link_agents_limit),
+            "web-upload-dir" => self.web_upload_dir.clone(),
+            "web-upload-max" => size_name(self.web_upload_max),
             "done-webhook-format" => self.done_webhook_format.clone(),
             // A secret is not shown: only whether it is set.
             "done-webhook-secret" => secret_shown(&self.done_webhook_secret),
@@ -1420,6 +1450,30 @@ pub use crate::platform::shell::{PROMPT_HOOK, which, with_shell_integration};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sizes in bytes, K, M or G (as the docs write them), shown back the
+    /// same way; where an upload goes and how big it may be.
+    #[test]
+    fn sizes_take_k_m_and_g_and_uploads_have_a_folder_and_a_limit() {
+        let mut o = Options::default();
+        // The docs said `link-agents-limit` (default 1G): G is read and shown.
+        assert_eq!(o.get("link-agents-limit").as_deref(), Some("1G"));
+        o.set("link-agents-limit", "2g").unwrap();
+        assert_eq!(o.link_agents_limit, 2 * 1024 * 1024 * 1024);
+        o.set("link-push-limit", "300M").unwrap();
+        assert_eq!(o.get("link-push-limit").as_deref(), Some("300M"));
+        assert!(o.set("link-agents-limit", "1T").unwrap_err().contains("K, M or G"));
+        // Uploads from the phone page: `uploads` under the pane, 2G at most.
+        assert_eq!(
+            (o.get("web-upload-dir").as_deref(), o.get("web-upload-max").as_deref()),
+            (Some("uploads"), Some("2G"))
+        );
+        o.set("web-upload-dir", r"C:\in").unwrap();
+        o.set("web-upload-max", "512K").unwrap();
+        assert_eq!((o.web_upload_dir.as_str(), o.web_upload_max), (r"C:\in", 512 * 1024));
+        assert!(o.set("web-upload-dir", "  ").is_err());
+        assert!(o.set("web-upload-max", "1").is_err(), "below 1K");
+    }
 
     /// A server that starts brings back what the last one had (its saved
     /// sessions, its shares, the phones' page) unless told not to.

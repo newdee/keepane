@@ -200,6 +200,22 @@ impl Server {
     /// (with the sessions restored: `keepane startup`, `restart-server`).
     /// What cannot be served yet (an address not up so soon after logon) is
     /// tried again every `LOOK_AGAIN`, until served or `web-stop`.
+    /// `web-uploaded`: the phone page wrote a file sent for a pane. Said on
+    /// the status line and kept in show-messages: a file put on this
+    /// machine should not go unnoticed.
+    pub(super) fn web_uploaded(&mut self, pane: &str, path: &str, bytes: u64, peer: &str) -> Outcome {
+        let p = std::path::Path::new(path);
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string());
+        let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+        let text = format!("{pane}: received {name} ({}) in {dir}, from {peer}", crate::sysinfo::human_bytes(bytes));
+        self.note_message(&text);
+        let now = std::time::Instant::now();
+        for c in self.clients.values_mut().filter(|c| c.session.is_some()) {
+            c.message = Some((text.clone(), now));
+        }
+        Outcome::Ok
+    }
+
     pub(super) fn web_resume(&mut self) -> Outcome {
         if self.web.is_some() {
             return Outcome::Text(self.web_status());

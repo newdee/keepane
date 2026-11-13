@@ -712,6 +712,14 @@ pub enum Cmd {
         peer: String,
         note: String,
     },
+    /// `web-uploaded pane path bytes peer`: the phone page wrote a file
+    /// `peer` sent for `pane` (said on the status line).
+    WebUploaded {
+        pane: String,
+        path: String,
+        bytes: u64,
+        peer: String,
+    },
     /// `web-fit -t pane -x cols -y rows | -u`: size the pane's session to a
     /// phone, the pane zoomed, until undone or no phone shows the pane
     /// (the phone page's fit button).
@@ -1865,6 +1873,9 @@ impl fmt::Display for Cmd {
             Cmd::Share(ShareWhat::Stop(None)) => f.write_str("share stop --all"),
             Cmd::ShareOpen { token, peer } => write!(f, "web-share-open {token} {}", quote(peer)),
             Cmd::ShareSent { token, peer, note } => write!(f, "web-share-sent {token} {} {}", quote(peer), quote(note)),
+            Cmd::WebUploaded { pane, path, bytes, peer } => {
+                write!(f, "web-uploaded {pane} {} {bytes} {}", quote(path), quote(peer))
+            }
             Cmd::WebFit { target, size } => {
                 f.write_str("web-fit")?;
                 fmt_target(f, target)?;
@@ -2656,6 +2667,7 @@ pub const COMMANDS: &[&str] = &[
     "share",
     "web-share-open",
     "web-share-sent",
+    "web-uploaded",
 ];
 
 /// The flags each command takes, for completion (the shell's and the `:`
@@ -2806,6 +2818,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("share", &["-l", "--for", "--once", "--all"]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
+    ("web-uploaded", &[]),
     ("link-add", &[]),
     ("link-allow", &["--full", "--lan", "--none"]),
     ("link-share", &[]),
@@ -4386,6 +4399,15 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             };
             let (token, peer) = (token.to_string(), peer.to_string());
             if n == "web-share-open" { Cmd::ShareOpen { token, peer } } else { Cmd::ShareSent { token, peer, note } }
+        }
+        "web-uploaded" => {
+            let (pane, path, bytes, peer) = (a.next(), a.next(), a.next(), a.next());
+            a.none_left(n)?;
+            let (Some(pane), Some(path), Some(bytes), Some(peer)) = (pane, path, bytes, peer) else {
+                return Err(format!("{n}: a pane, the file's path, its size and the address that sent it"));
+            };
+            let bytes = bytes.parse().map_err(|_| format!("{n}: '{bytes}' is not a size in bytes"))?;
+            Cmd::WebUploaded { pane: pane.into(), path: path.into(), bytes, peer: peer.into() }
         }
         "web-status" | "web-stop" | "web-resume" => {
             a.none_left(n)?;

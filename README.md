@@ -1244,6 +1244,18 @@ or pi as they come, vim) keeps no history: a drag up or down on its screen
 scrolls it instead, as the wheel does on the computer, and the pane's bar says
 so.
 
+The 📎 beside the box sends files from the phone into the pane's folder:
+`uploads` under the pane's directory (made when it is not there), or
+`set -g web-upload-dir <folder>` (relative: under the pane's directory;
+absolute: there, for every pane). Pick one or more; each goes with its
+progress, then its full path shows with a button to copy it (nothing is
+typed into the pane). A name already there is not written over: the file
+becomes `report (1).pdf`. One file may be up to `web-upload-max` (default
+2G); the status line says each one that came, and from where. A page
+started `--read-only` has no button, and a pane copied from another
+machine takes none (it would go to this one). Like the page, plain HTTP:
+on a network you do not trust, use the Tailscale address.
+
 The same page works in a computer's browser: on a wide screen the list stays
 on the left and the pane fills the right. The button at the top left folds the
 list down to a strip of one button per pane (and back); on a touch screen a
@@ -1847,6 +1859,8 @@ set -g clock-mode-look dots       # drawn in dots, blocks or binary; plain (the 
 set -g clock-mode-zones "Asia/Shanghai,America/Los_Angeles"  # other places' time under the clock's date (IANA names, or a city alone: tokyo)
 set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
 set -g git-command C:\Tools\git\cmd\git.exe  # the git to run for the panes' repositories (default: the one found)
+set -g web-upload-dir uploads     # where the phone page's 📎 puts files: under the pane's directory (absolute: there)
+set -g web-upload-max 2G          # the largest file it takes (bytes, K, M or G)
 
 bind -r h select-pane -L          # -r: press h h h after one prefix
 bind -r j select-pane -D

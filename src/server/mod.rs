@@ -6604,6 +6604,7 @@ impl Server {
             Cmd::Share(what) => self.exec_share(what, cid),
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
             Cmd::ShareSent { token, peer, note } => self.share_sent(&token, &peer, &note),
+            Cmd::WebUploaded { pane, path, bytes, peer } => self.web_uploaded(&pane, &path, bytes, &peer),
             Cmd::WebFit { target, size } => self.web_fit(cid, target.as_ref(), size),
             Cmd::WebTails { lines } => Outcome::Text(self.web_tails(lines)),
             c @ (Cmd::FeishuStatus | Cmd::FeishuAllow { .. } | Cmd::FeishuRemove { .. }) => self.exec_feishu(c, cid),
@@ -10667,7 +10668,7 @@ fn unix_seconds(i: Instant) -> i64 {
 }
 
 /// Expand a leading `~` or `~/` to the user's home directory.
-fn expand_home(path: &str) -> String {
+pub(crate) fn expand_home(path: &str) -> String {
     if (path == "~" || path.starts_with("~/") || path.starts_with("~\\"))
         && let Some(home) = dirs::home_dir()
     {
