@@ -312,7 +312,8 @@ mod tests {
         let opening = open(&a.x25519_secret(), &msg1).unwrap();
         assert_eq!(opening.remote, x25519_public(&b.public()).unwrap(), "who called");
         assert_eq!(opening.hello, hello);
-        let (msg2, keys_a) = opening.answer(&Answer { version: "2.0".into(), refused: None, epoch: 7 }).unwrap();
+        let (msg2, keys_a) =
+            opening.answer(&Answer { version: "2.0".into(), refused: None, epoch: 7, commands: true }).unwrap();
         let (answer, keys_b) = calling.read(&msg2).unwrap();
         assert_eq!(answer.version, "2.0");
         // Messages both ways, one bigger than a frame.

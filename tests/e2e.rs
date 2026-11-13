@@ -7753,12 +7753,38 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     assert_eq!(a.cli(&["send-keys", "-t", &there, "echo typed-from-a", "Enter"]).await.0, 0);
     b.wait_capture("wb:0.0", "what the copy typed", |t| t.matches("typed-from-a").count() >= 2).await;
     same("typed-from-a").await;
-    // Its shape is that machine's to change; its size too: a client here
-    // of another size leaves it as it is there.
+    // What changes its shape is done there, asked from here: a split there
+    // (and here the eye goes to the new pane), a zoom, a kill.
+    let panes_b = async || b.cli(&["list-panes", "-t", "wb"]).await.1.lines().count();
     let (code, _, err) = a.cli(&["split-window", "-t", &format!("{addr_b}/wb")]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(panes_b().await, 2, "split there");
+    let new_there =
+        b.cli(&["display-message", "-p", "-t", "wb", "#{pane_id}"]).await.1.trim().trim_start_matches('%').to_string();
+    let looked_at = a.cli(&["display-message", "-p", "-t", &format!("{addr_b}/wb"), "#{pane_id}"]).await.1;
+    let shown = a.cli(&["display-message", "-p", "-t", &format!("{addr_b}/%{new_there}"), "#{pane_id}"]).await.1;
+    assert_eq!(looked_at.trim(), shown.trim(), "here the new pane is looked at");
+    let (code, _, err) = a.cli(&["resize-pane", "-Z", "-t", &format!("{addr_b}/%{new_there}")]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(b.cli(&["display-message", "-p", "-t", "wb", "#{window_zoomed_flag}"]).await.1.trim(), "1");
+    let (code, _, err) = a.cli(&["kill-pane", "-t", &format!("{addr_b}/%{new_there}")]).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(panes_b().await, 1, "killed there");
+    a.wait_for_cli("the copy back to one pane", &["list-panes", "-t", &format!("{addr_b}/wb")], |_, out| {
+        out.lines().count() == 1
+    })
+    .await;
+    // Failed there: said here. What would be this machine's doing stays
+    // refused, as does moving a pane between machines.
+    let (code, _, err) = a.cli(&["kill-pane", "-t", &format!("{addr_b}/%999")]).await;
+    assert!(code != 0 && err.contains("can't find pane"), "{err}");
+    let (code, _, err) = a.cli(&["respawn-pane", "-t", &there]).await;
+    assert!(code != 0 && err.contains("pane is still running"), "its answer there: {err}");
+    let (code, _, err) = a.cli(&["pipe-pane", "-t", &there, "cat"]).await;
     assert!(code != 0 && err.contains("only that machine can"), "{err}");
-    let (code, _, err) = a.cli(&["resize-pane", "-Z", "-t", &there]).await;
-    assert!(code != 0 && err.contains("only that machine can"), "{err}");
+    let (code, _, err) = a.cli(&["join-pane", "-s", "wa", "-t", &there]).await;
+    assert!(code != 0 && err.contains("between machines"), "{err}");
+    assert_eq!(panes_b().await, 1);
     // Every session but this machine's one killed: another machine's are not
     // this one's to kill.
     assert_eq!(a.cli(&["kill-session", "-a", "-t", "wa"]).await.0, 0);

@@ -48,11 +48,17 @@ pub struct Feed {
     /// What the machine typed into its copy of a pane (`link_proto::Input`):
     /// to the server, which puts it into the pane.
     pub input: Box<dyn Fn(u32, Vec<u8>) + Send + Sync>,
+    /// A command it sends about one of this machine's sessions
+    /// (`link_proto::Command`): to the server, which runs it if it is one
+    /// that changes a session's shape, and replies on this feed.
+    pub command: Box<dyn Fn(u64, String) + Send + Sync>,
 }
 
 pub enum FeedItem {
     Entry(journal::Entry),
     Snapshot(journal::Snapshot),
+    /// What became of one of its commands, after the changes it made.
+    Reply(crate::link_proto::Reply),
     /// The feed ends, and why.
     End(String),
 }
@@ -62,6 +68,7 @@ impl FeedItem {
         match self {
             FeedItem::Entry(e) => e.cost(),
             FeedItem::Snapshot(s) => s.panes.iter().map(|p| p.screen.len() + 64).sum::<usize>() + 256,
+            FeedItem::Reply(r) => r.text.len() + 32,
             FeedItem::End(_) => 0,
         }
     }
@@ -128,8 +135,12 @@ impl Server {
         let quiet = peer.is_some() && replayed.is_none();
         let refused = refused_here.or(replayed).or_else(|| may_stream(peer.as_ref(), ask.peer, &addr).err());
         let (since, epoch) = (opening.hello.since, opening.hello.epoch);
-        let answer =
-            Answer { version: env!("CARGO_PKG_VERSION").into(), refused: refused.clone(), epoch: self.journal.epoch };
+        let answer = Answer {
+            version: env!("CARGO_PKG_VERSION").into(),
+            refused: refused.clone(),
+            epoch: self.journal.epoch,
+            commands: true,
+        };
         let (msg2, keys) = match opening.answer(&answer) {
             Ok(a) => a,
             Err(e) => {
@@ -181,7 +192,11 @@ impl Server {
         let input = Box::new(move |pane, bytes| {
             let _ = events.send(super::Event::StreamInput(key.clone(), pane, bytes));
         });
-        let _ = ask.reply.send(StreamReply { msg2, open: Some((keys, Feed { rx, queued, input })) });
+        let (events, key) = (self.events.clone(), peer.key.clone());
+        let command = Box::new(move |id, line| {
+            let _ = events.send(super::Event::StreamCommand(key.clone(), id, line));
+        });
+        let _ = ask.reply.send(StreamReply { msg2, open: Some((keys, Feed { rx, queued, input, command })) });
     }
 
     /// Send every feed what changed since it was last sent to; end those
@@ -234,6 +249,38 @@ impl Server {
         }
     }
 
+    /// A command a machine fed sends about one of this machine's sessions
+    /// (`link_proto::Command`), while it is fed (it has all of this one):
+    /// run when it changes a session's shape and names this machine's own
+    /// places only (`mirrored::command_from_machine`); then, after the changes it
+    /// made, its reply on that machine's feed. Kept in the event log.
+    pub(super) fn stream_command(&mut self, key: &str, id: u64, line: &str) {
+        let Some(addr) = self.feeds.iter().find(|s| s.key == key && !s.tx.is_closed()).map(|s| s.addr.clone()) else {
+            return;
+        };
+        let (ok, text, pane) = match self.command_from_machine(line) {
+            Err(why) => (false, why, None),
+            Ok((cmd, sid)) => {
+                let (ok, text) = match self.exec(cmd, None) {
+                    super::Outcome::Error(e) => (false, e),
+                    super::Outcome::Text(t) => (true, t),
+                    _ => (true, String::new()),
+                };
+                let pane = self.session(sid).and_then(|s| s.window()).map(|w| w.active);
+                (ok, text, pane)
+            }
+        };
+        self.observe
+            .link("command", &format!(",\"addr\":{},\"key\":{},\"line\":{},\"ok\":{ok}", js(&addr), js(key), js(line)));
+        log::info!("link: {addr} ran `{line}`: {}", if ok { "done" } else { text.as_str() });
+        // Its changes first: the machine has them when it reads the reply.
+        self.journal_look();
+        self.stream_push();
+        let reply = crate::link_proto::Reply { id, ok, text, pane };
+        if let Some(sub) = self.feeds.iter().find(|s| s.key == key) {
+            sub.send(FeedItem::Reply(reply));
+        }
+    }
     /// A machine fed, for a test: its feed's other end.
     #[cfg(test)]
     pub(super) fn feed_for_test(&mut self, key: &str) -> mpsc::UnboundedReceiver<FeedItem> {

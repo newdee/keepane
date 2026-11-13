@@ -305,9 +305,12 @@ are sessions here, named `name@host:port`: attached to, looked at and
 typed into (the keys go to the pane there; while the connection is down
 they are let go and counted), named in commands as `host:port/name` and
 `host:port/%N` (its pane N); `#{pane_machine}` is that `host:port` in
-them. A split, a kill, a resize, a rename of one is refused: its shape
-is that machine's, and looking at it never resizes it there. They are
-not saved, and machines that copy this one do not see them.
+them. A split, a kill, a resize, a zoom or a rename of one (keys, a
+border dragged, a command) is sent to that machine, done there and shown
+here when done, the eye on a new pane (keepane 0.63 or later there); a
+pane never moves between machines, and pipe-pane, record and
+save-session of one are refused. Looking at it never resizes it there.
+They are not saved, and machines that copy this one do not see them.
 `show-mirror` (`[host:port] [-t pane] [-J]`) lists the copies, one copy's
 sessions, or a pane's screen in it.
 `trace-message` of a message sent there asks

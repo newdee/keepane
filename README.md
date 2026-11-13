@@ -1591,10 +1591,14 @@ this machine's keys, theme and copy mode; what is typed goes to the pane
 there (while the connection is down it is let go, and `show-mirror`
 counts it). `100.64.0.3:7681/work` names it in a command,
 `100.64.0.3:7681/%3` its pane 3, and `#{pane_machine}` is
-`100.64.0.3:7681` in it. Its shape is that machine's: a split, a kill or
-a resize is refused here, and looking at it never resizes it there. A
+`100.64.0.3:7681` in it. A split, a kill, a resize, a zoom or a rename
+of it (by its keys, the mouse on a border, or a command) is done there,
+by that machine, and shows here when done; a split puts the eye on the
+new pane. A pane never moves between machines, and piping, recording or
+saving it from here is refused. Looking at it never resizes it there. A
 terminal smaller than the session shows part of it, panned as for any
-session too big for it. It is not saved here, and the machines
+session too big for it. That machine needs keepane 0.63 or later to take
+these. It is not saved here, and the machines
 that copy this one do not see it.
 
 A pane of another machine opens live here: Enter on it in the chart of

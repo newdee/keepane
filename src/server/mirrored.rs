@@ -5,8 +5,10 @@
 //! there and each pane's model fed the bytes the pane there printed. They
 //! are attached to, looked at, switched between and typed into like any
 //! other. What changes their shape (a split, a kill, a resize) is that
-//! machine's to do, and looking at one from here never resizes it there:
-//! a client smaller than the session sees its top left part.
+//! machine's to do: asked for here, it is sent there and done by it
+//! (`mirror_route`, `link_feed::stream_command`). Looking at one from here
+//! never resizes it there: a client smaller than the session sees part of
+//! it.
 //!
 //! None of them is this machine's own: they are not saved, not told to the
 //! machines that copy this one, and a bare name never names them (`name`
@@ -347,56 +349,229 @@ impl Server {
             .map(|s| s.id)
     }
 
-    /// Why `cmd` may not run where it would: a session of another machine,
-    /// whose shape is that machine's to change (its windows, its panes, its
-    /// size, its names). Looking, choosing what to look at, copying out and
-    /// typing in are free. A command not named here changes no shape (a
-    /// new one that does is named here when it is made).
-    pub(super) fn mirror_refusal(&self, cmd: &Cmd, cid: Option<super::ClientId>) -> Option<String> {
-        let (targets, what): (Vec<Option<&Target>>, &str) = match cmd {
-            Cmd::KillSession { target, all_but: false } => (vec![target.as_ref()], "kill it"),
-            Cmd::RenameSession { target, .. } => (vec![target.as_ref()], "rename it"),
-            Cmd::NewWindow { target, .. } => (vec![target.as_ref()], "add a window to it"),
-            Cmd::KillWindow { target, .. } => (vec![target.as_ref()], "kill a window of it"),
-            Cmd::RenameWindow { target, .. } => (vec![target.as_ref()], "rename a window of it"),
-            Cmd::SwapWindow { src, dst, .. } => (vec![src.as_ref(), dst.as_ref()], "move its windows"),
-            Cmd::SplitWindow { target, .. } => (vec![target.as_ref()], "split a pane of it"),
-            Cmd::KillPane { target, .. } => (vec![target.as_ref()], "kill a pane of it"),
-            Cmd::PaneTitle { target, title: Some(_), .. } => (vec![target.as_ref()], "name a pane of it"),
-            Cmd::ResizeWindow { target, .. } => (vec![target.as_ref()], "resize it"),
-            Cmd::ResizePane { target, .. } => (vec![target.as_ref()], "resize or zoom a pane of it"),
-            Cmd::SwapPane { target, source, .. } => (vec![target.as_ref(), source.as_ref()], "move its panes"),
-            Cmd::SelectLayout { target, .. } => (vec![target.as_ref()], "lay out a window of it"),
-            Cmd::BreakPane { target, .. } => (vec![target.as_ref()], "move its panes"),
-            Cmd::JoinPane { src, dst, .. } => (vec![src.as_ref(), dst.as_ref()], "move its panes"),
-            Cmd::RotateWindow { target, .. } => (vec![target.as_ref()], "move its panes"),
-            Cmd::RespawnPane { target, .. } => (vec![target.as_ref()], "start a pane of it again"),
-            Cmd::PipePane { target, .. } => (vec![target.as_ref()], "pipe a pane of it"),
-            Cmd::Record { target, .. } => (vec![target.as_ref()], "record a pane of it"),
-            Cmd::SaveSession { target, all: false } => (vec![target.as_ref()], "save it"),
-            Cmd::SetWorkMode { target, .. } => (vec![target.as_ref()], "set a pane of it to work"),
-            Cmd::RenamePane { target, .. } => (vec![target.as_ref()], "name a pane of it"),
-            Cmd::SetCwd { target, .. } => (vec![target.as_ref()], "set the directory of a pane of it"),
-            Cmd::WebFit { target, .. } => (vec![target.as_ref()], "size it to a phone"),
-            _ => return None,
+    /// A command line another machine sent about one of this machine's
+    /// sessions (`link_feed::stream_command`), read: one that changes a
+    /// session's shape (`there_targets`), every place named and this
+    /// machine's own (never a third machine's copied here, nor one on
+    /// another machine). With the session it is about first.
+    pub(super) fn command_from_machine(&self, line: &str) -> Result<(Cmd, SessionId), String> {
+        let mut cmd = match crate::command::parse_line(line) {
+            Ok(Some(c)) => c,
+            Ok(None) => return Err("an empty command".into()),
+            Err(e) => return Err(e),
         };
-        for t in targets {
-            // One that names nothing is the command's to say.
-            let Ok(sid) = self.resolve_session(t, cid) else { continue };
-            if let Some(s) = self.session(sid)
-                && let Some(r) = &s.remote
-            {
-                return Some(format!(
-                    "{} is a session of {}: only that machine can {what} (attached there: `keepane link attach {} {}`)",
-                    s.name,
-                    r.addr,
-                    r.addr,
-                    s.name.strip_suffix(&format!("@{}", r.addr)).unwrap_or(&s.name)
-                ));
+        let first = first_target(&cmd).cloned();
+        let Some(targets) = there_targets(&mut cmd) else {
+            return Err(format!("not a command another machine runs here: {line}"));
+        };
+        for (t, level) in targets {
+            let Some(t) = t.as_ref() else {
+                if matches!(level, Level::Optional) {
+                    continue;
+                }
+                return Err(format!("{line}: every place is named"));
+            };
+            if t.remote.is_some() {
+                return Err(format!("{line}: names a place on another machine"));
+            }
+            let sid = self.resolve_session(Some(t), None)?;
+            if self.session(sid).is_some_and(|s| s.remote.is_some()) {
+                return Err(format!("{line}: names a session copied here from another machine"));
             }
         }
-        None
+        let sid = self.resolve_session(first.as_ref(), None)?;
+        Ok((cmd, sid))
     }
+    /// Where `cmd` runs when it is about a session of another machine copied
+    /// here: one that changes that session's shape (a split, a kill, a
+    /// resize, a rename) is sent to that machine and runs there
+    /// (`mirror_send`); one that would do something of this machine's to it
+    /// (pipe its output to a program here, save it here) is refused; one
+    /// that moves a pane between machines is refused. None: it is not about
+    /// such a session, or it only looks, chooses what to look at, copies
+    /// out or types in, and runs here as it is.
+    pub(super) fn mirror_route(&mut self, cmd: &Cmd, cid: Option<super::ClientId>) -> Option<super::Outcome> {
+        use super::Outcome;
+        if let Some((targets, what)) = refused_on_copy(cmd) {
+            for t in targets {
+                let Ok(sid) = self.resolve_session(t, cid) else { continue };
+                if let Some(s) = self.session(sid)
+                    && let Some(r) = &s.remote
+                {
+                    return Some(Outcome::Error(format!(
+                        "{} is a session of {}: only that machine can {what}",
+                        s.name, r.addr
+                    )));
+                }
+            }
+            return None;
+        }
+        // (Most commands are none of these: not copied to find out.)
+        if targets_of(cmd).is_empty() {
+            return None;
+        }
+        let mut there = cmd.clone();
+        let follow = matches!(
+            cmd,
+            Cmd::SplitWindow { detached: false, .. } | Cmd::NewWindow { detached: false, .. } | Cmd::BreakPane { .. }
+        );
+        let marked = self.marked;
+        let targets = there_targets(&mut there)?;
+        // Where each target is here; a pane marked here stands for a missing
+        // join-pane source, as it does here.
+        let mut places = Vec::new();
+        for (t, level) in &targets {
+            let found = match (t.as_ref(), level) {
+                (None, Level::Source) => match marked.and_then(|p| self.window_of_pane(p).map(|(s, w)| (s, w, p))) {
+                    Some(place) => Some(place),
+                    None => continue,
+                },
+                (None, Level::Optional) => continue,
+                _ => self.resolve(t.as_ref(), cid).ok(),
+            };
+            places.push(found);
+        }
+        let machines: Vec<Option<String>> = places
+            .iter()
+            .map(|p| p.and_then(|(sid, _, _)| self.session(sid)).and_then(|s| s.remote.as_ref().map(|r| r.key.clone())))
+            .collect();
+        if machines.iter().all(Option::is_none) {
+            return None;
+        }
+        let key = machines.iter().flatten().next().cloned().expect("one is");
+        if machines.iter().any(|m| m.as_deref() != Some(key.as_str())) {
+            return Some(Outcome::Error(
+                "a pane cannot move between machines: its program runs on the machine it was started on".into(),
+            ));
+        }
+        // Each target by that machine's ids for it.
+        let mut places = places.into_iter();
+        for (t, level) in targets {
+            if t.is_none() && matches!(level, Level::Optional) {
+                continue;
+            }
+            let Some((sid, widx, pid)) = places.next().flatten() else {
+                // `move-window -t :5` names an index free there: the session's
+                // id, the index as written.
+                let sid = self.resolve_session(t.as_ref(), cid).ok()?;
+                let rsid = self.session(sid)?.remote.as_ref()?.id;
+                *t = Some(Target {
+                    session: Some(format!("${rsid}")),
+                    window: t.as_ref().and_then(|t| t.window.clone()),
+                    ..Default::default()
+                });
+                continue;
+            };
+            let s = self.session(sid)?;
+            let w = s.windows.get(widx)?;
+            let rsid = s.remote.as_ref()?.id;
+            let rwid = w.remote.as_ref()?.id;
+            let rpid = w.pane(pid)?.remote?.id;
+            *t = Some(match level {
+                Level::Session => Target { session: Some(format!("${rsid}")), ..Default::default() },
+                Level::Window => {
+                    Target { session: Some(format!("${rsid}")), window: Some(format!("@{rwid}")), ..Default::default() }
+                }
+                Level::Pane | Level::Source | Level::Optional => Target {
+                    session: Some(format!("${rsid}")),
+                    window: Some(format!("@{rwid}")),
+                    pane_id: Some(rpid),
+                    ..Default::default()
+                },
+            });
+        }
+        let sid = self.resolve_session(first_target(cmd), cid).ok();
+        Some(self.mirror_send(&key, there.to_string(), cid, sid.filter(|_| follow)))
+    }
+}
+
+/// How much of a place a command's target names, as the machine it is sent
+/// to is told it: its session, its window, its pane; a source pane that may
+/// be missing (join-pane: then the pane marked), or a pane that may be left
+/// out (swap-pane -U/-D: then none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Level {
+    Session,
+    Window,
+    Pane,
+    Source,
+    Optional,
+}
+
+/// The commands that change a session's shape, run on the machine whose
+/// session it is (`mirror_route` here, `stream_command` there), with their
+/// targets. A command not named here changes no session's shape.
+fn there_targets(cmd: &mut Cmd) -> Option<Vec<(&mut Option<Target>, Level)>> {
+    use Level::*;
+    Some(match cmd {
+        Cmd::KillSession { target, all_but: false }
+        | Cmd::RenameSession { target, .. }
+        | Cmd::NewWindow { target, .. }
+        | Cmd::ResizeWindow { target, .. } => vec![(target, Session)],
+        Cmd::KillWindow { target, .. }
+        | Cmd::RenameWindow { target, .. }
+        | Cmd::SelectLayout { target, .. }
+        | Cmd::RotateWindow { target, .. } => vec![(target, Window)],
+        Cmd::SwapWindow { src, dst, .. } => vec![(src, Window), (dst, Window)],
+        Cmd::SplitWindow { target, .. }
+        | Cmd::KillPane { target, .. }
+        | Cmd::PaneTitle { target, title: Some(_), .. }
+        | Cmd::ResizePane { target, .. }
+        | Cmd::BreakPane { target }
+        | Cmd::RespawnPane { target, .. }
+        | Cmd::RenamePane { target, .. } => vec![(target, Pane)],
+        Cmd::SwapPane { target, source, .. } => vec![(target, Pane), (source, Optional)],
+        Cmd::JoinPane { src, dst, .. } => vec![(src, Source), (dst, Pane)],
+        _ => return None,
+    })
+}
+
+/// The target a command is about first: its session is the one a split or
+/// a new window puts the eye in.
+fn first_target(cmd: &Cmd) -> Option<&Target> {
+    targets_of(cmd).into_iter().next().flatten()
+}
+
+/// The targets of a command, as `there_targets` lists them (read only).
+fn targets_of(cmd: &Cmd) -> Vec<Option<&Target>> {
+    match cmd {
+        Cmd::KillSession { target, .. }
+        | Cmd::RenameSession { target, .. }
+        | Cmd::NewWindow { target, .. }
+        | Cmd::ResizeWindow { target, .. }
+        | Cmd::KillWindow { target, .. }
+        | Cmd::RenameWindow { target, .. }
+        | Cmd::SelectLayout { target, .. }
+        | Cmd::RotateWindow { target, .. }
+        | Cmd::SplitWindow { target, .. }
+        | Cmd::KillPane { target, .. }
+        | Cmd::PaneTitle { target, .. }
+        | Cmd::ResizePane { target, .. }
+        | Cmd::BreakPane { target }
+        | Cmd::RespawnPane { target, .. }
+        | Cmd::RenamePane { target, .. } => vec![target.as_ref()],
+        Cmd::SwapWindow { src, dst, .. } => vec![src.as_ref(), dst.as_ref()],
+        Cmd::SwapPane { target, source, .. } => vec![target.as_ref(), source.as_ref()],
+        Cmd::JoinPane { src, dst, .. } => vec![dst.as_ref(), src.as_ref()],
+        _ => vec![],
+    }
+}
+
+/// The commands that would do something of this machine's to a session of
+/// another (pipe its output to a program here, record it here, save it
+/// here, fit it to a phone here, or kill this machine's other sessions):
+/// refused for it, with what they would have done.
+fn refused_on_copy(cmd: &Cmd) -> Option<(Vec<Option<&Target>>, &'static str)> {
+    Some(match cmd {
+        Cmd::KillSession { target, all_but: true } => (vec![target.as_ref()], "be the one session kept"),
+        Cmd::PipePane { target, .. } => (vec![target.as_ref()], "pipe a pane of it"),
+        Cmd::Record { target, .. } => (vec![target.as_ref()], "record a pane of it"),
+        Cmd::SaveSession { target, all: false } => (vec![target.as_ref()], "save it"),
+        Cmd::SetWorkMode { target, .. } => (vec![target.as_ref()], "set a pane of it to work"),
+        Cmd::SetCwd { target, .. } => (vec![target.as_ref()], "set the directory of a pane of it"),
+        Cmd::WebFit { target, .. } => (vec![target.as_ref()], "size it to a phone"),
+        _ => return None,
+    })
 }
 
 /// A window of another machine, empty: its panes go in next.

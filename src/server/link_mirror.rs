@@ -39,10 +39,23 @@ const RETRY_LONGEST: Duration = Duration::from_secs(30);
 const RETRY_REFUSED: Duration = Duration::from_secs(60);
 /// A pane's model, inflated, at most (a long scrollback, a big screen).
 const MODEL_MAX: usize = 256 << 20;
+/// How long a command sent there waits for its reply.
+const REPLY_WAIT: Duration = Duration::from_secs(10);
+
+/// A command sent there, waiting for its reply.
+struct Ask {
+    /// Who asked, told the outcome (none: a key binding, a hook).
+    cid: Option<super::ClientId>,
+    /// The session (here) whose eye goes where the command put it there.
+    follow: Option<super::SessionId>,
+    at: Instant,
+}
 
 pub(super) enum MirrorNews {
     Connecting,
-    Live,
+    /// Connected; whether that machine runs commands sent to it
+    /// (`link_proto::Answer::commands`).
+    Live(bool),
     Down(String),
     Msg(Box<ToClient>, usize),
 }
@@ -66,6 +79,13 @@ pub(super) struct Mirror {
     input: mpsc::UnboundedSender<ToServer>,
     /// Keys typed into it while it had no connection, let go (`Typed`).
     dropped: Arc<AtomicU64>,
+    /// That machine runs the commands sent to it (keepane 0.63 on).
+    commands: bool,
+    /// Commands sent there, by number, waiting for their replies.
+    asks: HashMap<u64, Ask>,
+    next_ask: u64,
+    /// The resize a border drag sent last, while it waits for its reply.
+    drag: Option<u64>,
     state: State,
     /// The machine's shape as last told (its sessions are made from it).
     shape: Option<proto::Shape>,
@@ -96,11 +116,8 @@ impl Server {
         };
         if stop {
             self.mirrors_stopped.insert(key.clone());
-            return match self.mirrors.remove(&key) {
-                Some(m) => {
-                    self.mirror_forget(&key, &format!("{} is no longer copied", m.addr));
-                    Outcome::Text(format!("link: stopped copying {}\n", m.addr))
-                }
+            return match self.mirror_remove(&key, "is no longer copied") {
+                Some(addr) => Outcome::Text(format!("link: stopped copying {addr}\n")),
                 None => Outcome::Error(format!("link: {addr} is not being copied")),
             };
         }
@@ -123,6 +140,7 @@ impl Server {
     /// longer paired is no longer copied; one at a new address is copied
     /// from there. Nothing until this machine has paired with one.
     pub(super) fn mirror_peers(&mut self) {
+        self.mirror_asks_due();
         if self.link.is_none() && !self.link_dir().join("authorized").exists() {
             return;
         }
@@ -133,9 +151,7 @@ impl Server {
         let gone: Vec<String> =
             self.mirrors.keys().filter(|k| !peers.iter().any(|(key, _)| key == *k)).cloned().collect();
         for key in gone {
-            if let Some(m) = self.mirrors.remove(&key) {
-                self.mirror_forget(&key, &format!("{} is no longer paired", m.addr));
-            }
+            self.mirror_remove(&key, "is no longer paired");
         }
         for (key, addr) in peers {
             let moved = self.mirrors.get(&key).is_some_and(|m| m.addr != addr);
@@ -179,10 +195,157 @@ impl Server {
         )));
         let mut m = Mirror::new(addr.clone(), round, task, resync, last, input);
         m.dropped = dropped;
-        self.mirrors.insert(key, m);
+        self.mirror_put(key, m);
         Ok(addr)
     }
 
+    /// A copy kept for machine `key`; the one it replaces (the machine
+    /// moved): what that sent is not answered on the new connection, and
+    /// its askers are told so.
+    fn mirror_put(&mut self, key: String, m: Mirror) {
+        if let Some(mut old) = self.mirrors.insert(key, m) {
+            let why = format!("the connection to {} was made again: what became of it shows in its sessions", old.addr);
+            self.mirror_unanswered(std::mem::take(&mut old.asks), &why);
+        }
+    }
+
+    /// Machine `key` no longer copied (`why`: after its address): its
+    /// sessions go, and whoever waits for a reply from it is told. Its
+    /// address back, when it was copied.
+    fn mirror_remove(&mut self, key: &str, why: &str) -> Option<String> {
+        let mut m = self.mirrors.remove(key)?;
+        let why = format!("{} {why}", m.addr);
+        self.mirror_unanswered(std::mem::take(&mut m.asks), &why);
+        self.mirror_forget(key, &why);
+        Some(m.addr.clone())
+    }
+
+    /// Commands sent there that will get no reply: their askers are told.
+    fn mirror_unanswered(&mut self, asks: HashMap<u64, Ask>, why: &str) {
+        for cid in asks.into_values().filter_map(|a| a.cid) {
+            self.reply(cid, Outcome::Error(why.to_string()));
+        }
+    }
+
+    /// Send a command to machine `key` about one of its sessions (`line`
+    /// names its places by its ids: `mirrored::mirror_route`). Its outcome
+    /// goes to `cid` when the reply comes; `follow`: the session here whose
+    /// eye then goes where the command put it there.
+    pub(super) fn mirror_send(
+        &mut self,
+        key: &str,
+        line: String,
+        cid: Option<super::ClientId>,
+        follow: Option<super::SessionId>,
+    ) -> Outcome {
+        let Some(m) = self.mirrors.get_mut(key) else {
+            return Outcome::Error("that machine is not copied any more".into());
+        };
+        if !matches!(m.state, State::Live(_)) {
+            return Outcome::Error(format!(
+                "no connection to {} now: its sessions are as last seen, and only it can change them",
+                m.addr
+            ));
+        }
+        if !m.commands {
+            return Outcome::Error(format!(
+                "{}'s keepane takes no commands from here (0.62 or before): upgrade it, or do it there",
+                m.addr
+            ));
+        }
+        m.next_ask += 1;
+        let id = m.next_ask;
+        let cmd = ToServer {
+            kind: Some(crate::link_proto::to_server::Kind::Command(crate::link_proto::Command { id, line })),
+        };
+        if m.input.send(cmd).is_err() {
+            return Outcome::Error(format!("no connection to {} now", m.addr));
+        }
+        m.asks.insert(id, Ask { cid, follow, at: Instant::now() });
+        match cid {
+            Some(_) => Outcome::Pending,
+            None => Outcome::Ok,
+        }
+    }
+
+    /// A border of another machine's window dragged here: a resize of pane
+    /// `pane` sent there (`mirror_send`), unless the last one is not
+    /// answered yet (false: the way dragged adds up for the next); `last`
+    /// (the button went up) sends it anyway.
+    pub(super) fn mirror_drag(
+        &mut self,
+        sid: super::SessionId,
+        pane: super::PaneId,
+        dir: crate::command::Dir,
+        amount: u16,
+        last: bool,
+    ) -> bool {
+        let Some(key) = self.session(sid).and_then(|s| s.remote.as_ref()).map(|r| r.key.clone()) else { return true };
+        if !last && self.mirrors.get(&key).is_some_and(|m| m.drag.is_some_and(|id| m.asks.contains_key(&id))) {
+            return false;
+        }
+        let target = Some(crate::command::Target { pane_id: Some(pane), ..Default::default() });
+        let cmd =
+            crate::command::Cmd::ResizePane { dir: Some(dir), amount, zoom: false, target, width: None, height: None };
+        if let Some(Outcome::Ok) = self.mirror_route(&cmd, None)
+            && let Some(m) = self.mirrors.get_mut(&key)
+        {
+            m.drag = Some(m.next_ask);
+        }
+        true
+    }
+    /// The reply to a command sent there: after the changes it made, which
+    /// the copy has; the eye follows where it asked to; whoever asked is
+    /// told.
+    fn mirror_reply(&mut self, key: &str, r: crate::link_proto::Reply) {
+        let Some(ask) = self.mirrors.get_mut(key).and_then(|m| m.asks.remove(&r.id)) else { return };
+        if r.ok
+            && let (Some(sid), Some(pane)) = (ask.follow, r.pane)
+            && let Some(local) = self.mirror_pane_mut(key, pane).map(|p| p.id)
+            && let Some(s) = self.session_mut(sid)
+            && let Some(widx) = s.windows.iter().position(|w| w.pane(local).is_some())
+        {
+            s.select_window(widx);
+            let w = &mut s.windows[widx];
+            if w.active != local {
+                w.last_pane = Some(w.active);
+                w.active = local;
+            }
+            super::mirrored::zoom_on_active(w);
+        }
+        if let Some(cid) = ask.cid {
+            let out = match (r.ok, r.text.trim_end().is_empty()) {
+                (false, _) => Outcome::Error(r.text),
+                (true, true) => Outcome::Ok,
+                (true, false) => Outcome::Text(r.text),
+            };
+            self.reply(cid, out);
+        }
+    }
+
+    /// Commands sent there and not answered in `REPLY_WAIT`: their askers
+    /// are told (what became of them shows in the shape).
+    fn mirror_asks_due(&mut self) {
+        let mut due = Vec::new();
+        for m in self.mirrors.values_mut() {
+            let late: Vec<u64> =
+                m.asks.iter().filter(|(_, a)| a.at.elapsed() > REPLY_WAIT).map(|(id, _)| *id).collect();
+            for id in late {
+                if let Some(a) = m.asks.remove(&id) {
+                    due.push((a.cid, m.addr.clone()));
+                }
+            }
+        }
+        for (cid, addr) in due {
+            if let Some(cid) = cid {
+                let why = format!(
+                    "no reply from {addr} in {} s: what became of it shows in its sessions",
+                    REPLY_WAIT.as_secs()
+                );
+                self.reply(cid, Outcome::Error(why));
+            }
+        }
+    }
     /// What a mirror's task says.
     pub(super) fn mirror_news(&mut self, round: u64, key: String, news: MirrorNews) {
         let Some(m) = self.mirrors.get_mut(&key).filter(|m| m.round == round) else { return };
@@ -192,8 +355,9 @@ impl Server {
                     m.state = State::Connecting;
                 }
             }
-            MirrorNews::Live => {
+            MirrorNews::Live(commands) => {
                 m.connects += 1;
+                m.commands = commands;
                 m.state = State::Live(Instant::now());
             }
             MirrorNews::Down(why) => {
@@ -201,6 +365,11 @@ impl Server {
                     log::info!("link mirror {}: {why}", m.addr);
                 }
                 m.state = State::Down(why, Instant::now());
+                // What was sent and not answered: what became of it shows
+                // when the connection is back (the shape says).
+                let why = format!("the connection to {} dropped: what became of it shows once it is back", m.addr);
+                let asks = std::mem::take(&mut m.asks);
+                self.mirror_unanswered(asks, &why);
             }
             MirrorNews::Msg(msg, len) => {
                 m.bytes_in += len as u64;
@@ -283,6 +452,11 @@ impl Server {
     /// Take one message in; one the copy cannot follow from loses it: it
     /// asks for a snapshot, and lets what comes before that go.
     pub(super) fn mirror_receive(&mut self, key: &str, msg: ToClient) {
+        // A reply comes outside the numbered changes, and is taken however
+        // the copy stands.
+        if let Some(to_client::Kind::Reply(r)) = msg.kind {
+            return self.mirror_reply(key, r);
+        }
         let snapshot = matches!(msg.kind, Some(to_client::Kind::Snapshot(_)));
         if self.mirrors.get(key).is_none_or(|m| m.lost && !snapshot) {
             return;
@@ -310,7 +484,7 @@ impl Server {
         let m = self.mirrors.get(key).ok_or("not copied")?;
         let (addr, input, last) = (m.addr.clone(), m.input.clone(), m.last.load(Ordering::Relaxed));
         match msg.kind {
-            None | Some(to_client::Kind::Ping(_)) => Ok(()),
+            None | Some(to_client::Kind::Ping(_)) | Some(to_client::Kind::Reply(_)) => Ok(()),
             Some(to_client::Kind::Snapshot(s)) => {
                 let mut models = HashMap::new();
                 for p in s.panes {
@@ -396,6 +570,10 @@ impl Mirror {
             last,
             input,
             dropped: Arc::default(),
+            commands: false,
+            asks: HashMap::new(),
+            next_ask: 0,
+            drag: None,
             state: State::Connecting,
             shape: None,
             bytes_in: 0,
@@ -610,7 +788,7 @@ async fn connect_once(
     // Keys typed while there was no connection are let go: typed into a
     // copy that was not there, they are never typed later.
     typed.let_go();
-    tell(MirrorNews::Live);
+    tell(MirrorNews::Live(answer.commands));
     let (sealer, mut opener) = link_stream::split(keys);
     let (mut rd, mut wr) = s.into_split();
     let (frames_tx, mut frames) = tokio::sync::mpsc::channel::<anyhow::Result<Vec<u8>>>(64);
@@ -673,6 +851,7 @@ mod tests {
         pane_change, to_server,
     };
     use crate::server::layout;
+    use crate::server::{ClientId, MOUSE_MOVED};
 
     const KEY: &str = "k";
 
@@ -815,19 +994,10 @@ mod tests {
         s.resize_session(sid, 200, 50);
         let session = s.session(sid).unwrap();
         assert_eq!((session.cols, session.rows, session.windows[0].panes[0].cols), (80, 6, 20));
-        // What changes its shape is that machine's to do.
-        let refused =
-            |s: &mut Server, line: &str| match s.exec(crate::command::parse_line(line).unwrap().unwrap(), None) {
-                Outcome::Error(e) => e,
-                _ => String::new(),
-            };
-        for line in [
-            "split-window -t 10.0.0.2:7681/work",
-            "kill-session -t 10.0.0.2:7681/work",
-            "kill-pane -t 10.0.0.2:7681/%1",
-        ] {
-            assert!(refused(&mut s, line).contains("only that machine can"), "{line}");
-        }
+        // What changes its shape is that machine's to do: with no connection
+        // to it, nothing is done here.
+        let out = s.exec(crate::command::parse_line("kill-pane -t 10.0.0.2:7681/%1").unwrap().unwrap(), None);
+        assert!(matches!(&out, Outcome::Error(e) if e.contains("no connection to 10.0.0.2:7681")));
         assert_eq!(s.mirror_panes(KEY).len(), 2, "nothing was killed");
         // What is typed into a pane goes there, by its id there.
         s.mirror_pane_mut(KEY, 4).unwrap().type_input(b"ls\r");
@@ -1076,20 +1246,40 @@ mod tests {
     }
 
     #[test]
-    fn a_border_between_panes_of_another_machine_is_not_dragged() {
-        let (mut s, _typed) = copying();
+    fn a_border_dragged_here_resizes_there_one_resize_at_a_time() {
+        let (mut s, mut typed) = copying();
         s.opts.mouse = true;
         s.mirror_apply(KEY, snapshot(10, &[(1, "a", 1), (4, "b", 1)])).unwrap();
+        live(&mut s);
         let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
         let (tx, _rx) = mpsc::channel(64);
         s.client_connected(7, tx);
         let c = s.clients.get_mut(&7).unwrap();
         (c.cols, c.rows, c.interactive, c.session) = (80, 6, true, Some(sid));
-        // The column between the two panes (0-19 and 21-40).
-        s.handle_mouse(7, crate::ipc::MouseRecord { x: 20, y: 1, buttons: 1, ctrl: 0, flags: 0 });
+        let mouse = |s: &mut Server, x: i16, buttons: u32, flags: u32| {
+            s.handle_mouse(7, crate::ipc::MouseRecord { x, y: 1, buttons, ctrl: 0, flags });
+        };
+        // The column between the two panes (0-19 and 21-40), dragged right.
+        mouse(&mut s, 20, 1, 0);
+        assert!(s.clients[&7].drag.is_some());
+        mouse(&mut s, 22, 1, MOUSE_MOVED);
+        let (id, line) = sent(&mut typed);
+        assert_eq!(line, "resize-pane -R 2 -t $1:@2.%1");
+        // Not answered yet: the way dragged adds up, nothing more is sent.
+        mouse(&mut s, 23, 1, MOUSE_MOVED);
+        mouse(&mut s, 25, 1, MOUSE_MOVED);
+        assert!(typed.try_recv().is_err());
+        assert_eq!(s.mirror_panes(KEY)[0].cols, 20, "nothing resized here");
+        reply(&mut s, id, true, "", None);
+        mouse(&mut s, 26, 1, MOUSE_MOVED);
+        let (id, line) = sent(&mut typed);
+        assert_eq!(line, "resize-pane -R 4 -t $1:@2.%1", "all the way since the last one sent");
+        // The button up while one is out: what is left goes anyway.
+        mouse(&mut s, 24, 0, 0);
+        assert_eq!(sent(&mut typed).1, "resize-pane -L 2 -t $1:@2.%1");
         assert!(s.clients[&7].drag.is_none());
+        let _ = id;
     }
-
     #[test]
     fn a_copy_is_placed_again_when_the_window_area_here_changes() {
         let (mut s, _typed) = copying();
@@ -1107,6 +1297,170 @@ mod tests {
         assert_eq!(ys(&s), [(0, 0), (21, 0)]);
         let session = s.session(sid).unwrap();
         assert_eq!((session.cols, session.rows, session.windows[0].panes[0].cols), (80, 6, 20));
+    }
+
+    /// Live, taking commands (as a keepane of 0.63 on answers).
+    fn live(s: &mut Server) {
+        let m = s.mirrors.get_mut(KEY).unwrap();
+        (m.state, m.commands) = (State::Live(Instant::now()), true);
+    }
+
+    fn said(o: &Outcome) -> String {
+        match o {
+            Outcome::Error(e) | Outcome::Text(e) => e.clone(),
+            Outcome::Ok => "ok".into(),
+            Outcome::Pending => "pending".into(),
+            _ => "something else".into(),
+        }
+    }
+
+    fn run(s: &mut Server, line: &str, cid: Option<ClientId>) -> Outcome {
+        s.exec(crate::command::parse_line(line).unwrap().unwrap(), cid)
+    }
+
+    fn sent(typed: &mut mpsc::UnboundedReceiver<ToServer>) -> (u64, String) {
+        match typed.try_recv().expect("sent").kind {
+            Some(to_server::Kind::Command(c)) => (c.id, c.line),
+            k => panic!("{k:?}"),
+        }
+    }
+
+    fn reply(s: &mut Server, id: u64, ok: bool, text: &str, pane: Option<u32>) {
+        let r = crate::link_proto::Reply { id, ok, text: text.into(), pane };
+        s.mirror_receive(KEY, ToClient { kind: Some(to_client::Kind::Reply(r)) });
+    }
+
+    /// What a client not attached is told: its text, then its exit code.
+    fn told(rx: &mut mpsc::Receiver<crate::ipc::ServerMsg>) -> (String, i32) {
+        let mut text = String::new();
+        while let Ok(m) = rx.try_recv() {
+            match m {
+                crate::ipc::ServerMsg::Text(t) | crate::ipc::ServerMsg::Error(t) => text.push_str(&t),
+                crate::ipc::ServerMsg::Done { code } => return (text, code),
+                _ => {}
+            }
+        }
+        (text, -1)
+    }
+
+    #[test]
+    fn what_changes_its_shape_is_sent_there_by_its_ids_and_answered() {
+        let (mut s, mut typed) = copying();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "one", 3), (4, "four", 4)])).unwrap();
+        let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
+        // A keepane there of 0.62 or before takes none.
+        s.mirrors.get_mut(KEY).unwrap().state = State::Live(Instant::now());
+        let out = run(&mut s, "split-window -t 10.0.0.2:7681/work", None);
+        assert!(matches!(&out, Outcome::Error(e) if e.contains("takes no commands")), "{}", said(&out));
+        live(&mut s);
+        // Its places by its ids: session 1, window 2, pane 4.
+        assert!(matches!(run(&mut s, "kill-pane -t 10.0.0.2:7681/%4", None), Outcome::Ok));
+        assert_eq!(sent(&mut typed).1, "kill-pane -t $1:@2.%4");
+        assert!(matches!(run(&mut s, "rename-window -t 10.0.0.2:7681/work:0 logs", None), Outcome::Ok));
+        assert_eq!(sent(&mut typed).1, "rename-window -t $1:@2 logs");
+        assert!(matches!(run(&mut s, "new-window -d -t 10.0.0.2:7681/work", None), Outcome::Ok));
+        assert_eq!(sent(&mut typed).1, "new-window -d -t $1");
+        assert_eq!(s.mirror_panes(KEY).len(), 2, "nothing done here: it is done there");
+        // A key's command (no target): the pane the client looks at.
+        let (tx, mut rx) = mpsc::channel(64);
+        s.client_connected(9, tx);
+        s.clients.get_mut(&9).unwrap().pane_env = Some(s.mirror_pane_mut(KEY, 1).unwrap().id);
+        assert!(matches!(run(&mut s, "split-window -h", Some(9)), Outcome::Pending));
+        let (id, line) = sent(&mut typed);
+        assert_eq!(line, "split-window -h -t $1:@2.%1");
+        // The reply comes after the changes: the eye goes to the new pane
+        // (9 there), and the client is told.
+        let mut next = shape(&[1, 4, 9]);
+        next.sessions[0].windows[0].active = 9;
+        let change = ToClient {
+            kind: Some(to_client::Kind::Entry(Entry { seq: 11, at: 0, change: Some(entry::Change::Shape(next)) })),
+        };
+        s.mirror_apply(KEY, change).unwrap();
+        reply(&mut s, id, true, "", Some(9));
+        let p9 = s.mirror_pane_mut(KEY, 9).unwrap().id;
+        assert_eq!(s.session(sid).unwrap().windows[0].active, p9);
+        assert_eq!(told(&mut rx), (String::new(), 0));
+        // Failed there: said here.
+        run(&mut s, "kill-pane -t 10.0.0.2:7681/%4", Some(9));
+        let (id, _) = sent(&mut typed);
+        reply(&mut s, id, false, "can't find pane: %4", None);
+        let (text, code) = told(&mut rx);
+        assert!(code != 0 && text.contains("can't find pane"), "{text}");
+        // No reply in time, or the connection gone: said too.
+        run(&mut s, "kill-pane -t 10.0.0.2:7681/%4", Some(9));
+        sent(&mut typed);
+        for a in s.mirrors.get_mut(KEY).unwrap().asks.values_mut() {
+            a.at -= REPLY_WAIT + Duration::from_secs(1);
+        }
+        s.mirror_asks_due();
+        assert!(told(&mut rx).0.contains("no reply from 10.0.0.2:7681"));
+        run(&mut s, "kill-pane -t 10.0.0.2:7681/%4", Some(9));
+        sent(&mut typed);
+        s.mirror_news(1, KEY.into(), MirrorNews::Down("gone".into()));
+        assert!(told(&mut rx).0.contains("dropped"));
+        assert!(s.mirrors[KEY].asks.is_empty());
+        // The copy made again (the machine moved), or stopped: whoever waits
+        // for a reply is told, never left waiting.
+        live(&mut s);
+        run(&mut s, "kill-pane -t 10.0.0.2:7681/%4", Some(9));
+        sent(&mut typed);
+        let (input, mut again) = mpsc::unbounded_channel();
+        s.mirror_put(
+            KEY.into(),
+            Mirror::new("10.0.0.2:7681".into(), 3, None, Default::default(), Default::default(), input),
+        );
+        assert!(told(&mut rx).0.contains("was made again"));
+        s.mirror_apply(KEY, snapshot(30, &[(1, "one", 3), (4, "four", 4)])).unwrap();
+        live(&mut s);
+        run(&mut s, "kill-pane -t 10.0.0.2:7681/%4", Some(9));
+        sent(&mut again);
+        assert_eq!(s.mirror_remove(KEY, "is no longer copied").as_deref(), Some("10.0.0.2:7681"));
+        assert!(told(&mut rx).0.contains("no longer copied"));
+        assert!(s.mirror_session("10.0.0.2:7681", "work").is_none());
+        s.mirrors.insert(
+            KEY.into(),
+            Mirror::new(
+                "10.0.0.2:7681".into(),
+                4,
+                None,
+                Default::default(),
+                Default::default(),
+                mpsc::unbounded_channel().0,
+            ),
+        );
+        s.mirror_apply(KEY, snapshot(40, &[(1, "one", 3), (4, "four", 4)])).unwrap();
+        // What would do something of this machine's to it stays refused;
+        // a pane never moves between machines.
+        live(&mut s);
+        let out = run(&mut s, "pipe-pane -t 10.0.0.2:7681/%1 cat", None);
+        assert!(matches!(&out, Outcome::Error(e) if e.contains("only that machine can pipe")), "{}", said(&out));
+        let (input, _rx2) = mpsc::unbounded_channel();
+        let mut other = Mirror::new("10.0.0.3:7681".into(), 2, None, Default::default(), Default::default(), input);
+        (other.state, other.commands) = (State::Live(Instant::now()), true);
+        s.mirrors.insert("k2".into(), other);
+        s.mirror_apply("k2", snapshot(5, &[(1, "x", 1)])).unwrap();
+        let out = run(&mut s, "join-pane -s 10.0.0.3:7681/%1 -t 10.0.0.2:7681/%1", None);
+        assert!(matches!(&out, Outcome::Error(e) if e.contains("between machines")), "{}", said(&out));
+        assert!(typed.try_recv().is_err(), "nothing sent");
+    }
+
+    /// The machine copied runs only what changes a session's shape, about
+    /// its own places, each named.
+    #[test]
+    fn a_machine_sends_only_what_changes_a_shape_of_this_ones_own() {
+        let (mut s, _typed) = copying();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "x", 1)])).unwrap();
+        let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
+        let refused = |s: &Server, line: &str| s.command_from_machine(line).err().unwrap_or_default();
+        assert!(refused(&s, "run-shell 'rm -rf /'").contains("not a command another machine runs here"));
+        assert!(refused(&s, "set -g status off").contains("not a command"));
+        assert!(refused(&s, "kill-server").contains("not a command"));
+        assert!(refused(&s, "kill-pane").contains("every place is named"));
+        assert!(refused(&s, "kill-pane -t 10.0.0.9:7681/%1").contains("on another machine"));
+        // Named by its address, even a machine copied here: not this one's.
+        assert!(refused(&s, "kill-pane -t 10.0.0.2:7681/%1").contains("names a place on another machine"));
+        // A third machine's session copied here is not this machine's.
+        assert!(refused(&s, &format!("kill-session -t ${sid}")).contains("copied here"));
     }
 
     #[test]

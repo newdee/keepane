@@ -40,11 +40,16 @@ pub struct Answer {
     /// This run of the server: its changes are numbered within it.
     #[prost(uint64, tag = "3")]
     pub epoch: u64,
+    /// It runs the commands a copy sends (`ToServer::Command`, keepane
+    /// 0.63 on): a split, a kill, a resize of one of its sessions asked for
+    /// from the copy. A keepane of 0.62 or before leaves it unset.
+    #[prost(bool, tag = "4")]
+    pub commands: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct ToServer {
-    #[prost(oneof = "to_server::Kind", tags = "1, 2")]
+    #[prost(oneof = "to_server::Kind", tags = "1, 2, 3")]
     pub kind: Option<to_server::Kind>,
 }
 
@@ -55,12 +60,14 @@ pub mod to_server {
         Ping(super::Ping),
         #[prost(message, tag = "2")]
         Input(super::Input),
+        #[prost(message, tag = "3")]
+        Command(super::Command),
     }
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct ToClient {
-    #[prost(oneof = "to_client::Kind", tags = "1, 2, 3")]
+    #[prost(oneof = "to_client::Kind", tags = "1, 2, 3, 4")]
     pub kind: Option<to_client::Kind>,
 }
 
@@ -73,6 +80,8 @@ pub mod to_client {
         Snapshot(super::Snapshot),
         #[prost(message, tag = "3")]
         Ping(super::Ping),
+        #[prost(message, tag = "4")]
+        Reply(super::Reply),
     }
 }
 
@@ -80,6 +89,35 @@ pub mod to_client {
 #[derive(Clone, PartialEq, Message)]
 pub struct Ping {}
 
+/// A command for the machine copied, about one of its sessions (a split, a
+/// kill, a resize: what changes its shape), as a keepane command line whose
+/// targets name its sessions, windows and panes by its own ids. Only the
+/// commands that change a session's shape are run (`mirrored`).
+#[derive(Clone, PartialEq, Message)]
+pub struct Command {
+    /// Its number, which the reply carries.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(string, tag = "2")]
+    pub line: String,
+}
+
+/// What became of a command (`Command`): sent after the changes it made,
+/// so the copy has them when it reads this.
+#[derive(Clone, PartialEq, Message)]
+pub struct Reply {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(bool, tag = "2")]
+    pub ok: bool,
+    /// Its output, or why it failed.
+    #[prost(string, tag = "3")]
+    pub text: String,
+    /// The pane the session it ran on looks at now (its id there): where a
+    /// split, a new window or a broken-out pane put the eye.
+    #[prost(uint32, optional, tag = "4")]
+    pub pane: Option<u32>,
+}
 /// What is typed into a pane of the copy, for the pane it copies (by its
 /// id there): bytes as the program reads them, put in by the copy's own
 /// keys (the copy's model has the same modes as the original's). A keepane

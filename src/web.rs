@@ -626,6 +626,7 @@ async fn link_stream(mut stream: TcpStream, peer: IpAddr, state: &State, req: &R
                     let kind = match &item {
                         FeedItem::Entry(e) => to_client::Kind::Entry(e.into()),
                         FeedItem::Snapshot(s) => to_client::Kind::Snapshot(s.into()),
+                        FeedItem::Reply(r) => to_client::Kind::Reply(r.clone()),
                         FeedItem::End(why) => {
                             log::info!("link stream to {peer} ends: {why}");
                             return Ok(());
@@ -638,8 +639,10 @@ async fn link_stream(mut stream: TcpStream, peer: IpAddr, state: &State, req: &R
                     let Some(frame) = frame else { return Ok(()) };
                     // That it is there, and what is typed into its copy.
                     for msg in opener.open::<ToServer>(&frame?)? {
-                        if let Some(to_server::Kind::Input(i)) = msg.kind {
-                            (feed.input)(i.pane, i.bytes);
+                        match msg.kind {
+                            Some(to_server::Kind::Input(i)) => (feed.input)(i.pane, i.bytes),
+                            Some(to_server::Kind::Command(c)) => (feed.command)(c.id, c.line),
+                            _ => {}
                         }
                     }
                     heard = std::time::Instant::now();

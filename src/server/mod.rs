@@ -111,6 +111,9 @@ enum Event {
     /// Keys a machine fed typed into a copy of one of this machine's panes
     /// (its key, the pane's id, the bytes): `link_feed`.
     StreamInput(String, u32, Vec<u8>),
+    /// A command a machine fed sends about one of this machine's sessions
+    /// (its key, the command's number, the line): `link_feed`.
+    StreamCommand(String, u64, String),
     Connected(ClientId, mpsc::Sender<ServerMsg>),
     Msg(ClientId, ClientMsg),
     Gone(ClientId),
@@ -2763,6 +2766,7 @@ impl Server {
             Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::LinkStream(ask) => self.link_stream_ask(ask),
             Event::StreamInput(key, pane, bytes) => self.stream_input(&key, pane, &bytes),
+            Event::StreamCommand(key, id, line) => self.stream_command(&key, id, &line),
             Event::Mirror(round, key, news) => self.mirror_news(round, key, news),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
             Event::LinkAnswer(a) => self.link_answered(*a),
@@ -4219,8 +4223,8 @@ impl Server {
     // -------------------------------------------------------------- commands
 
     fn exec(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
-        if let Some(why) = self.mirror_refusal(&cmd, cid) {
-            return Outcome::Error(why);
+        if let Some(out) = self.mirror_route(&cmd, cid) {
+            return out;
         }
         match cmd {
             Cmd::Version => Outcome::Text(format!("keepane {}", env!("CARGO_PKG_VERSION"))),
@@ -9268,10 +9272,9 @@ impl Server {
         let released = prev & !buttons;
         let motion = m.flags & MOUSE_MOVED != 0 && wheel.is_none();
 
-        // Border drag in progress?
-        if let Some(d) = c.drag.take()
-            && buttons & BTN_LEFT != 0
-        {
+        // Border drag in progress? The button going up ends it.
+        if let Some(d) = c.drag.take() {
+            let held = buttons & BTN_LEFT != 0;
             let pos = if d.horizontal { (x + view_x) as i32 } else { (y + view_y) as i32 };
             let delta = pos - d.last;
             if delta != 0 {
@@ -9281,15 +9284,29 @@ impl Server {
                     (false, true) => Dir::Down,
                     (false, false) => Dir::Up,
                 };
-                if let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) {
-                    w.layout.resize(d.pane, dir, delta.unsigned_abs() as u16);
+                // Another machine's window is laid out there: the resize is
+                // sent there, one at a time; meanwhile the way dragged adds up
+                // (the start stays where the last one sent was), and what is
+                // left when the button goes up is sent then.
+                let remote = self.session(sid).and_then(|s| s.window()).is_some_and(|w| w.remote.is_some());
+                if remote {
+                    if !self.mirror_drag(sid, d.pane, dir, delta.unsigned_abs() as u16, !held) && held {
+                        self.clients.get_mut(&cid).unwrap().drag = Some(d);
+                        return;
+                    }
+                } else if held {
+                    if let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) {
+                        w.layout.resize(d.pane, dir, delta.unsigned_abs() as u16);
+                    }
+                    self.relayout_session(sid);
                 }
-                self.relayout_session(sid);
             }
-            self.clients.get_mut(&cid).unwrap().drag = Some(Drag { pane: d.pane, horizontal: d.horizontal, last: pos });
-            return;
+            if held {
+                self.clients.get_mut(&cid).unwrap().drag =
+                    Some(Drag { pane: d.pane, horizontal: d.horizontal, last: pos });
+                return;
+            }
         }
-
         // A selection being dragged: its pane has the mouse until the left
         // button goes up, wherever the pointer is (another pane, a border,
         // the status line); a wheel or another button meanwhile ends it.
@@ -9324,10 +9341,8 @@ impl Server {
         let Some(pid) = w.pane_at(x, y) else {
             // On a border: start a drag from the pane whose edge this is.
             // The outer edge of the window is not a border.
-            // (Another machine's window is laid out there: no drag.)
             if pressed & BTN_LEFT != 0
                 && mouse_opt
-                && w.remote.is_none()
                 && area.contains(x, y)
                 && let Some((pane, horizontal)) = border_owner(&w.rects, x, y, frames, area)
             {
