@@ -5878,3 +5878,10 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
   - hook 里不带目标的命令按"最近用的 session"解析，最近用的是副本时会发到对方（3a 前是拒绝）。
   - 结构图（`C-b w`）里对着对方 session 按 Enter 仍开 `link attach`；第 4 阶段改走副本。
   - 结构命令里带的程序（`split-window -t … 命令`）在对方机器上运行，这是给了 `--full` 的含义，文档未单独强调。
+
+- CI 发现（77e0a3d，Windows 两次）：`conpty_passes_the_replay_marker_through` 找不到 keepane.exe。原因：CI 的 cargo 换成新版，单元测试的二进制从 `target\debug\deps\` 移到 `target\debug\build\keepane\<hash>\out\`，`helper_exe` 写死"往上两级就是 `target\debug\keepane.exe`"。定性：结构缺陷（"测试在 deps 里"这个前提不再成立），全仓搜过：只有这一处按层数找，另外两处只取所在目录（CI 通过）。改：`keepane_above` 逐级往上找（最多 6 级，文件名带平台后缀），正式运行时程序本身就是 keepane，提前返回，行为不变。新 bug 风险：只在当前程序不叫 keepane 时才往上找。
+
+| 轮 | 视角 | 数据 | 结论 |
+|---|---|---|---|
+| 6 | 机制存活（修复） | 新测试按新旧两种目录布局各造一个，没有 keepane 时为 None，有了都找到；`take(6)` 改成 `take(1)`、`skip(1)` 改成 `skip(3)` 都被抓到；还原后文件逐字节相同 | 干净（1/3） |
+| 7 | 全量 | Windows 634 + 11 + 159，Linux 618 + 156，fmt、clippy 通过 | 干净（2/3） |

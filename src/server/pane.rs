@@ -798,7 +798,7 @@ pub struct Pipe {
 
 /// The keepane.exe that runs `__replay` and `view`: this executable when it is keepane,
 /// `KEEPANE_EXE` when set (the tests, whose own binary is not keepane), else the
-/// keepane.exe two directories up from a test binary (cargo's layout).
+/// keepane executable in a folder above a test binary (`keepane_above`).
 pub fn helper_exe() -> Option<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("KEEPANE_EXE").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
@@ -807,8 +807,16 @@ pub fn helper_exe() -> Option<std::path::PathBuf> {
     if me.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("keepane")) {
         return Some(me);
     }
-    let sibling = me.parent()?.parent()?.join("keepane.exe");
-    sibling.is_file().then_some(sibling)
+    keepane_above(&me)
+}
+
+/// The keepane executable in a folder above `me` (a test's binary): cargo
+/// puts that in `target/debug`, the test somewhere under it, at a depth
+/// that changed (`deps/`; `build/keepane/<hash>/out/` in the newer cargo the
+/// CI took up on 2026-11-13).
+fn keepane_above(me: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = format!("keepane{}", std::env::consts::EXE_SUFFIX);
+    me.ancestors().skip(1).take(6).map(|d| d.join(&name)).find(|p| p.is_file())
 }
 
 /// The command that prints `text` into the pane's console: `keepane __replay
@@ -2514,6 +2522,25 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let text = String::from_utf8_lossy(&got.lock().unwrap()).to_string();
         assert!(text.contains("hello-from-first") && text.contains("hello-from-second"), "{text:?}");
+    }
+
+    /// A test's binary finds keepane in `target/debug` wherever cargo put
+    /// the test under it: `deps/`, or `build/keepane/<hash>/out/`.
+    #[test]
+    fn the_keepane_a_test_runs_is_found_above_it_at_any_depth() {
+        let root = std::env::temp_dir().join(format!("keepane-above-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let debug = root.join("debug");
+        let name = format!("keepane{}", std::env::consts::EXE_SUFFIX);
+        let old = debug.join("deps").join("keepane-1234");
+        let new = debug.join("build").join("keepane").join("1234").join("out").join("keepane-1234");
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        assert_eq!(keepane_above(&new), None, "none there yet");
+        std::fs::write(debug.join(&name), b"").unwrap();
+        assert_eq!(keepane_above(&old), Some(debug.join(&name)));
+        assert_eq!(keepane_above(&new), Some(debug.join(&name)));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// What ConPTY passes through of what a process prints: the marker a
