@@ -2211,6 +2211,103 @@ async fn the_clock_shows_other_places_and_the_month() {
     h.cli(&["kill-server"]).await;
 }
 
+/// Under the clock's date, what waits for you: a window with output or a
+/// message nobody has looked at (`z:1 activity`, `z:1 message`). `p` puts
+/// the phone page's QR code over the clock (white on black), or says the
+/// page is off; another key or `p` again takes it off; the last line names
+/// `p` only while the page is served.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_clock_says_what_waits_for_you_and_shows_the_phone_pages_code() {
+    let h = Harness::start("clockneeds").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "z"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    h.cli(&["set", "-g", "clock-mode-animation", "off"]).await;
+    h.cli(&["set", "-g", "monitor-activity", "on"]).await;
+    let (code, _, err) = h.cli(&["new-window", "-d", "-t", "z"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_for_cli("z:1 at its prompt", &["capture-pane", "-p", "-t", "z:1"], |_, out| out.contains("keepane>")).await;
+    h.cli(&["send-keys", "-t", "z:1", "echo kpBusy", "Enter"]).await;
+    h.wait_for_cli("activity in z:1", &["display", "-p", "-t", "z:1", "#{window_flags}"], |_, out| out.contains('#'))
+        .await;
+    let (code, _, err) = h.cli(&["send-message", "-t", "z:1.0", "echo kpMail"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_for_cli("a message in z:1", &["display", "-p", "-t", "z:1", "#{window_flags}"], |_, out| out.contains('@'))
+        .await;
+    c.prefix('t').await;
+    c.wait_for("what waits, under the date", |s| {
+        let t = s.contents();
+        t.contains("needs you: z:1 message · z:1 activity") && t.contains("keepane: 1 session")
+    })
+    .await;
+    assert!(!c.screen.screen().contents().contains("p: phone page"), "no page served, no key named");
+    // No page served: `p` says so; another key takes it off, the clock stays.
+    c.type_str("p").await;
+    c.wait_for("the page is off", |s| s.contents().contains("the phone page is off: keepane web starts it")).await;
+    c.type_str("x").await;
+    c.wait_for("taken off", |s| {
+        let t = s.contents();
+        !t.contains("the phone page is off") && t.contains("needs you: ")
+    })
+    .await;
+    // Served: the key is named, `p` shows the code.
+    let (code, _, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("p named", |s| s.contents().contains(" · p: phone page")).await;
+    c.type_str("p").await;
+    c.wait_for("the code", |s| s.contents().contains("phone page · a key hides it")).await;
+    let screen = c.screen.screen();
+    let (rows, cols) = screen.size();
+    let blocks: Vec<(u16, u16)> = (0..rows)
+        .flat_map(|r| (0..cols).map(move |col| (r, col)))
+        .filter(|&(r, col)| screen.cell(r, col).is_some_and(|x| matches!(x.contents(), "▀" | "▄" | "█")))
+        .collect();
+    assert!(blocks.len() > 100, "a QR code's blocks: {}", blocks.len());
+    // Nothing of the clock beside the code: the pane (all but the status
+    // line) is blank outside the code's box (its columns, its rows and the
+    // line under it).
+    let (left, right) = blocks.iter().fold((cols, 0), |(l, r), &(_, c)| (l.min(c), r.max(c)));
+    let (top, bottom) = blocks.iter().fold((rows, 0), |(t, b), &(r, _)| (t.min(r), b.max(r)));
+    let stray: Vec<(u16, u16, String)> = (0..rows - 1)
+        .flat_map(|r| (0..cols).map(move |c| (r, c)))
+        .filter(|&(r, c)| !((left..=right).contains(&c) && (top..=bottom + 1).contains(&r)))
+        .filter_map(|(r, c)| {
+            let t = screen.cell(r, c)?.contents().to_string();
+            (!t.trim().is_empty()).then_some((r, c, t))
+        })
+        .collect();
+    assert!(stray.is_empty(), "the clock beside the code: {:?}", &stray[..stray.len().min(8)]);
+    let (r, col) = blocks[0];
+    let cell = screen.cell(r, col).unwrap();
+    assert_eq!(
+        (cell.fgcolor(), cell.bgcolor()),
+        (vt100::Color::Rgb(255, 255, 255), vt100::Color::Rgb(0, 0, 0)),
+        "white on black whatever the theme"
+    );
+    // The prefix takes it off too (`prefix d` must not leave it on screen);
+    // `prefix t` under a clock changes nothing else.
+    c.prefix('t').await;
+    c.wait_for("the prefix takes it off", |s| {
+        let t = s.contents();
+        !t.contains("a key hides it") && t.contains("needs you: ")
+    })
+    .await;
+    c.type_str("p").await;
+    c.wait_for("the code again", |s| s.contents().contains("phone page · a key hides it")).await;
+    c.type_str("p").await;
+    c.wait_for("p again takes it off", |s| !s.contents().contains("a key hides it")).await;
+    // The page stopped: the key is no longer named.
+    let (code, _, err) = h.cli(&["web-stop"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("p no longer named", |s| {
+        let t = s.contents();
+        !t.contains("p: phone page") && t.contains("keepane: 1 session")
+    })
+    .await;
+    c.type_str("q").await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// Under the clock something moves with the machine: `random` (the
 /// default) one kind or another each time the clock is put on; `cycle`
 /// takes them in turn, pulse, matrix and bars first; frames come while it
@@ -12734,6 +12831,11 @@ async fn a_panes_agent_is_read_from_its_transcript() {
     assert_eq!(v["waiting"]["text"], "waits for you: Claude needs your permission to use Bash", "{out}");
     let (_, tree, _) = h.cli(&["trace-pane", "-t", "ag"]).await;
     assert_eq!(tree.lines().last(), Some("waits for you: Claude needs your permission to use Bash"), "{tree}");
+    // Under a clock, first after the date: the agent waits.
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "ag"]).await;
+    c.prefix('t').await;
+    c.wait_for("the agent waits, under the clock", |s| s.contents().contains("needs you: ag:0.0 claude waits")).await;
     let later =
         (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let next = serde_json::json!({"type": "assistant", "timestamp": later, "message": {"id": "m4", "model": "claude-opus-5-5",
@@ -12747,6 +12849,13 @@ async fn a_panes_agent_is_read_from_its_transcript() {
         serde_json::from_str::<serde_json::Value>(out).is_ok_and(|v| v["waiting"].is_null())
     })
     .await;
+    c.wait_for("nothing waits under the clock", |s| {
+        let t = s.contents();
+        !t.contains("needs you:") && t.contains("keepane: 1 session")
+    })
+    .await;
+    c.type_str("q").await;
+    drop(c);
 
     // The agent gone: no agent.
     let shell: Vec<String> = PROMPT_SHELL.split(' ').map(String::from).collect();

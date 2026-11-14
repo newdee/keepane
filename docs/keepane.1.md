@@ -587,7 +587,11 @@ the commit ids are read from the repository's files and the rest is left out.
 (and UTC), other places' time (`clock-mode-zones`: IANA names, commas
 between them, 8 at most; a name in any case, or a city alone when one zone
 ends with it, as `tokyo`; each shown by its city, its weekday too when its
-day is not this one), the pane (its program, folder and branch, how long
+day is not this one), what waits for you in every session (in yellow:
+each agent that waits on you, `work:1.0 claude waits`, while its Trace
+has nothing newer than its `pane-wait`; then each window marked `!`, `@`,
+`#` or `~` as `bell`, `message`, `activity` or `silence`; no line when
+nothing waits), the pane (its program, folder and branch, how long
 it has run and been quiet), its last command (how long it took, how it
 ended), its agent (model, cost, context), the machine (CPU, memory,
 battery, time since boot) and keepane (its sessions and panes, the
@@ -598,7 +602,11 @@ before it). `clock-mode-info off` leaves the time alone, as tmux draws it;
 `clock-mode-style 12` counts the hours to 12; `clock-mode-colour` colours
 all the digits. Unset, the hours take the active pane border's colour
 and, with a theme that draws the panes (paper, paper-dark, tokyo-day),
-the minutes are yellow and the colon faint.
+the minutes are yellow and the colon faint. While the phone page is
+served, the last line ends `p: phone page`: `p` under the clock puts the
+page's QR code over it, white on black, for 60 seconds or until another
+key (the code carries the page's key); without a page it says how to
+start one.
 
 Under that, in the rows left over, something moves with the machine and
 with keepane (`clock-mode-animation`). `pulse` is a monitor: a heartbeat at

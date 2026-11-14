@@ -667,6 +667,10 @@ pub struct Pane {
     /// `clock-mode-animation` while this clock is up (the next clock starts
     /// without it), and its name shows for a second.
     pub clock_over: Option<(super::clockanim::Kind, std::time::Instant)>,
+    /// Since when `p` under the clock shows the phone page's QR code over it:
+    /// until `QR_FOR` has passed or another key is pressed (the code carries
+    /// the page's key, so it is not left on a screen nobody watches).
+    pub clock_qr: Option<std::time::Instant>,
     /// The commit its repository was at when its agent began the work in
     /// hand (a message delivered, or someone typing to it while it was
     /// free): what that work did is measured from here (`crate::git::work`).
@@ -1053,6 +1057,7 @@ impl Pane {
             clock_anim: None,
             clock_lines: None,
             clock_over: None,
+            clock_qr: None,
             output_bytes: 0,
             copy: None,
             bell: false,
@@ -1132,6 +1137,7 @@ impl Pane {
             clock_anim: None,
             clock_lines: None,
             clock_over: None,
+            clock_qr: None,
             output_bytes: 0,
             copy: None,
             bell: false,

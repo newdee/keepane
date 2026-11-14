@@ -7387,6 +7387,18 @@ impl Server {
         // clock), and a picker or popup over it keeps its keys, as does a
         // `bind -r` key still in its repeat time.
         let over = self.clients.get(&cid).is_some_and(|c| c.prefix || c.chooser.is_some() || c.popup.is_some());
+        // Any key takes the phone page's QR code off the clock, the prefix
+        // too (`prefix d` must not leave the page's key on the screen).
+        if key.is_some()
+            && let Some(p) = self.session_mut(sid).and_then(|s| s.window_mut()).and_then(|w| w.active_pane_mut())
+            && p.clock
+        {
+            let pressed = key.map(crate::keys::ascii_form);
+            let toggles = !over && pressed.is_some_and(|q| q.code == KeyCode::Char('p') && !q.ctrl && !q.alt);
+            if !toggles {
+                p.clock_qr = None;
+            }
+        }
         let repeats = key.is_some_and(|k| {
             self.clients.get(&cid).is_some_and(|c| c.repeat_until.is_some_and(|t| Instant::now() < t))
                 && self
@@ -7411,6 +7423,11 @@ impl Server {
                 KeyCode::Char('?') if plain => Some(false),
                 _ => None,
             };
+            // `p`: the phone page's QR code over the clock, or off again;
+            // any other key takes it off as well (and does what it does).
+            let qr = q.code == KeyCode::Char('p') && plain;
+            p.clock_qr =
+                if qr && clock::qr_left(p.clock_qr, Instant::now()).is_none() { Some(Instant::now()) } else { None };
             if leave {
                 p.clock = false;
                 (p.clock_anim, p.clock_lines) = (None, None);
@@ -10308,6 +10325,23 @@ impl Server {
                         grid.put_str(x, band.y, &name, style, name.len() as u16);
                     }
                 }
+                // `p`: the phone page's QR code over it all, in the middle,
+                // white on black whatever the theme (a camera wants one).
+                if clock::qr_left(p.clock_qr, Instant::now()).is_some() {
+                    let url = self.web.as_ref().map(|w| w.url());
+                    let ro = self.web.as_ref().is_some_and(|w| w.read_only());
+                    let lines = clock::qr_lines(url, ro, usize::from(rect.w), usize::from(rect.h));
+                    let style = render::Style::colors(vt100::Color::Rgb(255, 255, 255), vt100::Color::Rgb(0, 0, 0));
+                    let w = lines.first().map_or(0, |l| unicode_width::UnicodeWidthStr::width(l.as_str())) as u16;
+                    let x = rect.x + rect.w.saturating_sub(w) / 2;
+                    let y = rect.y + rect.h.saturating_sub(lines.len() as u16) / 2;
+                    // The pane cleared first (to its theme's background):
+                    // nothing of the clock beside it.
+                    grid.fill(*rect, render::Style::colors(vt100::Color::Default, self.opts.window_bg));
+                    for (i, line) in lines.iter().enumerate().take(usize::from(rect.h)) {
+                        grid.put_str(x, y + i as u16, line, style, rect.w.min(w));
+                    }
+                }
                 cursor = None;
             }
         }
@@ -11560,7 +11594,7 @@ fn clock_on(p: &mut Pane, seed: u64) {
     p.clock_turns = p.clock_turns.wrapping_add(1);
     let r = seed ^ (u64::from(p.id) << 40) ^ u64::from(p.clock_turns);
     p.clock_pick = Some(clockanim::Kind::random(p.clock_pick, r));
-    (p.clock_anim, p.clock_lines, p.clock_over) = (None, None, None);
+    (p.clock_anim, p.clock_lines, p.clock_over, p.clock_qr) = (None, None, None, None);
 }
 
 /// What moves under `p`'s clock: the kind `/` or `?` turned it to, else by

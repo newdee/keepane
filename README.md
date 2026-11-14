@@ -535,7 +535,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `T` / `f` | name this pane / find a window by name or title |
 | `[` / `PgUp` | copy mode (see below) |
 | `#` / `-` / `=` | list paste buffers / delete the newest / pick one to paste |
-| `t` / `~` / `r` | clock, and under it the date (and UTC), other places' time (`clock-mode-zones`), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine, then the month with today marked when it fits (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`); below, something that moves with the machine (see below); `q` leaves it / recent messages / redraw |
+| `t` / `~` / `r` | clock, and under it the date (and UTC), other places' time (`clock-mode-zones`), what waits for you (agents, windows; see below), the pane (program, folder, branch, how long it has run and been quiet), its last command (how long, how it ended; a long folder or command shortened with `…` so the rest fits), its agent (model, cost, context) and the machine, then the month with today marked when it fits (`clock-mode-info off`: the time alone; `clock-mode-style 12`, `clock-mode-colour`); below, something that moves with the machine (see below); `p` shows the phone page's QR code, `q` leaves it / recent messages / redraw |
 | `]` | paste the clipboard |
 | `:` | command prompt (`:split-window -h -c C:\src`, `:set mouse off`, ...; Tab completes the command, its flags, a `-t` target and option names; ↑ / ↓ or `C-p` / `C-n` bring back the lines run there before, the last 100, until the server stops; `show-prompt-history` lists them, `clear-prompt-history` forgets them) |
 | `d` | detach |
@@ -667,6 +667,19 @@ one runs, since Windows' own ACPI thermal zone is a fixed figure on many
 machines; macOS: none). The CPU's power is its own meter (RAPL): Windows reads
 it for anyone, where the CPU has one; Linux lets only root read it on most
 systems (`/sys/class/powercap`), so there it shows only when readable.
+
+Right under the date (and the other places), a line in yellow says what
+waits for you, in every session: each agent that waits on you (its
+permission hook ran `pane-wait`; `work:1.0 claude waits`, until it goes
+on), then each window the status line marks, which is never a session's
+current window (`bell`, `message`, `activity`, `silence`).
+With nothing waiting there is no line.
+
+While the phone page is served (`keepane web`), the clock's last line
+says `p: phone page`: `p` puts the page's QR code over the clock, white on
+black whatever the theme, for a minute or until another key. The code
+carries the page's key, so it is not left on a screen nobody watches.
+Without a page, `p` says how to start one.
 
 `clock-mode-look` draws any of them in a set of characters instead of its
 own: `dots` (`·` `•` `●`), `blocks` (`░` `▒` `▓` `█`) or `binary` (`1`

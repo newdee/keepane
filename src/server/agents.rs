@@ -998,13 +998,7 @@ impl Server {
                 "%{pid} runs no agent keepane reads (Claude Code, Codex, pi, Cursor CLI)"
             ));
         };
-        // What it waits on you for, while nothing happened since it said so.
-        let latest = a.trace.iter().map(|s| s.end.unwrap_or(s.start).max(s.start)).max().unwrap_or(0);
-        let waiting = self
-            .pane_ref(pid)
-            .and_then(|p| p.actor.waiting.as_ref())
-            .filter(|(_, at)| *at >= latest)
-            .map(|(text, at)| serde_json::json!({ "text": text, "at": at }));
+        let waiting = self.waits_for_you(pid).map(|(text, at)| serde_json::json!({ "text": text, "at": at }));
         if json {
             let v = serde_json::json!({
                 "pane": format!("%{pid}"),
@@ -1024,6 +1018,16 @@ impl Server {
         }
         if lines.is_empty() { super::Outcome::Ok } else { super::Outcome::Text(lines.join("\n")) }
     }
+    /// What the agent in pane `pid` waits on you for (`pane-wait`, from its
+    /// permission hook) and when, while nothing happened in its Trace since
+    /// it said so; None for a pane no agent is read in (nothing would ever
+    /// tell that the wait is over).
+    pub(super) fn waits_for_you(&self, pid: PaneId) -> Option<&(String, i64)> {
+        let a = self.agents.stats.get(&pid)?;
+        let latest = a.trace.iter().map(|s| s.end.unwrap_or(s.start).max(s.start)).max().unwrap_or(0);
+        self.pane_ref(pid).and_then(|p| p.actor.waiting.as_ref()).filter(|(_, at)| *at >= latest)
+    }
+
     pub(super) fn agents_seen(&mut self, stats: HashMap<PaneId, Stats>) {
         self.agents.asking = false;
         if !self.opts.agent_cost {

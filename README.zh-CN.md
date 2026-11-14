@@ -291,7 +291,7 @@ keepane kill-server
 | `m` / `M` | 标记这个 pane / 取消标记（`join-pane` 默认搬走被标记的那个） |
 | `T` / `f` | 给这个 pane 起名 / 按名字或标题找窗口 |
 | `#` / `-` / `=` | 列出粘贴缓冲区 / 删掉最新的 / 挑一个粘贴 |
-| `t` / `~` / `r` | 时钟，下面写着日期（和 UTC 时间）、其他地方的时间（`clock-mode-zones`）、这个 pane（程序、目录、分支、跑了多久、安静了多久）、它的上一条命令（花了多久、结果；目录或命令太长时用 `…` 缩短，保证后面的内容显示完整）、它的 agent（模型、花费、上下文）和这台机器，放得下时再显示当月月历并标出今天（`clock-mode-info off` 只显示时间；`clock-mode-style 12`、`clock-mode-colour`）；再往下是随机器负载变化的动画（见下文）；按 `q` 退出 / 最近的提示消息 / 重画 |
+| `t` / `~` / `r` | 时钟，下面写着日期（和 UTC 时间）、其他地方的时间（`clock-mode-zones`）、等你处理的事（agent、窗口，见下文）、这个 pane（程序、目录、分支、跑了多久、安静了多久）、它的上一条命令（花了多久、结果；目录或命令太长时用 `…` 缩短，保证后面的内容显示完整）、它的 agent（模型、花费、上下文）和这台机器，放得下时再显示当月月历并标出今天（`clock-mode-info off` 只显示时间；`clock-mode-style 12`、`clock-mode-colour`）；再往下是随机器负载变化的动画（见下文）；按 `p` 显示手机网页的二维码，按 `q` 退出 / 最近的提示消息 / 重画 |
 | `S` | 开关 `synchronize-panes`：敲的东西同时进这个窗口的所有 pane，状态栏会多个 `S` |
 | `[` / `PgUp` | copy mode（下面单独说） |
 | `]` | 粘贴剪贴板 |
@@ -331,6 +331,10 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 时钟下方信息行的最后一行是 keepane 自己的情况：会话数、pane 数，以及启动以来送达的消息数。
 
 `pulse`、`matrix`、`starfield` 的颜色，以及鲨鱼的眼睛和盆景的叶子，随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 13 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。`aquarium`、`life`、`donut`、`weather`、`hourglass`、`orbits`、`radar` 在 0.46 去掉了，配置里还写着它们的，按 `random` 处理。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有中断和功耗数字，上下文切换和线程数只算你能查看的进程，不是整个系统的；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
+
+日期（和其他地方的时间）下面紧接着用黄色写一行“等你处理”，覆盖所有 session：先列等你的 agent（它的权限 hook 运行了 `pane-wait`，显示为 `work:1.0 claude waits`，它继续往下做后消失），再列状态栏上带标记的窗口（各 session 的当前窗口不会有标记）：`bell`、`message`、`activity`、`silence`。没有要处理的就不显示这一行。
+
+手机网页开着时（`keepane web`），时钟最后一行会写 `p: phone page`：按 `p` 在时钟上显示网页的二维码，不管什么主题都是黑底白码，显示 1 分钟或到按下别的键为止。二维码里带着网页的 key，所以不会一直留在没人看的屏幕上。网页没开时，按 `p` 会提示怎么打开。
 
 `clock-mode-look` 让任何一种动画改用一套字符来画：`dots`（`·` `•` `●`）、`blocks`（`░` `▒` `▓` `█`）或 `binary`（`1` `0`）。每个格子换成墨量最接近的字符；墨量看原来的字符占了格子多少、颜色有多亮。颜色不变，数字、名字和消息的 `✉` 也不变。`plain`（默认）用动画自己的字符。
 
