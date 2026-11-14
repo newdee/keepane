@@ -1,6 +1,6 @@
 [package]
 name = "keepane"
-version = "0.66.1"
+version = "0.67.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Persistent terminal panes, each with its own inbox: a terminal multiplexer with tmux's keys and commands."
