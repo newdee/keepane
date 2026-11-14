@@ -5,10 +5,12 @@
 ## 用户看到的
 
 - 手机网页（`keepane web`）的 pane 底栏，输入框旁一个 📎 按钮：选一个或几个文件，逐个上传，显示进度；传完列出每个文件存到的完整路径，带"复制路径"按钮。
-- 存到这个 pane 当前目录下的 `uploads/`（不存在就建）。选项 `set -g web-upload-dir uploads`：相对路径相对于 pane 的目录，绝对路径就固定存那里（`~` 展开）。
+- 存到这个 pane 当前目录下的 `keepane-uploads/`（不存在就建）。选项 `set -g web-upload-dir keepane-uploads`：相对路径相对于 pane 的目录，绝对路径就固定存那里（`~` 展开）。
+- 0.66.1 起默认名从 `uploads` 改为 `keepane-uploads`：用户说「要有个不一样的名字，表示是keepane上传的，不然和原uploads混了」（很多项目自己就有 `uploads/`，文件会混在一起，项目程序也可能处理它）。0.66.0 存进 `uploads/` 的文件不搬。
+- keepane 新建的上传目录里放一个 `.gitignore`（内容 `*`）：上传的文件不出现在 `git status` 里，也不会被误提交。目录原来就在（比如指到项目自己的目录）就什么都不加；目录里已有 `.gitignore` 不覆盖；写不了 `.gitignore` 不影响上传。
 - 同名不覆盖：`report.pdf` 已有就存成 `report (1).pdf`，依次往上。
 - 单个文件默认最多 2 GiB：`set -g web-upload-max 2G`（和 `link-agents-limit` 同样的写法）。超过的在开始传之前就拒绝（413）。
-- 状态栏和 show-messages 说一句：`%3: received report.pdf (2.1M) in C:\proj\uploads, from 192.168.1.20`。
+- 状态栏和 show-messages 说一句：`%3: received report.pdf (2.1M) in C:\proj\keepane-uploads, from 192.168.1.20`。
 - 传完不把路径打进 pane（避免误触发命令）。
 
 ## 不做 / 拒绝

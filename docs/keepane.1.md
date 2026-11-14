@@ -248,8 +248,9 @@ prompts passed over as `#{pane_last_line}` passes them: a keepane command
 of the page's, not for people.
 
 The page's paper clip, by the box, sends files into the pane's folder:
-`web-upload-dir` (default `uploads`) under the pane's directory, or that
-folder when it is absolute, made when it is not there. Each file is the
+`web-upload-dir` (default `keepane-uploads`) under the pane's directory,
+or that folder when it is absolute, made when it is not there, with a
+`.gitignore` of `*` (a folder there already gets none). Each file is the
 body of `POST /api/upload?pane=%N&name=…` with its `Content-Length`,
 written as it comes, never over a file there (`report (1).pdf`), its
 name's last part only, at most 200 bytes; one past

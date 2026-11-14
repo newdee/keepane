@@ -13626,11 +13626,12 @@ async fn a_feishu_app_tells_the_panes_and_takes_answers() {
 }
 
 /// A file sent from the phone page (`POST /api/upload`) for a pane: written
-/// under its directory's `uploads` (`web-upload-dir`), byte for byte, read
-/// as it comes; a name taken gets ` (1)`; a path in the name keeps only its
-/// last part; past `web-upload-max` refused before a byte is read; cut
-/// short, nothing left; a read-only page refuses; an absolute folder is
-/// used as it is; the status line says each one.
+/// under its directory's `keepane-uploads` (`web-upload-dir`), which keepane
+/// makes with a `.gitignore`, byte for byte, read as it comes; a name taken
+/// gets ` (1)`; a path in the name keeps only its last part; past
+/// `web-upload-max` refused before a byte is read; cut short, nothing left;
+/// a read-only page refuses; an absolute folder is used as it is, one there
+/// already left without a `.gitignore`; the status line says each one.
 #[tokio::test(flavor = "multi_thread")]
 async fn files_sent_from_the_page_go_under_the_panes_folder() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13676,7 +13677,7 @@ async fn files_sent_from_the_page_go_under_the_panes_folder() {
             (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
         }
     };
-    let up = dir.join("uploads");
+    let up = dir.join("keepane-uploads");
     // Where it would go, asked first.
     let (code, body) = http(addr, "GET", &format!("/api/upload-info?pane={q}"), "k", "").await;
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
@@ -13697,6 +13698,10 @@ async fn files_sent_from_the_page_go_under_the_panes_folder() {
     assert_eq!((v["name"].as_str(), v["bytes"].as_u64()), (Some("report.pdf"), Some(300_000)));
     assert!(same(v["path"].as_str().unwrap(), &up.join("report.pdf")), "{body}");
     assert!(std::fs::read(up.join("report.pdf")).unwrap() == data, "the same bytes");
+    // The folder keepane made: left out of git, the pane's directory not.
+    let ignore = std::fs::read_to_string(up.join(".gitignore")).unwrap_or_default();
+    assert!(ignore.lines().any(|l| l == "*"), "{ignore}");
+    assert!(!dir.join(".gitignore").exists());
     // The name taken: the next free one, the first left as it was.
     let (code, body) = send(addr, "k", "report.pdf", b"second".to_vec(), 6).await;
     assert_eq!(code, 200, "{body}");
@@ -13757,6 +13762,14 @@ async fn files_sent_from_the_page_go_under_the_panes_folder() {
     let (code, body) = send(addr, "k", "abs.txt", b"abs".to_vec(), 3).await;
     assert_eq!(code, 200, "{body}");
     assert_eq!(std::fs::read(elsewhere.join("abs.txt")).unwrap(), b"abs");
+    assert!(elsewhere.join(".gitignore").exists(), "made by keepane");
+    // A folder there already (the pane's own directory): used, nothing
+    // added to it but the file.
+    h.cli(&["set", "-g", "web-upload-dir", &dir.to_string_lossy()]).await;
+    let (code, body) = send(addr, "k", "own.txt", b"own".to_vec(), 3).await;
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(std::fs::read(dir.join("own.txt")).unwrap(), b"own");
+    assert!(!dir.join(".gitignore").exists(), "a folder there already is left as it is");
     // Each one said.
     let (_, said, _) = h.cli(&["show-messages"]).await;
     assert!(said.contains(&format!("{pane}: received report.pdf (")) && said.contains("from 127.0.0.1"), "{said}");

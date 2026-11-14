@@ -5992,3 +5992,17 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 14 | 全量 + Linux 符号链接临时目录 | Windows：652 / 11 / 162；Linux：fmt ok、clippy 0、636 / 159（同步覆盖了上一轮在 WSL 副本里改过的那行）；Linux 上 `TMPDIR` 经符号链接再跑上传 e2e：通过；0 失败 | 干净 2/3 |
 | 15 | CI（三平台 + 网页） | ccdc10c 上 CI run 43486286384 一次通过：Windows、Ubuntu、macOS（真跑，10 步）、网页四项全过 | 干净（3/3），验收通过（第 13–15 轮：真实环境复现、全量 + Linux 符号链接、CI 三平台） |
 - 发布：v0.66.0（tag 在 ccdc10c，其 CI run 43486286384 四项全过；013edaf 的 macOS 两次因 runner 容量被取消、第三次暴露了上传测试在 macOS 符号链接临时目录下的问题，见第 12–15 轮）。Release run 43487296766 成功，13 个文件；Homebrew formula run 43488599243 通过，3 个 sha256 与发布文件一致；manifests 已拉取（dafe7ed）；winget 新开 PR #479691。重拍的图：手机截图（深浅）、tour（深浅）。
+
+## 190. 上传目录改名 `keepane-uploads`，新建时放 `.gitignore`
+
+- 用户要求：「要有个不一样的名字，表示是keepane上传的，不然和原uploads混了」；方案给出后「改吧，按推荐来」。设计：`docs/design/upload.md`（0.66.1 两条）。
+- 定性：结构缺陷（默认值写了两份：`config.rs` 的默认和 `web.rs` 选项为空时的回退，各写 `"uploads"`），收成一个常量 `config::WEB_UPLOAD_DIR`。新行为：`upload_folder` 只在目录不存在、由 keepane 新建时写 `.gitignore`（`*`），`create_new` 不覆盖已有的，写不了不影响上传。原行为不变的部分：用户自己设的 `web-upload-dir`、目录原来就在、同名不覆盖、所有拒绝路径都不变。0.66.0 存进 `uploads/` 的文件不搬。
+- 改动：`src/config.rs`、`src/web.rs`、`tests/e2e.rs`、`web/tests/upload.e2e.ts`、README 两种语言、man、`keepane.conf.example`、`docs/design/upload.md`。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 0 | 实现 | 单元：`a_folder_made_for_uploads_is_left_out_of_git_and_one_there_is_left_alone`（嵌套新建只在叶子目录放、已有的不覆盖、已存在的目录不加、同名是文件时报错）；`upload_dir` 加空白值回退到默认。e2e：默认目录 `keepane-uploads`、里面有 `*`、pane 目录本身没有 `.gitignore`；绝对路径新建的有；指到已存在的目录（pane 目录本身）上传成功且不加。真实环境（本次构建、临时 server、带 `uploads/` 和 `assets/` 的 git 仓库、`curl.exe`）9/9：默认值、`upload-info`、字节一致、项目的 `uploads/` 没动、`.gitignore` 内容、`git status --porcelain` 为空、指到 `assets/` 时不加且 git 看到 `?? assets/pic.jpg`、用户改过的 `.gitignore` 保留 | — |
+| 1 | 全量（Windows + Linux） | Windows：653 / 11 / 162，0 失败。Linux：fmt ok、clippy 0，新单元测试失败（读到的 `.gitignore` 内容不对）。原因：tokio 的文件写完没有 `flush` 就丢掉，写入可能还没落盘（Windows 上恰好落了）。共性排查：`src` 里 tokio 写文件只有 2 处，上传文件那处已有 `flush`，只有新的这处漏了；边界遗漏：补 `flush` | 有发现，不计 || 2 | 静态一致性 + 全量 | 文档逐句对代码：README 两种语言、man、`keepane.conf.example`、设计文档都写 `keepane-uploads`、`.gitignore` 内容 `*`、已存在的目录不加，与 `upload_folder` 一致；`Upload.tsx` 的注释不写默认名；网站不提上传；本次改的 README / man 散文行超过 76 列 0 行；`"uploads"` 字面量在 `src` 里只剩 1 处，是单元测试里当作用户设的相对目录（`web.rs` 第 1953 行），默认值只在常量里。未发现问题。Linux 上新单元测试连跑 30 次 0 失败。Windows：653 / 11 / 162；网页：e2e 12 个文件 39/39；Linux：fmt ok、clippy 0、637 / 159；0 失败 | 干净 1/3 |
+| 3 | 机制存活 | `mutate-0661.ps1` 8 个：6 个抓到；"不写 `.gitignore`"的变异本身写错，编译不过（脚本问题）；"`.gitignore` 被覆盖"（`create_new` 换成 `create` + `truncate`）没抓到：等价变异，目录已存在时函数一开始就返回，走不到这一步，只有两个上传同时新建目录才会走到，两边写的内容相同，没有可测的差别。保留 `create_new`（不截断任何已有文件），记为等价 | 有发现（脚本），不计 |
+| 4 | 机制存活 + 全量 | 改好那个变异后 8 个重跑：7/7 非等价变异抓到（每个都确认重新编译过），1 个等价（见上）；跑完后 `src` 哈希与开跑前相同。Windows：653 / 11 / 162；网页 e2e 39/39；Linux：fmt ok、clippy 0、637 / 159；0 失败 | 干净 1/3 |
+| 5 | 真实环境 + 可复现性 + Linux | 真二进制 + `curl.exe` 连跑 2 次：每次 9/9，结果（去掉路径）哈希相同 E5EC52A05F0F6AE4；跑完立刻查到 1 个临时 keepane 进程，几秒后再查已退出（`kill-server` 后 server 还在退出），无残留。Windows 全量连跑 2 次：653 / 11 / 162，839 个测试结果差异 0。Linux：fmt ok、clippy 0、637 / 159；0 失败 | 干净 2/3 || 6 | 逻辑不变量 + 边界 + 全量 | 不变量：默认值只在 `WEB_UPLOAD_DIR` 一处（另 1 处是测试里用户设的相对目录）；`.gitignore` 只在 `create_dir_all` 新建之后写，且用 `create_new`；写 `.gitignore` 的错误不影响上传。真二进制边界 5/5：嵌套新目录 `in/phone` 只在叶子目录放、`git status` 为空；往新目录传名为 `.gitignore` 的文件存成 `.gitignore (1)`，keepane 的那份不被覆盖；目标位置是文件时回 500 并说出路径；空白值 `set` 拒绝、原值不变；`.`（pane 目录本身，已存在）不加 `.gitignore`。未发现问题。Windows：653 / 11 / 162；网页 e2e 39/39；Linux：fmt ok、clippy 0、637 / 159；0 失败 | 干净（3/3），验收通过（第 4–6 轮：机制存活、真实环境 + 可复现性、逻辑不变量 + 边界） |

@@ -58,7 +58,7 @@ set -g save-history 500           # lines of each pane restored with the session
 # set -g restore-on-start off     # leave them to `keepane resume [name]` instead
 
 # the phone page (keepane web): its paper clip puts files here, under the pane's directory
-# set -g web-upload-dir uploads
+# set -g web-upload-dir keepane-uploads
 # set -g web-upload-max 2G
 # set -g sessions-dir ~/.keepane/sessions
 

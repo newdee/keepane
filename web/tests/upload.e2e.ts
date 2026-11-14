@@ -2,7 +2,7 @@
 // button says where they go; a chosen file is sent and lands there byte for
 // byte, its path shown with a button to copy it; the same name again gets
 // " (1)"; the server says each on its status line. Unset, the folder is
-// `uploads` under the pane's directory. (The API's refusals: tests/e2e.rs.)
+// `keepane-uploads` under the pane's directory. (The API's refusals: tests/e2e.rs.)
 import { expect } from "e2e";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -31,10 +31,10 @@ test("a file from the page lands in the pane's folder", async ({ app, browser, s
     expect(kp("show-messages")).toContain(`%${n}: received notes.txt`);
     expect(show(`%${n}`, "#{pane_current_command}")).not.toBe("");
   });
-  // Unset: `uploads` under the pane's directory.
+  // Unset: `keepane-uploads` under the pane's directory.
   const cwd = show(`%${n}`, "#{pane_current_path}");
   await browser.reload();
-  await expect(browser.locator("#upload")).toHaveAccessibleName(`上传文件到 ${path.join(cwd, "uploads")}`);
+  await expect(browser.locator("#upload")).toHaveAccessibleName(`上传文件到 ${path.join(cwd, "keepane-uploads")}`);
   fs.rmSync(into, { recursive: true, force: true });
   // On a phone held upright the box is narrower beside the paper clip: its
   // hint stays on one line (cut at the edge), no second line half shown.

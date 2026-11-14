@@ -1474,7 +1474,7 @@ async fn upload_place(state: &State, pane: &str) -> Result<(std::path::PathBuf, 
 /// Where `pane`'s uploads go, from its directory (`cwd`), the machine it is
 /// on (`machine`: empty for this one), `web-upload-dir` and
 /// `web-upload-max` as `show-options` gives them (empty: their defaults,
-/// `uploads` and 2G). A refusal (its status and words) for another
+/// `keepane-uploads` and 2G). A refusal (its status and words) for another
 /// machine's pane, or a relative folder under a directory not known.
 fn upload_dir(
     pane: &str,
@@ -1486,7 +1486,11 @@ fn upload_dir(
     if !machine.is_empty() {
         return Err((400, format!("{pane} is a pane of {machine}: a file is written only to this machine's")));
     }
-    let dir = if dir.trim().is_empty() { "uploads".to_string() } else { crate::server::expand_home(dir.trim()) };
+    let dir = if dir.trim().is_empty() {
+        crate::config::WEB_UPLOAD_DIR.to_string()
+    } else {
+        crate::server::expand_home(dir.trim())
+    };
     let max = crate::config::size_bytes(max.trim()).filter(|m| *m > 0).unwrap_or(2 << 30);
     let dir = std::path::PathBuf::from(dir);
     if dir.is_absolute() {
@@ -1496,6 +1500,34 @@ fn upload_dir(
         return Err((400, format!("{pane}: its directory is not known (web-upload-dir is relative)")));
     }
     Ok((std::path::Path::new(cwd).join(dir), max))
+}
+
+/// What a folder keepane makes for uploads holds besides them: a
+/// `.gitignore` that leaves the whole folder out of git (`git status`
+/// stays as it was, nothing sent from a phone is committed by mistake).
+const UPLOAD_GITIGNORE: &str = "# Files sent from keepane's web page (web-upload-dir): left out of git.\n*\n";
+
+/// `dir` made ready for uploads: there already, it is left as it is; made
+/// here, it gets [`UPLOAD_GITIGNORE`] (never over one there: two uploads
+/// may make it at once). The `.gitignore` is a help, not the upload: one
+/// that cannot be written fails nothing.
+async fn upload_folder(dir: &std::path::Path) -> std::io::Result<()> {
+    if tokio::fs::metadata(dir).await.is_ok_and(|m| m.is_dir()) {
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(dir).await?;
+    let new = tokio::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(".gitignore")).await;
+    if let Ok(mut f) = new {
+        use tokio::io::AsyncWriteExt;
+        // Flushed: a tokio file dropped with a write still in flight may
+        // leave it unwritten (an empty `.gitignore`, git seeing everything).
+        let _: std::io::Result<()> = async {
+            f.write_all(UPLOAD_GITIGNORE.as_bytes()).await?;
+            f.flush().await
+        }
+        .await;
+    }
+    Ok(())
 }
 
 /// `POST /api/upload?pane=%N&name=…`: the body a file, written under the
@@ -1542,7 +1574,7 @@ async fn upload_into(stream: &mut TcpStream, req: &Request, peer: IpAddr, state:
             ),
         );
     }
-    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+    if let Err(e) = upload_folder(&dir).await {
         return Response::text(500, &format!("{}: {e}", dir.display()));
     }
     // The first free name, made new (never one there, even one another
@@ -1903,22 +1935,51 @@ mod tests {
         assert_eq!(tries, ["archive.tar.gz", "archive.tar (1).gz"]);
     }
 
-    /// Where a pane's uploads go: `uploads` under its directory unless told,
-    /// an absolute folder as it is (its directory then not needed), the
-    /// limit as shown or 2G; another machine's pane, or a relative folder
-    /// with no directory known, refused.
+    /// Where a pane's uploads go: `keepane-uploads` under its directory
+    /// unless told, an absolute folder as it is (its directory then not
+    /// needed), the limit as shown or 2G; another machine's pane, or a
+    /// relative folder with no directory known, refused.
     #[test]
     fn a_panes_uploads_go_under_its_directory_and_never_to_another_machine() {
         let here = std::env::temp_dir();
         let abs = here.join("keepane-in").to_string_lossy().into_owned();
         let cwd = here.join("proj").to_string_lossy().into_owned();
-        assert_eq!(upload_dir("%1", &cwd, "", "", ""), Ok((here.join("proj").join("uploads"), 2 << 30)));
+        assert_eq!(upload_dir("%1", &cwd, "", "", ""), Ok((here.join("proj").join("keepane-uploads"), 2 << 30)));
+        assert_eq!(upload_dir("%1", &cwd, "", " \n", ""), Ok((here.join("proj").join("keepane-uploads"), 2 << 30)));
         assert_eq!(upload_dir("%1", &cwd, "", "in", "300M\n"), Ok((here.join("proj").join("in"), 300 << 20)));
         assert_eq!(upload_dir("%1", "", "", &abs, "1G"), Ok((here.join("keepane-in"), 1 << 30)));
         let (status, why) = upload_dir("%1", &cwd, "10.0.0.2:7681", "", "").unwrap_err();
         assert!(status == 400 && why.contains("pane of 10.0.0.2:7681"), "{why}");
         let (status, why) = upload_dir("%1", "", "", "uploads", "").unwrap_err();
         assert!(status == 400 && why.contains("directory is not known"), "{why}");
+    }
+
+    /// A folder keepane makes for uploads (nested too) gets a `.gitignore`
+    /// that leaves it out of git; a folder there already is left as it is,
+    /// and a `.gitignore` there is never written over.
+    #[tokio::test]
+    async fn a_folder_made_for_uploads_is_left_out_of_git_and_one_there_is_left_alone() {
+        let base = std::env::temp_dir().join(format!("keepane-upfolder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let made = base.join("a").join("keepane-uploads");
+        upload_folder(&made).await.unwrap();
+        assert_eq!(std::fs::read_to_string(made.join(".gitignore")).unwrap(), UPLOAD_GITIGNORE);
+        assert!(UPLOAD_GITIGNORE.lines().any(|l| l == "*"), "the whole folder");
+        assert!(!base.join("a").join(".gitignore").exists(), "only in the folder for uploads");
+        // Again: the one there is kept as the user left it.
+        std::fs::write(made.join(".gitignore"), "mine\n").unwrap();
+        upload_folder(&made).await.unwrap();
+        assert_eq!(std::fs::read_to_string(made.join(".gitignore")).unwrap(), "mine\n");
+        // A folder there already (a project's own): nothing added to it.
+        let theirs = base.join("theirs");
+        std::fs::create_dir_all(&theirs).unwrap();
+        upload_folder(&theirs).await.unwrap();
+        assert!(!theirs.join(".gitignore").exists());
+        // A file where the folder would be: an error, nothing written.
+        let file = base.join("file");
+        std::fs::write(&file, "x").unwrap();
+        assert!(upload_folder(&file).await.is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]

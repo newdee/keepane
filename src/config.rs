@@ -201,7 +201,7 @@ pub struct Options {
     /// The most a `send-agents` pack may be, compressed (sent and taken in).
     pub link_agents_limit: u64,
     /// Where a file sent from the phone page goes (`web-upload-dir`): under
-    /// the pane's directory when relative.
+    /// the pane's directory when relative ([`WEB_UPLOAD_DIR`] unless told).
     pub web_upload_dir: String,
     /// The largest file the phone page takes (`web-upload-max`).
     pub web_upload_max: u64,
@@ -400,6 +400,11 @@ fn parse_size(name: &str, value: &str, lo: u64, hi: u64) -> Result<u64, String> 
         _ => Err(format!("bad {name} '{value}' (bytes, K, M or G; {} to {})", size_name(lo), size_name(hi))),
     }
 }
+
+/// Where files sent from the web page go unless `web-upload-dir` says: this
+/// folder under the pane's directory. A name of keepane's own, so that they
+/// are not mixed with a project's own `uploads`.
+pub const WEB_UPLOAD_DIR: &str = "keepane-uploads";
 
 /// A size as `show-options` gives it (`2G`, `300M`, bytes), in bytes.
 pub fn size_bytes(value: &str) -> Option<u64> {
@@ -631,7 +636,7 @@ impl Default for Options {
             link_clone_dir: "~/keepane".into(),
             link_push_limit: 200 * 1024 * 1024,
             link_agents_limit: 1024 * 1024 * 1024,
-            web_upload_dir: "uploads".into(),
+            web_upload_dir: WEB_UPLOAD_DIR.into(),
             web_upload_max: 2 * 1024 * 1024 * 1024,
             event_log: true,
             event_log_days: 30,
@@ -1463,10 +1468,11 @@ mod tests {
         o.set("link-push-limit", "300M").unwrap();
         assert_eq!(o.get("link-push-limit").as_deref(), Some("300M"));
         assert!(o.set("link-agents-limit", "1T").unwrap_err().contains("K, M or G"));
-        // Uploads from the phone page: `uploads` under the pane, 2G at most.
+        // Uploads from the phone page: `keepane-uploads` under the pane (a
+        // name of its own, not a project's `uploads`), 2G at most.
         assert_eq!(
             (o.get("web-upload-dir").as_deref(), o.get("web-upload-max").as_deref()),
-            (Some("uploads"), Some("2G"))
+            (Some("keepane-uploads"), Some("2G"))
         );
         o.set("web-upload-dir", r"C:\in").unwrap();
         o.set("web-upload-max", "512K").unwrap();
