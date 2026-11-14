@@ -5,6 +5,8 @@
 
 [中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)** · [FAQ](docs/FAQ.md)
 
+**Persistent terminal panes, each with its own inbox.**
+
 keepane is a terminal multiplexer. The programs in its panes
 keep running after the terminal connection closes, and panes can pass
 messages to each other through inboxes, on one computer or across two you

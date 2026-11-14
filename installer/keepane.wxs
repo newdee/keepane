@@ -36,7 +36,7 @@
              Compressed="yes"
              InstallScope="$(var.Scope)"
              InstallPrivileges="$(var.Privileges)"
-             Description="keepane $(var.Version) - panes that keep running and pass messages to each other" />
+             Description="keepane $(var.Version) - persistent terminal panes, each with its own inbox" />
     <!-- Installing a newer version replaces the old one in place. -->
     <MajorUpgrade DowngradeErrorMessage="A newer version of keepane is already installed." />
     <MediaTemplate EmbedCab="yes" />

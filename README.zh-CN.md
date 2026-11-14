@@ -5,6 +5,8 @@
 
 [English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)** · [常见问题](docs/FAQ.zh-CN.md)
 
+**持久化的终端 pane，各有自己的收件箱。**
+
 keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息，同一台电脑上可以，配过对的两台电脑之间也可以。常用的 tmux 按键、命令和配置文件可以继续使用。
 
 <p align="center">

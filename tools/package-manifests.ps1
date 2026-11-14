@@ -161,10 +161,10 @@ PackageName: keepane
 PackageUrl: https://github.com/$Repo
 License: MIT
 LicenseUrl: https://github.com/$Repo/blob/master/LICENSE
-ShortDescription: A terminal multiplexer whose panes keep running after you detach and can pass messages to each other, with tmux's keys and commands.
+ShortDescription: Persistent terminal panes, each with its own inbox: a terminal multiplexer with tmux's keys and commands.
 Description: |-
-  keepane is a terminal multiplexer whose panes keep running after you
-  detach and can pass messages to each other. A named pane gets messages in
+  keepane: persistent terminal panes, each with its own inbox. The programs
+  in them keep running after you detach. A named pane gets messages in
   an inbox and takes each one when it is ready: a shell runs it at its next
   prompt, a program reads it when it asks. Every message carries its sender
   and its task, and an event log and a dashboard show what became of it.
@@ -195,7 +195,7 @@ foreach ($pair in @(
 
 $scoop = [ordered]@{
     version     = $Version
-    description = "A terminal multiplexer whose panes keep running after you detach and can pass messages to each other, with tmux's keys and commands."
+    description = "Persistent terminal panes, each with its own inbox: a terminal multiplexer with tmux's keys and commands."
     homepage    = "https://github.com/$Repo"
     license     = "MIT"
     url         = "$base/$zipName"

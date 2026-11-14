@@ -2,7 +2,7 @@
 
 ## NAME
 
-keepane - a terminal multiplexer whose panes keep running and pass messages to each other
+keepane - persistent terminal panes, each with its own inbox
 
 ## SYNOPSIS
 

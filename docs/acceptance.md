@@ -6006,3 +6006,17 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | 机制存活 | `mutate-0661.ps1` 8 个：6 个抓到；"不写 `.gitignore`"的变异本身写错，编译不过（脚本问题）；"`.gitignore` 被覆盖"（`create_new` 换成 `create` + `truncate`）没抓到：等价变异，目录已存在时函数一开始就返回，走不到这一步，只有两个上传同时新建目录才会走到，两边写的内容相同，没有可测的差别。保留 `create_new`（不截断任何已有文件），记为等价 | 有发现（脚本），不计 |
 | 4 | 机制存活 + 全量 | 改好那个变异后 8 个重跑：7/7 非等价变异抓到（每个都确认重新编译过），1 个等价（见上）；跑完后 `src` 哈希与开跑前相同。Windows：653 / 11 / 162；网页 e2e 39/39；Linux：fmt ok、clippy 0、637 / 159；0 失败 | 干净 1/3 |
 | 5 | 真实环境 + 可复现性 + Linux | 真二进制 + `curl.exe` 连跑 2 次：每次 9/9，结果（去掉路径）哈希相同 E5EC52A05F0F6AE4；跑完立刻查到 1 个临时 keepane 进程，几秒后再查已退出（`kill-server` 后 server 还在退出），无残留。Windows 全量连跑 2 次：653 / 11 / 162，839 个测试结果差异 0。Linux：fmt ok、clippy 0、637 / 159；0 失败 | 干净 2/3 || 6 | 逻辑不变量 + 边界 + 全量 | 不变量：默认值只在 `WEB_UPLOAD_DIR` 一处（另 1 处是测试里用户设的相对目录）；`.gitignore` 只在 `create_dir_all` 新建之后写，且用 `create_new`；写 `.gitignore` 的错误不影响上传。真二进制边界 5/5：嵌套新目录 `in/phone` 只在叶子目录放、`git status` 为空；往新目录传名为 `.gitignore` 的文件存成 `.gitignore (1)`，keepane 的那份不被覆盖；目标位置是文件时回 500 并说出路径；空白值 `set` 拒绝、原值不变；`.`（pane 目录本身，已存在）不加 `.gitignore`。未发现问题。Windows：653 / 11 / 162；网页 e2e 39/39；Linux：fmt ok、clippy 0、637 / 159；0 失败 | 干净（3/3），验收通过（第 4–6 轮：机制存活、真实环境 + 可复现性、逻辑不变量 + 边界） |- 发布：v0.66.1（tag 在 0676392，其 CI run 43556788943 四项全过，macOS 真跑 10 步）。Release run 43557282707 成功，13 个文件；Homebrew formula run 43557952028 通过，3 个 sha256 与发布文件一致；manifests 已拉取（ff3b7f2）；winget 新开 PR #479962。重拍的图：make-demos 的 11 个镜头深浅各一遍（3492807，96 个文件；`detach` 重拍后逐字节相同），手机截图今天上午为 0.66.0 拍过、界面没变，未重拍。
+
+## 191. 一句话简介改为「持久化的终端 pane，各有自己的收件箱」
+
+- 用户要求：「网页的标题换一下，不要用pane一直在跑，太不像人类说的话了，比如可以这么说，Pane is always keeping这种，中文的话大概是持久化的终端Pane（窗格），有各自的收件箱」；指出 `Pane is always keeping` 语法不通、给出方案后「改吧，按推荐来，简介也一起统一」。
+- 英文 `Persistent terminal panes, each with its own inbox.`，中文 `持久化的终端 pane，各有自己的收件箱。`（不加"（窗格）"：标题里括号显得重，网站中文版其余地方都写 pane）。
+- 改动：网站 `docs/index.html`（`<title>`、description、og:description、`<h1>`）、`docs/site.js`（中文标题）；README 两种语言（链接下面加一行加粗的简介）；`Cargo.toml` description；`installer/keepane.wxs`；man 的 NAME 行；`tools/package-manifests.ps1`（winget ShortDescription、Description 首句、scoop）和当前的 `packaging/scoop/keepane.json`；`src/main.rs`、`src/lib.rs` 的模块注释。旧版本的 winget manifests 是历史记录，不改；正文里描述具体行为的 "keep running"（"关掉终端，程序照常运行"等）不改。GitHub 仓库的 About 是公开内容，没有改。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 0 | 实现 | agent-browser 打开本地网站，桌面 1280 宽和手机 390 宽、中英文各截一张：标题两行（英文手机三行），不溢出、不遮挡；`document.title` 为新文字；`node --check docs/site.js` 通过 | — |
+| 1 | 静态一致性 + 全量 | 旧简介（5 种写法）在仓库里 0 处（不算旧 winget manifests 和验收记录）；新简介在 11 个文件里。scoop JSON 能解析、`package-manifests.ps1` 解析错误 0、`keepane.wxs` 是合法 XML。fmt 0、clippy 0；Windows：653 / 11 / 162；0 失败 | 干净 1/3 |
+| 2 | 机制存活 + 全量 | 用改后的 `package-manifests.ps1` 按 0.66.1 的发布文件重新生成到临时目录：与已发布的 0.66.1 相比，`newdee.keepane.yaml`、`installer.yaml` 0 行不同，`locale.en-US.yaml` 只有简介 3 行不同，scoop 只有 description 1 行不同；手改的 `packaging/scoop/keepane.json` 与生成的逐字节相同。Windows：653 / 11 / 162；0 失败 | 干净 2/3 |
+| 3 | 可复现性 + 静态 + Linux | 生成两次，全部文件哈希相同；README、man 新增散文行超过 76 列 0 行。Linux：fmt ok、clippy 0、637 / 159；0 失败 | 干净（3/3），验收通过 |
+- 网站随推送由 Pages 部署；`Cargo.toml`、安装包、winget 的简介在下一次发布时生效。
