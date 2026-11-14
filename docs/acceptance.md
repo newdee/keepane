@@ -6047,3 +6047,4 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 2 | 机制存活 + 全量 | 加引号的 `winget validate` 退出码 0，去掉引号的退出码 -1978335191（与 CI 一致）。Windows：657 / 11 / 163；0 失败 | 干净 2/3 |
 | 3 | 可复现性 + Linux | 生成两次，全部文件哈希相同，两次 `winget validate` 都是 0。Linux：fmt ok、clippy 0、641 / 160；0 失败 | 干净（3/3），验收通过 |
 - 以后改 `tools/package-manifests.ps1` 的文字：验收里必须在本机运行 `winget validate`。
+- 发布：v0.67.0（包含第 191–193 条）。第一次 tag 在 bf85945，Release run 43570652792 停在 winget 校验（见第 193 条），什么都没发布；修好后经用户同意把 tag 移到 c3b295d（其 CI run 43579728039 四项全过）。Release run 43580194568 成功，13 个文件；Homebrew formula run 43580896795 通过，3 个 sha256 与发布文件一致；manifests 已拉取（b25df8d，`ShortDescription` 带引号）；winget 新开 PR #480056。重拍的图：时钟的动画和两张截图（深浅各一，356f1f8）。
