@@ -149,6 +149,8 @@ ManifestType: installer
 ManifestVersion: 1.12.0
 "@
 
+# ShortDescription is quoted: it holds `: `, which YAML takes for a key
+# and value unquoted (0.67.0's release stopped at `winget validate`).
 $localeYaml = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: newdee.keepane
@@ -161,7 +163,7 @@ PackageName: keepane
 PackageUrl: https://github.com/$Repo
 License: MIT
 LicenseUrl: https://github.com/$Repo/blob/master/LICENSE
-ShortDescription: Persistent terminal panes, each with its own inbox: a terminal multiplexer with tmux's keys and commands.
+ShortDescription: "Persistent terminal panes, each with its own inbox: a terminal multiplexer with tmux's keys and commands."
 Description: |-
   keepane: persistent terminal panes, each with its own inbox. The programs
   in them keep running after you detach. A named pane gets messages in
