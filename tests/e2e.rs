@@ -7439,7 +7439,8 @@ async fn the_chart_shows_the_paired_machines() {
     let me = keepane::sysinfo::hostname();
     let text = c.text();
     assert!(text.contains("this machine · 1 session"), "{text}");
-    let shown: String = me.chars().take(28).collect();
+    // A block's title is cut with `…` (CI's macOS names are long): its start.
+    let shown: String = me.chars().take(20).collect();
     assert!(text.matches(shown.as_str()).count() >= 2, "both machines by their name (one machine here): {text}");
     // `s` on this machine's pane shares it with the one machine paired: the
     // tree marks it, and that machine sees it; `s` again takes it back.
