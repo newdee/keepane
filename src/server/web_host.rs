@@ -140,6 +140,7 @@ impl WebHost {
     pub(super) fn read_only(&self) -> bool {
         self.options.read_only
     }
+
     /// Some phone shows pane `pane` (`%N`) now.
     pub(super) fn watching(&self, pane: &str) -> bool {
         self.peers.iter().any(|p| p.watching.iter().any(|w| w == pane))
