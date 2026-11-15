@@ -219,10 +219,19 @@ impl Server {
                     if let Some((parser, at)) = models.remove(&rp.id) {
                         p.set_remote_model(parser, at);
                     }
-                    p.title = rp.title.clone();
-                    p.command = rp.command.clone();
-                    p.cwd = rp.cwd.clone();
+                    // What that machine says is shown here (the status line,
+                    // `list-panes`, the dashboard): no control characters.
+                    p.title = super::link_tree::printable(&rp.title, 1024);
+                    p.command = super::link_tree::printable(&rp.command, 1024);
+                    p.cwd = rp.cwd.as_deref().map(|c| super::link_tree::printable(c, 4096));
                     p.exit_code = rp.exited;
+                    // Its name there, to be read here (`#{pane_name}`, `C-b v`);
+                    // `%name` never finds it (`pane_by_name`), and a rename
+                    // is done there. A name no keepane gives (control
+                    // characters, say) is none. Its work mode stays that
+                    // machine's: one here would have messages delivered into
+                    // it from here.
+                    p.actor.name = rp.name.clone().filter(|n| super::actor::check_name(n).is_ok());
                     ids.push(p.id);
                     w.panes.push(p);
                 }
@@ -235,7 +244,7 @@ impl Server {
                     w.active = theirs;
                 }
                 w.last_pane = w.last_pane.filter(|id| ids.contains(id));
-                w.name = rw.name.clone();
+                w.name = super::link_tree::printable(&rw.name, 256);
                 let placed = rw
                     .panes
                     .iter()
@@ -289,7 +298,7 @@ impl Server {
             kept.insert(sid);
             let (was, last) = chosen.get(&sid).copied().unwrap_or((None, None));
             let s = self.session_mut(sid).expect("just found or made");
-            s.name = format!("{}@{addr}", rs.name);
+            s.name = format!("{}@{addr}", super::link_tree::printable(&rs.name, 256));
             if let Some(r) = s.remote.as_mut() {
                 r.addr = addr.to_string();
             }

@@ -181,6 +181,15 @@ pub fn split_remote(s: &str) -> Option<(&str, &str)> {
     valid_hostport(machine).then_some((machine, rest))
 }
 
+/// The `host:port` of a URL (`http://100.64.0.2:7681/#k=…`), as the paired
+/// machines know this one; None for one without a port.
+pub fn hostport_of_url(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"))?;
+    let end = rest.find(['/', '#', '?']).unwrap_or(rest.len());
+    let hp = &rest[..end];
+    valid_hostport(hp).then_some(hp)
+}
+
 /// `host:port`, `[v6]:port`: a name or address, and a port from 1 up.
 pub fn valid_hostport(s: &str) -> bool {
     let (host, port) = if let Some(r) = s.strip_prefix('[') {
@@ -624,8 +633,15 @@ impl Answer {
     }
 
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.body).trim().to_string()
+        shown(&self.body).trim().to_string()
     }
+}
+
+/// What another machine answered, as text to show here: line breaks and
+/// tabs kept, every other control character left out (an escape sequence
+/// in it would reach the terminal it is printed in).
+pub fn shown(body: &[u8]) -> String {
+    String::from_utf8_lossy(body).chars().filter(|c| !c.is_control() || matches!(c, '\n' | '\t')).collect()
 }
 
 /// One HTTP request to `addr` (`host:port`), the answer read to its end.
@@ -750,6 +766,26 @@ mod tests {
             assert_eq!(split_remote(local), None, "{local}");
         }
         assert!(valid_hostport("localhost:1") && !valid_hostport("localhost") && !valid_hostport(":80"));
+    }
+
+    #[test]
+    fn what_another_machine_answers_is_shown_without_its_escapes() {
+        let body = "host\tmac\x1b]52;c;aGk=\x07\r\nline two \u{9b}2J\n";
+        assert_eq!(shown(body.as_bytes()), "host\tmac]52;c;aGk=\nline two 2J\n");
+        let a = Answer { status: 200, headers: Vec::new(), body: b"  ok\x1b[31m  \n".to_vec() };
+        assert_eq!(a.text(), "ok[31m");
+        assert_eq!(shown(b"\xff\xfe"), "\u{fffd}\u{fffd}", "not UTF-8: as lossy text");
+    }
+
+    #[test]
+    fn a_urls_host_and_port_are_read() {
+        assert_eq!(hostport_of_url("http://100.64.0.2:7681/#k=abc"), Some("100.64.0.2:7681"));
+        assert_eq!(hostport_of_url("https://[fd7a::1]:7681/x"), Some("[fd7a::1]:7681"));
+        assert_eq!(hostport_of_url("http://box:7681"), Some("box:7681"));
+        assert_eq!(hostport_of_url("http://box:7681#k"), Some("box:7681"));
+        assert_eq!(hostport_of_url("http://box/"), None, "no port");
+        assert_eq!(hostport_of_url("ftp://box:21/"), None);
+        assert_eq!(hostport_of_url(""), None);
     }
 
     #[test]

@@ -68,7 +68,7 @@ pub fn needs_yes(argv: &[String]) -> bool {
 }
 
 /// `list-panes -F` for the board: one pane a line, tab-separated.
-pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}\t#{pane_state}\t#{pane_ssh_host}\t#{pane_machine}";
+pub const PANE_FORMAT: &str = "#{pane_address}\t#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_name}\t#{pane_work_mode}\t#{pane_idle}\t#{pane_inbox}\t#{pane_status}\t#{pane_current_command}\t#{pane_message}\t#{pane_dead}\t#{pane_current_path}\t#{pane_pid}\t#{pane_start_time}\t#{pane_activity}\t#{pane_width}\t#{pane_height}\t#{pane_dead_status}\t#{pane_unheard}\t#{agent}\t#{agent_model}\t#{agent_cost}\t#{agent_tokens}\t#{agent_context}\t#{agent_cpu}\t#{agent_mem}\t#{agent_tools}\t#{agent_turns}\t#{git_branch}\t#{git_marks}\t#{pane_state}\t#{pane_ssh_host}\t#{pane_machine}\t#{pane_host}\t#{pane_watch}";
 
 /// The agent a pane runs, its figures as the `agent_*` formats write them.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -187,6 +187,9 @@ pub struct PaneRow {
     /// The machine whose pane it is, for one copied here (`#{pane_machine}`):
     /// its directory is there.
     pub machine: String,
+    /// The name of the machine whose pane it is (`#{pane_host}`): this
+    /// one's, or the other's once it said it.
+    pub host: String,
 }
 
 impl PaneRow {
@@ -205,10 +208,12 @@ impl PaneRow {
             idle: f[6] == "1",
             inbox: f[7].parse().unwrap_or(0),
             status: f[8].into(),
-            // An `ssh` in it says where it goes (from a server that knows).
-            command: match f.get(32).filter(|h| !h.is_empty()) {
-                Some(host) => format!("ssh {host}"),
-                None => f[9].into(),
+            // A watch of another machine's pane says whose; an `ssh` in it
+            // says where it goes (from a server that knows).
+            command: match (f.get(35).filter(|w| !w.is_empty()), f.get(32).filter(|h| !h.is_empty())) {
+                (Some(watched), _) => format!("watch {watched}"),
+                (None, Some(host)) => format!("ssh {host}"),
+                (None, None) => f[9].into(),
             },
             message: f[10].into(),
             dead: f[11] == "1",
@@ -229,6 +234,7 @@ impl PaneRow {
                 .join(" "),
             state_word: f.get(31).copied().unwrap_or_default().to_string(),
             machine: f.get(33).copied().unwrap_or_default().to_string(),
+            host: f.get(34).copied().unwrap_or_default().to_string(),
         })
     }
 
@@ -292,9 +298,21 @@ impl PaneRow {
     fn matches(&self, filter: &str) -> bool {
         let f = filter.to_lowercase();
         let agent = self.agent.as_ref().map(|a| format!("{} {}", a.kind, a.model)).unwrap_or_default();
-        [&self.address, &self.session, &self.name, &self.mode, &self.status, &self.command, &self.path, &agent]
-            .iter()
-            .any(|x| x.to_lowercase().contains(&f))
+        // The machine's name and address too: `/macbook` keeps its panes.
+        [
+            &self.address,
+            &self.session,
+            &self.name,
+            &self.mode,
+            &self.status,
+            &self.command,
+            &self.path,
+            &agent,
+            &self.host,
+            &self.machine,
+        ]
+        .iter()
+        .any(|x| x.to_lowercase().contains(&f))
     }
 }
 
@@ -534,6 +552,9 @@ pub struct Board {
     pub height: u16,
     /// Unix seconds, from the refresh (how long ago panes started, went quiet).
     pub now: i64,
+    /// Where the paired machines reach this one (`100.64.0.2:7681`), while
+    /// the phones' page is served: said by this machine's heading.
+    pub address: Option<String>,
     /// How many are connected to the phones' page, while it is served.
     pub web: Option<usize>,
     /// The Trace tab shows every turn open, not only the latest (`e`).
@@ -775,6 +796,7 @@ impl Board {
             height,
             now: 0,
             web: None,
+            address: None,
             trace_all: false,
             scroll_most: std::cell::Cell::new(0),
             machine: machine::Machine::default(),
@@ -843,7 +865,16 @@ impl Board {
     }
 
     /// New pane rows from the server; the chosen pane stays chosen.
-    pub fn set_rows(&mut self, rows: Vec<PaneRow>) {
+    pub fn set_rows(&mut self, mut rows: Vec<PaneRow>) {
+        // By machine: this one's first, then each other's in the order its
+        // first pane came; the sessions in each as they came.
+        let mut machines: Vec<String> = vec![String::new()];
+        for r in &rows {
+            if !machines.contains(&r.machine) {
+                machines.push(r.machine.clone());
+            }
+        }
+        rows.sort_by_key(|r| machines.iter().position(|m| *m == r.machine));
         self.rows = rows;
         self.chosen = self.chosen_id();
     }
@@ -869,6 +900,7 @@ impl Board {
             .starts_with("serving ")
             .then(|| first.rsplit(" · ").next()?.strip_suffix(" connected")?.parse().ok())
             .flatten();
+        self.address = crate::web::status_url(status).and_then(crate::link::hostport_of_url).map(String::from);
     }
 
     /// Page 2's list, as `share -l -J` gave it; the share picked stays
@@ -1707,7 +1739,8 @@ impl Board {
     }
 
     /// The pane table in `width` columns: what each column is (a row that
-    /// stays on top), the session headings and panes, each line with its
+    /// stays on top), the machine headings (panes of more than one machine
+    /// only), the session headings and panes, each line with its
     /// pane, and the first line shown in the `rows` below the heading so
     /// the chosen pane is in view.
     ///
@@ -1771,11 +1804,26 @@ impl Board {
             paint("2", &head)
         });
         let mut table: Rows = Vec::new();
+        // Panes of more than one machine: each machine's heading, its
+        // sessions under it (their `@host:port` said by the heading).
+        let grouped = shown.iter().any(|r| r.machine != shown[0].machine);
+        let mut machine = None;
         let mut session = None;
         for (i, r) in shown.iter().enumerate() {
+            if grouped && machine != Some(&r.machine) {
+                machine = Some(&r.machine);
+                session = None;
+                table.push((None, self.machine_heading(r)));
+            }
             if session != Some(&r.session) {
                 session = Some(&r.session);
-                table.push((None, paint("1;34", &r.session)));
+                let line = if grouped {
+                    let name = r.session.strip_suffix(&format!("@{}", r.machine)).filter(|_| !r.machine.is_empty());
+                    format!("  {}", paint("1;34", name.unwrap_or(&r.session)))
+                } else {
+                    paint("1;34", &r.session)
+                };
+                table.push((None, line));
             }
             let mut line: String = cols.iter().map(|c| c.cell(&c.cells[i]) + " ").collect();
             line.push_str(&format!(" {}", what_of(r)));
@@ -1784,6 +1832,20 @@ impl Board {
         let at = table.iter().position(|(id, _)| id.is_some() && *id == chosen).unwrap_or(0);
         let room = rows.saturating_sub(usize::from(heading.is_some()));
         (window_start(at, table.len(), room), heading, table)
+    }
+
+    /// A machine's heading in the pane table: its name, then its address;
+    /// this machine's says so. A machine that has not said its name yet is
+    /// its address.
+    fn machine_heading(&self, r: &PaneRow) -> String {
+        let (name, at) = if r.machine.is_empty() {
+            let at =
+                self.address.as_ref().map_or_else(|| "this machine".to_string(), |a| format!("{a} · this machine"));
+            (r.host.as_str(), at)
+        } else {
+            (r.host.as_str(), r.machine.clone())
+        };
+        if name.is_empty() { paint("1;35", &at) } else { format!("{} {}", paint("1;35", name), paint("2", &at)) }
     }
 
     fn panes_box(&self, r: Rect) -> Vec<String> {
@@ -3896,6 +3958,9 @@ mod tests {
             agent_tools: "4".into(),
             agent_turns: "2".into(),
             pane_machine: "10.0.0.2:7681".into(),
+            pane_host: "macbook.local".into(),
+            pane_watch: "raqs@desk".into(),
+            pane_ssh_host: "web1".into(),
             ..Default::default()
         };
         let segs = crate::format::expand(
@@ -3906,7 +3971,8 @@ mod tests {
             chrono::Local::now(),
         );
         let r = PaneRow::parse(&crate::format::plain(&segs)).unwrap();
-        assert_eq!((r.id.as_str(), r.machine.as_str()), ("%7", "10.0.0.2:7681"));
+        assert_eq!((r.id.as_str(), r.machine.as_str(), r.host.as_str()), ("%7", "10.0.0.2:7681", "macbook.local"));
+        assert_eq!(r.command, "watch raqs@desk", "a watch says whose pane it shows");
         let a = r.agent.unwrap();
         let got = [&a.kind, &a.model, &a.cost, &a.tokens, &a.context, &a.cpu, &a.mem, &a.tools, &a.turns];
         assert_eq!(got, ["codex", "gpt-5.5", "$0.06", "27k", "5%", "3%", "120M", "4", "2"]);
@@ -3925,6 +3991,66 @@ mod tests {
             chrono::Local::now(),
         );
         assert_eq!(PaneRow::parse(&crate::format::plain(&segs)).unwrap().agent, None);
+    }
+
+    /// Panes of other machines (sessions copied here): the table is by
+    /// machine, this one first, each heading its name and address, its
+    /// sessions under it without their `@host:port`; one machine alone has
+    /// the table as before.
+    #[test]
+    fn the_panes_are_by_machine_when_there_are_more_than_one() {
+        let on = |r: PaneRow, machine: &str, host: &str| PaneRow { machine: machine.into(), host: host.into(), ..r };
+        let mac = "10.0.0.2:7681";
+        let mut b = Board::new(160, 40);
+        b.now = 2_000;
+        b.set_web("serving http://100.64.0.1:7681/#k=abc · since 14:02 · 0 connected");
+        assert_eq!(b.address.as_deref(), Some("100.64.0.1:7681"));
+        // Copied sessions come where the server has them: among this
+        // machine's.
+        b.set_rows(vec![
+            on(row("%1", "work", "lead", "ai", false, 0), "", "desk"),
+            on(row("%9", &format!("Dfine@{mac}"), "raqs", "normal", false, 0), mac, "macbook.local"),
+            on(row("%3", "ops", "", "normal", false, 0), "", "desk"),
+            on(row("%12", "x@10.0.0.3:7681", "", "normal", false, 0), "10.0.0.3:7681", ""),
+        ]);
+        let (_, _, table) = b.pane_table(30, 160);
+        let lines: Vec<String> = table.iter().map(|(_, l)| strip(l).trim_end().to_string()).collect();
+        let heads: Vec<&str> =
+            table.iter().zip(&lines).filter(|((id, _), _)| id.is_none()).map(|(_, l)| l.as_str()).collect();
+        assert_eq!(
+            heads,
+            [
+                "desk 100.64.0.1:7681 · this machine",
+                "  work",
+                "  ops",
+                "macbook.local 10.0.0.2:7681",
+                "  Dfine",
+                // Its name not said yet: its address.
+                "10.0.0.3:7681",
+                "  x",
+            ],
+            "{lines:#?}"
+        );
+        let ids: Vec<&str> = table.iter().filter_map(|(id, _)| id.as_deref()).collect();
+        assert_eq!(ids, ["%1", "%3", "%9", "%12"], "each pane under its machine");
+        // j goes down the table as drawn.
+        b.chosen = Some("%3".into());
+        b.key(Key::ch('j'));
+        assert_eq!(b.chosen_row().unwrap().id, "%9");
+        // Not served: this machine's heading says only that it is this one.
+        b.set_web("");
+        let (_, _, table) = b.pane_table(30, 160);
+        assert_eq!(strip(&table[0].1), "desk this machine");
+        // A filter by the machine's name keeps its panes, which are then one
+        // machine's: no headings.
+        b.filter = "macbook".into();
+        let (_, _, table) = b.pane_table(30, 160);
+        let lines: Vec<String> = table.iter().map(|(_, l)| strip(l).trim_end().to_string()).collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0], format!("Dfine@{mac}"));
+        // One machine alone: the table as before, no heading.
+        let (_, _, table) = board().pane_table(30, 160);
+        assert_eq!(strip(&table[0].1), "work");
     }
 
     /// While the phones' page is served, the pane panel says how many are

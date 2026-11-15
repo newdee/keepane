@@ -836,12 +836,14 @@ impl Grid {
         if n != 0 && n != usize::from(size.rows) {
             return None;
         }
-        let rows = (0..n).map(|_| crate::row::Row::read_snap(r, size.cols)).collect::<Option<Vec<_>>>()?;
+        let rows = (0..n).map(|_| crate::row::Row::read_snap(r, Some(size.cols))).collect::<Option<Vec<_>>>()?;
         let n = r.u32()? as usize;
         if n > scrollback_len {
             return None;
         }
-        let scrollback = (0..n).map(|_| crate::row::Row::read_snap(r, size.cols)).collect::<Option<_>>()?;
+        // (keepane) Each row of the scrollback at its own width: the width
+        // the screen had when it scrolled off.
+        let scrollback = (0..n).map(|_| crate::row::Row::read_snap(r, None)).collect::<Option<_>>()?;
         let inside = |p: Pos| p.row < size.rows && p.col <= size.cols;
         if !inside(cur) || !inside(saved) || scroll_top > scroll_bottom || scroll_bottom >= size.rows {
             return None;

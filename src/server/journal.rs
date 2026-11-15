@@ -848,6 +848,41 @@ mod tests {
         }
         assert!(copy.screen_mut().restore(&before), "still usable after damaged bytes");
     }
+
+    /// A pane made narrower or wider after lines went into its scrollback
+    /// (a split, a window resized): the scrollback keeps the width each
+    /// line had, and a snapshot of it reads back as it is. (Up to 0.67 the
+    /// reader wanted every row at the screen's width: a copy of such a pane
+    /// never started, asking for a snapshot again every half a minute.)
+    #[test]
+    fn a_snapshot_of_a_pane_resized_after_its_scrollback_reads_back() {
+        let history: String = (0..40).map(|i| format!("history line {i} {}\r\n", "w".repeat(i % 70))).collect();
+        for (cols, rows) in [(40, 24), (120, 24), (80, 10), (30, 30)] {
+            let mut original = vt100::Parser::new(24, 80, 100);
+            original.process(history.as_bytes());
+            original.screen_mut().set_size(rows, cols);
+            original.process(b"after the resize\r\n");
+            // Resized once more: rows of three widths.
+            original.screen_mut().set_size(rows, cols + 7);
+            original.process(&(0..30).map(|i| format!("then {i}\r\n")).collect::<String>().into_bytes());
+            let snap = original.screen().snapshot();
+            let mut copy = vt100::Parser::new(5, 5, 0);
+            assert!(copy.screen_mut().restore(&snap), "{cols}x{rows}");
+            assert_eq!(copy.screen().snapshot(), snap, "the same, read back, {cols}x{rows}");
+            assert_eq!(copy.screen().contents(), original.screen().contents());
+            // Fed the same after, the same still, scrollback included.
+            let more = b"\x1b[1;32mmore\x1b[0m\r\nand more\r\n";
+            original.process(more);
+            copy.process(more);
+            assert_eq!(copy.screen().snapshot(), original.screen().snapshot(), "fed after, {cols}x{rows}");
+            for off in [5, 20, 60] {
+                original.screen_mut().set_scrollback(off);
+                copy.screen_mut().set_scrollback(off);
+                assert_eq!(copy.screen().contents(), original.screen().contents(), "scrolled back {off}");
+            }
+        }
+    }
+
     #[test]
     fn the_preview_leaves_escapes_out() {
         assert_eq!(preview(b"\x1b[1;32mok\x1b[0m\r\nnext\x1b]0;title\x07!", 60), "ok⏎next!");

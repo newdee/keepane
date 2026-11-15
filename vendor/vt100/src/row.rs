@@ -520,10 +520,15 @@ impl Row {
         }
     }
 
-    pub(crate) fn read_snap(r: &mut crate::snapshot::Reader, cols: u16) -> Option<Self> {
-        if r.u16()? != cols {
+    /// `cols`: the width a row on screen has. A row of the scrollback
+    /// (`None`) has the width it had when it scrolled off: a screen resized
+    /// since leaves it as it was (`Grid::set_size`).
+    pub(crate) fn read_snap(r: &mut crate::snapshot::Reader, cols: Option<u16>) -> Option<Self> {
+        let width = r.u16()?;
+        if cols.is_some_and(|c| c != width) || width == 0 {
             return None;
         }
+        let cols = width;
         let wrapped = match r.u8()? {
             0 => false,
             1 => true,

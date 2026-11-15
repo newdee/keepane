@@ -7410,6 +7410,7 @@ async fn the_chart_shows_the_paired_machines() {
     b.cli(&["new", "-d", "-s", "wb", "-n", "edit"]).await;
     b.cli(&["split-window", "-t", "wb"]).await;
     b.wait_capture("wb:0.1", "shell prompt", |t| t.contains("keepane>")).await;
+    b.cli(&["rename-pane", "-t", "wb:0.1", "worker"]).await;
     let web = async |h: &Harness| {
         let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
         assert_eq!(code, 0, "{err}");
@@ -7426,19 +7427,20 @@ async fn the_chart_shows_the_paired_machines() {
     assert_eq!(code, 0, "{err}");
     assert!(out.starts_with(&format!("wb shared with {addr_a}: it sees them")), "{out}");
     // root, this machine, wa, wa:0, its pane; b, wb, wb:0 (edit), its two
-    // panes: 10, the cursor on wa's pane (5).
+    // panes: 10, the cursor on wa's pane (5). Each machine's block: its
+    // name, then where it is (b's once it said its name).
     c.prefix('w').await;
     let at = |n: usize| move |s: &vt100::Screen| s.contents().contains(&format!("[{n}/10] hjkl move"));
     c.wait_for("the machines", |s| {
         let t = s.contents();
-        at(5)(s)
-            && t.matches("host").count() == 2
-            && t.contains(&addr_b)
-            && t.contains("1 session")
-            && !t.contains("asking")
+        at(5)(s) && t.matches("host").count() == 2 && t.contains(&format!("{addr_b} · 1 session"))
     })
     .await;
-    assert!(c.text().contains("this machine · 1 session"), "{}", c.text());
+    let me = keepane::sysinfo::hostname();
+    let text = c.text();
+    assert!(text.contains("this machine · 1 session"), "{text}");
+    let shown: String = me.chars().take(28).collect();
+    assert!(text.matches(shown.as_str()).count() >= 2, "both machines by their name (one machine here): {text}");
     // `s` on this machine's pane shares it with the one machine paired: the
     // tree marks it, and that machine sees it; `s` again takes it back.
     assert!(c.text().contains("s share"), "the hint says s: {}", c.text());
@@ -7488,12 +7490,16 @@ async fn the_chart_shows_the_paired_machines() {
     b.wait_capture("wb:0.1", "the echo", |t| t.matches("chart-marker").count() >= 2).await;
     c.enter().await;
     let host = addr_b.rsplit_once(':').unwrap().0.to_string();
-    c.wait_for("the watch window", |s| {
-        let t = s.contents();
-        t.contains(&format!("{host}/%")) && t.matches("chart-marker").count() >= 2
-    })
-    .await;
+    c.wait_for("the watch window", |s| s.contents().matches("chart-marker").count() >= 2).await;
+    // Named after the pane's name there and that machine's (short) name;
+    // `C-b v` reads the same as what it runs.
+    let label = format!("worker@{}", me.split('.').next().unwrap());
     assert_eq!(a.cli(&["list-windows", "-t", "wa"]).await.1.lines().count(), 2, "one window more");
+    let (_, watch, _) =
+        a.cli(&["display-message", "-p", "-t", "wa:1", "#{window_name}|#{pane_watch}|#{pane_host}"]).await;
+    assert_eq!(watch.trim(), format!("{label}|{label}|{me}"));
+    let (_, plain, _) = a.cli(&["display-message", "-p", "-t", "wa:0", "#{pane_watch}|#{pane_host}"]).await;
+    assert_eq!(plain.trim(), format!("|{me}"), "a shell watches nothing");
     // Enter on it again goes to that window: no third one.
     c.prefix('w').await;
     c.wait_for("the chart", |s| s.contents().contains("hjkl move") && !s.contents().contains("asking")).await;
@@ -7539,7 +7545,7 @@ async fn the_chart_shows_the_paired_machines() {
     b.cli(&["kill-server"]).await;
     c.wait_for("the watch says it", |s| !s.contents().contains("chart-marker")).await;
     c.prefix('w').await;
-    c.wait_for("offline", |s| s.contents().contains("1 session · offline")).await;
+    c.wait_for("offline", |s| s.contents().contains(&format!("{addr_b} · offline"))).await;
     c.type_str("q").await;
     a.cli(&["kill-server"]).await;
 }
@@ -7981,6 +7987,17 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     assert_eq!(a.cli(&["send-keys", "-t", &there, "echo typed-from-a", "Enter"]).await.0, 0);
     b.wait_capture("wb:0.0", "what the copy typed", |t| t.matches("typed-from-a").count() >= 2).await;
     same("typed-from-a").await;
+    // A pane's name there is its name here (renamed from here: done there);
+    // `%name` here is still this machine's. Its machine's name, once said.
+    assert_eq!(a.cli(&["rename-pane", "-t", &there, "copied-name"]).await.0, 0);
+    let (_, real, _) = b.cli(&["display-message", "-p", "-t", "wb:0.0", "#{pane_name}"]).await;
+    assert_eq!(real.trim(), "copied-name", "renamed there");
+    let me = keepane::sysinfo::hostname();
+    a.wait_for_cli("its name here", &["display-message", "-p", "-t", &there, "#{pane_name}|#{pane_host}"], |_, out| {
+        out.trim() == format!("copied-name|{me}")
+    })
+    .await;
+    assert_ne!(a.cli(&["has-session", "-t", "%copied-name"]).await.0, 0, "%name is this machine's");
     // What changes its shape is done there, asked from here: a split there
     // (and here the eye goes to the new pane), a zoom, a kill.
     let panes_b = async || b.cli(&["list-panes", "-t", "wb"]).await.1.lines().count();

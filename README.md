@@ -161,7 +161,9 @@ processes of the same user from each other.
 ## The dashboard
 
 `C-b v` (a popup) or `keepane dashboard` (any terminal) lays everything out in
-panels, lazygit style. On the left: `[1]` every pane, grouped by session, with
+panels, lazygit style. On the left: `[1]` every pane, grouped by session
+(and first by machine while sessions of another machine are copied here:
+each machine's name and address over its sessions), with
 its work mode, whether it is free, its inbox, how long it has been quiet and
 its program (or its agent's cost and context, the total in the title), under
 named columns, each colour saying one thing (free green, busy yellow,
@@ -541,7 +543,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `d` | detach |
 | `?` | list key bindings. This and other output of more lines than the window (`:show-messages`, `:show-prompt-history`) opens at its end, as tmux's view mode does, and scrolls: ↑ ↓ or `j` `k`, PgUp PgDn, `g` `G`, the wheel; `/` `?` search it (the hit in inverse), `n` `N` go on; any other key closes it |
 | (wait) | after the prefix, a key not pressed within half a second brings up a panel of what the keys do, by group (panes, windows, sessions, tools, and keys you bound yourself); the key then works as ever (`prefix-hint`, `prefix-hint-delay`) |
-| `s` / `w` | pick a session / a window, `w` down to every pane. By default a chart: `keepane` centred on top, the sessions on the row under it, then the windows of the session you are on, then that window's panes, each row spread across (a row wider than the screen scrolls, `‹` `›` at its ends), each an open box in its kind's colour (a session blue, a window purple, a pane green, the selected one yellow; its name in the text's colour, the rest faint) with what it is in its top border (`host`, `session`, `window`, `pane`); `h` `l` or ← → move along a row and the rows under it follow, `k` or ↑ goes to the parent, `j` or ↓ to the current window or the active pane. `a` opens every node at once, each parent over its own; when that does not fit the boxes get narrower, then become one line each, then just their numbers, and what is still too wide scrolls to the selection (`a` again: only the branch). Paired with other machines (`keepane link`, below), a row of machines comes under `keepane`, this one first: ← → on it shows another machine's sessions, windows and panes (asked of it every 5 seconds while the chart is open; `offline` when it does not answer), and Enter on one of its panes opens a window watching it live (`keepane link watch`, below); only what that machine shares with this one is there (`link share`, below). `s` shares a session, window or pane of this machine with the paired machine (a menu asks which when there are several), or takes it back; shared ones read `shared`. `v` turns it into a tree of blocks, one a line (↑ ↓ the parent and the first child, ← → along the same level, `-` / `+` fold and unfold a session or a window), then the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold), then the chart again. In the tree and the list `j` `k` go line by line; in all three `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `D` (or Delete) kills them and also forgets a session's save, so that `resume` does not bring it back. On a session both ask first (y/n). `set -g choose-tree-style tree` (or `list`) opens it that way |
+| `s` / `w` | pick a session / a window, `w` down to every pane. By default a chart: `keepane` centred on top, the sessions on the row under it, then the windows of the session you are on, then that window's panes, each row spread across (a row wider than the screen scrolls, `‹` `›` at its ends), each an open box in its kind's colour (a session blue, a window purple, a pane green, the selected one yellow; its name in the text's colour, the rest faint) with what it is in its top border (`host`, `session`, `window`, `pane`); `h` `l` or ← → move along a row and the rows under it follow, `k` or ↑ goes to the parent, `j` or ↓ to the current window or the active pane. `a` opens every node at once, each parent over its own; when that does not fit the boxes get narrower, then become one line each, then just their numbers, and what is still too wide scrolls to the selection (`a` again: only the branch). Paired with other machines (`keepane link`, below), a row of machines comes under `keepane`, this one first, each other machine's block its name (once it said it) over its address: ← → on it shows another machine's sessions, windows and panes (asked of it every 5 seconds while the chart is open; `offline` when it does not answer), and Enter on one of its panes opens a window watching it live (`keepane link watch`, below); only what that machine shares with this one is there (`link share`, below). `s` shares a session, window or pane of this machine with the paired machine (a menu asks which when there are several), or takes it back; shared ones read `shared`. `v` turns it into a tree of blocks, one a line (↑ ↓ the parent and the first child, ← → along the same level, `-` / `+` fold and unfold a session or a window), then the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold), then the chart again. In the tree and the list `j` `k` go line by line; in all three `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `D` (or Delete) kills them and also forgets a session's save, so that `resume` does not bring it back. On a session both ask first (y/n). `set -g choose-tree-style tree` (or `list`) opens it that way |
 | `(` / `)` | switch the client to the previous / next session |
 | `D` | pick a client from a list and detach it |
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
@@ -1667,7 +1669,9 @@ this machine's keys, theme and copy mode; what is typed goes to the pane
 there (while the connection is down it is let go, and `show-mirror`
 counts it). `100.64.0.3:7681/work` names it in a command,
 `100.64.0.3:7681/%3` its pane 3, and `#{pane_machine}` is
-`100.64.0.3:7681` in it. A split, a kill, a resize, a zoom or a rename
+`100.64.0.3:7681` in it, `#{pane_host}` that machine's name. Its panes
+keep their names there (`#{pane_name}`, `C-b v`), but `%name` here is
+always this machine's pane. A split, a kill, a resize, a zoom or a rename
 of it (by its keys, the mouse on a border, or a command) is done there,
 by that machine, and shows here when done; a split puts the eye on the
 new pane. A pane never moves between machines, and piping, recording or
@@ -1680,6 +1684,9 @@ that copy this one do not see it.
 A pane of another machine opens live here: Enter on it in the chart of
 `C-b w` opens a window watching it (Enter again goes to that window while
 it is open), and `keepane link watch` does the same in any terminal. The
+window is named after the pane's name there (else its window's, else its
+number) and the machine's: `raqs@macbook`; `C-b v` says it runs
+`watch raqs@macbook` (`#{pane_watch}`). The
 watch is an ordinary program in an ordinary pane, so zoom, splits, copy
 mode and `C-b v` treat it as any pane, and `resume` brings it back. It
 shows the pane at that pane's size, cut to fit and following its cursor.

@@ -954,6 +954,68 @@ mod tests {
         assert_eq!(text(&mut s, 2), "fresh!");
     }
 
+    /// A shape change (seq `seq`) with pane 4 named `name` there.
+    fn named(seq: u64, name: Option<&str>) -> ToClient {
+        let mut next = shape(&[1, 4]);
+        next.sessions[0].windows[0].panes[1].name = name.map(String::from);
+        next.sessions[0].windows[0].panes[1].mode = "agent".into();
+        ToClient { kind: Some(to_client::Kind::Entry(Entry { seq, at: 0, change: Some(entry::Change::Shape(next)) })) }
+    }
+
+    #[test]
+    fn a_panes_name_there_is_its_name_here_but_never_finds_it() {
+        let (mut s, _typed) = copying();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "one", 3), (4, "four", 4)])).unwrap();
+        let name_of = |s: &mut Server, id| s.mirror_pane_mut(KEY, id).and_then(|p| p.actor.name.clone());
+        assert_eq!(name_of(&mut s, 4), None, "no name there, none here");
+        s.mirror_apply(KEY, named(11, Some("worker"))).unwrap();
+        assert_eq!(name_of(&mut s, 4).as_deref(), Some("worker"));
+        assert_eq!(name_of(&mut s, 1), None, "only that pane's");
+        let p4 = s.mirror_pane_mut(KEY, 4).unwrap();
+        // Its work mode stays this machine's word for it: none.
+        assert_eq!(p4.actor.mode, super::super::actor::WorkMode::default());
+        let id = p4.id;
+        let shown = s.exec(
+            crate::command::parse_line(&format!("display-message -p -t %{id} '#{{pane_name}}'")).unwrap().unwrap(),
+            None,
+        );
+        let Outcome::Text(shown) = shown else { panic!("display-message gave no text") };
+        assert_eq!(shown.trim(), "worker");
+        // `%worker` is a pane of this machine's: not the copied one.
+        assert!(s.resolve(Some(&Target::parse("%worker")), None).is_err());
+        // A name of this machine's may be the same.
+        assert!(s.pane_by_name("worker").is_none());
+        // Renamed away there: none here either.
+        s.mirror_apply(KEY, named(12, Some(""))).unwrap();
+        assert_eq!(name_of(&mut s, 4), None);
+        s.mirror_apply(KEY, named(13, Some("again"))).unwrap();
+        s.mirror_apply(KEY, named(14, None)).unwrap();
+        assert_eq!(name_of(&mut s, 4), None);
+        // A name no keepane gives is none; a window's and a session's name
+        // lose their control characters (shown here, written out by the
+        // dashboard).
+        let mut odd = shape(&[1, 4]);
+        odd.sessions[0].name = "wo\x1b[2Jrk".into();
+        odd.sessions[0].windows[0].name = "w\x1b]0;x\x07in".into();
+        odd.sessions[0].windows[0].panes[1].name = Some("bad\x1b[31m".into());
+        odd.sessions[0].windows[0].panes[1].title = "t\x1b]52;c;aGk=\x07itle".into();
+        odd.sessions[0].windows[0].panes[1].command = "v\x1b[2Jim".into();
+        odd.sessions[0].windows[0].panes[1].cwd = Some("/h\x07ome".into());
+        let change = ToClient {
+            kind: Some(to_client::Kind::Entry(Entry { seq: 15, at: 0, change: Some(entry::Change::Shape(odd)) })),
+        };
+        s.mirror_apply(KEY, change).unwrap();
+        assert_eq!(name_of(&mut s, 4), None);
+        let sid = s.mirror_session("10.0.0.2:7681", "wo[2Jrk").expect("named without the escape");
+        let session = s.session(sid).unwrap();
+        assert_eq!((session.name.as_str(), session.windows[0].name.as_str()), ("wo[2Jrk@10.0.0.2:7681", "w]0;xin"));
+        let p4 = s.mirror_pane_mut(KEY, 4).unwrap();
+        assert_eq!(
+            (p4.title.as_str(), p4.command.as_str(), p4.cwd.as_deref()),
+            ("t]52;c;aGk=itle", "v[2Jim", Some("/home"))
+        );
+    }
+
     #[test]
     fn a_lost_copy_asks_once_and_waits_for_its_snapshot() {
         let (mut s, _typed) = copying();

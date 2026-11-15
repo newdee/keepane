@@ -244,7 +244,7 @@ printed, which `keepane web` watches), and for pane messages `pane_name` `pane_a
 `pane_idle` `pane_state` `pane_unheard` `pane_inbox` `pane_status` `pane_message`, and for the agent a pane
 runs `agent` `agent_model` `agent_cost` `agent_tokens` `agent_context` `agent_cpu` `agent_mem`
 `agent_tools` `agent_turns` (`list-agents`, keepane's own command, gives the same), and
-`pane_ssh_host` (where the pane's `ssh` goes; `ssh-hosts` lists every machine), `pane_machine` (`host:port` for a pane of another machine whose sessions are shown here, `link mirror`; empty for this machine's). Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
+`pane_ssh_host` (where the pane's `ssh` goes; `ssh-hosts` lists every machine), `pane_machine` (`host:port` for a pane of another machine whose sessions are shown here, `link mirror`; empty for this machine's), `pane_host` (the name of the machine whose pane it is: this one's, or that machine's once it said it), `pane_watch` (what a pane's `keepane link watch` shows, `raqs@macbook`; empty for any other program). Modifiers: `=N:` `=-N:` `b:` `d:` `t:`
 `s/a/b/:`, nestable. Conditionals: `#{?name,yes,no}`, `#{?name==value,…}`,
 `#{?name!=value,…}`; comparisons `#{==:a,b}` `#{!=:a,b}` `#{<:a,b}`
 `#{>:a,b}` `#{<=:a,b}` `#{>=:a,b}` `#{&&:a,b}` `#{||:a,b}` and

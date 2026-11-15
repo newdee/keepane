@@ -36,6 +36,9 @@ pub(super) enum LinkOp {
     Trace { addr: String, key: String, here: String, waited: bool },
     /// The chart of `choose-tree`: their panes, kept, told to no one.
     Tree { addr: String, key: String },
+    /// Their machine's name (`/link/info`'s `host`), kept for the chart,
+    /// `C-b v` and the windows watching their panes; told to no one.
+    Name { addr: String, key: String },
     /// `link-list`: what this machine has there, row `row` of table `list`.
     Access { addr: String, key: String, list: u64, row: usize },
     /// `link-view`: a pane's screen for `keepane link watch` (or what a
@@ -384,6 +387,10 @@ impl Server {
                 let result = Self::checked(&addr, &key, &nonce, result);
                 return self.remote_tree_answered(&addr, result);
             }
+            LinkOp::Name { addr, key } => {
+                let result = Self::checked(&addr, &key, &nonce, result);
+                return self.machine_name_answered(&addr, result);
+            }
             LinkOp::Access { addr, key, list, row } => {
                 let result = Self::checked(&addr, &key, &nonce, result);
                 return self.link_list_answered(list, row, result);
@@ -441,9 +448,10 @@ impl Server {
             LinkOp::Info { addr, key } | LinkOp::Capture { addr, key } => {
                 match Self::checked(&addr, &key, &nonce, result) {
                     // The body as it is: text, which may end in blank rows
-                    // of a screen; only the transport's own end is cut.
+                    // of a screen; only the transport's own end is cut (and
+                    // no control character of theirs reaches the terminal).
                     Ok(ans) if ans.status == 200 => {
-                        Outcome::Text(String::from_utf8_lossy(&ans.body).trim_end_matches('\n').to_string())
+                        Outcome::Text(link::shown(&ans.body).trim_end_matches('\n').to_string())
                     }
                     Ok(ans) => Outcome::Error(format!("{addr} said: {}", ans.text())),
                     Err(e) => Outcome::Error(e),
@@ -496,7 +504,7 @@ impl Server {
                 Ok(ans) => Outcome::Error(format!("{addr} said: {}", ans.text())),
                 Err(e) => Outcome::Error(e),
             },
-            LinkOp::Tree { .. } | LinkOp::Access { .. } => unreachable!("answered above"),
+            LinkOp::Tree { .. } | LinkOp::Name { .. } | LinkOp::Access { .. } => unreachable!("answered above"),
         };
         if let Some(cid) = cid {
             self.reply(cid, out);

@@ -184,6 +184,12 @@ pub struct Context {
     /// The machine whose pane it is (`host:port`), for a session of another
     /// machine copied here; empty for this machine's own.
     pub pane_machine: String,
+    /// The name of the machine whose pane it is: this one's, or that
+    /// machine's as it said it (empty until it has).
+    pub pane_host: String,
+    /// What the pane's `keepane link watch` shows (`raqs@macbook`), empty
+    /// when it runs none.
+    pub pane_watch: String,
 }
 
 /// A count as people read it: `950`, `1.2k`, `123k`, `4.5M`, `1.2G`.
@@ -399,6 +405,8 @@ impl Context {
             "agent_turns" => self.agent_turns.clone(),
             "pane_ssh_host" => self.pane_ssh_host.clone(),
             "pane_machine" => self.pane_machine.clone(),
+            "pane_host" => self.pane_host.clone(),
+            "pane_watch" => self.pane_watch.clone(),
             "version" => env!("CARGO_PKG_VERSION").to_string(),
             "pid" => std::process::id().to_string(),
             _ => return None,

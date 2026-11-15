@@ -1330,6 +1330,8 @@ pub struct Server {
     feishu: feishu::FeishuHost,
     /// The paired machines' panes, by address, for the chart of `choose-tree`.
     remote_views: HashMap<String, link_tree::RemoteView>,
+    /// The paired machines' names, by address (`ask_machine_names`).
+    machine_names: HashMap<String, link_tree::MachineName>,
     /// Clients attached here for other machines (`keepane link attach`
     /// there): drawn into a screen of their own, which that machine asks for.
     remote_clients: HashMap<ClientId, link_attach::RemoteClient>,
@@ -1785,6 +1787,7 @@ impl Server {
             link: None,
             feishu: feishu::FeishuHost::default(),
             remote_views: HashMap::new(),
+            machine_names: HashMap::new(),
             remote_clients: HashMap::new(),
             next_remote_client: link_attach::FIRST_ID,
             journal: journal::Journal::default(),
@@ -2865,6 +2868,9 @@ impl Server {
                 self.link_git_sweep();
                 self.remote_clients_tick();
                 self.mirror_peers();
+                // The paired machines' names, for the chart, `C-b v` and the
+                // windows watching their panes (once each).
+                self.ask_machine_names();
                 self.forget_due();
                 // An open chart keeps the paired machines' panes fresh.
                 if self.a_chart_is_open() {
@@ -7140,8 +7146,13 @@ impl Server {
                 a.fill(&mut ctx);
             }
             ctx.pane_ssh_host = self.ssh_host_of(pid);
+            ctx.pane_watch = self.watch_label_of(&p.argv).unwrap_or_default();
         }
         ctx.pane_machine = sess.remote.as_ref().map(|r| r.addr.clone()).unwrap_or_default();
+        ctx.pane_host = match &sess.remote {
+            Some(r) => self.machine_name(&r.addr).unwrap_or_default().to_string(),
+            None => ctx.host.clone(),
+        };
         if let Some(r) = w.rect_of(pid) {
             let area = self.window_area(sess.cols, sess.rows);
             ctx.pane_top = r.y.saturating_sub(area.y);
@@ -8241,7 +8252,19 @@ impl Server {
             _ => "asking…".to_string(),
         };
         items.push(ChooserItem::Host(Some(m)));
-        lines.push(format!("{addr}\n{about}"));
+        // Its name once it said it, then its address and how it is (a block
+        // is 30 columns: an address and `2 sessions` fill it, so one gone
+        // away is only `offline`; its sessions are below it anyway).
+        lines.push(match self.machine_name(addr) {
+            Some(name) => {
+                let about = match view {
+                    Some(v) if v.heard && v.error.is_some() => "offline".to_string(),
+                    _ => about,
+                };
+                format!("{name}\n{addr} · {about}")
+            }
+            None => format!("{addr}\n{about}"),
+        });
         for s in sessions {
             let of_s: Vec<&link_tree::RemotePane> = panes.iter().filter(|p| p.session == s).collect();
             let mut windows: Vec<u32> = Vec::new();

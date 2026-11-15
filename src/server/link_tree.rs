@@ -41,6 +41,56 @@ pub(super) struct RemoteView {
     pub pending: bool,
 }
 
+/// How long after a failed asking a machine's name is asked for again.
+pub(super) const NAME_AGAIN: Duration = Duration::from_secs(60);
+
+/// A paired machine's name, as it said it (`/link/info`): asked for once
+/// while it is not known, again a minute after an asking that failed.
+#[derive(Debug, Default)]
+pub(super) struct MachineName {
+    pub name: Option<String>,
+    pub asked: Option<Instant>,
+    pub pending: bool,
+}
+
+/// What another machine said, as a name shown here (a window's, a
+/// session's, a machine's): no control characters (an escape sequence in a
+/// name would be written to the terminal by `keepane dashboard`), at most
+/// `max` characters.
+pub(super) fn printable(s: &str, max: usize) -> String {
+    s.chars().filter(|c| !c.is_control()).take(max).collect()
+}
+
+/// The name `/link/info` says a machine has: its `host` row.
+pub(super) fn host_of_info(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("host").filter(|rest| rest.starts_with([' ', '\t'])))
+        .map(|h| printable(h.trim(), 253).trim().to_string())
+        .filter(|h| !h.is_empty())
+}
+
+/// A machine's name short, as `#{host_short}` has it: up to its first dot
+/// (`macbook.local` is `macbook`).
+pub(super) fn short_host(name: &str) -> &str {
+    name.split('.').next().filter(|s| !s.is_empty()).unwrap_or(name)
+}
+
+/// What a window watching a pane of another machine is called, and what
+/// `C-b v` says it runs: the pane's name there, else its window's, else
+/// its number; then the machine's short name, else its address's host.
+pub(super) fn watch_label(pane: &str, remote: Option<&RemotePane>, machine: Option<&str>, addr: &str) -> String {
+    let what = match remote {
+        Some(p) if !p.name.is_empty() => p.name.clone(),
+        Some(p) if p.window_name.as_deref().is_some_and(|n| !n.is_empty()) => p.window_name.clone().unwrap_or_default(),
+        _ => pane.to_string(),
+    };
+    let host = match machine {
+        Some(m) => short_host(m),
+        None => addr.rsplit_once(':').map_or(addr, |(h, _)| h),
+    };
+    printable(&format!("{what}@{host}"), 128)
+}
+
 /// `$1:@3.%7`: the session, window and pane numbers.
 fn ids(address: &str) -> Option<(u32, u32, u32)> {
     let (s, rest) = address.strip_prefix('$')?.split_once(":@")?;
@@ -125,6 +175,58 @@ impl Server {
         }
     }
 
+    /// Ask each paired machine whose name is not known for it (at most once
+    /// a minute each). A machine that never paired loads nothing for it.
+    pub(super) fn ask_machine_names(&mut self) {
+        let Some(link) = self.link.as_ref() else { return };
+        let peers: Vec<(String, String)> = link.peers.iter().map(|p| (p.addr.clone(), p.key.clone())).collect();
+        self.machine_names.retain(|addr, _| peers.iter().any(|(a, _)| a == addr));
+        for (addr, key) in peers {
+            let n = self.machine_names.entry(addr.clone()).or_default();
+            if n.name.is_some() || n.pending || n.asked.is_some_and(|t| t.elapsed() < NAME_AGAIN) {
+                continue;
+            }
+            n.pending = true;
+            n.asked = Some(Instant::now());
+            let op = LinkOp::Name { addr: addr.clone(), key: key.clone() };
+            if self.link_signed(None, &addr, &key, "GET", "/link/info", Vec::new(), ASK_EVERY, op).is_err() {
+                self.machine_names.entry(addr).or_default().pending = false;
+            }
+        }
+    }
+
+    /// A machine's name came back (or did not: asked again later).
+    pub(super) fn machine_name_answered(&mut self, addr: &str, result: Result<Answer, String>) {
+        let Some(n) = self.machine_names.get_mut(addr) else { return };
+        n.pending = false;
+        if let Ok(ans) = result
+            && ans.status == 200
+        {
+            n.name = host_of_info(&String::from_utf8_lossy(&ans.body)).or(n.name.take());
+        }
+    }
+
+    /// A paired machine's name, once it said it.
+    pub(super) fn machine_name(&self, addr: &str) -> Option<&str> {
+        self.machine_names.get(addr).and_then(|n| n.name.as_deref())
+    }
+
+    /// What a pane running `keepane link watch host:port/pane` shows, for
+    /// `#{pane_watch}`; None for any other program.
+    pub(super) fn watch_label_of(&self, argv: &[String]) -> Option<String> {
+        let n = argv.len();
+        if n < 3 || argv[n - 3] != "link" || argv[n - 2] != "watch" {
+            return None;
+        }
+        let (addr, pane) = crate::link::split_remote(&argv[n - 1])?;
+        let bare = pane.trim_start_matches('%');
+        let remote = self
+            .remote_views
+            .get(addr)
+            .and_then(|v| v.panes.iter().find(|p| bare.parse::<u32>().map_or(p.name == bare, |id| p.pane == id)));
+        Some(watch_label(pane, remote, self.machine_name(addr), addr))
+    }
+
     /// Whether a client has the chart open: what keeps the asking going.
     pub(super) fn a_chart_is_open(&self) -> bool {
         self.clients.values().any(|c| c.chooser.as_ref().is_some_and(|ch| ch.is_chart()))
@@ -165,8 +267,8 @@ impl Server {
             return self.message(cid, "no keepane executable to watch it with");
         };
         let argv = vec![exe.to_string_lossy().into_owned(), "link".into(), "watch".into(), target];
-        let host = addr.rsplit_once(':').map_or(addr, |(h, _)| h);
-        if let Err(e) = self.new_window(sid, Some(format!("{host}/%{pane}")), None, &argv) {
+        let name = self.watch_label_of(&argv).unwrap_or_else(|| format!("%{pane}@{addr}"));
+        if let Err(e) = self.new_window(sid, Some(name), None, &argv) {
             self.message(cid, &e);
         }
     }
@@ -237,5 +339,66 @@ mod tests {
         assert!(parse_panes("garbage\n\n$x:@1.%2\ta\tb\tc\td\te\n").is_empty());
         let odd = parse_panes("$1:@3.%7\ta\tnormal\tidle\t0\tsh\ts\tX\t1\tY\t1\tw\n");
         assert_eq!(odd[0].window_index, None);
+    }
+
+    /// A machine's name from its `/link/info`; a watch window's name and
+    /// what `C-b v` says it runs: the pane's name there, else its window's,
+    /// else its number; the machine's short name, else its address's host.
+    #[test]
+    fn a_watched_pane_is_called_by_its_names() {
+        let info = "host     dfines-MacBook-Pro-4.local\nsystem   macos aarch64\nkeepane  0.67.0\n";
+        assert_eq!(host_of_info(info).as_deref(), Some("dfines-MacBook-Pro-4.local"));
+        assert_eq!(host_of_info("hosts    x\nsystem   y"), None, "only the host row");
+        assert_eq!(host_of_info("host\nsystem y"), None, "an empty name is none");
+        assert_eq!(host_of_info(""), None);
+        // What a machine says is shown here: never an escape sequence.
+        assert_eq!(host_of_info("host     mac\x1b]52;c;aGk=\x07book\n").as_deref(), Some("mac]52;c;aGk=book"));
+        assert_eq!(host_of_info("host     \x1b\x07\n"), None, "nothing printable is no name");
+        assert_eq!(host_of_info(&format!("host {}\n", "a".repeat(400))).map(|h| h.len()), Some(253));
+        assert_eq!(printable("a\tb\r\nc\u{9b}2J", 10), "abc2J");
+        let odd = RemotePane { name: "x\x1b[2Jy".into(), ..RemotePane::default() };
+        assert_eq!(watch_label("%1", Some(&odd), Some("h\x07ost"), "a:1"), "x[2Jy@host");
+        assert_eq!(short_host("dfines-MacBook-Pro-4.local"), "dfines-MacBook-Pro-4");
+        assert_eq!(short_host("DESK"), "DESK");
+        assert_eq!(short_host(".odd"), ".odd", "never an empty name");
+        let pane = |name: &str, window: Option<&str>| RemotePane {
+            pane: 29,
+            name: name.into(),
+            window_name: window.map(String::from),
+            ..RemotePane::default()
+        };
+        let addr = "100.89.165.28:7681";
+        let mac = Some("dfines-MacBook-Pro-4.local");
+        assert_eq!(watch_label("%29", Some(&pane("raqs", Some("RAQS"))), mac, addr), "raqs@dfines-MacBook-Pro-4");
+        assert_eq!(watch_label("%29", Some(&pane("", Some("RAQS"))), mac, addr), "RAQS@dfines-MacBook-Pro-4");
+        assert_eq!(watch_label("%29", Some(&pane("", Some(""))), mac, addr), "%29@dfines-MacBook-Pro-4");
+        assert_eq!(watch_label("%29", Some(&pane("", None)), None, addr), "%29@100.89.165.28");
+        assert_eq!(watch_label("%29", None, None, addr), "%29@100.89.165.28", "not heard: its number");
+        assert_eq!(watch_label("%29", None, None, "[fd7a::1]:7681"), "%29@[fd7a::1]");
+    }
+
+    /// `#{pane_watch}` reads the pane's command line: a watch, by the pane's
+    /// number or its name there, as last heard; any other program, none.
+    #[test]
+    fn the_watch_a_pane_runs_is_read_from_its_command() {
+        let (pane_tx, _p) = std::sync::mpsc::channel::<super::super::PaneEvent>();
+        let (events, _e) = tokio::sync::mpsc::unbounded_channel::<super::super::Event>();
+        let mut s = Server::new(pane_tx, "t".into(), events);
+        let addr = "10.0.0.2:7681";
+        let argv = |target: &str| ["keepane.exe", "link", "watch", target].map(String::from).to_vec();
+        assert_eq!(s.watch_label_of(&argv(&format!("{addr}/%7"))).as_deref(), Some("%7@10.0.0.2"));
+        let view = RemoteView {
+            panes: parse_panes("$1:@3.%7\tbuilder\tshell\tidle\t0\tpwsh\twork\t0\t1\t1\t1\tedit\n"),
+            ..RemoteView::default()
+        };
+        s.remote_views.insert(addr.into(), view);
+        s.machine_names.insert(addr.into(), MachineName { name: Some("mac.local".into()), ..Default::default() });
+        assert_eq!(s.watch_label_of(&argv(&format!("{addr}/%7"))).as_deref(), Some("builder@mac"));
+        assert_eq!(s.watch_label_of(&argv(&format!("{addr}/%builder"))).as_deref(), Some("builder@mac"));
+        assert_eq!(s.watch_label_of(&argv(&format!("{addr}/%8"))).as_deref(), Some("%8@mac"), "not in the list");
+        assert_eq!(s.watch_label_of(&["pwsh".to_string()]), None);
+        assert_eq!(s.watch_label_of(&argv("not-a-target")), None);
+        let attach = ["keepane", "link", "attach", addr].map(String::from).to_vec();
+        assert_eq!(s.watch_label_of(&attach), None);
     }
 }

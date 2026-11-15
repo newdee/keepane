@@ -62,7 +62,7 @@ the config file take. `keepane list-commands` lists them, and
 `new-session` (`new`), `attach-session` (`attach`), `list-sessions` (`ls`),
 `has-session`, `kill-session`, `kill-server`, `rename-session`,
 `switch-client`, `detach-client`, `start-server`, `choose-session`,
-`choose-tree` (sessions, windows and panes, and the paired machines' in the chart; a chart of rows by default, a tree of blocks with `choose-tree-style tree`, the plain list with `choose-tree-style list`; `v` goes to the next), `choose-client`, `list-clients`.
+`choose-tree` (sessions, windows and panes, and the paired machines' in the chart, each other machine's block its name over its address; a chart of rows by default, a tree of blocks with `choose-tree-style tree`, the plain list with `choose-tree-style list`; `v` goes to the next), `choose-client`, `list-clients`.
 
 ### Windows and panes
 
@@ -110,7 +110,9 @@ for a Feishu or DingTalk bot that checks), `pane-wait` (the pane waits for
 you: `done-events` `wait`; an agent's hook gives what it asks on standard
 input),
 `show-messages`, `clock-mode`, `dashboard` (panes, inboxes, tasks and the
-chosen pane's screen, to act on; its Git tab, the pane's repository or
+chosen pane's screen, to act on; the panes by session, and first by
+machine, its name and address, while another's sessions are copied here;
+its Git tab, the pane's repository or
 files; from 150 columns, the machine's CPU, memory, disk and network on
 the left), `list-agents` (the Claude Code, Codex, pi
 and Cursor CLI the panes run: model, cost, tokens, context, CPU, memory;
@@ -317,7 +319,10 @@ the panes of it this machine may reach;
 `keepane link capture [-S lines] <host:port/pane>` (`link-capture`) what one
 of those panes shows, as text; `keepane link watch <host:port/pane>` that
 pane live in the terminal it runs in (Enter on it in `C-b w` opens a window
-running it), typed into only when that machine gave this one `--full`, else
+running it, named after the pane's name there, else its window's, else its
+number, and the machine's short name: `raqs@macbook`, which
+`#{pane_watch}` gives too), typed into only when that machine gave this
+one `--full`, else
 read-only (`q` closes it); it asks through `link-view` (the screen, or
 "same" since a stamp) and types through `link-keys` (key records).
 `keepane link attach <host:port> [session]` attaches to a session there
@@ -339,7 +344,10 @@ are sessions here, named `name@host:port`: attached to, looked at and
 typed into (the keys go to the pane there; while the connection is down
 they are let go and counted), named in commands as `host:port/name` and
 `host:port/%N` (its pane N); `#{pane_machine}` is that `host:port` in
-them. A split, a kill, a resize, a zoom or a rename of one (keys, a
+them and `#{pane_host}` that machine's name (asked of it once). Their
+panes keep their names there (`#{pane_name}`), but `%name` always names a
+pane of this machine. A split, a kill, a resize, a zoom or a rename of
+one (keys, a
 border dragged, a command) is sent to that machine, done there and shown
 here when done, the eye on a new pane (keepane 0.63 or later there); a
 pane never moves between machines, and pipe-pane, record and

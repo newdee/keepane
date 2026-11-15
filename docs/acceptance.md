@@ -6048,3 +6048,30 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | 可复现性 + Linux | 生成两次，全部文件哈希相同，两次 `winget validate` 都是 0。Linux：fmt ok、clippy 0、641 / 160；0 失败 | 干净（3/3），验收通过 |
 - 以后改 `tools/package-manifests.ps1` 的文字：验收里必须在本机运行 `winget validate`。
 - 发布：v0.67.0（包含第 191–193 条）。第一次 tag 在 bf85945，Release run 43570652792 停在 winget 校验（见第 193 条），什么都没发布；修好后经用户同意把 tag 移到 c3b295d（其 CI run 43579728039 四项全过）。Release run 43580194568 成功，13 个文件；Homebrew formula run 43580896795 通过，3 个 sha256 与发布文件一致；manifests 已拉取（b25df8d，`ShortDescription` 带引号）；winget 新开 PR #480056。重拍的图：时钟的动画和两张截图（深浅各一，356f1f8）。
+
+## 194. 远程 pane 的名字：观看窗口、复制会话、`C-b v` 按机器分组、`C-b w` 的机器名；复制不到有回滚历史后改过宽度的 pane
+
+用户：添加远程的 pane 后，`C-b v` 里看到的 window name、pane name 好像都没更新。查到三件事，用户选"改吧，按推荐来，先做 1 和 2，再查 5"，并要求 `C-b v` 先按 host 分组（host 显示名字和 ip:port）、`C-b w` 多显示 host name。
+
+- 现象（只读查的用户机器）：Mac 上 `C-b w` 回车开的观看窗口叫 `100.89.165.28/%29`，跑 `keepane`，pane 没名字；本机复制 Mac：`show-mirror` 是 `down`，0 个会话，212 次重启；server.log 里 1853 次 `pane %10's model is not one this keepane reads`。
+- 定性：
+  - 复制会话丢 pane 名：边界遗漏（形状里有 `name`，`mirror_shape` 没取）。同类搜过：`PaneShape` 收到后没用的只有 `name`、`mode`、`generation`；`mode` 故意不取（本机会把消息投进副本再打到对方），`generation` 本来不用。
+  - 观看窗口名：结构问题（打开那一刻用编号起名，以后不变）。改成按名字起名；`C-b v` 跑的程序显示 `watch 名字@机器`。
+  - 复制失败：结构缺陷。`Grid::set_size` 只改屏幕上的行，回滚行保留原宽度；快照写端照实写每行宽度，读端却假定回滚行等于当前宽度。改读端（回滚行按自己的宽度读），写端和格式不变。这个假设只在快照读端出现（`restore` 是唯一读者，副本、`screen` 变化、journal 都走它）。
+  - 第 3、6 轮查出：对方给的文字（主机名、观看标签、副本的 session/窗口/窗格名、标题、程序、目录，`link info`/`capture`/`panes` 和报错原文）原样进了 dashboard 和终端。共性问题，收敛到 `link_tree::printable` 和 `link::shown` 两个函数，在入口和出口去掉控制字符。
+- 会不会引入新 bug：只有一台机器时 `C-b v` 和以前一样（单元测试断言第一行仍是 `work`）；对方没报名字时 `C-b w` 框和以前一样（`地址\n状态`）；`%name` 仍只找本机（`pane_by_name` 跳过副本，单元 + e2e）；旧 server 的 `list-panes` 少两列时 host 为空、不显示 watch。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 0 | 实现 | 新单元测试 8 个（复制名、观看标签、`#{pane_watch}`、按机器分组、URL 的 host:port、格式读回、快照回滚宽度、对方文字过滤）；e2e 两个加断言（图表：机器名、窗口名 `worker@主机`、`#{pane_watch}`/`#{pane_host}`、离线；复制：改名、`#{pane_host}`、`%name` 不找副本）。快照测试改前失败（`40x24` 读不回）、改后通过。Windows 663 / 11 / 163，Linux 647 / 160 | 实现中，不计 |
+| 1 | 静态一致性 | 逐句对 README 中英、man、tmux-parity、设计文档与代码。发现：文档说"每个机器框名字在上、地址在下"，本机的框没有地址。改成"别的机器的框" | 有发现，不计 |
+| 2 | 机制存活 | 8 个变异体（不取名字、标签不看名字、不按机器排序、从不分组、回滚按屏宽读、从不问名字、不填 `pane_watch`、副本 `pane_host` 为空）全被测试抓到。Windows 663 / 11 / 163 | 干净 1/3 |
+| 3 | 边界与坏输入 | 对方报的主机名、名字里带 ESC/BEL/C1：原样进 dashboard（`clip` 丢 OSC 但保留 CSI，能把面板画乱）。加 `printable`：主机名 ≤253、标签 ≤128，副本窗格名不合 `check_name` 就不要，session/窗口名去控制字符；单元测试覆盖 | 有发现，不计（清零） |
+| 4 | 代码正确性 | 问名字的三条错误路径（发送失败、回答出错或超时、已取消配对）都复位 `pending`、60 秒后再问。Windows 663 / 11 / 163 | 干净 1/3 |
+| 5 | 真二进制端到端 | 两台临时 server（`-L`、独立目录）在 127.0.0.1 配对、`--full`、复制，A 的 pane 里跑真 `keepane dashboard`：本机标题 `DFINE 127.0.0.1:… · this machine`，对方先显示地址，≤1 秒后变成 `DFINE 127.0.0.1:…`，下面 `wb`、`worker`。Linux：fmt ok、clippy 0、647 / 160 | 干净 2/3 |
+| 6 | 全局不变量 | 不变量"对方给的文字显示前没有控制字符"：副本的标题、程序、目录漏了，`link info`/`capture`/`panes` 和报错原文直接打到终端。加 `link::shown`（保留换行和 Tab），`Answer::text` 用它；副本三项走 `printable` | 有发现，不计（清零） |
+| 7 | 原行为不变 | 查 `Answer::text` 的全部调用：只做显示、等值/包含比较、JSON；签名校验用原始 body。`link-view` 的 JSON 由 serde 转义控制字符。Windows 664 / 11 / 163 | 干净 1/3 |
+| 8 | 可复现性 | 两个 e2e 连跑 3 次、8 个单元测试连跑 5 次，全过。Linux：fmt ok、clippy 0、648 / 160 | 干净 2/3 |
+| 9 | 真实场景前后对比 | B 的 pane 先有 173 行回滚，再分屏变成 60 列，然后复制。0.67.0 当复制方：`down … 0 sessions … 2 restarts`（与用户机器相同）；新版本：`live; 1 sessions, 2 panes; 1 snapshots, 0 restarts`。Windows 664 / 11 / 163 | 干净（3/3），验收通过 |
+
+- 遗留：两台都要升级才能复制这种窗格（读端在复制方）。Mac 当前复制本机能用，是因为本机的窗格还没有踩中；Mac 也要升级。
