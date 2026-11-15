@@ -4056,6 +4056,35 @@ async fn a_zoom_in_motion_survives_what_happens_meanwhile() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `resize-pane -Z -t pane` zooms that pane, which becomes the window's
+/// pane (as in tmux); without `-t` it zooms the window's pane, as before;
+/// zoomed, it unzooms whatever it names; a window of one pane never zooms.
+#[tokio::test(flavor = "multi_thread")]
+async fn zooming_a_named_pane_makes_it_the_windows_pane() {
+    let h = Harness::start("zoom-t").await;
+    h.cli(&["new", "-d", "-s", "z"]).await;
+    h.cli(&["split-window", "-h", "-d", "-t", "z:0"]).await;
+    let (p0, p1) = (pane_id(&h, "z:0.0").await, pane_id(&h, "z:0.1").await);
+    let state = async || h.cli(&["display-message", "-p", "-t", "z", "#{window_zoomed_flag} #{pane_id}"]).await.1;
+    assert_eq!(state().await.trim(), format!("0 %{p0}"));
+    h.cli(&["resize-pane", "-Z"]).await;
+    assert_eq!(state().await.trim(), format!("1 %{p0}"), "no -t: the window's pane");
+    h.cli(&["resize-pane", "-Z"]).await;
+    assert_eq!(state().await.trim(), format!("0 %{p0}"));
+    assert_eq!(h.cli(&["resize-pane", "-Z", "-t", &format!("%{p1}")]).await.0, 0);
+    assert_eq!(state().await.trim(), format!("1 %{p1}"), "-t: that pane, zoomed and the window's");
+    h.cli(&["resize-pane", "-Z", "-t", &format!("%{p0}")]).await;
+    assert_eq!(state().await.trim(), format!("0 %{p1}"), "zoomed: unzoomed, the pane kept");
+    h.cli(&["select-pane", "-l"]).await;
+    assert_eq!(state().await.trim(), format!("0 %{p0}"), "the pane before is the last one");
+    h.cli(&["new-window", "-d", "-t", "z"]).await;
+    let alone = pane_id(&h, "z:1.0").await;
+    assert_eq!(h.cli(&["resize-pane", "-Z", "-t", &format!("%{alone}")]).await.0, 0);
+    assert_eq!(ask_pane(&h, alone, "#{window_zoomed_flag}").await, "0", "one pane: nothing to zoom");
+    assert_eq!(state().await.trim(), format!("0 %{p0}"));
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn zoomed_pane_still_navigates_by_direction() {
     let h = Harness::start("zoom-nav").await;
@@ -6424,6 +6453,14 @@ async fn the_phone_page_lists_shows_types_and_splits() {
     let list = h.cli(&["list-panes", "-t", "w"]).await.1;
     assert_eq!(list.lines().count(), 2, "{list}");
     assert!(list.lines().nth(1).unwrap().to_ascii_lowercase().contains(there), "{list}");
+    // The computer keeps looking where it was: the phone opens the new pane
+    // (or window) itself.
+    let looked_at = async || h.cli(&["display-message", "-p", "-t", "w", "#{window_index}.#{pane_index}"]).await.1;
+    assert_eq!(looked_at().await.trim(), "0.0");
+    let (code, err) = http(addr, "POST", &format!("/api/action?pane={pane}&do=new-window"), key, "").await;
+    assert_eq!(code, 200, "{err}");
+    assert_eq!(h.cli(&["list-windows", "-t", "w"]).await.1.lines().count(), 2);
+    assert_eq!(looked_at().await.trim(), "0.0");
     assert_eq!(http(addr, "POST", &format!("/api/action?pane={pane}&do=kill-server"), key, "").await.0, 400);
     assert_eq!(h.cli(&["ls"]).await.0, 0, "the server is still there");
     h.cli(&["kill-server"]).await;
@@ -8000,23 +8037,47 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     .await;
     assert_ne!(a.cli(&["has-session", "-t", "%copied-name"]).await.0, 0, "%name is this machine's");
     // What changes its shape is done there, asked from here: a split there
-    // (and here the eye goes to the new pane), a zoom, a kill.
+    // (here the eye goes to the new pane; there it stays where it was), a
+    // zoom on that pane (there it is the pane zoomed, so the one looked at),
+    // a kill, a new window (looked at here, not there).
     let panes_b = async || b.cli(&["list-panes", "-t", "wb"]).await.1.lines().count();
+    let looked_at_b = async || b.cli(&["display-message", "-p", "-t", "wb", "#{window_index}.#{pane_id}"]).await.1;
+    let looked_at_a = async || a.cli(&["display-message", "-p", "-t", &format!("{addr_b}/wb"), "#{pane_id}"]).await.1;
+    let here =
+        async |id: &str| a.cli(&["display-message", "-p", "-t", &format!("{addr_b}/%{id}"), "#{pane_id}"]).await.1;
+    assert_eq!(looked_at_b().await.trim(), format!("0.%{pane}"));
     let (code, _, err) = a.cli(&["split-window", "-t", &format!("{addr_b}/wb")]).await;
     assert_eq!(code, 0, "{err}");
     assert_eq!(panes_b().await, 2, "split there");
-    let new_there =
-        b.cli(&["display-message", "-p", "-t", "wb", "#{pane_id}"]).await.1.trim().trim_start_matches('%').to_string();
-    let looked_at = a.cli(&["display-message", "-p", "-t", &format!("{addr_b}/wb"), "#{pane_id}"]).await.1;
-    let shown = a.cli(&["display-message", "-p", "-t", &format!("{addr_b}/%{new_there}"), "#{pane_id}"]).await.1;
-    assert_eq!(looked_at.trim(), shown.trim(), "here the new pane is looked at");
+    let new_there = pane_id(&b, "wb:0.1").await.to_string();
+    assert_eq!(looked_at_b().await.trim(), format!("0.%{pane}"), "there the eye stays");
+    assert_eq!(looked_at_a().await.trim(), here(&new_there).await.trim(), "here the new pane is looked at");
     let (code, _, err) = a.cli(&["resize-pane", "-Z", "-t", &format!("{addr_b}/%{new_there}")]).await;
     assert_eq!(code, 0, "{err}");
-    assert_eq!(b.cli(&["display-message", "-p", "-t", "wb", "#{window_zoomed_flag}"]).await.1.trim(), "1");
+    let zoom = b.cli(&["display-message", "-p", "-t", "wb", "#{window_zoomed_flag} #{pane_id}"]).await.1;
+    assert_eq!(zoom.trim(), format!("1 %{new_there}"), "the pane asked for is the one zoomed");
     let (code, _, err) = a.cli(&["kill-pane", "-t", &format!("{addr_b}/%{new_there}")]).await;
     assert_eq!(code, 0, "{err}");
     assert_eq!(panes_b().await, 1, "killed there");
     a.wait_for_cli("the copy back to one pane", &["list-panes", "-t", &format!("{addr_b}/wb")], |_, out| {
+        out.lines().count() == 1
+    })
+    .await;
+    let (code, _, err) = a.cli(&["new-window", "-t", &format!("{addr_b}/wb")]).await;
+    assert_eq!(code, 0, "{err}");
+    let in_new = pane_id(&b, "wb:1.0").await.to_string();
+    assert_eq!(looked_at_b().await.trim(), format!("0.%{pane}"), "there the window stays");
+    assert_eq!(looked_at_a().await.trim(), here(&in_new).await.trim(), "here the new window is looked at");
+    // A split in a window not looked at there: here the eye goes to its new
+    // pane (not to the window looked at there).
+    let (code, _, err) = a.cli(&["split-window", "-t", &format!("{addr_b}/%{in_new}")]).await;
+    assert_eq!(code, 0, "{err}");
+    let split_new = pane_id(&b, "wb:1.1").await.to_string();
+    assert_eq!(looked_at_b().await.trim(), format!("0.%{pane}"), "there the window stays");
+    assert_eq!(looked_at_a().await.trim(), here(&split_new).await.trim(), "here its new pane is looked at");
+    let (code, _, err) = a.cli(&["kill-window", "-t", &format!("{addr_b}/%{in_new}")]).await;
+    assert_eq!(code, 0, "{err}");
+    a.wait_for_cli("the copy back to one window", &["list-windows", "-t", &format!("{addr_b}/wb")], |_, out| {
         out.lines().count() == 1
     })
     .await;

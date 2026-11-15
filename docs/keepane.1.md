@@ -349,7 +349,11 @@ panes keep their names there (`#{pane_name}`), but `%name` always names a
 pane of this machine. A split, a kill, a resize, a zoom or a rename of
 one (keys, a
 border dragged, a command) is sent to that machine, done there and shown
-here when done, the eye on a new pane (keepane 0.63 or later there); a
+here when done (keepane 0.63 or later there). A split or a new window
+puts the eye here on the new pane and leaves that machine's terminals
+where they were (0.69 or later there); a zoom zooms the pane asked for.
+The pane looked at here is chosen here: what that machine looks at (a
+zoom moved there included) changes it only when it is gone. A
 pane never moves between machines, and pipe-pane, record and
 save-session of one are refused. Looking at it never resizes it there.
 They are not saved, and machines that copy this one do not see them.

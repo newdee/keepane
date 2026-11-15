@@ -1187,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn zoomed_there_the_zoomed_pane_is_looked_at_and_a_pane_chosen_here_is_drawn_in_its_place() {
+    fn zoomed_there_the_pane_chosen_here_stays_chosen_and_is_drawn_in_its_place() {
         let (mut s, _typed) = copying();
         s.mirror_apply(KEY, snapshot(10, &[(1, "one", 3), (4, "four", 4)])).unwrap();
         let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
@@ -1195,7 +1195,9 @@ mod tests {
             let w = &s.session(sid).unwrap().windows[0];
             (w.panes[0].id, w.panes[1].id)
         };
-        // Zoomed there on pane 4 (40x5): looked at here too, drawn alone.
+        assert_eq!(s.session(sid).unwrap().windows[0].active, p1);
+        // Zoomed there on pane 4 (40x5): pane 1, chosen here, stays chosen,
+        // drawn alone where the zoomed one is, at its size.
         let mut zoomed = shape(&[1, 4]);
         let win = &mut zoomed.sessions[0].windows[0];
         (win.zoomed, win.active) = (true, 4);
@@ -1205,18 +1207,21 @@ mod tests {
         };
         s.mirror_apply(KEY, change(11, zoomed.clone())).unwrap();
         let w = &s.session(sid).unwrap().windows[0];
-        assert_eq!((w.active, w.zoomed), (p4, true));
-        assert_eq!(w.rects.iter().map(|(id, r)| (*id, r.w)).collect::<Vec<_>>(), [(p4, 20)], "its size: 20 till told");
-        // Pane 1 chosen here: drawn where the zoomed one is, at its size;
+        assert_eq!((w.active, w.zoomed), (p1, true));
+        assert_eq!(w.rects.iter().map(|(id, r)| (*id, r.w)).collect::<Vec<_>>(), [(p1, 20)]);
+        // Pane 4 chosen here: drawn alone, at its size till told (20);
         // unzooming here (select-pane with keep-zoom off) unzooms nothing.
         let area = s.window_area(80, 6);
         let w = &mut s.session_mut(sid).unwrap().windows[0];
-        (w.active, w.zoomed) = (p1, false);
+        (w.active, w.zoomed) = (p4, false);
         w.relayout(area, super::super::Chrome::Lines);
-        assert_eq!((w.zoomed, w.rects.len(), w.rects[0].0), (true, 1, p1));
-        // The same zoom told again: the choice here stays.
+        assert_eq!(w.rects.iter().map(|(id, r)| (*id, r.w)).collect::<Vec<_>>(), [(p4, 20)], "its size: 20 till told");
+        assert!(w.zoomed);
+        // The zoom moved there to pane 1: the choice here stays.
+        let win = &mut zoomed.sessions[0].windows[0];
+        win.active = 1;
         s.mirror_apply(KEY, change(12, zoomed)).unwrap();
-        assert_eq!(s.session(sid).unwrap().windows[0].active, p1);
+        assert_eq!(s.session(sid).unwrap().windows[0].active, p4);
         // Nothing is added to it from here, however it is asked.
         assert!(s.new_window(sid, None, None, &[]).unwrap_err().contains("only that machine can"));
         assert!(s.split_pane(sid, 0, p1, true, None, &[], false, false).unwrap_err().contains("only that machine can"));

@@ -1281,9 +1281,11 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             };
             let what = req.param("do").unwrap_or("");
             let mut argv: Vec<String> = match what {
-                "new-window" => vec!["new-window".into(), "-t".into(), pane.into()],
-                "split-h" => vec!["split-window".into(), "-h".into(), "-t".into(), pane.into()],
-                "split-v" => vec!["split-window".into(), "-v".into(), "-t".into(), pane.into()],
+                // `-d`: the new pane is the phone's to open; the computer's
+                // terminals keep looking where they were.
+                "new-window" => vec!["new-window".into(), "-d".into(), "-t".into(), pane.into()],
+                "split-h" => vec!["split-window".into(), "-d".into(), "-h".into(), "-t".into(), pane.into()],
+                "split-v" => vec!["split-window".into(), "-d".into(), "-v".into(), "-t".into(), pane.into()],
                 "kill-pane" => vec!["kill-pane".into(), "-t".into(), pane.into()],
                 // Its program again, once it has ended.
                 "respawn" => vec!["respawn-pane".into(), "-t".into(), pane.into()],

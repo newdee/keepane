@@ -134,7 +134,7 @@ tmux's table, with what keepane does today.
 | `s` / `w` | choose-tree -Zs / -Zw | yes |
 | `t` | clock-mode | yes |
 | `x` | kill-pane (confirm) | yes |
-| `z` | resize-pane -Z | yes; while zoomed, selecting another pane of the window moves the zoom to it (tmux unzooms; `keep-zoom off` does too), and `q` numbers every pane |
+| `z` | resize-pane -Z | yes (`-t` zooms that pane, which becomes the window's pane, as in tmux); while zoomed, selecting another pane of the window moves the zoom to it (tmux unzooms; `keep-zoom off` does too), and `q` numbers every pane |
 | `{` / `}` | swap-pane -U / -D | yes |
 | `~` | show-messages | yes |
 | arrows | select-pane (repeat) | yes |

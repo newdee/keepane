@@ -1215,10 +1215,12 @@ under ⋯; Ctrl+C and Enter stay in view at its end); Ctrl, Alt or Shift (any of
 them together), then a key of the row or a letter typed, sends it with them
 (Shift then → is Shift+Right). The ⋯ menu in the pane's bar, and a right click
 (a long press on a phone) on a pane in the list, split the pane, open a
-window, rename the pane, its window or its session (a pane's name empty takes
-it away), close the pane or show its inbox (also a tap on a card's
-"queued" or "on #N" mark): the message it works on, each waiting one whole, to
-put first, up, down or delete (and undo), and the last few it finished. The
+window (the phone opens the new pane; the computer's terminals keep
+looking where they were), rename the pane, its window or its session (a
+pane's name empty takes it away), close the pane or show its inbox (also
+a tap on a card's "queued" or "on #N" mark): the message it works on,
+each waiting one whole, to put first, up, down or delete (and undo), and
+the last few it finished. The
 view menu holds the rest: When each command ran adds a column with the time
 each command started (tap one for its date, how long it took and its exit
 code, and to copy the command or what it printed; see "Command times and
@@ -1673,9 +1675,13 @@ counts it). `100.64.0.3:7681/work` names it in a command,
 keep their names there (`#{pane_name}`, `C-b v`), but `%name` here is
 always this machine's pane. A split, a kill, a resize, a zoom or a rename
 of it (by its keys, the mouse on a border, or a command) is done there,
-by that machine, and shows here when done; a split puts the eye on the
-new pane. A pane never moves between machines, and piping, recording or
-saving it from here is refused. Looking at it never resizes it there. A
+by that machine, and shows here when done; a split or a new window puts
+the eye here on the new pane, and leaves that machine's own terminals
+looking where they were (keepane 0.69 or later there). A zoom zooms the
+pane it is asked for, there too. The pane looked at here is chosen here:
+what that machine looks at, a zoom moved there included, changes it only
+when it is gone. A pane never moves between machines, and piping,
+recording or saving it from here is refused. Looking at it never resizes it there. A
 terminal smaller than the session shows part of it, panned as for any
 session too big for it. That machine needs keepane 0.63 or later to take
 these. It is not saved here, and the machines

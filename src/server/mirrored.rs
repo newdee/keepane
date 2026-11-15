@@ -43,9 +43,10 @@ pub(super) struct RemoteWindow {
     /// Its id there.
     pub id: u32,
     /// Zoomed there: one pane drawn, the whole window's size. Which one is
-    /// chosen here, as any pane is; the one zoomed there when it zooms.
+    /// chosen here, as any pane is.
     pub zoomed: bool,
-    /// The pane zoomed there (its id here), to tell a new zoom.
+    /// The pane zoomed there (its id here): where the one chosen here is
+    /// drawn.
     pub zoomed_pane: Option<PaneId>,
     /// Where its panes are there, as told: placed here again whenever the
     /// window area or what the panes give up around them changes here
@@ -236,11 +237,12 @@ impl Server {
                     w.panes.push(p);
                 }
                 let theirs = rw.panes.iter().position(|p| p.id == rw.active).map_or(ids[0], |i| ids[i]);
-                // Zoomed there anew (or on another pane): the zoomed pane is
-                // the one looked at here too.
+                // The pane looked at here is chosen here: what that machine
+                // looks at (a zoom there included) moves it only when it is
+                // gone. Zoomed there, the pane chosen here is drawn where
+                // the zoomed one is (`zoom_on_active`).
                 let zoomed_pane = rw.zoomed.then_some(theirs);
-                let zoomed_anew = zoomed_pane.is_some() && w.remote.as_ref().and_then(|r| r.zoomed_pane) != zoomed_pane;
-                if !ids.contains(&w.active) || zoomed_anew {
+                if !ids.contains(&w.active) {
                     w.active = theirs;
                 }
                 w.last_pane = w.last_pane.filter(|id| ids.contains(id));

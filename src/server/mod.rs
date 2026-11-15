@@ -5374,6 +5374,12 @@ impl Server {
                 let (scols, srows) = self.session(sid).map(|s| (s.cols, s.rows)).unwrap();
                 let area = self.window_area(scols, srows);
                 let w = &mut self.session_mut(sid).unwrap().windows[widx];
+                // Zooming in on a pane (`-t`) makes it the window's pane, as
+                // in tmux: the zoomed pane is the one drawn.
+                if zoom && !w.zoomed && w.panes.len() > 1 && pid != w.active {
+                    w.last_pane = Some(w.active);
+                    w.active = pid;
+                }
                 // Zooming: the frame grows from the pane to the window, or
                 // shrinks back into it.
                 let zoom_from = if zoom { w.rect_of(w.active).map(|r| (w.active, r)) } else { None };

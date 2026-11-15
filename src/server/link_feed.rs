@@ -28,6 +28,63 @@ use crate::link_proto::Answer;
 /// What may wait for a feed's web task before it is ended.
 pub const FEED_LIMIT: usize = 16 << 20;
 
+/// Where this machine's terminals look: each of its own sessions' window
+/// and the one before it, each window's pane and the one before it. Taken
+/// before another machine's command runs and put back after
+/// (`stream_command`), so that command moves nobody's eye here.
+struct View {
+    sessions: Vec<(super::SessionId, super::WindowId, Option<super::WindowId>)>,
+    windows: Vec<(super::WindowId, super::PaneId, Option<super::PaneId>)>,
+}
+
+impl View {
+    fn of(server: &Server) -> View {
+        let own = || server.sessions.iter().filter(|s| s.remote.is_none());
+        View {
+            sessions: own().filter_map(|s| s.window().map(|w| (s.id, w.id, s.last))).collect(),
+            windows: own().flat_map(|s| s.windows.iter()).map(|w| (w.id, w.active, w.last_pane)).collect(),
+        }
+    }
+
+    /// The pane a command put the eye on in session `sid`: the window it
+    /// went to, else a window whose pane it changed (a split in a window
+    /// not shown), else the window shown.
+    fn moved(&self, server: &Server, sid: super::SessionId) -> Option<super::PaneId> {
+        let s = server.session(sid)?;
+        let shown = s.window()?;
+        if self.sessions.iter().any(|&(id, cur, _)| id == sid && cur != shown.id) {
+            return Some(shown.active);
+        }
+        let changed = s.windows.iter().find(|w| self.windows.iter().any(|&(id, a, _)| id == w.id && a != w.active));
+        Some(changed.unwrap_or(shown).active)
+    }
+
+    /// What is still there as it was. A zoomed window keeps the pane the
+    /// command left: the zoomed one is the one it draws, there and on every
+    /// machine copying it.
+    fn put_back(self, server: &mut Server) {
+        for (sid, cur, last) in self.sessions {
+            let Some(s) = server.session_mut(sid) else { continue };
+            if let Some(i) = s.windows.iter().position(|w| w.id == cur) {
+                s.cur = i;
+                if last.is_none_or(|l| s.windows.iter().any(|w| w.id == l)) {
+                    s.last = last;
+                }
+            }
+        }
+        for (wid, active, last) in self.windows {
+            let Some(w) = server.sessions.iter_mut().flat_map(|s| s.windows.iter_mut()).find(|w| w.id == wid) else {
+                continue;
+            };
+            if w.zoomed || w.pane(active).is_none() {
+                continue;
+            }
+            w.active = active;
+            w.last_pane = last.filter(|l| w.pane(*l).is_some());
+        }
+    }
+}
+
 /// A connection's first handshake message, from `keepane web`.
 pub struct StreamAsk {
     pub peer: IpAddr,
@@ -261,12 +318,18 @@ impl Server {
         let (ok, text, pane) = match self.command_from_machine(line) {
             Err(why) => (false, why, None),
             Ok((cmd, sid)) => {
+                // Where this machine's terminals look is theirs: what another
+                // machine does here (a split, a new window) leaves it as it
+                // was. The pane the command put the eye on is the reply's,
+                // for that machine's eye to go to.
+                let view = View::of(self);
                 let (ok, text) = match self.exec(cmd, None) {
                     super::Outcome::Error(e) => (false, e),
                     super::Outcome::Text(t) => (true, t),
                     _ => (true, String::new()),
                 };
-                let pane = self.session(sid).and_then(|s| s.window()).map(|w| w.active);
+                let pane = view.moved(self, sid);
+                view.put_back(self);
                 (ok, text, pane)
             }
         };
