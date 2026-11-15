@@ -6075,3 +6075,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 9 | 真实场景前后对比 | B 的 pane 先有 173 行回滚，再分屏变成 60 列，然后复制。0.67.0 当复制方：`down … 0 sessions … 2 restarts`（与用户机器相同）；新版本：`live; 1 sessions, 2 panes; 1 snapshots, 0 restarts`。Windows 664 / 11 / 163 | 干净（3/3），验收通过 |
 
 - 遗留：两台都要升级才能复制这种窗格（读端在复制方）。Mac 当前复制本机能用，是因为本机的窗格还没有踩中；Mac 也要升级。
+- CI（提交 47adc92，run 43710969043）：macOS 上 `the_chart_shows_the_paired_machines` 失败。CI 机器的主机名很长，图表框把标题截到约 25 个字符再加 `…`，而测试按前 28 个字符去匹配。功能没问题，是测试的假设错了。定性：只此一处（另外两处主机名比较的是命令行输出，不经过截断）、边界遗漏。改成按前 20 个字符匹配（5f783c9）。之后 Windows 664 / 11 / 163，Linux fmt ok、clippy 0、648 / 160。5f783c9 的 CI（run 43711551382）在 Ubuntu 上失败一次，是没改过的时序测试 `passthrough_gives_a_pane_the_prefix_until_f12`（上一轮 Ubuntu 通过、本地 Linux 两次通过），重跑失败的 job 后四项全过。
+- 发布：v0.68.0（第 194 条），tag 在 5f783c9。Release run 43712463033 成功，13 个文件；Homebrew formula run 43713136050 通过，3 个 sha256 与发布文件一致；manifests 已拉取（c9aaa0f）；winget 新开 PR #480830。图没重拍：演示里没有多台机器的画面。
