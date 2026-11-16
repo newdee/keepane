@@ -191,9 +191,12 @@ under the cursor shows on the right (a directory's entries, a file's text
 with its line numbers, the first 256 KiB of it; a binary file only by its
 size), and `l` on a file scrolls it; `.` shows hidden entries and `-`
 goes back to the pane's directory, which `[0]` follows when another pane
-is chosen or this one changes directory. Narrower, `0` puts `[0]` in place
-of the left column while it is focused. (Up to 0.60 the right side was
-`[0]`; it is `[4]` now.)
+is chosen or this one changes directory. Each entry is marked by its kind
+with an emoji: 📁 a folder (📂 the one whose entries are on the right),
+🐍 Python, 🦀 Rust, 📄 a file of no known kind; `set -g dashboard-icons
+nerd` draws a Nerd Font's icons instead, for a terminal drawn in one.
+Narrower, `0` puts `[0]` in place of the left column while it is focused.
+(Up to 0.60 the right side was `[0]`; it is `[4]` now.)
 
 It also acts. On a pane: `s` sends it a message, `r` renames it, `m`
 changes its work mode, `R` marks it ready (unsticks it), `o` goes there
@@ -1887,6 +1890,7 @@ set -g animation off              # no frame flying to where the keys go (animat
 set -g clock-mode-animation bars  # under the clock: pulse, matrix, bars, fire, starfield, sharks, bonsai, sea, cat, dino, penguins, synthwave, fireworks, random (the default), cycle or off
 set -g clock-mode-look dots       # drawn in dots, blocks or binary; plain (the default) is its own characters
 set -g clock-mode-zones "Asia/Shanghai,America/Los_Angeles"  # other places' time under the clock's date (IANA names, or a city alone: tokyo)
+set -g dashboard-icons nerd       # the dashboard's [0] Files marks entries with a Nerd Font's icons (emoji by default)
 set -g agent-cost off             # no price list fetched, no cost for the panes' agents (on by default)
 set -g git-command C:\Tools\git\cmd\git.exe  # the git to run for the panes' repositories (default: the one found)
 set -g web-upload-dir keepane-uploads  # where the phone page's 📎 puts files: under the pane's directory (absolute: there)

@@ -22,6 +22,106 @@ pub struct Entry {
     pub size: u64,
 }
 
+/// What marks each entry (`dashboard-icons`): an emoji, which the
+/// system's own emoji font draws, or a Nerd Font's icon, which only a
+/// terminal drawn in one has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Icons {
+    #[default]
+    Emoji,
+    Nerd,
+}
+
+impl Icons {
+    /// `show-options -gv dashboard-icons`'s answer; anything else (an
+    /// older server that has no such option) the default.
+    pub fn parse(s: &str) -> Icons {
+        if s.trim() == "nerd" { Icons::Nerd } else { Icons::Emoji }
+    }
+}
+
+/// A kind of entry: its emoji, its Nerd Font icon and that icon's colour
+/// (an SGR colour, one of the 16 the theme maps). Each emoji is one shown
+/// as a picture without a variation selector, so it is two columns
+/// wherever it is drawn.
+struct Kind {
+    emoji: &'static str,
+    nerd: char,
+    colour: &'static str,
+}
+
+const fn kind(emoji: &'static str, nerd: char, colour: &'static str) -> Kind {
+    Kind { emoji, nerd, colour }
+}
+
+const FOLDER: Kind = kind("📁", '\u{f07b}', "34");
+/// A directory whose entries are on the right.
+const FOLDER_OPEN: Kind = kind("📂", '\u{f07c}', "34");
+/// A file of no kind below: no extension, or one not known.
+const FILE: Kind = kind("📄", '\u{f15b}', "90");
+
+/// Kinds by whole name (case aside), before the extension is looked at.
+const BY_NAME: &[(&[&str], Kind)] = &[
+    (&["readme"], kind("📝", '\u{e73e}', "37")),
+    (&["license", "licence", "copying"], kind("📜", '\u{f0219}', "33")),
+    (&["makefile", "justfile"], kind("🔨", '\u{e779}', "33")),
+    (&["dockerfile", "containerfile"], kind("🐳", '\u{f308}', "34")),
+    (&[".gitignore", ".gitattributes", ".gitmodules"], kind("🌱", '\u{e702}', "31")),
+    (&["package-lock.json", "yarn.lock", "pnpm-lock.yaml"], kind("🔒", '\u{f023}', "90")),
+    (&[".env", ".editorconfig"], kind("🔧", '\u{e615}', "36")),
+];
+
+/// Kinds by extension (case aside).
+const BY_EXT: &[(&[&str], Kind)] = &[
+    (&["py", "pyi", "pyw", "ipynb"], kind("🐍", '\u{e73c}', "33")),
+    (&["ts", "tsx", "mts", "cts"], kind("🟦", '\u{e628}', "34")),
+    (&["js", "jsx", "mjs", "cjs"], kind("🟨", '\u{e74e}', "33")),
+    (&["rs"], kind("🦀", '\u{e7a8}', "31")),
+    (&["go"], kind("🐹", '\u{e627}', "36")),
+    (&["c", "h"], kind("🔷", '\u{e61e}', "34")),
+    (&["cpp", "cc", "cxx", "hpp", "hh"], kind("🔷", '\u{e61d}', "34")),
+    (&["sh", "bash", "zsh", "fish", "ps1", "psm1", "bat", "cmd"], kind("🐚", '\u{f489}', "32")),
+    (&["md", "mdx", "markdown"], kind("📝", '\u{e73e}', "37")),
+    (&["txt", "log"], kind("📄", '\u{f15c}', "90")),
+    (&["json", "jsonc", "json5"], kind("🧾", '\u{e60b}', "33")),
+    (&["toml", "yaml", "yml", "ini", "cfg", "conf", "env"], kind("🔧", '\u{e615}', "36")),
+    (&["html", "htm", "xml", "vue", "svelte"], kind("🌐", '\u{e736}', "31")),
+    (&["css", "scss", "sass", "less"], kind("🎨", '\u{e749}', "34")),
+    (&["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp"], kind("🌄", '\u{f1c5}', "35")),
+    (&["zip", "tar", "gz", "tgz", "xz", "bz2", "7z", "rar", "zst"], kind("📦", '\u{f1c6}', "31")),
+    (&["csv", "tsv", "xlsx", "xls"], kind("📊", '\u{f1c3}', "32")),
+    (&["db", "sqlite", "sqlite3"], kind("💽", '\u{f1c0}', "36")),
+    (&["pdf"], kind("📕", '\u{f1c1}', "31")),
+    (&["exe", "dll", "so", "dylib", "wasm", "bin"], kind("⚡", '\u{eae8}', "32")),
+    (&["lock"], kind("🔒", '\u{f023}', "90")),
+];
+
+/// What `e` is: a folder (open when its entries are on the right), else
+/// by its whole name, then by its name without the extension (`README.txt`
+/// is a readme), then by the extension.
+fn kind_of(e: &Entry, open: bool) -> &'static Kind {
+    if e.dir {
+        return if open { &FOLDER_OPEN } else { &FOLDER };
+    }
+    let name = e.name.to_lowercase();
+    let named = |n: &str| BY_NAME.iter().find(|(names, _)| names.contains(&n)).map(|(_, k)| k);
+    let ext = name.rfind('.').map(|i| (&name[..i], &name[i + 1..]));
+    named(&name)
+        .or_else(|| ext.and_then(|(stem, _)| named(stem)))
+        .or_else(|| ext.and_then(|(_, x)| BY_EXT.iter().find(|(exts, _)| exts.contains(&x)).map(|(_, k)| k)))
+        .unwrap_or(&FILE)
+}
+
+/// `e`'s mark and the space after it: an emoji (two columns), or a Nerd
+/// Font icon in its colour (one).
+pub fn icon(icons: Icons, e: &Entry, open: bool) -> String {
+    let k = kind_of(e, open);
+    match icons {
+        Icons::Emoji => format!("{} ", k.emoji),
+        Icons::Nerd => format!("{} ", paint(k.colour, &k.nerd.to_string())),
+    }
+}
+
 #[derive(Default)]
 pub struct Files {
     /// Where the browsing is.
@@ -31,6 +131,8 @@ pub struct Files {
     pub more: usize,
     pub pick: usize,
     pub hidden: bool,
+    /// What marks each entry (`dashboard-icons`).
+    pub icons: Icons,
     /// Why the directory could not be read.
     pub error: Option<String>,
     /// The pane followed and its directory then: a new pane or a `cd`
@@ -178,8 +280,10 @@ impl Files {
     }
 
     /// The panel's rows: `rows` of entries in `width` columns, the cursor's
-    /// in view; directories blue with a `/`.
-    pub fn rows(&self, rows: usize, width: usize) -> Vec<(bool, String)> {
+    /// in view; each marked by its kind (`icon`), directories blue with a
+    /// `/`. `open`: the entry under the cursor is shown on the right, so a
+    /// directory there is an open folder.
+    pub fn rows(&self, rows: usize, width: usize, open: bool) -> Vec<(bool, String)> {
         if let Some(e) = &self.error {
             return vec![(false, paint("31", &clip(&format!("cannot read: {e}"), width).0))];
         }
@@ -199,6 +303,8 @@ impl Files {
             .skip(start)
             .take(room)
             .map(|(i, e)| {
+                let mark = icon(self.icons, e, open && i == self.pick);
+                let width = width.saturating_sub(width_of(&mark));
                 let line = if e.dir {
                     paint("1;34", &format!("{}/", e.name))
                 } else {
@@ -208,7 +314,7 @@ impl Files {
                     let pad = " ".repeat(width.saturating_sub(width_of(&name) + size.len()));
                     format!("{name}{pad}{}", paint("2", &size))
                 };
-                (i == self.pick, line)
+                (i == self.pick, format!("{mark}{line}"))
             })
             .collect();
         if self.more > 0 {
@@ -230,9 +336,10 @@ pub fn size_text(b: u64) -> String {
 }
 
 /// What `path` holds, for the main panel in `width` columns: a
-/// directory's entries (hidden ones with `hidden`, as on the left), a file's text with its line numbers (at most
+/// directory's entries (hidden ones with `hidden`, each marked with
+/// `icons`, as on the left), a file's text with its line numbers (at most
 /// `PREVIEW_MAX` of it), or what it is when it is not text.
-pub fn preview(path: &Path, width: usize, hidden: bool) -> Vec<String> {
+pub fn preview(path: &Path, width: usize, hidden: bool, icons: Icons) -> Vec<String> {
     let name = path.to_string_lossy();
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -253,10 +360,11 @@ pub fn preview(path: &Path, width: usize, hidden: bool) -> Vec<String> {
                 ));
                 out.push(String::new());
                 for e in &entries {
+                    let mark = icon(icons, e, false);
                     out.push(if e.dir {
-                        paint("1;34", &format!("{}/", e.name))
+                        format!("{mark}{}", paint("1;34", &format!("{}/", e.name)))
                     } else {
-                        format!("{}  {}", e.name, paint("2", &size_text(e.size)))
+                        format!("{mark}{}  {}", e.name, paint("2", &size_text(e.size)))
                     });
                 }
             }
@@ -341,6 +449,7 @@ fn read_head(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_width::UnicodeWidthChar;
 
     fn tree() -> PathBuf {
         let d = std::env::temp_dir().join(format!("keepane-files-{}-{}", std::process::id(), rand_tag()));
@@ -441,7 +550,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         f.read();
         assert!(f.error.is_some() && f.entries.is_empty());
-        assert!(f.rows(5, 30)[0].1.contains("cannot read"));
+        assert!(f.rows(5, 30, false)[0].1.contains("cannot read"));
     }
 
     #[test]
@@ -449,7 +558,7 @@ mod tests {
         let d = tree();
         let text = d.join("t.txt");
         std::fs::write(&text, "a\tb\r\nescape \x1b[31mred\n中文\n").unwrap();
-        let p = preview(&text, 40, false);
+        let p = preview(&text, 40, false, Icons::Emoji);
         let body: Vec<String> = p.iter().map(|l| super::super::strip(l)).collect();
         assert!(body[1].contains("3 lines"), "{body:?}");
         assert_eq!(body[3], "1 a   b");
@@ -457,18 +566,18 @@ mod tests {
         assert_eq!(body[5], "3 中文");
         let bin = d.join("b.bin");
         std::fs::write(&bin, [0u8, 1, 2, 3]).unwrap();
-        assert!(preview(&bin, 40, false).iter().any(|l| l.contains("binary")));
+        assert!(preview(&bin, 40, false, Icons::Emoji).iter().any(|l| l.contains("binary")));
         let big = d.join("big.txt");
         std::fs::write(&big, "x\n".repeat((PREVIEW_MAX as usize) / 2 + 100)).unwrap();
-        let p = preview(&big, 40, false);
+        let p = preview(&big, 40, false, Icons::Emoji);
         assert!(super::super::strip(&p[1]).contains("the first 256.0K shown"), "{:?}", p[1]);
         assert_eq!(p.len(), 3 + (PREVIEW_MAX as usize) / 2, "only what was read");
         std::fs::write(d.join("src/.secret"), "").unwrap();
-        let dirp = preview(&d.join("src"), 40, false);
+        let dirp = preview(&d.join("src"), 40, false, Icons::Emoji);
         assert!(super::super::strip(&dirp[1]).contains("1 directories, 1 files"), "{dirp:?}");
-        let all = preview(&d.join("src"), 40, true);
+        let all = preview(&d.join("src"), 40, true, Icons::Emoji);
         assert!(super::super::strip(&all[1]).contains("1 directories, 2 files"), "hidden as on the left: {all:?}");
-        assert!(preview(&d.join("nope"), 40, false)[1].contains("cannot read"));
+        assert!(preview(&d.join("nope"), 40, false, Icons::Emoji)[1].contains("cannot read"));
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -491,9 +600,137 @@ mod tests {
         assert_eq!((entries.len(), more), (LIST_MAX, 7));
         let mut f = Files::default();
         f.follow("%1", &d.to_string_lossy());
-        let rows = f.rows(4, 30);
+        let rows = f.rows(4, 30, false);
         assert_eq!(rows.len(), 4);
         assert!(rows[3].1.contains("7 more"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    fn entry(name: &str, dir: bool) -> Entry {
+        Entry { name: name.into(), dir, size: 0 }
+    }
+
+    /// A name's kind: by its whole name, then its name without the
+    /// extension, then the extension, case aside; a folder by being one.
+    #[test]
+    fn an_entry_is_marked_by_its_kind() {
+        let emoji = |name: &str| icon(Icons::Emoji, &entry(name, false), false);
+        let cases = [
+            ("main.py", "🐍"),
+            ("MAIN.PY", "🐍"),
+            ("index.ts", "🟦"),
+            ("app.jsx", "🟨"),
+            ("lib.rs", "🦀"),
+            ("README", "📝"),
+            ("readme.txt", "📝"),
+            ("LICENSE", "📜"),
+            ("Dockerfile", "🐳"),
+            (".gitignore", "🌱"),
+            (".env", "🔧"),
+            (".env.local", "🔧"),
+            ("Cargo.toml", "🔧"),
+            ("package-lock.json", "🔒"),
+            ("package.json", "🧾"),
+            ("release.tar.gz", "📦"),
+            ("logo.png", "🌄"),
+            ("model.onnx", "📄"),
+            ("run", "📄"),
+            ("trailing.", "📄"),
+        ];
+        for (name, want) in cases {
+            assert_eq!(emoji(name), format!("{want} "), "{name}");
+        }
+        assert_eq!(icon(Icons::Emoji, &entry("src", true), false), "📁 ");
+        assert_eq!(icon(Icons::Emoji, &entry("src", true), true), "📂 ", "its entries on the right");
+        assert_eq!(icon(Icons::Emoji, &entry("main.py", false), true), "🐍 ", "a file opens no folder");
+        // A Nerd Font's icons, each in its colour.
+        assert_eq!(icon(Icons::Nerd, &entry("src", true), false), "\x1b[34m\u{f07b}\x1b[0m ");
+        assert_eq!(icon(Icons::Nerd, &entry("src", true), true), "\x1b[34m\u{f07c}\x1b[0m ");
+        assert_eq!(icon(Icons::Nerd, &entry("main.py", false), false), "\x1b[33m\u{e73c}\x1b[0m ");
+        assert_eq!(icon(Icons::Nerd, &entry("model.onnx", false), false), "\x1b[90m\u{f15b}\x1b[0m ");
+        assert_eq!(
+            (Icons::parse("nerd\n"), Icons::parse("emoji"), Icons::parse("")),
+            (Icons::Nerd, Icons::Emoji, Icons::Emoji)
+        );
+    }
+
+    /// Odd names are marked without a fault; a panel too narrow for a mark
+    /// and a size gets rows all the same (`row_line` cuts them, as it cut
+    /// the size alone before), and one wide enough rows no wider than it.
+    #[test]
+    fn odd_names_and_narrow_panels_stay_in_bounds() {
+        for name in ["", ".", "..", "a..b", "x.", ".PY", "中文.md", "🐍.py", "a.b.c.d.rs", "über.RS"] {
+            assert!(icon(Icons::Emoji, &entry(name, false), false).ends_with(' '), "{name:?}");
+        }
+        assert_eq!(icon(Icons::Emoji, &entry("中文.md", false), false), "📝 ");
+        assert_eq!(icon(Icons::Emoji, &entry("über.RS", false), false), "🦀 ");
+        let d = tree();
+        std::fs::write(d.join(format!("{}🐍中文.py", "long-".repeat(12))), "x").unwrap();
+        let mut f = Files::default();
+        f.follow("%1", &d.to_string_lossy());
+        for icons in [Icons::Emoji, Icons::Nerd] {
+            f.icons = icons;
+            let mark = if icons == Icons::Emoji { 3 } else { 2 };
+            for width in 0..=12 {
+                let rows = f.rows(10, width, true);
+                assert_eq!(rows.len(), 5, "{icons:?} {width}");
+                for (_, line) in &rows {
+                    let plain = super::super::strip(line);
+                    // A file row fits once there is room for its mark and
+                    // its size (`4B` here); a folder's name is cut where
+                    // the row is drawn (`row_line`).
+                    if !plain.contains('/') && width >= mark + 4 {
+                        assert!(width_of(&plain) <= width, "{icons:?} {width} {plain:?}");
+                    }
+                }
+            }
+            let wide = f.rows(10, 30, false);
+            assert!(wide.iter().all(|(_, l)| width_of(l) <= 30), "{wide:?}");
+        }
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Every emoji is one character two columns wide (none needs a
+    /// variation selector, which terminals count differently), every Nerd
+    /// Font icon one column: so a row's width is known wherever it is drawn.
+    #[test]
+    fn every_mark_has_a_known_width() {
+        let all = BY_NAME.iter().chain(BY_EXT).map(|(_, k)| k).chain([&FOLDER, &FOLDER_OPEN, &FILE]);
+        for k in all {
+            let mut chars = k.emoji.chars();
+            let (c, rest) = (chars.next().unwrap(), chars.next());
+            assert_eq!((c.width(), rest), (Some(2), None), "{}", k.emoji);
+            assert_eq!(k.nerd.width(), Some(1), "{:x}", k.nerd as u32);
+        }
+    }
+
+    /// The marks take their columns from the name, not from the row: each
+    /// row is as wide as before, the size still against the right edge.
+    #[test]
+    fn a_row_keeps_its_width_with_its_mark() {
+        let d = tree();
+        let mut f = Files::default();
+        f.follow("%1", &d.to_string_lossy());
+        for icons in [Icons::Emoji, Icons::Nerd] {
+            f.icons = icons;
+            for open in [false, true] {
+                let rows = f.rows(10, 24, open);
+                assert_eq!(rows.len(), 4);
+                for (_, line) in &rows {
+                    assert!(width_of(line) <= 24, "{icons:?} {line:?}");
+                }
+                // Files fill the row, their size at its end.
+                let plain: Vec<String> = rows.iter().map(|(_, l)| super::super::strip(l)).collect();
+                assert_eq!(width_of(&plain[2]), 24, "{plain:?}");
+                assert!(plain[2].ends_with("4B"), "{plain:?}");
+                let folder = if icons == Icons::Emoji { ["📂", "📁"] } else { ["\u{f07c}", "\u{f07b}"] };
+                assert!(plain[0].starts_with(folder[usize::from(!open)]), "the picked folder, {open}: {plain:?}");
+                assert!(plain[1].starts_with(folder[1]), "another folder stays shut: {plain:?}");
+            }
+        }
+        // The right side's listing of a directory marks its entries too.
+        let p: Vec<String> = preview(&d, 40, false, Icons::Emoji).iter().map(|l| super::super::strip(l)).collect();
+        assert!(p.contains(&"📁 Docs/".to_string()) && p.contains(&"📝 A.md  4B".to_string()), "{p:?}");
         let _ = std::fs::remove_dir_all(d);
     }
 }

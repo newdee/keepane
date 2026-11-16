@@ -39,6 +39,8 @@ pub const QUERIES: &[&str] = &[
     "web-status",
     // `share -l -J`: page 2.
     "share",
+    // `show-options -gv dashboard-icons`: what marks [0]'s entries.
+    "show-options",
 ];
 /// The only ones it sends to change anything.
 pub const ACTIONS: &[&str] = &[
@@ -830,12 +832,22 @@ impl Board {
         self.layout().machine.is_some()
     }
 
+    /// The file or directory the main panel shows, read here: on page 1
+    /// only (page 2's main panel is the share picked), in the Detail tab.
+    fn shown_file(&self) -> Option<&std::path::Path> {
+        match (self.page, self.tab, &self.detail) {
+            (1, Tab::Detail, Some(Detail::File(path))) => Some(path),
+            _ => None,
+        }
+    }
+
     /// The main panel's lines when the board reads them itself, not from
-    /// the server: the Git tab's (`git` the program to ask).
+    /// the server: a file's or a directory's (`shown_file`), the Git tab's
+    /// (`git` the program to ask).
     pub fn local_main(&self, git: Option<&std::path::Path>) -> Option<Vec<String>> {
-        if let (Tab::Detail, Some(Detail::File(path))) = (self.tab, &self.detail) {
+        if let Some(path) = self.shown_file() {
             let width = self.layout().main.map_or(80, |r| r.inner_w());
-            return Some(files::preview(path, width, self.files.hidden));
+            return Some(files::preview(path, width, self.files.hidden, self.files.icons));
         }
         if self.tab != Tab::Git {
             return None;
@@ -1883,10 +1895,13 @@ impl Board {
         // title has no room for it beside the path.)
         let room = r.w.saturating_sub(5 + "[0] Files ".len());
         let title = format!("[0] Files {}", tail(&self.files.where_(), room));
+        // The entry under the cursor while the main panel shows it: a
+        // directory then is an open folder.
+        let open = self.files.picked().is_some_and(|p| self.shown_file() == Some(p.as_path()));
         // A column for the row's marker (`row_line`).
         let lines = self
             .files
-            .rows(r.inner_h(), r.inner_w().saturating_sub(1))
+            .rows(r.inner_h(), r.inner_w().saturating_sub(1), open)
             .into_iter()
             .map(|(picked, l)| row_line(&l, picked, focused, r.inner_w()))
             .collect();
@@ -3077,6 +3092,8 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
             }
             board.set_tasks(&lines(ask(&board.tasks_query())));
             board.set_web(&ask(&owned(&["web-status"])).1);
+            // Asked each time, so a `set` while the board is open shows.
+            board.files.icons = files::Icons::parse(&ask(&owned(&["show-options", "-gv", "dashboard-icons"])).1);
             // The window's size, every time: a resize can pass unannounced
             // (a popup laid out again).
             let (cols, rows) = console.size();
@@ -4109,6 +4126,9 @@ mod tests {
         assert_eq!((b.focus, b.files.dir.as_deref()), (Panel::Files, Some(dir.as_path())));
         let text = screen(&b).join("\n");
         assert!(text.contains("sub/"), "listed on the left");
+        // Marked by its kind: the directory under the cursor, its entries
+        // on the right, an open folder.
+        assert!(text.contains("📂 sub/") && text.contains("📄 a.txt"), "{text}");
         // A file's size whole beside it (the row's marker takes a column).
         assert!(text.contains("12B│"), "{text}");
         // The end of the path in the title, which says where: its start goes.
@@ -4124,6 +4144,23 @@ mod tests {
         b.key(Key::ch('j'));
         b.set_main(b.local_main(None).unwrap());
         assert!(screen(&b).join("\n").contains("1 hello there"), "{}", screen(&b).join("\n"));
+        assert!(screen(&b).join("\n").contains("📁 sub/"), "off the cursor, shut again");
+        // `dashboard-icons nerd`: a Nerd Font's.
+        b.files.icons = files::Icons::Nerd;
+        b.key(Key::ch('k'));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("\u{f07c} sub/") && text.contains("\u{f15c} a.txt"), "{text}");
+        b.files.icons = files::Icons::Emoji;
+        // Page 2: [0] stays, but the main panel is the share picked, so no
+        // folder is open; back on page 1 it is again.
+        b.key(Key::ch('>'));
+        assert_eq!((b.page, b.focus), (2, Panel::Files));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("📁 sub/") && !text.contains("📂"), "{text}");
+        assert_eq!(b.local_main(None), None, "page 2 reads no file");
+        b.key(Key::ch('<'));
+        assert!(screen(&b).join("\n").contains("📂 sub/"));
+        b.key(Key::ch('j'));
         // l on a file: its preview takes the keys; h comes back.
         b.key(Key::ch('l'));
         assert_eq!((b.focus, b.tab), (Panel::Main, Tab::Detail));

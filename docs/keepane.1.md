@@ -113,8 +113,10 @@ input),
 chosen pane's screen, to act on; the panes by session, and first by
 machine, its name and address, while another's sessions are copied here;
 its Git tab, the pane's repository or
-files; from 150 columns, the machine's CPU, memory, disk and network on
-the left), `list-agents` (the Claude Code, Codex, pi
+files; from 150 columns, on the left, `[0]` the pane's directory, each
+entry an emoji of its kind (`dashboard-icons nerd`: a Nerd Font's icon),
+over the machine's CPU, memory, disk and network), `list-agents` (the
+Claude Code, Codex, pi
 and Cursor CLI the panes run: model, cost, tokens, context, CPU, memory;
 Cursor's CPU and memory only; `-J` as JSON),
 `trace-pane` (what a pane's agent did, step by step: its latest turns, each

@@ -228,7 +228,14 @@ pub struct Options {
     /// (rows of blocks under a centred `keepane` root), `tree` (blocks under
     /// a `keepane` root, one a line) or `list` (tmux's lines).
     pub choose_tree_style: String,
+    /// What marks each entry of the dashboard's `[0] Files`: `emoji` (the
+    /// system's own, the default) or `nerd` (a Nerd Font's icons, for a
+    /// terminal drawn in one).
+    pub dashboard_icons: String,
 }
+
+/// What `dashboard-icons` can be.
+pub const DASHBOARD_ICONS: &[&str] = &["emoji", "nerd"];
 
 /// What `clock-mode-animation` can be.
 pub const CLOCK_ANIMATIONS: &[&str] = &[
@@ -529,6 +536,7 @@ pub const SHOWABLE: &[&str] = &[
     "window-style",
     "pane-colours",
     "choose-tree-style",
+    "dashboard-icons",
 ];
 
 impl Default for Options {
@@ -655,6 +663,7 @@ impl Default for Options {
             .map(|c: u32| Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8))
             .to_vec(),
             choose_tree_style: "chart".into(),
+            dashboard_icons: "emoji".into(),
         }
     }
 }
@@ -754,6 +763,7 @@ pub const KNOWN: &[&str] = &[
     "clock-mode-look",
     "clock-mode-style",
     "clock-mode-zones",
+    "dashboard-icons",
     "default-command",
     "default-shell",
     "default-terminal",
@@ -951,6 +961,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "feishu-domain" => &["feishu", "lark"],
         "theme" => THEME_NAMES,
         "choose-tree-style" => &["chart", "list", "tree"],
+        "dashboard-icons" => DASHBOARD_ICONS,
         "clock-mode-style" => &["12", "24"],
         "clock-mode-animation" => CLOCK_ANIMATIONS,
         "clock-mode-look" => CLOCK_LOOKS,
@@ -1242,6 +1253,7 @@ impl Options {
             }
             "pane-colours" => self.pane_colours = parse_colours(value)?,
             "choose-tree-style" => self.choose_tree_style = one_of(name, value, &["chart", "tree", "list"])?,
+            "dashboard-icons" => self.dashboard_icons = one_of(name, value, DASHBOARD_ICONS)?,
             "default-terminal" => {
                 let v = value.trim();
                 if v.is_empty() || v.contains(char::is_whitespace) {
@@ -1381,6 +1393,7 @@ impl Options {
             "window-style" => format!("fg={},bg={}", color_name(self.window_fg), color_name(self.window_bg)),
             "pane-colours" => self.pane_colours.iter().map(|c| color_name(*c)).collect::<Vec<_>>().join(" "),
             "choose-tree-style" => self.choose_tree_style.clone(),
+            "dashboard-icons" => self.dashboard_icons.clone(),
             "log-history-dir" => {
                 if self.log_history_dir.is_empty() {
                     crate::histlog::default_dir().to_string_lossy().into_owned()

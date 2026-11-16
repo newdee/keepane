@@ -779,7 +779,7 @@ u UU N... 100644 100644 100644 100644 aa bb cc src/c.rs\0? notes.md\0? tmp/x\0";
         assert_eq!((w.commit_count, w.commits[0].1.as_str()), (1, "second"), "{w:?}");
         let paths: Vec<&str> = w.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["a.txt", "b.txt"], "since the first commit: the commit's file and the changed one");
-        assert_eq!((w.added, w.removed, w.new_files.clone()), (2, 0, vec!["new.txt".to_string()]));
+        assert_eq!((w.added, w.removed, w.new_files.clone()), (2, 0, vec!["new.txt".to_string()]), "{w:?}");
         assert!(w.measured);
         // From where it is now: the change in the working tree only.
         let now = work(Some(&git), &repo, None);
