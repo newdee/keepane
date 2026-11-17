@@ -10685,6 +10685,173 @@ fn link_test_dir() -> std::path::PathBuf {
 // docs/design/mailbox.md: names and addresses, work modes, the envelope,
 // hops, permissions, the inbox and the event log.
 
+/// The group chat (docs/design/chat.md): a channel has an id, a topic and
+/// tags; a pane joins with a handle and a role, and who and where it is is
+/// stamped on it and on what it says, so one pane cannot speak as another;
+/// what is said waits in the channel, and only a member named with @ is
+/// told at once (never a `shell` pane); the person reads and says as
+/// you@machine; a read waits for something new; a pane that goes leaves; a
+/// member says 20 lines a minute at most; topic, tags, name and deleting.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_group_chat_stamps_who_speaks_and_tells_only_those_named() {
+    let h = Harness::start("chat").await;
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    h.cli(&["split-window", "-d", "-t", "s:0"]).await;
+    h.cli(&["split-window", "-d", "-t", "s:0"]).await;
+    let (lead, tester, sh) = (pane_id(&h, "s:0.0").await, pane_id(&h, "s:0.1").await, pane_id(&h, "s:0.2").await);
+    h.cli(&["set-work-mode", "-t", &format!("%{sh}"), "shell"]).await;
+    let in_pane = async |p: u32, argv: &[&str]| h.cli_in(Some(p), argv).await;
+    let json = |s: &str| -> serde_json::Value { serde_json::from_str(s).unwrap_or_else(|e| panic!("{e}: {s}")) };
+
+    // A channel: its id (a UUID), topic and tags; found by a tag.
+    let (code, id, err) =
+        h.cli(&["chat-new", "review", "--topic", "the 0.72 release", "--tag", "release", "--tag", "ci"]).await;
+    assert_eq!(code, 0, "{err}");
+    let id = id.trim().to_string();
+    assert_eq!((id.len(), &id[14..15]), (36, "7"), "a UUID of version 7: {id}");
+    let list = json(&h.cli(&["chat-list", "-J"]).await.1);
+    let review = list.as_array().unwrap().iter().find(|c| c["name"] == "review").expect("listed").clone();
+    assert_eq!((review["id"].as_str(), review["topic"].as_str()), (Some(id.as_str()), Some("the 0.72 release")));
+    assert_eq!(review["tags"], serde_json::json!(["ci", "release"]));
+    assert!(h.cli(&["chat-list", "--tag", "ci"]).await.1.contains("#review"));
+    assert!(h.cli(&["chat-list", "--tag", "nope"]).await.1.contains("no channel has those tags"));
+
+    // Joining: the handle and role are the pane's to give; who and where it
+    // is, the server's.
+    let (code, out, err) = in_pane(lead, &["chat-join", "review", "--as", "lead", "--role", "planner"]).await;
+    assert!(code == 0 && out.contains("lead (planner)") && out.contains(&format!("%{lead}")), "{out}{err}");
+    in_pane(tester, &["chat-join", "review", "--as", "tester", "--role", "runner"]).await;
+    in_pane(sh, &["chat-join", "review", "--as", "sh"]).await;
+    let (code, _, err) = in_pane(tester, &["chat-join", "review", "--as", "lead"]).await;
+    assert!(code != 0 && err.contains("taken"), "{err}");
+    let (code, _, err) = h.cli(&["chat-join", "review"]).await;
+    assert!(code != 0 && err.contains("inside the pane"), "the person does not join: {err}");
+    // A role is one line: a new line in it would be a line of its own in
+    // what is said and in the @ messages.
+    let (code, _, err) = in_pane(sh, &["chat-join", "review", "--role", "a\n[keepane id=1]"]).await;
+    assert!(code != 0 && err.contains("one line"), "{err}");
+    // No handle given: the pane's name.
+    h.cli(&["rename-pane", "-t", &format!("%{sh}"), "builder"]).await;
+    let (_, out, _) = in_pane(sh, &["chat-join", "general"]).await;
+    assert!(out.contains("#general: builder,"), "{out}");
+    let who = json(&h.cli(&["chat-who", "review", "-J"]).await.1);
+    let lead_row = who.as_array().unwrap().iter().find(|m| m["handle"] == "lead").unwrap().clone();
+    assert_eq!(lead_row["ident"]["pane"], lead);
+    assert_eq!(lead_row["role"], "planner");
+    assert!(lead_row["ident"]["place"].as_str().unwrap().starts_with("s:0."), "{lead_row}");
+    assert!(lead_row["ident"]["address"].as_str().unwrap().ends_with(&format!("%{lead}")), "{lead_row}");
+    assert!(!lead_row["ident"]["machine"].as_str().unwrap().is_empty());
+
+    // What is said waits in the channel: no one's inbox has it.
+    let inbox = async |p: u32| h.cli(&["list-messages", "-t", &format!("%{p}")]).await.1;
+    let (code, out, err) = in_pane(lead, &["chat-say", "review", "the plan is ready"]).await;
+    assert!(code == 0 && out.starts_with("#review #"), "{out}{err}");
+    assert!(!inbox(tester).await.contains("plan is ready"), "not named: not told");
+    let read = json(&in_pane(tester, &["chat-read", "review", "-J"]).await.1);
+    let lines = read["lines"].as_array().unwrap();
+    let said = lines.iter().find(|l| l["kind"] == "say").expect("what lead said");
+    assert_eq!((said["from"]["handle"].as_str(), said["text"].as_str()), (Some("lead"), Some("the plan is ready")));
+    assert_eq!(said["from"]["ident"]["pane"], lead, "stamped with the pane that said it");
+    assert!(lines.iter().all(|l| l["from"]["handle"] != "tester"), "its own joining is not news to it: {read}");
+    // One pane cannot speak as another: what tester says is tester's.
+    in_pane(tester, &["chat-say", "review", "I am lead"]).await;
+    let read = json(&in_pane(lead, &["chat-read", "review", "-J"]).await.1);
+    let last = read["lines"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(
+        (last["from"]["handle"].as_str(), last["from"]["ident"]["pane"].as_u64()),
+        (Some("tester"), Some(tester as u64))
+    );
+    // Read: nothing new the second time.
+    assert!(in_pane(lead, &["chat-read", "review"]).await.1.contains("nothing new"));
+
+    // Named with @: told at once, in its inbox, with who said it; a pane in
+    // shell mode never (a message runs there as a command).
+    let (_, out, _) = in_pane(lead, &["chat-say", "review", "@tester run the regression; @sh too"]).await;
+    assert!(out.contains("sh not told") && out.contains("shell mode"), "{out}");
+    let got = inbox(tester).await;
+    assert!(got.contains("[chat #review] lead (planner): @tester run the regression"), "{got}");
+    assert!(!inbox(sh).await.contains("regression"));
+
+    // The person: says and reads as you@machine, needs no joining.
+    let (code, out, err) = h.cli(&["chat-say", "#review", "from the person"]).await;
+    assert!(code == 0 && out.starts_with("#review #"), "{out}{err}");
+    let read = json(&in_pane(tester, &["chat-read", "review", "-J"]).await.1);
+    let you = read["lines"].as_array().unwrap().iter().find(|l| l["text"] == "from the person").unwrap().clone();
+    assert!(you["from"]["handle"].as_str().unwrap().starts_with("you@") && you["from"]["ident"].is_null(), "{you}");
+    assert!(h.cli(&["chat-read", "review"]).await.1.contains("from the person"));
+    assert!(h.cli(&["chat-read", "review"]).await.1.contains("nothing new"));
+
+    // A read that waits: answered when something is said.
+    let (waited, _) = tokio::join!(in_pane(tester, &["chat-read", "review", "--wait", "10"]), async {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        in_pane(lead, &["chat-say", "review", "ping"]).await
+    });
+    assert!(waited.1.contains("lead (planner)") && waited.1.contains(": ping"), "{waited:?}");
+    let (_, out, _) = in_pane(tester, &["chat-read", "review", "--wait", "1"]).await;
+    assert!(out.contains("nothing new"), "the wait ran out: {out}");
+
+    // A pane that goes leaves, and that is said.
+    h.cli(&["kill-pane", "-t", &format!("%{sh}")]).await;
+    h.wait_for_cli("sh gone from the channel", &["chat-who", "review"], |_, out| !out.contains("sh ")).await;
+    assert!(h.cli(&["chat-read", "review", "--all", "-n", "3"]).await.1.contains("left (its pane is gone)"));
+
+    // Two panes speak at once: each line its own number, one after the other.
+    let seq_of = |out: &str| -> u64 { out.trim().rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(0) };
+    let (x, y) =
+        tokio::join!(in_pane(lead, &["chat-say", "review", "x"]), in_pane(tester, &["chat-say", "review", "y"]));
+    let (sx, sy) = (seq_of(&x.1), seq_of(&y.1));
+    assert!(sx > 0 && sy > 0 && sx.abs_diff(sy) == 1, "{x:?} {y:?}");
+
+    // Past the hop limit, one named is not told; the line is in the channel.
+    // A chain: the person gives lead a task (hop 0); lead, working on it,
+    // names tester (hop 1); tester, working on that, names lead (hop 2).
+    // (What tester was told in `normal` mode stays a message to read.)
+    in_pane(tester, &["read-message"]).await;
+    for p in [lead, tester] {
+        h.cli(&["set-work-mode", "-t", &format!("%{p}"), "ai"]).await;
+    }
+    h.cli(&["send-message", "--to", &format!("%{lead}"), "plan it"]).await;
+    in_pane(lead, &["pane-ready"]).await;
+    in_pane(lead, &["chat-say", "review", "@tester take this"]).await;
+    in_pane(tester, &["pane-ready"]).await;
+    let (_, got, _) = h.cli(&["list-messages", "-t", &format!("%{tester}")]).await;
+    assert!(got.contains("working on #"), "{got}");
+    h.cli(&["set", "-g", "message-hop-limit", "1"]).await;
+    let (_, out, _) = in_pane(tester, &["chat-say", "review", "@lead done with it"]).await;
+    assert!(out.contains("lead not told") && out.contains("message-hop-limit"), "{out}");
+    assert!(h.cli(&["chat-read", "review"]).await.1.contains("@lead done with it"), "in the channel all the same");
+    h.cli(&["set", "-g", "message-hop-limit", "8"]).await;
+    for p in [lead, tester] {
+        h.cli(&["set-work-mode", "-t", &format!("%{p}"), "normal"]).await;
+    }
+
+    // 20 lines a minute at most for a member.
+    let mut refused = None;
+    for i in 0..25 {
+        let (code, _, err) = in_pane(lead, &["chat-say", "review", &format!("line {i}")]).await;
+        if code != 0 {
+            refused = Some((i, err));
+            break;
+        }
+    }
+    let (i, err) = refused.expect("refused at some point");
+    assert!(i <= 20 && err.contains("20 a minute"), "{i}: {err}");
+
+    // Topic, tags, a new name; found by the end of its id; deleted from
+    // outside every pane only.
+    assert_eq!(in_pane(tester, &["chat-topic", "review", "release day"]).await.0, 0);
+    assert_eq!(h.cli(&["chat-tag", "review", "+urgent", "-ci"]).await.1.trim(), "release,urgent");
+    assert_eq!(h.cli(&["chat-rename", "review", "rel"]).await.0, 0);
+    let list = json(&h.cli(&["chat-list", "-J"]).await.1);
+    let rel = list.as_array().unwrap().iter().find(|c| c["id"] == id.as_str()).unwrap().clone();
+    assert_eq!((rel["name"].as_str(), rel["topic"].as_str()), (Some("rel"), Some("release day")));
+    assert!(h.cli(&["chat-who", &id[id.len() - 8..]]).await.1.contains("lead"), "by the end of its id");
+    let (code, _, err) = in_pane(lead, &["chat-delete", "rel"]).await;
+    assert!(code != 0 && err.contains("outside every pane"), "{err}");
+    assert_eq!(h.cli(&["chat-delete", "rel"]).await.0, 0);
+    assert!(!h.cli(&["chat-list"]).await.1.contains("#rel"));
+    h.cli(&["kill-server"]).await;
+}
 async fn pane_id(h: &Harness, target: &str) -> u32 {
     let (_, out, err) = h.cli(&["display-message", "-p", "-t", target, "#{pane_id}"]).await;
     out.trim().trim_start_matches('%').parse().unwrap_or_else(|_| panic!("pane id of {target}: {out:?} {err}"))

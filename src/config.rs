@@ -232,6 +232,8 @@ pub struct Options {
     /// system's own, the default) or `nerd` (a Nerd Font's icons, for a
     /// terminal drawn in one).
     pub dashboard_icons: String,
+    /// Days a group chat line is kept (`chat-days`; 0 keeps them all).
+    pub chat_days: u32,
 }
 
 /// What `dashboard-icons` can be.
@@ -537,6 +539,7 @@ pub const SHOWABLE: &[&str] = &[
     "pane-colours",
     "choose-tree-style",
     "dashboard-icons",
+    "chat-days",
 ];
 
 impl Default for Options {
@@ -664,6 +667,7 @@ impl Default for Options {
             .to_vec(),
             choose_tree_style: "chart".into(),
             dashboard_icons: "emoji".into(),
+            chat_days: 30,
         }
     }
 }
@@ -756,6 +760,7 @@ pub const KNOWN: &[&str] = &[
     "animation-time",
     "autosave",
     "base-index",
+    "chat-days",
     "choose-tree-style",
     "clock-mode-animation",
     "clock-mode-colour",
@@ -1254,6 +1259,10 @@ impl Options {
             "pane-colours" => self.pane_colours = parse_colours(value)?,
             "choose-tree-style" => self.choose_tree_style = one_of(name, value, &["chart", "tree", "list"])?,
             "dashboard-icons" => self.dashboard_icons = one_of(name, value, DASHBOARD_ICONS)?,
+            "chat-days" => {
+                self.chat_days =
+                    value.trim().parse().map_err(|_| format!("bad chat-days '{value}' (days; 0 keeps every line)"))?
+            }
             "default-terminal" => {
                 let v = value.trim();
                 if v.is_empty() || v.contains(char::is_whitespace) {
@@ -1394,6 +1403,7 @@ impl Options {
             "pane-colours" => self.pane_colours.iter().map(|c| color_name(*c)).collect::<Vec<_>>().join(" "),
             "choose-tree-style" => self.choose_tree_style.clone(),
             "dashboard-icons" => self.dashboard_icons.clone(),
+            "chat-days" => self.chat_days.to_string(),
             "log-history-dir" => {
                 if self.log_history_dir.is_empty() {
                     crate::histlog::default_dir().to_string_lossy().into_owned()

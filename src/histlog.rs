@@ -58,6 +58,21 @@ pub fn events_dir() -> PathBuf {
     crate::logger::log_dir().join("events")
 }
 
+/// Where the group chat goes (docs/design/chat.md): beside moved saved
+/// sessions or history (the tests move those), else
+/// `%LOCALAPPDATA%\keepane\chat`.
+pub fn chat_dir() -> PathBuf {
+    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(d).join("chat");
+    }
+    if let Some(d) = crate::legacy::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
+        let mut d = d;
+        d.push("-chat");
+        return PathBuf::from(d);
+    }
+    crate::logger::log_dir().join("chat")
+}
+
 /// A name made safe to be a directory: characters Windows refuses become
 /// `_`, as do trailing dots and spaces; nothing at all becomes `_`.
 pub fn safe_name(name: &str) -> String {

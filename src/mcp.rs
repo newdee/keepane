@@ -22,6 +22,8 @@ check who really sent the message you are working on.\n\
 Answer the sender with reply. To wait for an answer inside your turn, use wait_message. \
 Do not call anything to say you are done: keepane's Stop hook tells it when your turn ends.\n\
 A work mode is changed in the pane itself: set_work_mode sets yours.\n\
+Group chat: chat_join a channel (chat_list lists them), chat_say there, chat_read to catch up. Only a member you \
+name with @handle is told at once; read the channel for the rest.\n\
 Panes on other machines paired with this one (list_links) are addressed host:port/%name or \
 host:port/$1:@3.%7; list_panes with host lists them. A message from one reads from=host:port/...";
 
@@ -237,6 +239,49 @@ fn tools() -> Vec<Value> {
             json!({ "pane": s("Only about this pane or session"), "since": s("Like 15m, 2h, 1d"), "last": n("Only the last this many lines") }),
             &[],
         ),
+        tool(
+            "chat_list",
+            "The group chat's channels: name, id, topic, tags, members, how many you have not read.",
+            json!({ "tag": s("Only channels with this tag") }),
+            &[],
+        ),
+        tool(
+            "chat_new",
+            "Make a channel. Returns its id.",
+            json!({
+                "name": s("Its name: letters, digits, - and _"),
+                "topic": s("What it is about, one line"),
+                "tags": { "type": "array", "items": { "type": "string" }, "description": "Its tags, for finding it" },
+            }),
+            &["name"],
+        ),
+        tool(
+            "chat_join",
+            "Join a channel as your pane. keepane stamps who and where you are (machine, pane, agent, model); \
+             you choose a handle (default: your pane's name) and a role.",
+            json!({ "channel": s("Its name or id"), "handle": s("What you are called there"), "role": s("Your part there, e.g. reviewer") }),
+            &["channel"],
+        ),
+        tool(
+            "chat_say",
+            "Say something in a channel you joined. Each member you name with @handle is told at once in their inbox; \
+             the others read it when they read the channel.",
+            json!({ "channel": s("Its name or id"), "text": s("What to say") }),
+            &["channel", "text"],
+        ),
+        tool(
+            "chat_read",
+            "What was said in a channel since you last read it (oldest first; up to 50 unless count says). \
+             With wait_seconds, waits for something new when there is nothing yet.",
+            json!({ "channel": s("Its name or id"), "count": n("At most this many"), "wait_seconds": n("Wait up to this long for something new") }),
+            &["channel"],
+        ),
+        tool(
+            "chat_who",
+            "A channel's members: handle, role, and who and where each is (machine, pane, agent, model).",
+            json!({ "channel": s("Its name or id") }),
+            &["channel"],
+        ),
     ]
 }
 
@@ -429,6 +474,45 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             }
             c
         }
+        "chat_list" => {
+            let mut c = v(&["chat-list"]);
+            if let Some(t) = str_of("tag") {
+                c.extend(["--tag".into(), t]);
+            }
+            c
+        }
+        "chat_new" => {
+            let mut c = vec!["chat-new".into(), need("name")?];
+            if let Some(t) = str_of("topic") {
+                c.extend(["--topic".into(), t]);
+            }
+            for t in a["tags"].as_array().into_iter().flatten().filter_map(|t| t.as_str()) {
+                c.extend(["--tag".into(), t.to_string()]);
+            }
+            c
+        }
+        "chat_join" => {
+            let mut c = vec!["chat-join".into(), need("channel")?];
+            if let Some(h) = str_of("handle") {
+                c.extend(["--as".into(), h]);
+            }
+            if let Some(r) = str_of("role") {
+                c.extend(["--role".into(), r]);
+            }
+            c
+        }
+        "chat_say" => vec!["chat-say".into(), need("channel")?, "--".into(), need("text")?],
+        "chat_read" => {
+            let mut c = vec!["chat-read".into(), need("channel")?];
+            if let Some(n) = num("count") {
+                c.extend(["-n".into(), n]);
+            }
+            if let Some(w) = num("wait_seconds") {
+                c.extend(["--wait".into(), w]);
+            }
+            c
+        }
+        "chat_who" => vec!["chat-who".into(), need("channel")?],
         other => return Err(format!("unknown tool: {other}")),
     };
     argv.shrink_to_fit();
@@ -539,7 +623,7 @@ mod tests {
         let args = json!({
             "to": "%b", "text": "hi", "pane": "%b", "mode": "ai", "name": "n", "id": 3, "command": "claude",
             "args": ["-p", "x"], "wait_seconds": 5, "timeout_seconds": 5, "session": "s", "host": "10.0.0.1:7681",
-            "texts": ["ready"],
+            "texts": ["ready"], "channel": "general",
         });
         let moving = json!({"id": 3, "to": "top"});
         for t in tools() {

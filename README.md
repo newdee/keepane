@@ -158,6 +158,48 @@ panes are not limited by this; a close can be undone with `C-b u` within
 10 seconds. The rule is there to cut down on mistakes, not to isolate
 processes of the same user from each other.
 
+### Group chat
+
+A message goes to one pane. When several agents work on one thing, a
+channel lets them talk in one place: each joins under a handle and a
+role, says what it has to say, and reads what the others said when it
+wants to.
+
+```powershell
+keepane chat new review --topic "the 0.73 release" --tag release --tag ci
+keepane chat join review --as lead --role planner   # in the lead's pane
+keepane chat say review "@tester run the regression, please"
+keepane chat read review --wait 60                  # waits for something new
+keepane chat who review                             # who, and from where
+keepane chat list --tag ci
+```
+
+A channel has an id that never changes (a UUID; `chat list` shows its
+last 8 characters, and any 8 or more of its last ones name it), a name,
+a topic (what it is about) and tags (to find it by). Who and where a
+member is (machine, `session:window.pane`, pane id and name, agent,
+model) is stamped by keepane, on the member and on every line it says:
+a pane joins and speaks as itself only, and the handle and role are all
+it chooses. You, outside every pane (the dashboard, a terminal of your
+own, `C-b :`), speak as `you@<machine>` without joining.
+
+What is said stays in the channel: nobody's inbox gets it, so five
+agents in a channel do not each read every line. A member named with
+`@handle` is also told at once, through its inbox, with the channel and
+who said it; the hop limit counts these as for any message. A pane in
+`shell` mode is never told (a message runs there as a command): the
+speaker is told so. A member says at most 20 lines a minute. A pane
+that closes leaves; what it said stays.
+
+Channels are kept in `chat\<socket>\` beside the event log, one file a
+day each (`chat-days`, 30 by default), and come back after a restart
+with what was said and how far you read; agents join again. The same
+commands are MCP tools (`chat_list`, `chat_new`, `chat_join`,
+`chat_say`, `chat_read`, `chat_who`). The dashboard's page 3 shows
+them. Only from outside every pane, `chat delete` moves a channel to
+`chat\deleted\`. Panes of other machines join in a later release. The
+design: [docs/design/chat.md](docs/design/chat.md).
+
 ## The dashboard
 
 `C-b v` (a popup) or `keepane dashboard` (any terminal) lays everything out in
@@ -209,8 +251,9 @@ paired machines on the bottom line: `j`/`k` pick one, then `c` connects
 it, `x` disconnects it and `D` forgets its pairing (`keepane link`,
 below; connecting and forgetting ask first).
 
-`>` turns to page 2 (`<` back; the bottom line says `page 1/2` or
-`page 2/2`, and keeps it when too narrow for every key): `[0]` and the
+`>` turns to the next page, `<` the one before (the bottom line says
+`page 2/3`, and keeps it when too narrow for every key). On page 2,
+`[0]` and the
 machine stay, `[1]` lists what this machine shares (`keepane share`,
 below), each `active`, `missing` (its file gone for now), `stopped`,
 `expired` or `used` (for once, and it went), with its time left and how
@@ -220,8 +263,18 @@ in `[0]` shares what is under the cursor (for how long, once or not,
 asked); on `[1]`, `x` stops one (`X` every one), `e` extends it on the
 same link, `r` shares it again on a new link, `y` copies its link, `a`
 hides or shows the ended ones. Sharing, stopping and sharing again ask
-first. The design:
-[docs/design/dashboard.md](docs/design/dashboard.md).
+first.
+
+Page 3 is the group chat (above): `[1]` the channels, with how many are
+in each, how many lines you have not read and the tags (`/` filters
+them by a name or a tag); `[2]` the picked one's members, each with its
+role, where it is and whether its pane is busy; `[4]` what was said
+there, each line with who said it and where they were, the latest at
+the bottom. On `[1]`, `s` says something as you, `n` makes a channel
+(its name, then its topic), `t` changes its topic, `#` its tags (`+a
+-b`); on `[2]`, `o` goes to the member's pane and `s` says something
+to it. What you had not read of the channel shown counts as read. The
+design: [docs/design/dashboard.md](docs/design/dashboard.md).
 
 ### What the agents use and cost
 

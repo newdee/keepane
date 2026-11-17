@@ -110,6 +110,8 @@ pub fn complete(
                 "unshare",
                 "watch",
             ])
+        } else if canon == "chat" && rest.len() == 1 && !current.starts_with('-') {
+            owned(&["delete", "join", "leave", "list", "new", "read", "rename", "say", "tag", "topic", "who"])
         } else if canon == "feishu" && rest.len() == 1 && !current.starts_with('-') {
             owned(&["allow", "remove", "status"])
         } else if canon == "setup" && rest.len() == 1 && !current.starts_with('-') {

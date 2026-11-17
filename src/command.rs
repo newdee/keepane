@@ -149,6 +149,73 @@ pub struct MenuItem {
     pub cmd: Option<Box<Cmd>>,
 }
 
+/// What a `chat-*` command is asked (docs/design/chat.md). A channel is
+/// named by its name (`#` optional) or its id (whole, or 8 or more of its
+/// first characters).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatCmd {
+    /// `chat-new NAME [--topic TEXT] [--tag T]...`: a channel; its id back.
+    New {
+        name: String,
+        topic: String,
+        tags: Vec<String>,
+    },
+    /// `chat-list [--tag T]... [-J]`: the channels (those with every tag).
+    List {
+        tags: Vec<String>,
+        json: bool,
+    },
+    /// `chat-join CHAN [--as HANDLE] [--role ROLE]`: the calling pane a
+    /// member (again: its handle and role changed).
+    Join {
+        channel: String,
+        handle: Option<String>,
+        role: Option<String>,
+    },
+    Leave {
+        channel: String,
+    },
+    /// `chat-say CHAN TEXT`: said in it; `@handle` tells that member.
+    Say {
+        channel: String,
+        text: String,
+    },
+    /// `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J]`: what
+    /// came since the caller last read (`--all`: the last N of it);
+    /// `--peek` moves no read position.
+    Read {
+        channel: String,
+        n: Option<usize>,
+        all: bool,
+        peek: bool,
+        wait: Option<u64>,
+        json: bool,
+    },
+    /// `chat-who CHAN [-J]`: its members, each who and where.
+    Who {
+        channel: String,
+        json: bool,
+    },
+    Topic {
+        channel: String,
+        topic: String,
+    },
+    /// `chat-tag CHAN [+T] [-T]...`: tags added (`+`) and taken off (`-`).
+    Tag {
+        channel: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
+    Rename {
+        channel: String,
+        name: String,
+    },
+    /// Its files moved to `deleted`; from outside every pane only.
+    Delete {
+        channel: String,
+    },
+}
+
 /// What `share` is asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShareWhat {
@@ -700,6 +767,8 @@ pub enum Cmd {
     /// link (docs/design/share.md); `share [-l]` lists what is shared,
     /// `share stop ID|--all` ends it.
     Share(ShareWhat),
+    /// `chat-*`: the group chat (docs/design/chat.md).
+    Chat(ChatCmd),
     /// `web-share-open token peer`: what a link shares, asked by the phones'
     /// page when the link is opened.
     ShareOpen {
@@ -1865,6 +1934,84 @@ impl fmt::Display for Cmd {
                 }
             }
             Cmd::Share(ShareWhat::Again(id)) => write!(f, "share again {id}"),
+            Cmd::Chat(c) => {
+                let q = |s: &str| quote(s);
+                match c {
+                    ChatCmd::New { name, topic, tags } => {
+                        write!(f, "chat-new {}", q(name))?;
+                        if !topic.is_empty() {
+                            write!(f, " --topic {}", q(topic))?;
+                        }
+                        for t in tags {
+                            write!(f, " --tag {}", q(t))?;
+                        }
+                        Ok(())
+                    }
+                    ChatCmd::List { tags, json } => {
+                        f.write_str("chat-list")?;
+                        for t in tags {
+                            write!(f, " --tag {}", q(t))?;
+                        }
+                        if *json {
+                            f.write_str(" -J")?;
+                        }
+                        Ok(())
+                    }
+                    ChatCmd::Join { channel, handle, role } => {
+                        write!(f, "chat-join {}", q(channel))?;
+                        if let Some(h) = handle {
+                            write!(f, " --as {}", q(h))?;
+                        }
+                        if let Some(r) = role {
+                            write!(f, " --role {}", q(r))?;
+                        }
+                        Ok(())
+                    }
+                    ChatCmd::Leave { channel } => write!(f, "chat-leave {}", q(channel)),
+                    ChatCmd::Say { channel, text } => {
+                        let dash = if text.starts_with('-') { "-- " } else { "" };
+                        write!(f, "chat-say {} {dash}{}", q(channel), q(text))
+                    }
+                    ChatCmd::Read { channel, n, all, peek, wait, json } => {
+                        write!(f, "chat-read {}", q(channel))?;
+                        if let Some(n) = n {
+                            write!(f, " -n {n}")?;
+                        }
+                        if *all {
+                            f.write_str(" --all")?;
+                        }
+                        if *peek {
+                            f.write_str(" --peek")?;
+                        }
+                        if let Some(w) = wait {
+                            write!(f, " --wait {w}")?;
+                        }
+                        if *json {
+                            f.write_str(" -J")?;
+                        }
+                        Ok(())
+                    }
+                    ChatCmd::Who { channel, json } => {
+                        write!(f, "chat-who {}{}", q(channel), if *json { " -J" } else { "" })
+                    }
+                    ChatCmd::Topic { channel, topic } => {
+                        let dash = if topic.starts_with('-') { "-- " } else { "" };
+                        write!(f, "chat-topic {} {dash}{}", q(channel), q(topic))
+                    }
+                    ChatCmd::Tag { channel, add, remove } => {
+                        write!(f, "chat-tag {}", q(channel))?;
+                        for t in add {
+                            write!(f, " +{t}")?;
+                        }
+                        for t in remove {
+                            write!(f, " -{t}")?;
+                        }
+                        Ok(())
+                    }
+                    ChatCmd::Rename { channel, name } => write!(f, "chat-rename {} {}", q(channel), q(name)),
+                    ChatCmd::Delete { channel } => write!(f, "chat-delete {}", q(channel)),
+                }
+            }
             Cmd::Share(ShareWhat::Add { path, for_secs, once }) => {
                 write!(f, "share {}", quote(path))?;
                 if let Some(s) = for_secs {
@@ -2421,6 +2568,140 @@ impl<'a> Args<'a> {
     }
 }
 
+/// A `chat-*` command's words (docs/design/chat.md): the channel first,
+/// then what each takes; the text of `chat-say` and `chat-topic` is every
+/// word left, joined by spaces.
+fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
+    let channel = |a: &mut Args| -> Result<String, String> {
+        match a.next() {
+            Some(c) if !c.starts_with('-') || c.len() == 1 => Ok(c.to_string()),
+            _ => Err(format!("{n}: which channel (its name, or its id)")),
+        }
+    };
+    let rest = |a: &mut Args| a.rest().join(" ");
+    Ok(match n {
+        "chat-new" => {
+            let name = channel(a)?;
+            let (mut topic, mut tags) = (String::new(), Vec::new());
+            while let Some(w) = a.next() {
+                match w {
+                    "--topic" => topic = a.value("--topic")?.to_string(),
+                    "--tag" => tags.push(a.value("--tag")?.to_string()),
+                    f => return Err(not_taken(n, f)),
+                }
+            }
+            ChatCmd::New { name, topic, tags }
+        }
+        "chat-list" => {
+            let (mut tags, mut json) = (Vec::new(), false);
+            while let Some(w) = a.next() {
+                match w {
+                    "--tag" => tags.push(a.value("--tag")?.to_string()),
+                    "-J" => json = true,
+                    f => return Err(not_taken(n, f)),
+                }
+            }
+            ChatCmd::List { tags, json }
+        }
+        "chat-join" => {
+            let channel = channel(a)?;
+            let (mut handle, mut role) = (None, None);
+            while let Some(w) = a.next() {
+                match w {
+                    "--as" => handle = Some(a.value("--as")?.to_string()),
+                    "--role" => role = Some(a.value("--role")?.to_string()),
+                    f => return Err(not_taken(n, f)),
+                }
+            }
+            ChatCmd::Join { channel, handle, role }
+        }
+        "chat-leave" | "chat-delete" => {
+            let channel = channel(a)?;
+            a.none_left(n)?;
+            if n == "chat-leave" { ChatCmd::Leave { channel } } else { ChatCmd::Delete { channel } }
+        }
+        "chat-say" | "chat-topic" => {
+            let channel = channel(a)?;
+            // `--` lets a text start with a dash.
+            if a.peek() == Some("--") {
+                a.next();
+            }
+            let text = rest(a);
+            if n == "chat-say" {
+                if text.trim().is_empty() {
+                    return Err(format!("{n}: what to say"));
+                }
+                ChatCmd::Say { channel, text }
+            } else {
+                ChatCmd::Topic { channel, topic: text }
+            }
+        }
+        "chat-read" => {
+            let channel = channel(a)?;
+            let (mut count, mut all, mut peek, mut wait, mut json) = (None, false, false, None, false);
+            while let Some(w) = a.next() {
+                match w {
+                    "-n" => {
+                        let v = a.value("-n")?;
+                        count = Some(
+                            v.parse::<usize>()
+                                .ok()
+                                .filter(|n| *n > 0)
+                                .ok_or_else(|| format!("{n}: -n takes a number of messages, 1 or more, not '{v}'"))?,
+                        );
+                    }
+                    "--all" => all = true,
+                    "--peek" => peek = true,
+                    "--wait" => {
+                        let v = a.value("--wait")?;
+                        wait = Some(v.parse::<u64>().map_err(|_| format!("{n}: --wait takes seconds, not '{v}'"))?);
+                    }
+                    "-J" => json = true,
+                    f => return Err(not_taken(n, f)),
+                }
+            }
+            ChatCmd::Read { channel, n: count, all, peek, wait, json }
+        }
+        "chat-who" => {
+            let channel = channel(a)?;
+            let json = match a.next() {
+                None => false,
+                Some("-J") => true,
+                Some(f) => return Err(not_taken(n, f)),
+            };
+            a.none_left(n)?;
+            ChatCmd::Who { channel, json }
+        }
+        "chat-tag" => {
+            let channel = channel(a)?;
+            let (mut add, mut remove) = (Vec::new(), Vec::new());
+            for w in a.rest() {
+                match (w.strip_prefix('+'), w.strip_prefix('-')) {
+                    (Some(t), _) if !t.is_empty() => add.push(t.to_string()),
+                    (_, Some(t)) if !t.is_empty() => remove.push(t.to_string()),
+                    _ => return Err(format!("{n}: +TAG adds a tag, -TAG takes one off; not '{w}'")),
+                }
+            }
+            if add.is_empty() && remove.is_empty() {
+                return Err(format!("{n}: +TAG to add a tag, -TAG to take one off"));
+            }
+            ChatCmd::Tag { channel, add, remove }
+        }
+        "chat-rename" => {
+            let channel = channel(a)?;
+            let name = a.next().ok_or_else(|| format!("{n}: the new name"))?.to_string();
+            a.none_left(n)?;
+            ChatCmd::Rename { channel, name }
+        }
+        _ => return Err(format!("unknown command: {n}")),
+    })
+}
+
+/// A word a chat command does not take: an unknown flag, or one word too many.
+fn not_taken(n: &str, w: &str) -> String {
+    if w.starts_with('-') { bad_flag(n, w) } else { format!("{n}: unexpected argument '{w}'") }
+}
+
 fn bad_flag(name: &str, flag: &str) -> String {
     format!("{name}: unknown flag '{flag}'")
 }
@@ -2682,6 +2963,17 @@ pub const COMMANDS: &[&str] = &[
     "web-stop",
     "web-tails",
     "share",
+    "chat-new",
+    "chat-list",
+    "chat-join",
+    "chat-leave",
+    "chat-say",
+    "chat-read",
+    "chat-who",
+    "chat-topic",
+    "chat-tag",
+    "chat-rename",
+    "chat-delete",
     "web-share-open",
     "web-share-sent",
     "web-uploaded",
@@ -2833,6 +3125,17 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("web-stop", &[]),
     ("web-tails", &[]),
     ("share", &["-l", "--for", "--once", "--all"]),
+    ("chat-new", &["--topic", "--tag"]),
+    ("chat-list", &["--tag", "-J"]),
+    ("chat-join", &["--as", "--role"]),
+    ("chat-leave", &[]),
+    ("chat-say", &[]),
+    ("chat-read", &["-n", "--all", "--peek", "--wait", "-J"]),
+    ("chat-who", &["-J"]),
+    ("chat-topic", &[]),
+    ("chat-tag", &[]),
+    ("chat-rename", &[]),
+    ("chat-delete", &[]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
     ("web-uploaded", &[]),
@@ -4409,6 +4712,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 _ => return Err(format!("usage: {usage}")),
             }
         }
+        n if n.starts_with("chat-") => Cmd::Chat(parse_chat(n, &mut a)?),
         "web-share-open" | "web-share-sent" => {
             let (token, peer) = (a.next(), a.next());
             let note = if n == "web-share-sent" { a.next().unwrap_or("").to_string() } else { String::new() };

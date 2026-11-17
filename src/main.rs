@@ -83,6 +83,10 @@ Panes on other machines (both run `keepane web`; docs/design/link.md):
   clone host:port [path] [--tell pane]   push [host:port [path]] [--tell pane]   push -l   (commits of this repository there; docs/design/link-push.md)
   send-agents [host:port] [dir] [-s chat-id]... [-n]   send-agents -l   (this project and its agents' chats there; docs/design/agent-sync.md)
   link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane
+Group chat (docs/design/chat.md; from a pane, as that pane; outside every pane, as you@machine):
+  chat new NAME [--topic TEXT] [--tag T]...   chat list [--tag T]... [-J]   chat who CHAN [-J]
+  chat join CHAN [--as HANDLE] [--role ROLE]   chat leave CHAN   chat say CHAN TEXT   (@handle tells that member)
+  chat read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J]   chat topic CHAN TEXT   chat tag CHAN +T -T   chat rename CHAN NEW   chat delete CHAN
   link disconnect host:port   (stop talking with it, both ways; still paired)   link connect host:port   link remove host:port   (unpair: `link add` again to come back)
   link id   link trust host:port key [--full [--lan]]   link rekey
 Panes from a Feishu (Lark) app of your own (set -g feishu-app-id / feishu-app-secret; docs/design/feishu.md):
@@ -241,6 +245,21 @@ fn main() {
     // `keepane feishu [status|allow|remove]`: the server's feishu-* commands.
     if args[0] == "feishu" {
         args = keepane::feishu::command_args(&args[1..]);
+    }
+    // `keepane chat <what> ...`: the server's chat-<what> (docs/design/chat.md).
+    if args[0] == "chat" {
+        match args.get(1) {
+            Some(what) if !what.starts_with('-') => {
+                let what = format!("chat-{what}");
+                args.splice(0..2, [what]);
+            }
+            _ => {
+                eprintln!(
+                    "usage: keepane chat new|list|join|leave|say|read|who|topic|tag|rename|delete ... (docs/design/chat.md)"
+                );
+                std::process::exit(2);
+            }
+        }
     }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     // Starting at logon is about the server, and the Windows Terminal

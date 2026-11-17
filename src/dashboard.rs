@@ -21,6 +21,7 @@ use crate::keys::{Key, KeyCode};
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
+mod chat;
 mod files;
 mod gitview;
 mod machine;
@@ -43,6 +44,11 @@ pub const QUERIES: &[&str] = &[
     "show-options",
     // `link-list -J`: the paired machines, while `L` lists them.
     "link-list",
+    // Page 3: the channels, the picked one's members and lines; what the
+    // person has not read of the one shown is read (`chat_seen`).
+    "chat-list",
+    "chat-who",
+    "chat-read",
 ];
 /// The only ones it sends to change anything.
 pub const ACTIONS: &[&str] = &[
@@ -56,6 +62,11 @@ pub const ACTIONS: &[&str] = &[
     "move-message",
     // Page 2: stop, extend, again; `S` in [0] shares.
     "share",
+    // Page 3: what the person says, a new channel, its topic and tags.
+    "chat-say",
+    "chat-new",
+    "chat-topic",
+    "chat-tag",
     // `L`: a paired machine talked with again, no longer, or forgotten.
     "link-connect",
     "link-disconnect",
@@ -345,7 +356,7 @@ impl Queued {
         let from = parts.next()?.strip_prefix("from ")?.to_string();
         let waiting = parts.next()?.strip_prefix("waiting ")?.to_string();
         let text = parts.collect::<Vec<_>>().join("  ");
-        Some(Queued { id, from, waiting, text })
+        Some(Queued { id, from: inert(&from), waiting, text: inert(&text) })
     }
 }
 
@@ -393,7 +404,7 @@ impl TaskRow {
                         at: cell(2)?.rsplit('.').next().unwrap_or_default().to_string(),
                         took: cell(3)?,
                         steps: cell(4)?,
-                        title: cell(5)?,
+                        title: inert(&cell(5)?),
                     })
                 });
                 by_cols.unwrap_or_else(|| {
@@ -401,7 +412,7 @@ impl TaskRow {
                     TaskRow {
                         id: w.next().unwrap_or_default().trim_start_matches('#').to_string(),
                         status: w.next().unwrap_or_default().to_string(),
-                        title: w.collect::<Vec<_>>().join(" "),
+                        title: inert(&w.collect::<Vec<_>>().join(" ")),
                         ..Default::default()
                     }
                 })
@@ -438,6 +449,10 @@ pub enum Panel {
     Shares,
     /// Page 2's `[2]`: what happened to the shares.
     Activity,
+    /// Page 3's `[1]`: the group chat's channels.
+    Channels,
+    /// Page 3's `[2]`: the picked channel's members.
+    Members,
 }
 
 /// What the main panel shows of the chosen pane.
@@ -500,8 +515,27 @@ pub enum Detail {
 #[derive(Clone, Debug, PartialEq)]
 enum Input {
     Filter,
-    Send { to: String },
-    Rename { to: String },
+    Send {
+        to: String,
+    },
+    Rename {
+        to: String,
+    },
+    /// Page 3: what the person says in a channel, a new channel (its name,
+    /// then its topic), a channel's topic, its tags (`+a -b`).
+    ChatSay {
+        id: String,
+        name: String,
+    },
+    ChatNew,
+    ChatTopic {
+        id: String,
+        name: String,
+    },
+    ChatTag {
+        id: String,
+        name: String,
+    },
 }
 
 /// What waits for an answer at the bottom.
@@ -618,10 +652,12 @@ pub struct Board {
     pub activity_top: usize,
     /// The paired machines, read while `L` lists them.
     pub machines: Vec<MachineRow>,
+    /// Page 3: the group chat.
+    pub chat: chat::ChatPage,
 }
 
-/// The board's pages: the panes, the shares.
-const PAGES: u8 = 2;
+/// The board's pages: the panes, the shares, the group chat.
+const PAGES: u8 = 3;
 
 /// Visible width of text that may hold SGR sequences.
 fn width_of(s: &str) -> usize {
@@ -805,6 +841,9 @@ struct Layout {
     /// Page 2's middle column, in place of panes, inbox and tasks.
     shares: Option<Rect>,
     activity: Option<Rect>,
+    /// Page 3's: the channels over their members.
+    channels: Option<Rect>,
+    members: Option<Rect>,
 }
 
 /// Below this width, only the focused side is shown.
@@ -846,6 +885,7 @@ impl Board {
             files: files::Files::default(),
             page: 1,
             machines: Vec::new(),
+            chat: chat::ChatPage::default(),
             shares: Vec::new(),
             share_pick: 0,
             shares_ended: true,
@@ -1007,13 +1047,14 @@ impl Board {
         self.shares_shown().get(self.share_pick).copied()
     }
 
-    /// `<` / `>`: the other page. The focus stays on [0] or [4]; from a list
-    /// it goes to the other page's first.
-    fn turn_page(&mut self) {
-        self.page = self.page % PAGES + 1;
+    /// `>` the next page, `<` the one before (round). The focus stays on [0]
+    /// or [4]; from a list it goes to the new page's first.
+    fn turn_page(&mut self, back: bool) {
+        self.page = if back { (self.page + PAGES - 2) % PAGES + 1 } else { self.page % PAGES + 1 };
         let to = match (self.page, self.focus) {
             (_, Panel::Files | Panel::Main) => self.focus,
             (2, _) => Panel::Shares,
+            (3, _) => Panel::Channels,
             _ => Panel::Panes,
         };
         self.focus_on(to);
@@ -1164,7 +1205,12 @@ impl Board {
     fn cycle(&mut self, back: bool) {
         const ONE: [Panel; 5] = [Panel::Files, Panel::Panes, Panel::Inbox, Panel::Tasks, Panel::Main];
         const TWO: [Panel; 4] = [Panel::Files, Panel::Shares, Panel::Activity, Panel::Main];
-        let order: &[Panel] = if self.page == 2 { &TWO } else { &ONE };
+        const THREE: [Panel; 4] = [Panel::Files, Panel::Channels, Panel::Members, Panel::Main];
+        let order: &[Panel] = match self.page {
+            2 => &TWO,
+            3 => &THREE,
+            _ => &ONE,
+        };
         let at = order.iter().position(|p| *p == self.focus).unwrap_or(0);
         let to = if back { (at + order.len() - 1) % order.len() } else { (at + 1) % order.len() };
         self.focus_on(order[to]);
@@ -1184,7 +1230,13 @@ impl Board {
     fn scroll_by(&mut self, up: isize) {
         // Up is away from the bottom for what is read from the bottom, and
         // back towards the top for what is read from the top.
-        let by = if self.page == 1 && self.tab.read_up() { up } else { -up };
+        let from_bottom = match self.page {
+            1 => self.tab.read_up(),
+            // Page 3's [4]: a channel, the latest at the bottom.
+            3 => true,
+            _ => false,
+        };
+        let by = if from_bottom { up } else { -up };
         // As far as the last frame drawn has lines beyond its rows: at the
         // top (or the bottom) a page of lines still shows, never none.
         let most = self.scroll_most.get();
@@ -1227,7 +1279,7 @@ impl Board {
                 self.last_follow = None;
                 return;
             }
-            Panel::Main | Panel::Shares | Panel::Activity => return,
+            Panel::Main | Panel::Shares | Panel::Activity | Panel::Channels | Panel::Members => return,
         };
         let now = Some((self.focus, want.clone()));
         if self.last_follow == now {
@@ -1276,8 +1328,8 @@ impl Board {
                 self.cycle(k.shift);
                 return Action::Redraw;
             }
-            KeyCode::Char('<' | '>') if !k.ctrl && !k.alt => {
-                self.turn_page();
+            KeyCode::Char(c @ ('<' | '>')) if !k.ctrl && !k.alt => {
+                self.turn_page(c == '<');
                 return Action::Redraw;
             }
             // The paired machines: connect, disconnect, forget.
@@ -1290,6 +1342,8 @@ impl Board {
                     ('0', _) => Panel::Files,
                     ('1', 2) => Panel::Shares,
                     ('2' | '3', 2) => Panel::Activity,
+                    ('1', 3) => Panel::Channels,
+                    ('2' | '3', 3) => Panel::Members,
                     ('1', _) => Panel::Panes,
                     ('2', _) => Panel::Inbox,
                     ('3', _) => Panel::Tasks,
@@ -1329,7 +1383,9 @@ impl Board {
                 return Action::Redraw;
             }
             KeyCode::Char('/') if plain => {
-                self.input = Some((Input::Filter, self.filter.clone()));
+                // Page 3 filters the channels (by a name or a tag).
+                let now = if self.page == 3 { self.chat.filter.clone() } else { self.filter.clone() };
+                self.input = Some((Input::Filter, now));
                 return Action::Redraw;
             }
             // Paging as in vi and less: C-b / C-f a page, C-u / C-d half
@@ -1371,6 +1427,8 @@ impl Board {
             Panel::Main => self.main_key(k.code),
             Panel::Shares => self.share_key(k.code),
             Panel::Activity => self.activity_key(k.code),
+            Panel::Channels => self.channel_key(k.code),
+            Panel::Members => self.member_key(k.code),
         }
     }
 
@@ -1519,16 +1577,23 @@ impl Board {
         match k.code {
             KeyCode::Escape => {
                 if what == Input::Filter {
-                    self.filter.clear();
+                    if self.page == 3 {
+                        self.chat.filter.clear();
+                    } else {
+                        self.filter.clear();
+                    }
                 }
                 return Action::Redraw;
             }
             KeyCode::Enter => {
                 return match what {
                     Input::Filter => Action::Redraw,
+                    // A topic may be cleared; nothing else is sent empty.
+                    Input::ChatTopic { .. } => Board::chat_typed(&what, &text).map_or(Action::Redraw, Action::Run),
                     _ if text.trim().is_empty() => Action::Redraw,
                     Input::Send { to } => Action::Run(owned(&["send-message", "-t", &to, "--", &text])),
                     Input::Rename { to } => Action::Run(owned(&["rename-pane", "-t", &to, "--", text.trim()])),
+                    _ => Board::chat_typed(&what, &text).map_or(Action::Redraw, Action::Run),
                 };
             }
             KeyCode::BSpace => {
@@ -1538,8 +1603,13 @@ impl Board {
             _ => {}
         }
         if what == Input::Filter {
-            self.filter = text.clone();
-            self.chosen = self.chosen_id();
+            if self.page == 3 {
+                self.chat.filter = text.clone();
+                self.chat.pick = 0;
+            } else {
+                self.filter = text.clone();
+                self.chosen = self.chosen_id();
+            }
         }
         self.input = Some((what, text));
         Action::Redraw
@@ -1554,7 +1624,7 @@ impl Board {
                     let shared = argv.first().is_some_and(|c| c == "share")
                         && !matches!(argv.get(1).map(String::as_str), Some("stop" | "again" | "extend" | "-l"));
                     if shared && self.page == 1 {
-                        self.turn_page();
+                        self.turn_page(false);
                         self.focus_on(Panel::Shares);
                     }
                     Action::Run(argv)
@@ -1678,6 +1748,8 @@ impl Board {
             (Panel::Main, layout.main),
             (Panel::Shares, layout.shares),
             (Panel::Activity, layout.activity),
+            (Panel::Channels, layout.channels),
+            (Panel::Members, layout.members),
         ]
         .into_iter()
         .find_map(|(p, r)| r.filter(|r| r.holds(x, y)).map(|r| (p, r)));
@@ -1707,6 +1779,12 @@ impl Board {
                 }
                 Panel::Activity => {
                     self.activity_key(if up { KeyCode::Up } else { KeyCode::Down });
+                }
+                Panel::Channels => {
+                    self.channel_key(if up { KeyCode::Up } else { KeyCode::Down });
+                }
+                Panel::Members => {
+                    self.member_key(if up { KeyCode::Up } else { KeyCode::Down });
                 }
             }
             return Action::Redraw;
@@ -1757,6 +1835,20 @@ impl Board {
                     self.share_pick = start + row;
                 }
             }
+            Panel::Channels => {
+                let n = self.chat.shown().len();
+                let start = window_start(self.chat.pick, n, rect.inner_h());
+                if start + row < n {
+                    self.chat.pick = start + row;
+                }
+            }
+            Panel::Members => {
+                let n = self.chat.members.len();
+                let start = window_start(self.chat.member_pick, n, rect.inner_h());
+                if start + row < n {
+                    self.chat.member_pick = start + row;
+                }
+            }
             Panel::Main | Panel::Activity => {}
         }
         Action::Redraw
@@ -1775,6 +1867,8 @@ impl Board {
                 main: None,
                 shares: None,
                 activity: None,
+                channels: None,
+                members: None,
             };
         }
         // The machine's column first, when there is room: the rest is laid
@@ -1810,6 +1904,8 @@ impl Board {
                 main,
                 shares: None,
                 activity: None,
+                channels: None,
+                members: None,
             };
         }
         // No machine's column to be over: Files takes the left column while
@@ -1825,6 +1921,8 @@ impl Board {
                 main,
                 shares: None,
                 activity: None,
+                channels: None,
+                members: None,
             };
         }
         // Inbox and tasks a quarter each (3 rows at least), the panes the rest.
@@ -1833,6 +1931,22 @@ impl Board {
         let inbox_h = small.min(body.saturating_sub(panes_h));
         let tasks_h = body.saturating_sub(panes_h + inbox_h);
         let rect = |y, h| (h >= 3).then_some(Rect { x: mx, y, w: left_w, h });
+        // Page 3: the channels half, the picked one's members the rest.
+        if self.page == 3 {
+            let channels_h = (body / 2).max(3).min(body);
+            return Layout {
+                machine,
+                files,
+                panes: None,
+                inbox: None,
+                tasks: None,
+                main,
+                shares: None,
+                activity: None,
+                channels: rect(0, channels_h),
+                members: rect(channels_h, body - channels_h),
+            };
+        }
         // Page 2: the shares two thirds, what happened to them the rest.
         if self.page == 2 {
             let shares_h = (body * 2 / 3).max(3).min(body);
@@ -1845,6 +1959,8 @@ impl Board {
                 main,
                 shares: rect(0, shares_h),
                 activity: rect(shares_h, body - shares_h),
+                channels: None,
+                members: None,
             };
         }
         Layout {
@@ -1856,6 +1972,8 @@ impl Board {
             main,
             shares: None,
             activity: None,
+            channels: None,
+            members: None,
         }
     }
 
@@ -2243,9 +2361,14 @@ impl Board {
     fn foot(&self) -> String {
         if let Some((what, text)) = &self.input {
             let label = match what {
+                Input::Filter if self.page == 3 => "filter channels (a name or a tag)".to_string(),
                 Input::Filter => "filter panes".to_string(),
                 Input::Send { to } => format!("message to {to}"),
                 Input::Rename { to } => format!("name for {to}"),
+                Input::ChatSay { name, .. } => format!("say in #{name}"),
+                Input::ChatNew => "new channel (its name, then its topic)".to_string(),
+                Input::ChatTopic { name, .. } => format!("topic of #{name}"),
+                Input::ChatTag { name, .. } => format!("tags of #{name} (+a adds, -b takes off)"),
             };
             return format!("\x1b[1m{label}:\x1b[0m {text}\x1b[7m \x1b[0m   Enter ok · Esc cancel");
         }
@@ -2312,6 +2435,8 @@ impl Board {
                 "j/k pick  g/G first/last  Enter detail  x stop  X stop all  e extend  r again  y copy link  a ended"
             }
             Panel::Activity => "j/k scroll  g/G latest/oldest",
+            Panel::Channels => "j/k pick  s say  n new  t topic  # tags  Enter its lines",
+            Panel::Members => "j/k pick  s say to  o go there",
             Panel::Panes => {
                 "j/k pane  g/G first/last  Enter screen  s send  r rename  m mode  R ready  o go there  x close"
             }
@@ -2322,7 +2447,9 @@ impl Board {
             Panel::Main if self.tab == Tab::Trace => "j/k scroll  g/G top/bottom  e every turn  [/] tab  h back",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
-        let all = if self.page == 2 {
+        let all = if self.page == 3 {
+            "Tab/0124 panel  / filter  ? keys  q quit"
+        } else if self.page == 2 {
             "Tab/0124 panel  ? keys  q quit"
         } else {
             "Tab/01234 panel  T trace  L machines  / filter  ? keys  q quit"
@@ -2369,7 +2496,11 @@ impl Board {
         place(t, t.map(|r| self.tasks_box(r)).unwrap_or_default());
         place(layout.shares, layout.shares.map(|r| self.shares_box(r)).unwrap_or_default());
         place(layout.activity, layout.activity.map(|r| self.activity_box(r)).unwrap_or_default());
-        if self.page == 2 {
+        place(layout.channels, layout.channels.map(|r| self.channels_box(r)).unwrap_or_default());
+        place(layout.members, layout.members.map(|r| self.members_box(r)).unwrap_or_default());
+        if self.page == 3 {
+            place(m, m.map(|r| self.chat_box(r)).unwrap_or_default());
+        } else if self.page == 2 {
             place(m, m.map(|r| self.share_box(r)).unwrap_or_default());
         } else {
             place(m, m.map(|r| self.main_box(r)).unwrap_or_default());
@@ -2458,7 +2589,7 @@ fn block(text: &str, width: usize) -> Vec<String> {
 /// A message's life (`trace-message -J`): its number and stage, who sent
 /// it where, when each step came, then what it said and what came of it.
 fn message_view(v: &serde_json::Value, width: usize, who: &dyn Fn(&str) -> String) -> Vec<String> {
-    let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+    let s = |k: &str| inert(v[k].as_str().unwrap_or_default());
     let stage = s("stage");
     let mut out = Vec::new();
     let re = v["re"].as_u64().map(|r| format!(" · answers #{r}")).unwrap_or_default();
@@ -2498,7 +2629,7 @@ fn message_view(v: &serde_json::Value, width: usize, who: &dyn Fn(&str) -> Strin
         out.push(format!(" {dot} {word} {at}  \x1b[2m{note}\x1b[0m"));
     }
     if let Some(why) = v["why"].as_str() {
-        out.push(format!("   \x1b[31mwhy\x1b[0m  {why}"));
+        out.push(format!("   \x1b[31mwhy\x1b[0m  {}", inert(why)));
     }
     out.push(String::new());
     out.push(section("Text", width));
@@ -2507,7 +2638,7 @@ fn message_view(v: &serde_json::Value, width: usize, who: &dyn Fn(&str) -> Strin
         out.push(String::new());
         let cut = if v["cut"].as_bool() == Some(true) { " (cut)" } else { "" };
         out.push(section(&format!("Output{cut}"), width));
-        out.extend(block(o, width));
+        out.extend(block(&inert(o), width));
     }
     out
 }
@@ -2534,7 +2665,7 @@ fn task_view(
     }
     out.push(String::new());
     for (i, v) in steps.iter().enumerate() {
-        let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        let s = |k: &str| inert(v[k].as_str().unwrap_or_default());
         let stage = s("stage");
         let bar = if i + 1 < steps.len() { "\x1b[2m│\x1b[0m" } else { " " };
         out.push(format!(
@@ -2568,12 +2699,12 @@ fn task_view(
         if text.lines().count() > 3 {
             out.push(format!("{bar}   \x1b[2m…\x1b[0m"));
         }
-        if let Some(o) = v["output"].as_str().filter(|o| !o.trim().is_empty()) {
+        if let Some(o) = v["output"].as_str().map(inert).filter(|o| !o.trim().is_empty()) {
             let first = o.lines().find(|l| !l.trim().is_empty()).unwrap_or_default();
             out.push(format!("{bar}   \x1b[2m→ {}\x1b[0m", clip(first, room.saturating_sub(2)).0));
         }
         if let Some(why) = v["why"].as_str() {
-            out.push(format!("{bar}   \x1b[31m{why}\x1b[0m"));
+            out.push(format!("{bar}   \x1b[31m{}\x1b[0m", inert(why)));
         }
         if i + 1 < steps.len() {
             out.push(bar.to_string());
@@ -2690,6 +2821,16 @@ fn row_line(line: &str, picked: bool, focused: bool, width: usize) -> String {
 }
 
 /// `s` without its escape sequences.
+/// Text that came from a program (a message, its output, what was said in
+/// a channel) as the board draws it: no escape sequence of its own (the
+/// board's colours and cursor are the board's), other control characters
+/// as spaces, its lines kept. Every such text goes through it where it
+/// comes in; `clip` keeps escape sequences, for the board's own styles and
+/// the pane's screen.
+fn inert(s: &str) -> String {
+    strip(s).chars().map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect()
+}
+
 fn strip(s: &str) -> String {
     let mut out = String::new();
     let mut chars = s.chars().peekable();
@@ -2748,8 +2889,9 @@ fn boxed(title: &str, right: &str, lines: Vec<String>, r: Rect, focused: bool) -
 fn help_lines() -> Vec<String> {
     [
         "Everywhere",
-        "  Tab / Shift+Tab, 0-4, h / l       change panel (page 2: 0 1 2 4)",
-        "  < / >                             page 1 (the panes) / page 2 (what is shared)",
+        "  Tab / Shift+Tab, 0-4, h / l       change panel (pages 2 and 3: 0 1 2 4)",
+        "  > / <                             the next / last page: 1 the panes, 2 what is",
+        "                                    shared, 3 the group chat",
         "  [ / ]                             change the tab on the right",
         "  T                                 the trace of the pane's agent",
         "  L                                 the paired machines: j / k one, then c connect,",
@@ -2757,7 +2899,7 @@ fn help_lines() -> Vec<String> {
         "  PgUp / PgDn, C-b / C-f            page the right panel (C-u / C-d half a page;",
         "                                    in the prefix-v popup, C-b C-b sends C-b)",
         "  g / G, Home / End                 the first / last row of a list; top / bottom on the right",
-        "  /                                 filter the panes",
+        "  /                                 filter the panes (page 3: the channels)",
         "  q, Esc                            quit (Esc first cancels a question)",
         "  mouse                             click a panel or a row; the wheel scrolls",
         "",
@@ -2794,6 +2936,17 @@ fn help_lines() -> Vec<String> {
         "  states: active, missing (its file is gone), stopped, expired, used (for once, it went)",
         "[2] Activity: what happened to the shares, the latest first; j / k scroll",
         "[4] The share picked: its link, time, who opened it, its story, the code to scan",
+        "",
+        "Page 3: the group chat (keepane chat); [0] and System as on page 1",
+        "[1] Channels: name, members, what you have not read, tags",
+        "  j / k      pick one (shown right)  Enter   scroll its lines",
+        "  s          say something (as you)  n       a new channel: its name, then its topic",
+        "  t          its topic               #       its tags: +a adds, -b takes off",
+        "[2] Members: handle, role, where it is, busy (yellow) or idle (green)",
+        "  j / k      pick one                o       go to its pane",
+        "  s          say something to it (@ it)",
+        "[4] The channel picked: who said what, where they were, the latest at the bottom;",
+        "  shown here, what you had not read of it counts as read",
         "",
         "System (under [0], from 150 columns): CPU, each core, memory, swap, disk, network,",
         "  temperature, power, battery, processes: this machine, every second",
@@ -3236,6 +3389,22 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
             board.set_web(&ask(&owned(&["web-status"])).1);
             if board.wants_machines() {
                 board.set_machines(&ask(&owned(&["link-list", "-J"])).1);
+            }
+            // Page 3: the channels, then the picked one's members and lines;
+            // what the person had not read of the one shown is read.
+            if board.page == 3 {
+                board.chat.set_channels(&ask(&owned(&["chat-list", "-J"])).1);
+                let q = board.chat_queries();
+                if let [_, who, read] = q.as_slice() {
+                    board.chat.set_members(&ask(who).1);
+                    board.chat.set_lines(&ask(read).1);
+                } else {
+                    board.chat.members.clear();
+                    board.chat.lines.clear();
+                }
+                if let Some(seen) = board.chat_seen() {
+                    ask(&seen);
+                }
             }
             // Asked each time, so a `set` while the board is open shows.
             board.files.icons = files::Icons::parse(&ask(&owned(&["show-options", "-gv", "dashboard-icons"])).1);
@@ -4361,6 +4530,161 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Text a program wrote (a message, its output, why it failed) is drawn
+    /// as text in the inbox, the message's record and the task's steps: an
+    /// escape sequence in it (a clear screen, a cursor move) never reaches
+    /// the terminal; the board's own colours stay.
+    #[test]
+    fn text_from_programs_cannot_draw_on_the_board() {
+        let bad = "a\x1b[2J\x1b[1;1Hb";
+        let q = Queued::parse(&format!("  #5  from $1:@0.%1 (ai)  waiting 1s  {bad}")).unwrap();
+        assert_eq!(q.text, "ab");
+        let rows = TaskRow::parse_all(&[format!("#7 done {bad}")]);
+        assert_eq!(rows[0].title, "ab");
+        let v = serde_json::json!({"id": 5, "task": 5, "hop": 0, "stage": "failed", "from": "user",
+            "to": "$1:@0.%1", "via": "shell", "sent": "14:00", "text": bad, "output": bad, "why": bad});
+        let shown = message_view(&v, 60, &|a| a.to_string()).join("\n");
+        assert!(!shown.contains("\x1b[2J") && !shown.contains("\x1b[1;1H"), "{shown:?}");
+        assert!(shown.contains("\x1b[1mMessage #5"), "the board's own style kept");
+        let steps = task_view(&[v], None, 60, &|a| a.to_string()).join("\n");
+        assert!(!steps.contains("\x1b[2J") && !steps.contains("\x1b[1;1H"), "{steps:?}");
+        assert_eq!(inert("x\ty\nz"), "x y\nz", "lines kept, tabs a space");
+    }
+    /// Page 3: the channels over the picked one's members, its lines on the
+    /// right with the latest at the bottom; `<` goes back a page, `>` on;
+    /// s, n, t and # ask for text and run the chat command; o goes to a
+    /// member's pane; `/` filters the channels; a click picks one.
+    #[test]
+    fn page_three_shows_the_group_chat_and_says_things_as_the_person() {
+        let mut b = board();
+        b.resize(160, 30);
+        b.key(Key::ch('<'));
+        assert_eq!((b.page, b.focus), (3, Panel::Channels), "< from page 1: the last page");
+        b.key(Key::ch('<'));
+        assert_eq!(b.page, 2);
+        b.key(Key::ch('>'));
+        assert_eq!((b.page, b.focus), (3, Panel::Channels));
+        assert!(strip(&b.foot()).contains("</> page 3/3") && strip(&b.foot()).contains("s say"));
+        assert!(screen(&b).join("\n").contains("no channel (n makes one)"));
+        assert_eq!(b.chat_queries(), [owned(&["chat-list", "-J"])], "nothing picked: the list only");
+        b.chat.set_channels(
+            r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0,"unread":0},
+                {"id":"0190a-22222222","name":"review","topic":"the release","tags":["ci"],"members":2,"unread":3}]"#,
+        );
+        b.key(Key::ch('j'));
+        assert_eq!(b.chat_queries()[1], owned(&["chat-who", "0190a-22222222", "-J"]));
+        assert_eq!(b.chat_seen(), Some(owned(&["chat-read", "0190a-22222222", "-n", "1000"])), "shown: read");
+        b.chat.set_members(
+            r#"[{"handle":"lead","role":"planner","ident":{"machine":"M","place":"s:0.0","pane":3,"agent":"claude"},"busy":true},
+                {"handle":"tester","role":"","ident":{"machine":"M","place":"s:0.1","pane":4,"agent":"codex"},"busy":false}]"#,
+        );
+        let said: Vec<String> = (1..=40)
+            .map(|i| {
+                format!(
+                    r#"{{"seq":{i},"at":"2026-11-17T14:{:02}:00.000+08:00","kind":"say","from":{{"handle":"lead","role":"planner",
+                    "ident":{{"machine":"M","place":"s:0.0","pane":3,"agent":"claude","model":"opus"}}}},"text":"line {i}"}}"#,
+                    i % 60
+                )
+            })
+            .collect();
+        let joined = r#"{"seq":41,"at":"2026-11-17T15:00:00.000+08:00","kind":"join","from":{"handle":"tester"},"text":"joined"}"#;
+        b.chat.set_lines(&format!(r#"{{"lines":[{},{joined}]}}"#, said.join(",")));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[1] Channels") && text.contains("#review") && text.contains("●3"), "{text}");
+        assert!(text.contains("[2] Members · 2") && text.contains("lead") && text.contains("planner"), "{text}");
+        assert!(text.contains("[4] #review · the release"), "{text}");
+        assert!(text.contains("line 40") && text.contains("tester joined"), "the latest at the bottom: {text}");
+        assert!(text.contains("M s:0.0 %3 claude opus"), "the stamp shown: {text}");
+        assert!(!text.contains("line 1\n") && !text.contains("line 2 "), "the oldest off the top");
+        // [4]: k goes up (back in time), G down to the latest.
+        b.key(Key::ch('4'));
+        b.key(Key::ch('k'));
+        assert_eq!(b.scroll, 1);
+        b.key(Key::ch('g'));
+        assert!(strip(&screen(&b).join("\n")).contains("line 1"), "at the top: the oldest");
+        b.key(Key::ch('G'));
+        assert_eq!(b.scroll, 0);
+        // s: what the person says, sent as is (a leading dash too).
+        b.key(Key::ch('1'));
+        b.key(Key::ch('s'));
+        assert!(strip(&b.foot()).contains("say in #review"), "{}", strip(&b.foot()));
+        for c in "-hi all".chars() {
+            b.key(Key::ch(c));
+        }
+        assert_eq!(
+            b.key(Key::plain(KeyCode::Enter)),
+            Action::Run(owned(&["chat-say", "0190a-22222222", "--", "-hi all"]))
+        );
+        // n: a name, then a topic; nothing typed: nothing run.
+        b.key(Key::ch('n'));
+        assert_eq!(b.key(Key::plain(KeyCode::Enter)), Action::Redraw);
+        b.key(Key::ch('n'));
+        for c in "ops night shift".chars() {
+            b.key(Key::ch(c));
+        }
+        assert_eq!(
+            b.key(Key::plain(KeyCode::Enter)),
+            Action::Run(owned(&["chat-new", "ops", "--topic", "night shift"]))
+        );
+        // t: the topic as it is, to change; cleared, it is sent empty.
+        b.key(Key::ch('t'));
+        assert_eq!(b.input.as_ref().map(|(_, s)| s.as_str()), Some("the release"));
+        for _ in 0.."the release".len() {
+            b.key(Key::plain(KeyCode::BSpace));
+        }
+        assert_eq!(b.key(Key::plain(KeyCode::Enter)), Action::Run(owned(&["chat-topic", "0190a-22222222", "--", ""])));
+        // #: tags, a bare word added.
+        b.key(Key::ch('#'));
+        for c in "ops -ci".chars() {
+            b.key(Key::ch(c));
+        }
+        assert_eq!(
+            b.key(Key::plain(KeyCode::Enter)),
+            Action::Run(owned(&["chat-tag", "0190a-22222222", "+ops", "-ci"]))
+        );
+        // [2]: o goes to the member's pane; s starts with @ it.
+        b.key(Key::ch('2'));
+        assert_eq!(b.focus, Panel::Members);
+        b.key(Key::ch('j'));
+        assert_eq!(b.key(Key::ch('o')), Action::Go(owned(&["focus-pane", "%4"])));
+        b.key(Key::ch('s'));
+        assert_eq!(b.input.as_ref().map(|(_, s)| s.as_str()), Some("@tester "));
+        b.key(Key::plain(KeyCode::Escape));
+        // Tab goes round page 3's panels.
+        b.key(Key::plain(KeyCode::Tab));
+        assert_eq!(b.focus, Panel::Main);
+        b.key(Key::plain(KeyCode::Tab));
+        assert_eq!(b.focus, Panel::Files);
+        // /: the channels by a name or a tag; the panes' filter untouched.
+        b.key(Key::ch('/'));
+        for c in "gen".chars() {
+            b.key(Key::ch(c));
+        }
+        b.key(Key::plain(KeyCode::Enter));
+        assert_eq!(b.chat.shown().len(), 1);
+        assert!(b.filter.is_empty(), "page 1's filter as it was");
+        assert!(screen(&b).join("\n").contains("[1] Channels /gen"));
+        b.key(Key::ch('/'));
+        b.key(Key::plain(KeyCode::Escape));
+        assert_eq!(b.chat.shown().len(), 2);
+        // A click on a row picks it.
+        let r = b.layout().channels.unwrap();
+        b.mouse(&MouseRecord { x: (r.x + 3) as i16, y: (r.y + 1) as i16, buttons: 1, ctrl: 0, flags: 0 });
+        assert_eq!((b.focus, b.chat.picked().map(|c| c.name.as_str())), (Panel::Channels, Some("general")));
+        assert_eq!(b.chat_seen(), None, "nothing unread there");
+        // Narrow, [4] not on the screen while [1] has the focus: nothing read.
+        b.chat.channels[0].unread = 2;
+        b.resize(60, 30);
+        assert_eq!(b.chat_seen(), None, "[4] hidden: nothing read");
+        b.key(Key::ch('4'));
+        assert!(b.chat_seen().is_some(), "[4] shown: read");
+        b.resize(160, 30);
+        b.key(Key::ch('1'));
+        // > from page 3: page 1, the panes.
+        b.key(Key::ch('>'));
+        assert_eq!((b.page, b.focus), (1, Panel::Panes));
+        assert_eq!(b.chat_seen(), None, "page 3 not shown: nothing read");
+    }
     /// Page 2 (`<` / `>`): [0] and the machine as on page 1, the shares and
     /// what happened to them in the middle, the one picked on the right;
     /// each change asks first but extending, and sharing from [0] turns to it.
@@ -4375,10 +4699,10 @@ mod tests {
         let mut b = board();
         b.resize(160, 30);
         // The page shown, of how many, by the key that turns it.
-        assert!(strip(&b.foot()).contains("</> page 1/2"), "{}", strip(&b.foot()));
+        assert!(strip(&b.foot()).contains("</> page 1/3"), "{}", strip(&b.foot()));
         b.key(Key::ch('>'));
         assert_eq!((b.page, b.focus), (2, Panel::Shares));
-        assert!(strip(&b.foot()).contains("</> page 2/2") && b.foot().contains("\x1b[1m2\x1b[0m/2"));
+        assert!(strip(&b.foot()).contains("</> page 2/3") && b.foot().contains("\x1b[1m2\x1b[0m/3"));
         b.set_shares(json);
         let text = screen(&b).join("\n");
         assert!(text.contains("[1] Shares  1 active · 1 ended") && text.contains("[2] Activity"), "{text}");
@@ -4394,7 +4718,7 @@ mod tests {
         // Too narrow for every key: the page still shows, at the right end.
         b.resize(50, 30);
         let foot = strip(&b.foot());
-        assert!(foot.ends_with("│  </> page 2/2") && width_of(&foot) == 50, "{foot:?}");
+        assert!(foot.ends_with("│  </> page 2/3") && width_of(&foot) == 50, "{foot:?}");
         b.resize(160, 30);
         // [4] reads from the top: j goes down it.
         b.key(Key::ch('4'));

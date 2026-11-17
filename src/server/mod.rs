@@ -4,6 +4,7 @@
 pub mod actor;
 mod agents;
 mod agentsync;
+mod chat;
 mod clock;
 pub(crate) mod clockanim;
 mod digits;
@@ -1299,6 +1300,8 @@ pub struct Server {
     next_msg: actor::MsgId,
     /// What happened to every message, and the event log it is kept in.
     observe: observe::Store,
+    /// The group chat: channels, members, what was said (`chat-*`).
+    chat: chat::Chat,
     /// Clients waiting in a `-w` for a message or an inbox.
     msg_waits: Vec<mail::MsgWait>,
     /// Clients in `wait-output`, waiting for a pane to print something.
@@ -1469,6 +1472,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     srv.load_config();
     srv.feishu_sync();
     srv.mail_start();
+    srv.chat_start();
     srv.newer_start();
     // A persistent interval: a fresh `sleep` per iteration would never fire
     // while events keep arriving, and autosave / idle-exit hang off the tick.
@@ -1776,6 +1780,7 @@ impl Server {
             ending: None,
             next_msg: 0,
             observe: observe::Store::default(),
+            chat: chat::Chat::default(),
             msg_waits: Vec::new(),
             out_waits: Vec::new(),
             msg_dropped: Vec::new(),
@@ -2861,6 +2866,7 @@ impl Server {
                 self.autosave_changed();
                 self.history_tick();
                 self.mail_tick();
+                self.chat_tick();
                 self.output_waits_tick();
                 self.newer_tick();
                 self.public_ip_tick();
@@ -6639,6 +6645,7 @@ impl Server {
             Cmd::WebStop => self.web_stop(cid),
             Cmd::WebResume => self.web_resume(),
             Cmd::Share(what) => self.exec_share(what, cid),
+            Cmd::Chat(c) => self.exec_chat(c, cid),
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
             Cmd::ShareSent { token, peer, note } => self.share_sent(&token, &peer, &note),
             Cmd::WebUploaded { pane, path, bytes, peer } => self.web_uploaded(&pane, &path, bytes, &peer),
