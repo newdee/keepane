@@ -6299,3 +6299,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 9 | 可复现性 | Windows 全量连跑 2 次：两次都是 694 / 11 / 171；Linux 678 / 168。 | 干净（3/3），验收通过 |
 
 遗留：Linux 全量下 `the_hook_names_its_agents_transcript` 失败过 2 次（第 1、3 轮），第 3 轮看到 `list-agents` 为 `[]`（watcher 20 秒里没认出 pane 里的 agent）；之后 Linux 全量 7 次都过。测试已加失败时打印进程树，再出现时能定位。
+
+0.77.0 发布：CI 44124824550（7bfe946）四个 job 通过；tag v0.77.0；Release 44126111155（macOS aarch64 缺 runner 被取消一次，重跑后通过）；manifests e6c81e3；winget PR #482499；Homebrew formula 44130593129 通过，三个 tar.gz 的 sha256 与 release 一致。
