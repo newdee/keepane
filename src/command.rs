@@ -968,6 +968,8 @@ pub enum Cmd {
         user: String,
         shell: Option<bool>,
         screen: Option<bool>,
+        /// Other machines' panes (those that gave this one `--full`).
+        remote: Option<bool>,
     },
     /// `feishu-remove ou_…` (`keepane feishu remove`): no longer let in.
     FeishuRemove {
@@ -2199,10 +2201,13 @@ impl fmt::Display for Cmd {
             Cmd::LinkRemove { addr } => write!(f, "link-remove {}", quote(addr)),
             Cmd::LinkRekey => f.write_str("link-rekey"),
             Cmd::FeishuStatus => f.write_str("feishu-status"),
-            Cmd::FeishuAllow { user, shell, screen } => {
+            Cmd::FeishuAllow { user, shell, screen, remote } => {
                 write!(f, "feishu-allow {}", quote(user))?;
                 if let Some(s) = shell {
                     f.write_str(if *s { " --shell" } else { " --no-shell" })?;
+                }
+                if let Some(s) = remote {
+                    f.write_str(if *s { " --remote" } else { " --no-remote" })?;
                 }
                 if let Some(s) = screen {
                     f.write_str(if *s { " --screen" } else { " --no-screen" })?;
@@ -3178,7 +3183,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("link-panes", &[]),
     ("link-rekey", &[]),
     ("feishu-status", &[]),
-    ("feishu-allow", &["--shell", "--no-shell", "--screen", "--no-screen"]),
+    ("feishu-allow", &["--shell", "--no-shell", "--screen", "--no-screen", "--remote", "--no-remote"]),
     ("feishu-remove", &[]),
     ("link-remove", &[]),
     ("link-connect", &[]),
@@ -4821,9 +4826,11 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::FeishuStatus
         }
         "feishu-allow" | "feishu-remove" => {
-            let (mut user, mut shell, mut screen) = (None, None, None);
+            let (mut user, mut shell, mut screen, mut remote) = (None, None, None, None);
             while let Some(w) = a.next() {
                 match w {
+                    "--remote" if n == "feishu-allow" => remote = Some(true),
+                    "--no-remote" if n == "feishu-allow" => remote = Some(false),
                     "--shell" if n == "feishu-allow" => shell = Some(true),
                     "--no-shell" if n == "feishu-allow" => shell = Some(false),
                     "--screen" if n == "feishu-allow" => screen = Some(true),
@@ -4839,7 +4846,11 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if !crate::feishu::valid_open_id(&user) {
                 return Err(format!("{n}: '{user}' is not an open_id (ou_…)"));
             }
-            if n == "feishu-allow" { Cmd::FeishuAllow { user, shell, screen } } else { Cmd::FeishuRemove { user } }
+            if n == "feishu-allow" {
+                Cmd::FeishuAllow { user, shell, screen, remote }
+            } else {
+                Cmd::FeishuRemove { user }
+            }
         }
         "link-add" => {
             let url =
@@ -6105,6 +6116,8 @@ mod tests {
             "feishu-status",
             "feishu-allow ou_ab12",
             "feishu-allow ou_ab12 --shell --no-screen",
+            "feishu-allow ou_ab12 --remote",
+            "feishu-allow ou_ab12 --no-remote --screen",
             "feishu-remove ou_ab12",
             "pane-wait -t %3 -- \"Claude needs your permission to use Bash\"",
             "run-shell -b -t w:1 \"pwsh -c Get-Date\"",

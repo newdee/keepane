@@ -69,12 +69,13 @@ WebSocket 和 TLS：`tokio-tungstenite`（`rustls-tls-webpki-roots`）加 `rustl
 
 - 默认关闭：`feishu-app-id` 和 `feishu-app-secret` 都设了才连。
 - 移出白名单立即生效：之后的消息不处理，通知不发，agent 对他以前消息的 `-r` 回答也不发（报错说明）。
-- 白名单：`link` 目录下的 `feishu-users`，一行一个 `ou_… shell=no screen=no`，文件只有当前用户能读。`feishu-allow` 只能在 pane 外运行（和 `link-allow`、`link-share` 同一个检查），agent 不能给别人开权限。`feishu-remove` 哪里都能运行（收回权限总是安全的）。
+- 白名单：`link` 目录下的 `feishu-users`，一行一个 `ou_… shell=no screen=no remote=no`（旧文件没有 `remote=` 的算 no），文件只有当前用户能读。`feishu-allow` 只能在 pane 外运行（和 `link-allow`、`link-share` 同一个检查），agent 不能给别人开权限。`feishu-remove` 哪里都能运行（收回权限总是安全的）。
 - 不在白名单的人：机器人回他自己的 open_id 和授权命令，状态栏提示一次；同一个人 10 分钟内只回一次，最多记 100 人。
 - 只收单聊（`chat_type == "p2p"`），只收 `sender_type == "user"`。
 - 能做什么，和 `link` 一致：
   - 消息：`ai`、`normal` 模式的 pane 随时可以；`shell` 模式的 pane 收到消息会执行，要 `--shell`。
   - 按键：pane 里有 agent 时可以。有没有 agent：`list-agents` 看到了，或者 pane 还在等 agent 的提问、而且 shell 没有回到提示符。没有 agent 时按键会进 shell，要 `--shell`。
+  - 别的机器的 pane（给了本机 `--full` 的机器，`link.md` 第 21 条）：默认不列在 `/panes` 里，`/to`、`/key`、`/screen` 指到它们时拒绝并说明，要 `--remote`。那台机器信任的是本机的主人，不是主人放进机器人的每个人。
   - `/screen`：会把终端内容传到飞书服务器，要 `--screen`。注意每条通知本来就带 pane 最后几行（`done-lines`，默认 5 行），和 `done-webhook` 一样；不想带就 `set -g done-lines 0`。`--screen` 管的是"随时看任意 pane 的整屏"。
 - 去重：按飞书消息 ID，记最近 1000 条。飞书重发同一事件只处理一次。
 - 过期：消息发出超过 10 分钟才到（keepane 断线期间发的），不处理，记日志。避免几小时后按下一个早就不相关的键。
@@ -90,7 +91,7 @@ set -g feishu-domain feishu       # lark；或者一个 http(s) 地址（测试�
 set -g feishu-notify on
 
 keepane feishu                    # = feishu-status
-keepane feishu allow ou_… [--shell|--no-shell] [--screen|--no-screen]
+keepane feishu allow ou_… [--shell|--no-shell] [--screen|--no-screen] [--remote|--no-remote]
 keepane feishu remove ou_…
 ```
 

@@ -552,7 +552,9 @@ and this command. It is given from a terminal outside keepane or the `C-b
 :` prompt, never from inside a pane. `--shell` (`--no-shell`) lets the
 account's keys go where no agent runs and its messages to `shell` panes,
 which both run commands; `--screen` (`--no-screen`) lets it read what a
-pane shows. `keepane feishu remove ou_...` (`feishu-remove`) lets it in
+pane shows; `--remote` (`--no-remote`) lets it see and reach the panes of
+other machines here (those that gave this one `--full`), which are left
+out otherwise. `keepane feishu remove ou_...` (`feishu-remove`) lets it in
 no more. Only a chat with the bot alone is heard, a message sent more than
 10 minutes before it arrives is passed over, and each request is kept in
 the event log. Feishu gives each event to one connection of an app: one

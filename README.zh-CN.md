@@ -691,7 +691,7 @@ set -g done-lines 5               # 一起带上 pane 最后输出的几行（0 
 - **回复其他通知**：回复作为一条消息发给那个 pane，和 `send-message` 一样。agent 的 pane 等 agent 空闲时收到；`normal` 模式的 pane 留着等 `read-message`。agent 用 `send-message -r` 回答时，回答会回到飞书聊天里。
 - **命令**：`/panes`（列出 pane，以及哪些在等你）、`/to <pane> <文字>`（发消息）、`/key <pane> <按键>`（立刻按键）、`/screen <pane>`（看屏幕）、`/help`。
 
-只认你放进白名单的人，只收和机器人的单聊。消息能发给 agent 的 pane 和 `normal` 模式的 pane，按键能发给 agent。没有 agent 的 pane 收到按键、`shell` 模式的 pane 收到消息，都会执行命令，所以要加 `--shell` 授权。`/screen` 会把屏幕内容传到飞书的服务器，所以要加 `--screen` 授权。授权只能在 pane 外面运行，agent 不能给别人开权限。已经结束的提问，再回复按键也不会按下去。每条通知都带着 pane 最后几行，和 webhook 一样（`done-lines`；设成 0 就一行都不带）。收到的每条消息、做了什么，都写进事件日志（`list-events`）。
+只认你放进白名单的人，只收和机器人的单聊。消息能发给 agent 的 pane 和 `normal` 模式的 pane，按键能发给 agent。没有 agent 的 pane 收到按键、`shell` 模式的 pane 收到消息，都会执行命令，所以要加 `--shell` 授权。`/screen` 会把屏幕内容传到飞书的服务器，所以要加 `--screen` 授权。这台电脑上别的机器的 pane（给了本机 `--full` 的机器，见下文）不列在 `/panes` 里，`/to`、`/key`、`/screen` 也够不着，除非用 `--remote` 给这个人授权：那台机器信任的是你，不是你放进机器人的每个人。授权只能在 pane 外面运行，agent 不能给别人开权限。已经结束的提问，再回复按键也不会按下去。每条通知都带着 pane 最后几行，和 webhook 一样（`done-lines`；设成 0 就一行都不带）。收到的每条消息、做了什么，都写进事件日志（`list-events`）。
 
 配置步骤：
 
@@ -713,6 +713,7 @@ set -g feishu-notify on               # 通知由应用发出
 keepane feishu                        # 连上没有，白名单里有谁
 keepane feishu allow ou_xxxx          # 放一个账号进来
 keepane feishu allow ou_xxxx --shell --screen
+keepane feishu allow ou_xxxx --remote   # 也能碰这里的别的机器的 pane
 keepane feishu remove ou_xxxx
 ```
 

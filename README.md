@@ -1569,7 +1569,11 @@ Only the people you let in are heard, only in a chat with the bot alone.
 Messages go to agents' panes and `normal` ones, and keys to agents. Keys
 where no agent runs, and messages to `shell` panes, run commands: they
 need `--shell`. `/screen` sends what a pane shows to Feishu's servers: it
-needs `--screen`. Letting in works only outside the panes, so an agent
+needs `--screen`. Another machine's panes here (of a machine that gave
+this one `--full`, below) are left out of `/panes` and refused to
+`/to`, `/key` and `/screen`, unless the person is let in to them with
+`--remote`: that machine trusted you, not everyone you let in to the bot.
+Letting in works only outside the panes, so an agent
 cannot let anyone in. A reply to a question that is over presses nothing.
 Each telling carries the pane's last lines, as the webhook's do
 (`done-lines`; 0 sends none).
@@ -1602,6 +1606,7 @@ set -g feishu-notify on               # the tellings come from the app
 keepane feishu                        # connected or not, and who is let in
 keepane feishu allow ou_xxxx          # let an account in
 keepane feishu allow ou_xxxx --shell --screen
+keepane feishu allow ou_xxxx --remote # other machines' panes here too
 keepane feishu remove ou_xxxx
 ```
 

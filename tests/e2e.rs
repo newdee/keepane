@@ -14306,6 +14306,69 @@ impl FakeFeishu {
     }
 }
 
+/// Other machines' panes here (those of a machine that gave this one
+/// `--full`, docs/design/link.md decision 21) are not for everyone let in
+/// to the bot: that machine trusted this one's owner, not the bot's people.
+/// `/panes` leaves them out and `/to` refuses them, until the person is let
+/// in to them (`feishu allow --remote`).
+#[tokio::test(flavor = "multi_thread")]
+async fn feishu_reaches_other_machines_panes_only_when_let_in_to_them() {
+    let _dir = link_test_dir();
+    let a = Harness::start("fsra").await;
+    let b = Harness::start("fsrb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--full"]).await.0, 0);
+    assert_eq!(a.cli(&["link-mirror", &addr_b]).await.0, 0);
+    a.wait_for_cli("b's session here", &["list-panes", "-a", "-F", "#{session_name}"], |_, out| {
+        out.lines().any(|l| l.starts_with("wb@"))
+    })
+    .await;
+    let (_, rows, _) = a.cli(&["list-panes", "-a", "-F", "#{pane_id} #{session_name}"]).await;
+    let theirs = rows.lines().find(|l| l.contains(" wb@")).unwrap().split(' ').next().unwrap().to_string();
+
+    let mut f = FakeFeishu::start().await;
+    let me = "ou_me1";
+    for (k, v) in [("feishu-domain", f.base.as_str()), ("feishu-app-id", "cli_test"), ("feishu-app-secret", "s3cret")] {
+        assert_eq!(a.cli(&["set", "-g", k, v]).await.0, 0);
+    }
+    f.call("/callback/ws/endpoint").await;
+    f.frame("ping").await;
+    a.wait_for_cli("connected", &["feishu-status"], |_, out| out.contains("connected since")).await;
+    let (_, out, _) = a.cli(&["feishu-allow", me]).await;
+    assert!(out.contains("may not reach other machines' panes"), "{out}");
+    assert!(a.cli(&["feishu-status"]).await.1.contains("remote: no"));
+
+    // Not let in to them: not listed, not reached.
+    f.say(1, "om_1", me, "", "/panes");
+    f.frame("event").await;
+    let listed = f.reply().await.text();
+    assert!(listed.contains("wa:") && !listed.contains("wb@"), "{listed}");
+    f.say(2, "om_2", me, "", &format!("/to {theirs} hello"));
+    f.frame("event").await;
+    let refused = f.reply().await.text();
+    assert!(refused.contains("another machine's pane") && refused.contains("--remote"), "{refused}");
+
+    // Let in to them: listed.
+    let (code, out, _) = a.cli(&["feishu-allow", me, "--remote"]).await;
+    assert!(code == 0 && out.contains("may reach other machines' panes"), "{out}");
+    f.say(3, "om_3", me, "", "/panes");
+    f.frame("event").await;
+    let listed = f.reply().await.text();
+    assert!(listed.contains("wb@") && listed.contains(&theirs), "{listed}");
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
+}
 /// A Feishu app of one's own (docs/design/feishu.md), against a fake of
 /// Feishu: the long connection made with the app's id and secret (the
 /// secret not shown), each event answered within the frame, a stranger told

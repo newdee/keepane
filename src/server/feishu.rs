@@ -80,19 +80,25 @@ pub(super) struct User {
     pub open_id: String,
     pub shell: bool,
     pub screen: bool,
+    /// Other machines' panes here (of those that gave this one `--full`):
+    /// listed and reached. Those machines trusted this one's owner, not
+    /// whoever the owner lets in to the bot: off unless given.
+    pub remote: bool,
 }
 
-/// The people let in, a line each: `ou_… shell=no screen=no`.
+/// The people let in, a line each: `ou_… shell=no screen=no remote=no`
+/// (a line without `remote=` is no: written before it was asked).
 fn parse_users(text: &str) -> Vec<User> {
     text.lines()
         .filter_map(|l| {
             let mut w = l.split_whitespace();
             let open_id = w.next().filter(|id| feishu::valid_open_id(id))?.to_string();
-            let mut u = User { open_id, shell: false, screen: false };
+            let mut u = User { open_id, shell: false, screen: false, remote: false };
             for kv in w {
                 match kv {
                     "shell=yes" => u.shell = true,
                     "screen=yes" => u.screen = true,
+                    "remote=yes" => u.remote = true,
                     _ => {}
                 }
             }
@@ -103,7 +109,10 @@ fn parse_users(text: &str) -> Vec<User> {
 
 fn format_users(users: &[User]) -> String {
     let yes = |b: bool| if b { "yes" } else { "no" };
-    users.iter().map(|u| format!("{} shell={} screen={}\n", u.open_id, yes(u.shell), yes(u.screen))).collect()
+    users
+        .iter()
+        .map(|u| format!("{} shell={} screen={} remote={}\n", u.open_id, yes(u.shell), yes(u.screen), yes(u.remote)))
+        .collect()
 }
 
 /// Where a message goes: to a person, or under a message of theirs.
@@ -661,13 +670,26 @@ impl Server {
         );
     }
 
-    /// The pane a person names, as this machine knows it.
-    fn feishu_pane(&self, name: &str) -> Result<PaneId, String> {
+    /// The pane a person names, as this machine knows it. Another
+    /// machine's pane only for one let in to them (`remote`).
+    fn feishu_pane(&self, user: &User, name: &str) -> Result<PaneId, String> {
         let t = Target::parse(name);
         if t.remote.is_some() {
             return Err(format!("{name}: a pane of this machine (%3, %name, session:window.pane)"));
         }
-        self.resolve(Some(&t), None).map(|(_, _, p)| p)
+        let pid = self.resolve(Some(&t), None).map(|(_, _, p)| p)?;
+        if !user.remote && self.feishu_elsewhere(pid) {
+            return Err(format!(
+                "{name} is another machine's pane: not for you (keepane feishu allow {} --remote, on this computer)",
+                user.open_id
+            ));
+        }
+        Ok(pid)
+    }
+
+    /// Whether pane `pid` is another machine's (in a session copied from it).
+    fn feishu_elsewhere(&self, pid: PaneId) -> bool {
+        self.sessions.iter().any(|s| s.remote.is_some() && s.windows.iter().any(|w| w.layout.panes().contains(&pid)))
     }
 
     /// A pane as the person reads it: its name, else where it is.
@@ -717,21 +739,21 @@ impl Server {
             ChatCmd::Help => (feishu::HELP.into(), None),
             ChatCmd::Panes => {
                 self.feishu_log(&user.open_id, "panes", &m.text, None);
-                (self.feishu_panes(), None)
+                (self.feishu_panes(user), None)
             }
             ChatCmd::Text(_) => (
                 "Reply to a notification to answer its pane, or /to <pane> <text>. /help for the commands.".into(),
                 None,
             ),
-            ChatCmd::To { pane: p, text } => match self.feishu_pane(&p) {
+            ChatCmd::To { pane: p, text } => match self.feishu_pane(user, &p) {
                 Ok(pid) => self.feishu_message_to(user, m, pid, &text),
                 Err(e) => (e, None),
             },
-            ChatCmd::Key { pane: p, keys } => match self.feishu_pane(&p) {
+            ChatCmd::Key { pane: p, keys } => match self.feishu_pane(user, &p) {
                 Ok(pid) => self.feishu_keys(user, pid, &keys),
                 Err(e) => (e, None),
             },
-            ChatCmd::Screen { pane: p } => match self.feishu_pane(&p) {
+            ChatCmd::Screen { pane: p } => match self.feishu_pane(user, &p) {
                 Ok(pid) => self.feishu_screen(user, m, pid),
                 Err(e) => (e, None),
             },
@@ -739,10 +761,11 @@ impl Server {
     }
 
     /// `/panes`: each pane, where it is, its name, mode, state and
-    /// program; the ones that wait for the person said so.
-    fn feishu_panes(&self) -> String {
+    /// program; the ones that wait for the person said so. Other machines'
+    /// only for one let in to them.
+    fn feishu_panes(&self, user: &User) -> String {
         let mut lines = Vec::new();
-        for s in &self.sessions {
+        for s in self.sessions.iter().filter(|s| user.remote || s.remote.is_none()) {
             for w in &s.windows {
                 for pid in w.layout.panes() {
                     let Some(p) = self.pane_ref(pid) else { continue };
@@ -923,7 +946,7 @@ impl Server {
     pub(super) fn exec_feishu(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
         match cmd {
             Cmd::FeishuStatus => Outcome::Text(self.feishu_status()),
-            Cmd::FeishuAllow { user, shell, screen } => self.feishu_allow(cid, user, shell, screen),
+            Cmd::FeishuAllow { user, shell, screen, remote } => self.feishu_allow(cid, user, shell, screen, remote),
             Cmd::FeishuRemove { user } => {
                 let by = self.by(cid);
                 let users = self.feishu_users();
@@ -967,7 +990,13 @@ impl Server {
             out.push("let in:".into());
             let yes = |b: bool| if b { "yes" } else { "no" };
             for u in users {
-                out.push(format!("  {}  shell: {}  screen: {}", u.open_id, yes(u.shell), yes(u.screen)));
+                out.push(format!(
+                    "  {}  shell: {}  screen: {}  remote: {}",
+                    u.open_id,
+                    yes(u.shell),
+                    yes(u.screen),
+                    yes(u.remote)
+                ));
             }
         }
         out.join("\n")
@@ -982,6 +1011,7 @@ impl Server {
         user: String,
         shell: Option<bool>,
         screen: Option<bool>,
+        remote: Option<bool>,
     ) -> Outcome {
         if self.caller_pane(cid).is_some() {
             return Outcome::Error(not_from_a_pane("feishu-allow"));
@@ -991,7 +1021,7 @@ impl Server {
         let u = match users.iter().position(|u| u.open_id == user) {
             Some(i) => &mut users[i],
             None => {
-                users.push(User { open_id: user.clone(), shell: false, screen: false });
+                users.push(User { open_id: user.clone(), shell: false, screen: false, remote: false });
                 users.last_mut().expect("just pushed")
             }
         };
@@ -1001,19 +1031,30 @@ impl Server {
         if let Some(s) = screen {
             u.screen = s;
         }
+        if let Some(s) = remote {
+            u.remote = s;
+        }
         let now = u.clone();
         if let Err(e) = self.save_feishu_users() {
             return Outcome::Error(e);
         }
         let may = |b: bool| if b { "may" } else { "may not" };
         let text = format!(
-            "{user} is let in: messages to agents' panes and normal ones, keys to agents; it {} run commands (shell panes, keys where no agent runs); it {} read what the panes show",
+            "{user} is let in: messages to agents' panes and normal ones, keys to agents; it {} run commands (shell panes, keys where no agent runs); it {} read what the panes show; it {} reach other machines' panes here",
             may(now.shell),
-            may(now.screen)
+            may(now.screen),
+            may(now.remote)
         );
         self.observe.feishu(
             "allowed",
-            &format!(",\"user\":{},\"shell\":{},\"screen\":{},\"by\":{}", js(&user), now.shell, now.screen, js(&by)),
+            &format!(
+                ",\"user\":{},\"shell\":{},\"screen\":{},\"remote\":{},\"by\":{}",
+                js(&user),
+                now.shell,
+                now.screen,
+                now.remote,
+                js(&by)
+            ),
         );
         self.note_message(&format!("feishu: {user} let in (by {by})"));
         Outcome::Text(text)
@@ -1029,13 +1070,15 @@ mod tests {
     #[test]
     fn the_people_let_in_read_back() {
         let users = vec![
-            User { open_id: "ou_a1".into(), shell: true, screen: false },
-            User { open_id: "ou_b2".into(), shell: false, screen: true },
+            User { open_id: "ou_a1".into(), shell: true, screen: false, remote: false },
+            User { open_id: "ou_b2".into(), shell: false, screen: true, remote: true },
         ];
         let text = format_users(&users);
-        assert_eq!(text, "ou_a1 shell=yes screen=no\nou_b2 shell=no screen=yes\n");
+        assert_eq!(text, "ou_a1 shell=yes screen=no remote=no\nou_b2 shell=no screen=yes remote=yes\n");
         assert_eq!(parse_users(&text), users);
         assert_eq!(parse_users("# a note\nnot-an-id shell=yes\nou_c3\n").len(), 1);
+        // Written before `remote=` was asked: no.
+        assert!(!parse_users("ou_d4 shell=yes screen=yes\n")[0].remote);
     }
 
     /// curl gets the address, both headers and the body on its standard
