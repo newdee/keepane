@@ -1270,6 +1270,29 @@ mod tests {
         let asked = crate::server::mirrored::asked_on("kill-pane 1? (y/n)", Some(&long));
         assert!(asked.chars().take(30).collect::<String>().starts_with("kill-pane 1? (y/n)  on "), "{asked}");
         assert_eq!(crate::server::mirrored::asked_on("kill-pane 1? (y/n)", None), "kill-pane 1? (y/n)");
+        // And a name in a line of text is at most 24 columns, cut with `…`:
+        // what follows it (an address, the keys) stays in sight.
+        let said =
+            crate::server::mirrored::name_said("sat12-bq155-608590f5-b79a-4c93-a7e7-4b9a4862ec22-865F5B681961.local");
+        assert_eq!(said, "sat12-bq155-608590f5-b7…");
+        assert_eq!(said.chars().count(), crate::server::mirrored::NAME_MOST);
+        assert_eq!(crate::server::mirrored::name_said("DFINE"), "DFINE", "a short one as it is");
+        // Its name said (at last): in a question and in the list's heading
+        // it is the cut one, and the question comes before it.
+        let named = crate::server::link_tree::MachineName {
+            name: Some("sat12-bq155-608590f5-b79a-4c93-a7e7-4b9a4862ec22-865F5B681961.local".into()),
+            ..Default::default()
+        };
+        s.machine_names.insert("10.0.0.2:7681".into(), named);
+        assert_eq!(s.machine_at("10.0.0.2:7681"), "sat12-bq155-608590f5-b7… (10.0.0.2:7681)");
+        let forget = crate::server::mirrored::forget_asked(&s.machine_at("10.0.0.2:7681"));
+        let at = |what: &str| forget.find(what).unwrap_or(usize::MAX);
+        assert!(at("(y/n)") < 60 && at("(y/n)") < at("sat12"), "the question before the machine: {forget}");
+        let list = ChooserKind::Tree { expand: false, style: TreeStyle::List };
+        let (items, lines) = s.chooser_lines(&list, &[]).unwrap();
+        let head = items.iter().position(|i| *i == ChooserItem::Separator).unwrap();
+        assert_eq!(lines[head], "sat12-bq155-608590f5-b7… · 10.0.0.2:7681", "its address stays in the heading");
+        s.machine_names.clear();
         // Disconnected here: the chart says so, and lists nothing under it.
         assert!(matches!(
             s.exec(Cmd::LinkConnect { addr: "10.0.0.2:7681".into(), off: true }, None),

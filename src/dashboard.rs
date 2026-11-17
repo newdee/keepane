@@ -532,10 +532,20 @@ pub struct MachineRow {
     pub sessions: usize,
 }
 
+/// The most columns of a machine's name in a line of text: the name is the
+/// machine's own to say and can be any length, and what follows it in the
+/// line (its address, the keys) is to stay in sight. A longer one ends `…`.
+const NAME_MOST: usize = 24;
+
+/// A machine's name as a line of text says it: at most `NAME_MOST` columns.
+fn name_said(name: &str) -> String {
+    if width_of(name) <= NAME_MOST { name.to_string() } else { format!("{}…", clip(name, NAME_MOST - 1).0) }
+}
+
 impl MachineRow {
     /// Its name and address, as the pane table's heading says a machine.
     fn said(&self) -> String {
-        if self.name.is_empty() { self.addr.clone() } else { format!("{} ({})", self.name, self.addr) }
+        if self.name.is_empty() { self.addr.clone() } else { format!("{} ({})", name_said(&self.name), self.addr) }
     }
 }
 
@@ -1956,7 +1966,12 @@ impl Board {
         } else {
             (r.host.as_str(), r.machine.clone())
         };
-        if name.is_empty() { paint("1;35", &at) } else { format!("{} {}", paint("1;35", name), paint("2", &at)) }
+        // (A long name is cut, so that its address stays in the heading.)
+        if name.is_empty() {
+            paint("1;35", &at)
+        } else {
+            format!("{} {}", paint("1;35", &name_said(name)), paint("2", &at))
+        }
     }
 
     fn panes_box(&self, r: Rect) -> Vec<String> {
@@ -2274,12 +2289,14 @@ impl Board {
                         } else {
                             "connected".to_string()
                         };
-                        let name = if m.name.is_empty() { &m.addr } else { &m.name };
+                        let name = if m.name.is_empty() { m.addr.clone() } else { name_said(&m.name) };
                         let text = format!(" {name} · {state} ");
                         if i == *pick { format!("\x1b[7m{text}\x1b[0m") } else { text }
                     })
                     .collect::<String>();
-                return format!("\x1b[1mmachines:\x1b[0m{all}  j/k · c connect · x disconnect · D forget · Esc");
+                // The keys first: the machines, however many, are what the
+                // screen's edge cuts.
+                return format!("\x1b[1mmachines\x1b[0m  j/k · c connect · x disconnect · D forget · Esc: {all}");
             }
             _ => {}
         }
@@ -4186,6 +4203,14 @@ mod tests {
         b.set_web("");
         let (_, _, table) = b.pane_table(30, 160);
         assert_eq!(strip(&table[0].1), "desk this machine");
+        // A long name is cut in a heading, so that its address stays in it.
+        let long = "sat12-bq155-608590f5-b79a-4c93-a7e7-4b9a4862ec22-865F5B681961.local";
+        b.rows[2] = on(b.rows[2].clone(), mac, long);
+        let (_, _, table) = b.pane_table(30, 160);
+        let heads: Vec<String> =
+            table.iter().filter(|(id, _)| id.is_none()).map(|(_, l)| strip(l).trim_end().to_string()).collect();
+        assert!(heads.contains(&"sat12-bq155-608590f5-b7… 10.0.0.2:7681".to_string()), "{heads:#?}");
+        b.rows[2] = on(b.rows[2].clone(), mac, "macbook.local");
         // A filter by the machine's name keeps its panes, which are then one
         // machine's: no headings.
         b.filter = "macbook".into();
@@ -4899,6 +4924,22 @@ mod tests {
         }
         assert!(needs_yes(&owned(&["link-connect", "a:1"])) && needs_yes(&owned(&["link-remove", "a:1"])));
         assert!(!needs_yes(&owned(&["link-disconnect", "a:1"])));
+        // A machine's name is its own to say and can be long (a macOS
+        // runner's is over 60 columns): cut to 24, so that the keys, the
+        // question's end and a heading's address stay in sight.
+        let long = "sat12-bq155-608590f5-b79a-4c93-a7e7-4b9a4862ec22-865F5B681961.local";
+        assert_eq!(name_said(long), "sat12-bq155-608590f5-b7…");
+        assert_eq!((width_of(&name_said(long)), name_said("mac")), (NAME_MOST, "mac".to_string()));
+        b.set_machines(&format!(r#"[{{"addr":"10.0.0.2:7681","name":"{long}","connected":true,"sessions":1}}]"#));
+        b.key(Key::ch('L'));
+        let foot = strip(&b.foot());
+        let keys = foot.find("D forget").expect("the keys");
+        assert!(keys < 60 && foot.find("sat12").is_some_and(|at| at > keys), "the keys before the machines: {foot}");
+        assert!(!foot.contains(long) && foot.contains("sat12-bq155-608590f5-b7… · 1 sessions"), "{foot}");
+        b.key(Key::ch('D'));
+        let q = strip(&b.foot());
+        assert!(q.contains("forget sat12-bq155-608590f5-b7… (10.0.0.2:7681)?") && q.contains("y yes"), "{q}");
+        b.key(Key::ch('n'));
         // An older server's table, or none: no machines, and any key closes.
         b.set_machines("MACHINE  KEY\n");
         b.key(Key::ch('L'));

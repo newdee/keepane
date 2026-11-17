@@ -8287,7 +8287,7 @@ impl Server {
             for addr in machines {
                 items.push(ChooserItem::Separator);
                 lines.push(match self.machine_name(addr) {
-                    Some(name) => format!("{name} · {addr}"),
+                    Some(name) => format!("{} · {addr}", mirrored::name_said(name)),
                     None => addr.to_string(),
                 });
                 for s in of_machine(addr) {
@@ -8854,14 +8854,12 @@ impl Server {
     fn picker_machine(&mut self, cid: ClientId, m: u16, key: char) {
         let Some(addr) = self.chart_hosts().get(m as usize).cloned() else { return };
         if key == 'D' {
-            let said = match self.machine_name(&addr) {
-                Some(name) => format!("{name} ({addr})"),
-                None => addr.clone(),
-            };
+            // The question first, the machine after it (`asked_on`).
+            let said = self.machine_at(&addr);
             if let Some(c) = self.clients.get_mut(&cid) {
                 c.prompt = Some(Prompt {
                     kind: PromptKind::Confirm(Box::new(Cmd::LinkRemove { addr })),
-                    label: format!("forget {said}? pairing again takes `link add` (y/n) "),
+                    label: mirrored::forget_asked(&said),
                     input: String::new(),
                     cursor: 0,
                     hint: None,

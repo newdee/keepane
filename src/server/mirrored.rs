@@ -537,6 +537,18 @@ fn there_targets(cmd: &mut Cmd) -> Option<Vec<(&mut Option<Target>, Level)>> {
     })
 }
 
+/// The most columns of a machine's name in a line of text (a question, a
+/// heading): the name is the machine's own to say and can be any length
+/// (a macOS runner's is over 60 columns), and what follows it in the line
+/// (its address, the keys, `(y/n)`) is to stay in sight. A longer name
+/// ends in `…`.
+pub(super) const NAME_MOST: usize = 24;
+
+/// A machine's name as a line of text says it: at most `NAME_MOST` columns.
+pub(super) fn name_said(name: &str) -> String {
+    super::truncate(name, NAME_MOST)
+}
+
 /// A question about something of another machine, the machine said after
 /// it: a long name cut at the screen's edge never hides what is asked.
 pub(super) fn asked_on(question: &str, machine: Option<&str>) -> String {
@@ -546,16 +558,29 @@ pub(super) fn asked_on(question: &str, machine: Option<&str>) -> String {
     }
 }
 
+/// The question before a machine's pairing is forgotten (`D` on its block
+/// in the chart): what is asked first, then the machine (`said`).
+pub(super) fn forget_asked(said: &str) -> String {
+    format!("forget this machine? pairing again takes `link add` (y/n)  {said} ")
+}
+
 impl Server {
     /// The machine a session is of, as a person reads it: `DFINE
     /// (100.64.0.3:7681)`, its address alone until it said its name; none
     /// for a session of this machine.
     pub(super) fn machine_said(&self, sid: super::SessionId) -> Option<String> {
         let addr = &self.session(sid)?.remote.as_ref()?.addr;
-        Some(match self.machine_name(addr) {
-            Some(name) => format!("{name} ({addr})"),
-            None => addr.clone(),
-        })
+        Some(self.machine_at(addr))
+    }
+
+    /// The machine paired at `addr`, as a person reads it in a line: its
+    /// name (at most `NAME_MOST` columns) and its address, the address
+    /// alone until it said its name.
+    pub(super) fn machine_at(&self, addr: &str) -> String {
+        match self.machine_name(addr) {
+            Some(name) => format!("{} ({addr})", name_said(name)),
+            None => addr.to_string(),
+        }
     }
 
     /// The other machine a kill is done on (`kill-pane`, `kill-window`,

@@ -180,6 +180,22 @@ impl Harness {
         // number counter) before a test points `sessions-dir` elsewhere: a
         // config that makes a session at start comes before that.
         let fallback = std::env::temp_dir().join(format!("keepane-test-sessions-{}", std::process::id()));
+        // Empty at the start of each run: the event log is under it
+        // (`events_dir`), a server reads back the last two days of it, and a
+        // process number comes round again (2026-11-17: a run found the
+        // events one of 11-16 with its number had left, and two tests read
+        // messages that were not theirs). What older runs left goes too.
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(|| {
+            let _ = std::fs::remove_dir_all(&fallback);
+            for e in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+                let ours = e.file_name().to_string_lossy().starts_with("keepane-test-sessions-");
+                let age = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+                if ours && e.path() != fallback && age.is_some_and(|a| a > Duration::from_secs(3600)) {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        });
         unsafe { std::env::set_var("KEEPANE_SESSIONS_DIR", fallback) };
         // The replay helper is keepane.exe; this test binary is not it.
         unsafe { std::env::set_var("KEEPANE_EXE", env!("CARGO_BIN_EXE_keepane")) };
