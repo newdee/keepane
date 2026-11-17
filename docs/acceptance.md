@@ -6333,3 +6333,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | 代码正确性（失败路径）+ 可复现性 | passthrough 坏了时（C-b c 被 keepane 拿走），新等待先超时并打印 pane，原来的断言仍在后面：测试照样失败、原因更清楚；测试检查的内容不变。Windows 全量连跑 2 次：两次都是 695 / 11 / 171；Linux 679 / 169。 | 干净（3/3），验收通过 |
 
 0.78.0（1.0 的候选版，只有修复）：第 204、205 条。
+
+0.78.0 发布：CI 44139942219（42d6eee）四个 job 通过；tag v0.78.0；Release 44140972611（macOS aarch64 缺 runner 被取消一次，重跑后通过）；manifests fbcb3c6；winget PR #482557。Homebrew formula 44145986311：macOS 测试两次因缺 runner 被取消（0 步），publish 跳过，formula 仍是 0.77.0；不再重跑，下一个版本的 formula 跟最新 release 走。
