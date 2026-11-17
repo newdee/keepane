@@ -94,7 +94,7 @@
 - 跟随：起点是所选 pane 的 `pane_current_path`；换了所选 pane，或这个 pane 换了目录（`cd`），`[0]` 跟着过去；pane 和目录都没变时，手动走到的地方保留。每次刷新（1 秒）重读目录，光标按名字留在原条目上。
 - 右边：光标停在哪个条目，主面板就切到 Detail 显示它（和 `[2]`、`[3]` 一样，离开时回到原来的标签页）：目录列出条目和数目（隐藏的和左边一样按 `.` 的开关）；文件显示带行号的文本，最多读前 256 KiB；前 8 KiB 里有 NUL 字节的当二进制，只写大小；不是 UTF-8 的按替换字符显示；制表符按 4 列展开，控制字符（尤其是会改样式的 ESC）显示成它的图形符号，不执行。在 dashboard 自己的进程里读（它就跑在本机），不经 server；每行以行号开头，所以不会被当成消息信封（Detail 对消息行的排版）。
 - 列表最多 5000 条，其余计数显示；目录读不了的写原因。远程 pane 的目录不支持（dashboard 只看本机的 server）。
-- 图标（2026-11-16，用户说"改吧……默认用全 emoji，可以在 keepane set 里面改成 nerd 字体"）：每个条目前面标出类型，右边的目录列表也一样。`dashboard-icons emoji`（默认）用系统自带的彩色 emoji 字体：📁 文件夹，光标所在、内容正显示在右边的目录是 📂，🐍 Python、🟦 TypeScript、🦀 Rust、🐳 Dockerfile 等，认不出的文件是 📄。`dashboard-icons nerd` 用 Nerd Font 图标（文件夹 U+F07B，打开的 U+F07C），按类型着 16 色之一。
+- 图标（2026-11-16，用户说"改吧……默认用全 emoji，可以在 keepane set 里面改成 nerd 字体"）：每个条目前面标出类型，右边的目录列表、Git 标签页的两层文件树也一样（树里列出了内容的文件夹是打开的，2026-11-17 用户说"Git 标签页的文件树也加上图标"）。`dashboard-icons emoji`（默认）用系统自带的彩色 emoji 字体：📁 文件夹，光标所在、内容正显示在右边的目录是 📂，🐍 Python、🟦 TypeScript、🦀 Rust、🐳 Dockerfile 等，认不出的文件是 📄。`dashboard-icons nerd` 用 Nerd Font 图标（文件夹 U+F07B，打开的 U+F07C），按类型着 16 色之一。
   - 先按整个名字认（`Dockerfile`、`.gitignore`、`package-lock.json`），再按去掉后缀的名字（`README.txt` 是 readme），最后按后缀；大小写不论。
   - 只用不带变体选择符就显示成图的 emoji，每个都占 2 列；Nerd Font 图标占 1 列。所以一行的宽度在哪个终端里都一样，图标的列从文件名里扣，大小仍贴右边。
   - 试过、没采用的：块字符（`▆ ▙`）拼的图标和字母色块。终端的行之间没有缝，整格填色的块上下连成一片，文件夹看起来不像文件夹；用户说"太丑"。Unicode 不收品牌标志，所以 emoji 里没有 TypeScript、JavaScript，用 🟦 🟨 代替。程序看不出终端用什么字体，所以 Nerd Font 是选项，不是默认。

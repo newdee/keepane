@@ -6123,3 +6123,21 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 
 - 遗留：Git 标签页的两层文件树没有图标（不在范围）；C-b v 远程机器的顺序等用户回答。演示图没重拍：dashboard 的图是窄弹窗，没有 `[0]`。- CI（提交 c6994fb，run 43903915615）：web、ubuntu、windows、macOS 四项一次通过。
 - 发布：v0.70.0（第 196 条），tag 在 c6994fb。Release run 43905832415 成功，13 个文件；Homebrew formula run 43907527991 通过，3 个 sha256 与发布文件一致；manifests 已拉取（6ee38cf）；winget 新开 PR #481692。
+## 197. Git 标签页的文件树也标出类型
+
+用户："Git标签页的文件树也加上图标"（第 196 条的遗留）。
+
+- 做法：`gitview::view` 多一个 `icons` 参数，`walk` 给每个条目加 `files::icon`。树里列出了内容的文件夹（第一层、不是 `node_modules` 这类生成目录）是打开的（📂 / U+F07C），没展开的是 📁；`dashboard-icons nerd` 同样生效。只改树，仓库视图里改动文件的列表不动。
+- 定性：新功能，沿用第 196 条的类型表，没有新规则。
+- 会不会引入新 bug：树的行数上限、排序、隐藏项变暗、`(not listed)` 都不变（原测试改了期望值后全过）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 0 | 实现 | `gitview.rs` 传 `icons`；测试期望值加图标，加 nerd 断言。2 个变异（树里从不打开、不加图标）都被抓到。Windows 668 / 11 / 164 | 实现中，不计 |
+| 1 | 静态一致性 | 读 diff，对 README 中英、设计文档。发现：英文 README 的 "(a folder listed open under it 📂)" 意思不清，改成 "(📂 a folder whose entries are listed under it)"；改过的行最宽 75 列 | 有发现，不计 |
+| 2 | 边界输入 | 新测试：隐藏目录、空目录（打开，下面没有东西）、生成目录、没有后缀的文件、超过 200 行的截断。Linux 653 / 161。Windows 全量里 `a_drag_at_the_edge_scrolls_and_is_copied_wherever_let_go` 失败 1 次（和本改动无关，第 114 条的测试，以前修过一次；单跑 3/3 过）：它固定等 700 ms 再断言滚了 3 行，机器忙时滚得慢。改成等屏幕顶上确实滚出 3 行再松开（只改测试），单跑 5/5 过，0.5 s（原来 0.9 s） | 有发现，不计 |
+| 3 | 可复现性 | e2e 全量连跑 4 次加 Windows 全量 1 次，5 次都是 164 全过。Windows 669 / 11 / 164 | 干净 1/3 |
+| 4 | 真二进制 | 临时 server（`-L`、独立目录），dashboard 切到 Git 标签页：📂 src/、其下 🦀 main.rs、📁 node_modules/ (not listed)、📝 README.md；`set -g dashboard-icons nerd` 后变 U+F07C、U+E7A8。7 项全过，连跑 3 次 fails=0。（第一次 7 项全败是检查脚本的问题：它等标题里的 "not in a git repository"，临时目录路径太长，这句被面板宽度截掉；改成等树的内容。）Linux 653 / 161 | 干净 2/3 |
+| 5 | 机制存活 | 3 个变异（从不打开、不加图标、第二层固定用 emoji）全被抓到，还原后重编。Windows 669 / 11 / 164 | 干净（3/3），验收通过 |
+
+- 另：2026-11-17 02:01 用户的 Windows server 退出，查明是 Mac 经 link 发来 `kill-pane`（rex-rsi-check 的最后一个 pane）和 `kill-session -t $8`（Dfine），证据在事件日志；用户在 Mac 的 `C-b w` 里看到 Windows 的 session 列在本机组下，觉得乱而关掉。由此定下的改动（远程 session 只按机器分组显示、不再有"复制"的说法、connect / disconnect / delete、远程 kill 不移走存档、退出前写完日志）另立条目。

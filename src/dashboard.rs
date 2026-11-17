@@ -854,7 +854,7 @@ impl Board {
         }
         let row = self.chosen_row()?;
         let width = self.layout().main.map_or(80, |r| r.inner_w());
-        Some(gitview::view(&row.path, &row.command, git, width))
+        Some(gitview::view(&row.path, &row.command, git, width, self.files.icons))
     }
 
     pub fn resize(&mut self, cols: u16, height: u16) {

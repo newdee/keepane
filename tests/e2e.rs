@@ -990,8 +990,10 @@ async fn a_drag_at_the_edge_scrolls_and_is_copied_wherever_let_go() {
     c.send(ClientMsg::Mouse(m(from, 1, 0))).await;
     c.send(ClientMsg::Mouse(m(from - 1, 1, 1))).await;
     // Up to the top row, and held there: it scrolls a line every 80 ms.
+    // Held until the screen shows it has (a busy machine ticks later than
+    // a fixed wait allows).
     c.send(ClientMsg::Mouse(m(0, 1, 1))).await;
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    c.wait_for("scrolled 3 lines up", |s| first(s).is_some_and(|n| n + 3 <= top)).await;
     c.send(ClientMsg::Mouse(m(0, 0, 0))).await;
     let copied = |want: String| {
         let h = &h;

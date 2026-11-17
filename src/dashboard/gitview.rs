@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use super::files::{Entry, Icons, icon};
 use super::paint;
 
 /// Changed files listed before `+N more`.
@@ -20,8 +21,9 @@ const TREE: usize = 200;
 const MADE: &[&str] = &["node_modules", "target", ".git", ".venv", "venv", "__pycache__", "dist", "build"];
 
 /// The tab's lines for a pane in `dir` running `command`, for a panel `width`
-/// columns wide; `git` the program to ask (none: no git on this machine).
-pub fn view(dir: &str, command: &str, git: Option<&Path>, width: usize) -> Vec<String> {
+/// columns wide; `git` the program to ask (none: no git on this machine);
+/// a tree's entries marked with `icons`, as `[0]`'s.
+pub fn view(dir: &str, command: &str, git: Option<&Path>, width: usize, icons: Icons) -> Vec<String> {
     let dim = |s: &str| paint("2", s);
     if let Some(host) = command.strip_prefix("ssh ") {
         return vec![dim(&format!("this pane is on {host}: its files and repository are there, not on this machine"))];
@@ -37,13 +39,13 @@ pub fn view(dir: &str, command: &str, git: Option<&Path>, width: usize) -> Vec<S
                 dim("no git on this machine (git-command, or git on the PATH): its branch only"),
             ];
             out.push(String::new());
-            out.extend(tree(dir));
+            out.extend(tree(dir, icons));
             out
         }
         (None, _) => {
             let mut out = vec![format!("{}  {}", paint("36", dir), dim("not in a git repository: its files"))];
             out.push(String::new());
-            out.extend(tree(dir));
+            out.extend(tree(dir, icons));
             out
         }
     }
@@ -174,11 +176,12 @@ fn porcelain(out: &str) -> Vec<(String, String)> {
 }
 
 /// The directory's files two levels down: folders first, then files, each
-/// by name; inside what tools make again nothing is listed; at most `TREE`
-/// lines.
-fn tree(dir: &str) -> Vec<String> {
+/// by name, each marked by its kind (`icon`: a folder whose insides are
+/// listed under it open); inside what tools make again nothing is listed;
+/// at most `TREE` lines.
+fn tree(dir: &str, icons: Icons) -> Vec<String> {
     let mut out = Vec::new();
-    walk(Path::new(dir), "", 0, &mut out);
+    walk(Path::new(dir), "", 0, icons, &mut out);
     if out.is_empty() {
         out.push(paint("2", "(empty)"));
     }
@@ -190,7 +193,7 @@ fn tree(dir: &str) -> Vec<String> {
     out
 }
 
-fn walk(dir: &Path, indent: &str, depth: usize, out: &mut Vec<String>) {
+fn walk(dir: &Path, indent: &str, depth: usize, icons: Icons, out: &mut Vec<String>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let mut entries: Vec<(bool, String, u64, std::path::PathBuf)> = rd
         .flatten()
@@ -219,6 +222,8 @@ fn walk(dir: &Path, indent: &str, depth: usize, out: &mut Vec<String>) {
             name.clone()
         };
         let made = is_dir && MADE.contains(&name.as_str());
+        let opened = is_dir && !made && depth < 1;
+        let mark = icon(icons, &Entry { name: name.clone(), dir: is_dir, size }, opened);
         let note = if made {
             paint("2", "  (not listed)")
         } else if !is_dir {
@@ -226,10 +231,10 @@ fn walk(dir: &Path, indent: &str, depth: usize, out: &mut Vec<String>) {
         } else {
             String::new()
         };
-        out.push(format!("{}{}{shown}{note}", paint("2", indent), paint("2", branch)));
-        if is_dir && !made && depth < 1 {
+        out.push(format!("{}{}{mark}{shown}{note}", paint("2", indent), paint("2", branch)));
+        if opened {
             let deeper = format!("{indent}{}", if last { "   " } else { "│  " });
-            walk(&path, &deeper, depth + 1, out);
+            walk(&path, &deeper, depth + 1, icons, out);
         }
     }
 }
@@ -261,7 +266,8 @@ mod tests {
     }
 
     /// Not a repository: the files two levels down, folders first, inside
-    /// what tools make nothing; each file's size.
+    /// what tools make nothing; each file's size; each entry marked by its
+    /// kind, a folder whose insides are listed under it open.
     #[test]
     fn a_folder_that_is_no_repository_shows_its_tree() {
         let d = temp("tree");
@@ -270,30 +276,61 @@ mod tests {
         std::fs::write(d.join("README.md"), "hello").unwrap();
         std::fs::write(d.join("src").join("main.rs"), vec![b'x'; 2000]).unwrap();
         std::fs::write(d.join(".env"), "a").unwrap();
-        let got = plain(&view(&d.to_string_lossy(), "pwsh", crate::git::command("").as_deref(), 60));
+        let git = crate::git::command("");
+        let got = plain(&view(&d.to_string_lossy(), "pwsh", git.as_deref(), 60, Icons::Emoji));
         assert!(got[0].contains("not in a git repository"), "{got:#?}");
         let body: Vec<&str> = got[2..].iter().map(String::as_str).collect();
         assert_eq!(
             body,
             [
-                "├─ node_modules/  (not listed)",
-                "├─ src/",
-                "│  ├─ deep/",
-                "│  └─ main.rs  2K",
-                "├─ .env  1B",
-                "└─ README.md  5B",
+                "├─ 📁 node_modules/  (not listed)",
+                "├─ 📂 src/",
+                "│  ├─ 📁 deep/",
+                "│  └─ 🦀 main.rs  2K",
+                "├─ 🔧 .env  1B",
+                "└─ 📝 README.md  5B",
             ],
             "two levels, folders first"
         );
+        // A Nerd Font's icons, with `dashboard-icons nerd`.
+        let nerd = plain(&view(&d.to_string_lossy(), "pwsh", git.as_deref(), 60, Icons::Nerd));
+        assert_eq!((nerd[3].as_str(), nerd[5].as_str()), ("├─ \u{f07c} src/", "│  └─ \u{e7a8} main.rs  2K"));
         let empty = temp("empty");
-        assert_eq!(plain(&view(&empty.to_string_lossy(), "pwsh", None, 60))[2], "(empty)");
-        assert!(plain(&view("", "pwsh", None, 60))[0].contains("no directory"));
+        assert_eq!(plain(&view(&empty.to_string_lossy(), "pwsh", None, 60, Icons::Emoji))[2], "(empty)");
+        assert!(plain(&view("", "pwsh", None, 60, Icons::Emoji))[0].contains("no directory"));
         assert!(
-            plain(&view(&d.to_string_lossy(), "ssh box", None, 60))[0].contains("on box"),
+            plain(&view(&d.to_string_lossy(), "ssh box", None, 60, Icons::Emoji))[0].contains("on box"),
             "an ssh pane's are there"
         );
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// Odd entries in a tree: a hidden folder and an empty one are listed
+    /// (open, the empty one with nothing under it), what tools make is
+    /// not; a file with no extension is a plain file; past `TREE` lines
+    /// the rest is counted, marks or not.
+    #[test]
+    fn a_tree_marks_odd_entries_and_still_stops_at_its_limit() {
+        let d = temp("odd");
+        for sub in [".github", "empty", "target"] {
+            std::fs::create_dir_all(d.join(sub)).unwrap();
+        }
+        std::fs::write(d.join(".github").join("ci.yml"), "x").unwrap();
+        std::fs::write(d.join("run"), "x").unwrap();
+        let body = plain(&tree(&d.to_string_lossy(), Icons::Emoji));
+        assert_eq!(
+            body,
+            ["├─ 📂 .github/", "│  └─ 🔧 ci.yml  1B", "├─ 📂 empty/", "├─ 📁 target/  (not listed)", "└─ 📄 run  1B"],
+        );
+        for i in 0..TREE + 30 {
+            std::fs::write(d.join(format!("f{i:03}.py")), "").unwrap();
+        }
+        let long = plain(&tree(&d.to_string_lossy(), Icons::Nerd));
+        assert_eq!(long.len(), TREE + 1, "the limit, then the count");
+        assert!(long[TREE].starts_with("… ") && long[TREE].ends_with(" more"), "{:?}", long[TREE]);
+        assert!(long[TREE - 1].contains("\u{e73c} f"), "{:?}", long[TREE - 1]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// A repository: its branch, what is changed (counts, then each file),
@@ -317,7 +354,7 @@ mod tests {
             assert!(ok, "git {args:?}");
         };
         g(&["init", "-q", "-b", "main"]);
-        let view_now = || plain(&view(&d.to_string_lossy(), "pwsh", Some(&git), 60));
+        let view_now = || plain(&view(&d.to_string_lossy(), "pwsh", Some(&git), 60, Icons::Emoji));
         assert!(view_now().iter().any(|l| l.contains("no commit yet")), "{:#?}", view_now());
         std::fs::write(d.join("a.txt"), "one\n").unwrap();
         g(&["add", "a.txt"]);

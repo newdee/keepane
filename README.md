@@ -193,10 +193,11 @@ size), and `l` on a file scrolls it; `.` shows hidden entries and `-`
 goes back to the pane's directory, which `[0]` follows when another pane
 is chosen or this one changes directory. Each entry is marked by its kind
 with an emoji: 📁 a folder (📂 the one whose entries are on the right),
-🐍 Python, 🦀 Rust, 📄 a file of no known kind; `set -g dashboard-icons
-nerd` draws a Nerd Font's icons instead, for a terminal drawn in one.
-Narrower, `0` puts `[0]` in place of the left column while it is focused.
-(Up to 0.60 the right side was `[0]`; it is `[4]` now.)
+🐍 Python, 🦀 Rust, 📄 a file of no known kind, and so is each entry of
+the Git tab's tree (📂 a folder whose entries are listed under it); `set -g
+dashboard-icons nerd` draws a Nerd Font's icons instead, for a terminal
+drawn in one. Narrower, `0` puts `[0]` in place of the left column while
+it is focused. (Up to 0.60 the right side was `[0]`; it is `[4]` now.)
 
 It also acts. On a pane: `s` sends it a message, `r` renames it, `m`
 changes its work mode, `R` marks it ready (unsticks it), `o` goes there
