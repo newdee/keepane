@@ -160,6 +160,11 @@ impl Server {
             .unwrap_or_default();
         self.remote_views.retain(|addr, _| peers.iter().any(|(a, _)| a == addr));
         for (addr, key) in peers {
+            // Disconnected here: asked nothing (the chart says so).
+            if self.link_off(&key) {
+                self.remote_views.remove(&addr);
+                continue;
+            }
             let v = self.remote_views.entry(addr.clone()).or_default();
             if v.pending || (!now && v.asked.is_some_and(|t| t.elapsed() < ASK_EVERY)) {
                 continue;
@@ -182,6 +187,9 @@ impl Server {
         let peers: Vec<(String, String)> = link.peers.iter().map(|p| (p.addr.clone(), p.key.clone())).collect();
         self.machine_names.retain(|addr, _| peers.iter().any(|(a, _)| a == addr));
         for (addr, key) in peers {
+            if self.link_off(&key) {
+                continue;
+            }
             let n = self.machine_names.entry(addr.clone()).or_default();
             if n.name.is_some() || n.pending || n.asked.is_some_and(|t| t.elapsed() < NAME_AGAIN) {
                 continue;

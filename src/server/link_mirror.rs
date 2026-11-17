@@ -144,8 +144,10 @@ impl Server {
         if self.link.is_none() && !self.link_dir().join("authorized").exists() {
             return;
         }
+        // Those connected: one disconnected here (`link disconnect`) is as
+        // one not paired, until connected again.
         let peers: Vec<(String, String)> = match self.link() {
-            Ok(l) => l.peers.iter().map(|p| (p.key.clone(), p.addr.clone())).collect(),
+            Ok(l) => l.peers.iter().filter(|p| !p.off).map(|p| (p.key.clone(), p.addr.clone())).collect(),
             Err(_) => return,
         };
         let gone: Vec<String> =
@@ -212,7 +214,7 @@ impl Server {
     /// Machine `key` no longer copied (`why`: after its address): its
     /// sessions go, and whoever waits for a reply from it is told. Its
     /// address back, when it was copied.
-    fn mirror_remove(&mut self, key: &str, why: &str) -> Option<String> {
+    pub(super) fn mirror_remove(&mut self, key: &str, why: &str) -> Option<String> {
         let mut m = self.mirrors.remove(key)?;
         let why = format!("{} {why}", m.addr);
         self.mirror_unanswered(std::mem::take(&mut m.asks), &why);
@@ -1142,7 +1144,8 @@ mod tests {
         let local = s.mirror_pane_mut(KEY, 1).unwrap().id;
         // A machine with all of this one reaches none of its panes, sees
         // none listed, attaches to none of its sessions.
-        let peer = crate::link::Peer { key: "c".into(), addr: "10.0.0.3:7681".into(), full: true, lan: true };
+        let peer =
+            crate::link::Peer { key: "c".into(), addr: "10.0.0.3:7681".into(), full: true, lan: true, off: false };
         assert!(!s.may_reach(&peer, local));
         assert!(s.reachable_panes(&peer).is_empty());
         assert_eq!(s.session_to_attach(None), Err("no sessions".into()), "the one used last is not this machine's");
@@ -1184,6 +1187,116 @@ mod tests {
         assert_eq!(w.rects, before);
         w.panes[0].resize(100, 40);
         assert_eq!((w.panes[0].cols, w.panes[0].rows), (20, 5));
+    }
+
+    /// A session is of one machine and is listed under that machine alone
+    /// (docs/design/link.md, decision 20): not among this machine's in the
+    /// pickers, not in `list-sessions`; its machine is named before a kill
+    /// done there; a machine disconnected here says so.
+    #[test]
+    fn another_machines_session_is_under_its_machine_alone() {
+        use crate::command::Cmd;
+        use crate::server::{ChooserItem, ChooserKind, Outcome, TreeStyle};
+        let (mut s, _typed) = copying();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "one", 3)])).unwrap();
+        let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
+        let wid = s.session(sid).unwrap().windows[0].id;
+        // The list and the tree have no row of machines: a heading a
+        // machine, its sessions under it by their names there.
+        for style in [TreeStyle::List, TreeStyle::Tree] {
+            let (items, lines) = s.chooser_lines(&ChooserKind::Tree { expand: true, style }, &[]).unwrap();
+            let at = items.iter().position(|i| *i == ChooserItem::Tree(sid, None)).unwrap();
+            assert_eq!(items[at - 1], ChooserItem::Separator, "a heading before it");
+            assert_eq!(lines[at - 1], "10.0.0.2:7681", "its address until it said its name");
+            assert!(lines[at].contains("work") && !lines[at].contains('@'), "{lines:?}");
+            assert_eq!(items[at + 1], ChooserItem::Tree(sid, Some(wid)));
+        }
+        // `list-sessions` and a session named by nothing: this machine's.
+        assert!(matches!(s.exec(Cmd::ListSessions, None), Outcome::Error(e) if e == "no sessions"));
+        assert_eq!(s.resolve_session(None, None), Err("no sessions".into()));
+        // Paired, the chart has a row of machines: this one with its own
+        // sessions (none), then that machine with its session under it.
+        let dir = std::env::temp_dir().join(format!("keepane-under-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let peer =
+            crate::link::Peer { key: KEY.into(), addr: "10.0.0.2:7681".into(), full: false, lan: false, off: false };
+        s.link = Some(crate::server::link_state::LinkHost {
+            dir: dir.clone(),
+            id: crate::link::Identity::make(&dir.join("key")).unwrap(),
+            peers: vec![peer],
+            nonces: Default::default(),
+            seen: Default::default(),
+            origin: Default::default(),
+            refused: Default::default(),
+            sent: Default::default(),
+            made: Default::default(),
+            incoming: Default::default(),
+        });
+        let chart = ChooserKind::Tree { expand: true, style: TreeStyle::Chart };
+        let (items, lines) = s.chooser_lines(&chart, &[]).unwrap();
+        assert_eq!(
+            items[..5],
+            [
+                ChooserItem::Separator,
+                ChooserItem::Host(None),
+                ChooserItem::Host(Some(0)),
+                ChooserItem::Tree(sid, None),
+                ChooserItem::Tree(sid, Some(wid)),
+            ]
+        );
+        assert!(lines[1].ends_with("this machine · 0 sessions"), "{}", lines[1]);
+        assert_eq!(lines[2], "10.0.0.2:7681\n1 session");
+        assert!(lines[3].starts_with("work\n"), "{}", lines[3]);
+        // The sessions alone (`C-b s`): the machines still, since one of
+        // another machine is here; no windows.
+        let (items, _) = s.chooser_lines(&ChooserKind::Tree { expand: false, style: TreeStyle::Chart }, &[]).unwrap();
+        assert_eq!(
+            items,
+            [ChooserItem::Separator, ChooserItem::Host(None), ChooserItem::Host(Some(0)), ChooserItem::Tree(sid, None)]
+        );
+        // A kill of it is done there: the question names the machine.
+        let there = |cmd: Cmd| s.kill_is_on(&cmd, None);
+        let target = Some(Target::parse("10.0.0.2:7681/work"));
+        assert_eq!(
+            there(Cmd::KillSession { target: target.clone(), all_but: false }).as_deref(),
+            Some("10.0.0.2:7681")
+        );
+        assert_eq!(there(Cmd::KillWindow { target: target.clone(), all_but: false }).as_deref(), Some("10.0.0.2:7681"));
+        assert_eq!(there(Cmd::KillPane { target: target.clone(), all_but: false }).as_deref(), Some("10.0.0.2:7681"));
+        assert_eq!(there(Cmd::RenameSession { target, name: "x".into() }), None, "not a kill: not asked");
+        // Disconnected here: the chart says so, and lists nothing under it.
+        assert!(matches!(
+            s.exec(Cmd::LinkConnect { addr: "10.0.0.2:7681".into(), off: true }, None),
+            Outcome::Text(t) if t.contains("still paired")
+        ));
+        assert!(s.link_off(KEY) && s.mirror_session("10.0.0.2:7681", "work").is_none(), "its sessions go");
+        let (items, lines) = s.chooser_lines(&chart, &[]).unwrap();
+        assert_eq!(items, [ChooserItem::Separator, ChooserItem::Host(None), ChooserItem::Host(Some(0))]);
+        assert_eq!(lines[2], "10.0.0.2:7681\ndisconnected");
+        // (The fixture's key is no real one, so the table is read as text.)
+        let table = || std::fs::read_to_string(dir.join("authorized")).unwrap();
+        assert!(table().contains("k 10.0.0.2:7681 off\n"), "kept in the table: {}", table());
+        // Nothing is asked of it, by hand or by itself; connected again.
+        assert!(matches!(
+            s.exec(Cmd::LinkPanes { addr: "10.0.0.2:7681".into() }, None),
+            Outcome::Error(e) if e.contains("is disconnected here")
+        ));
+        // (Not followed while disconnected: checked end to end, since this
+        // fixture's key is no real one and could not be followed anyway.)
+        assert!(matches!(
+            s.exec(Cmd::LinkConnect { addr: "10.0.0.2:7681".into(), off: true }, None),
+            Outcome::Text(t) if t.contains("already")
+        ));
+        assert!(matches!(
+            s.exec(Cmd::LinkConnect { addr: "10.0.0.2:7681".into(), off: false }, None),
+            Outcome::Text(t) if t == "connected to 10.0.0.2:7681"
+        ));
+        assert!(!s.link_off(KEY) && table().contains("k 10.0.0.2:7681\n"), "{}", table());
+        assert!(matches!(
+            s.exec(Cmd::LinkConnect { addr: "10.9.9.9:1".into(), off: true }, None),
+            Outcome::Error(e) if e.contains("is not paired")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

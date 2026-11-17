@@ -162,7 +162,7 @@ processes of the same user from each other.
 
 `C-b v` (a popup) or `keepane dashboard` (any terminal) lays everything out in
 panels, lazygit style. On the left: `[1]` every pane, grouped by session
-(and first by machine while sessions of another machine are copied here:
+(and first by machine while sessions of another machine are here:
 each machine's name and address over its sessions), with
 its work mode, whether it is free, its inbox, how long it has been quiet and
 its program (or its agent's cost and context, the total in the title), under
@@ -203,8 +203,11 @@ It also acts. On a pane: `s` sends it a message, `r` renames it, `m`
 changes its work mode, `R` marks it ready (unsticks it), `o` goes there
 (and closes the popup), `x` closes it. In the inbox: `d` deletes a queued
 message (`u` brings it back), `K`/`J` move it, `t` puts it first, Enter
-moves into it to scroll. Closing a pane, deleting a message and switching a pane
-to `shell` (where what it gets is run) ask first.
+moves into it to scroll. Closing a pane, deleting a message and switching
+a pane to `shell` (where what it gets is run) ask first. `L` lists the
+paired machines on the bottom line: `j`/`k` pick one, then `c` connects
+it, `x` disconnects it and `D` forgets its pairing (`keepane link`,
+below; connecting and forgetting ask first).
 
 `>` turns to page 2 (`<` back; the bottom line says `page 1/2` or
 `page 2/2`, and keeps it when too narrow for every key): `[0]` and the
@@ -547,7 +550,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `d` | detach |
 | `?` | list key bindings. This and other output of more lines than the window (`:show-messages`, `:show-prompt-history`) opens at its end, as tmux's view mode does, and scrolls: ↑ ↓ or `j` `k`, PgUp PgDn, `g` `G`, the wheel; `/` `?` search it (the hit in inverse), `n` `N` go on; any other key closes it |
 | (wait) | after the prefix, a key not pressed within half a second brings up a panel of what the keys do, by group (panes, windows, sessions, tools, and keys you bound yourself); the key then works as ever (`prefix-hint`, `prefix-hint-delay`) |
-| `s` / `w` | pick a session / a window, `w` down to every pane. By default a chart: `keepane` centred on top, the sessions on the row under it, then the windows of the session you are on, then that window's panes, each row spread across (a row wider than the screen scrolls, `‹` `›` at its ends), each an open box in its kind's colour (a session blue, a window purple, a pane green, the selected one yellow; its name in the text's colour, the rest faint) with what it is in its top border (`host`, `session`, `window`, `pane`); `h` `l` or ← → move along a row and the rows under it follow, `k` or ↑ goes to the parent, `j` or ↓ to the current window or the active pane. `a` opens every node at once, each parent over its own; when that does not fit the boxes get narrower, then become one line each, then just their numbers, and what is still too wide scrolls to the selection (`a` again: only the branch). Paired with other machines (`keepane link`, below), a row of machines comes under `keepane`, this one first, each other machine's block its name (once it said it) over its address: ← → on it shows another machine's sessions, windows and panes (asked of it every 5 seconds while the chart is open; `offline` when it does not answer), and Enter on one of its panes opens a window watching it live (`keepane link watch`, below); only what that machine shares with this one is there (`link share`, below). `s` shares a session, window or pane of this machine with the paired machine (a menu asks which when there are several), or takes it back; shared ones read `shared`. `v` turns it into a tree of blocks, one a line (↑ ↓ the parent and the first child, ← → along the same level, `-` / `+` fold and unfold a session or a window), then the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold), then the chart again. In the tree and the list `j` `k` go line by line; in all three `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `D` (or Delete) kills them and also forgets a session's save, so that `resume` does not bring it back. On a session both ask first (y/n). `set -g choose-tree-style tree` (or `list`) opens it that way |
+| `s` / `w` | pick a session / a window, `w` down to every pane. By default a chart: `keepane` centred on top, the sessions on the row under it, then the windows of the session you are on, then that window's panes, each row spread across (a row wider than the screen scrolls, `‹` `›` at its ends), each an open box in its kind's colour (a session blue, a window purple, a pane green, the selected one yellow; its name in the text's colour, the rest faint) with what it is in its top border (`host`, `session`, `window`, `pane`); `h` `l` or ← → move along a row and the rows under it follow, `k` or ↑ goes to the parent, `j` or ↓ to the current window or the active pane. `a` opens every node at once, each parent over its own; when that does not fit the boxes get narrower, then become one line each, then just their numbers, and what is still too wide scrolls to the selection (`a` again: only the branch). Paired with other machines (`keepane link`, below), a row of machines comes under `keepane`, this one first, each other machine's block its name (once it said it) over its address. A session is under the machine it is of and nowhere else: this machine's block has this machine's sessions only. Under a machine that gave this one `--full` are its sessions, windows and panes, and Enter on one goes into it; under one that only shares (`link share`, below) is what it shares (asked of it every 5 seconds while the chart is open; `offline` when it does not answer), and Enter on one of its panes opens a window watching it live (`keepane link watch`, below). On a machine's block, `c` connects it, `x` disconnects it (still paired; it reads `disconnected`) and `D` forgets the pairing (asked first). `x` and `D` on a session, window or pane of another machine ask first and say which machine it is killed on. `s` shares a session, window or pane of this machine with the paired machine (a menu asks which when there are several), or takes it back; shared ones read `shared`. `v` turns it into a tree of blocks, one a line (↑ ↓ the parent and the first child, ← → along the same level, `-` / `+` fold and unfold a session or a window), then the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold), then the chart again. In the tree and the list `j` `k` go line by line; in all three `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `D` (or Delete) kills them and also forgets a session's save, so that `resume` does not bring it back. On a session both ask first (y/n). `set -g choose-tree-style tree` (or `list`) opens it that way |
 | `(` / `)` | switch the client to the previous / next session |
 | `D` | pick a client from a list and detach it |
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
@@ -1631,9 +1634,9 @@ and panes themselves, so a name used again by something new is not shared;
 they go into the saves and come back with `resume`.
 
 `--full` is all of it: every pane, typed into too (`keepane link watch`),
-every session, attached to (`keepane link attach`) and shown there as
-its own (`keepane link mirror`), its messages run in `shell` panes, and
-it may start panes and send commits and projects here.
+every session, worked in from there (under this machine's name in its
+`C-b w`), its messages run in `shell` panes, and it may start panes and
+send commits and projects here.
 Plain HTTP can be read
 by anyone on the network, so `--full` is taken only over Tailscale (or from
 this machine); from a LAN address the machine has only what is shared, and
@@ -1649,7 +1652,8 @@ machine that had all five has `--full` now, one that had some has
 nothing, and the status line names it once.
 
 ```powershell
-keepane link remove 100.64.0.3:7681            # unpair, on both; what was shared goes too
+keepane link disconnect 100.64.0.3:7681        # stop talking with it, both ways; still paired (link connect: again)
+keepane link remove 100.64.0.3:7681            # unpair, on both; what was shared goes too (link add pairs again)
 keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there (--full too)
 keepane link rekey                             # a new key: every pairing has to be made again
 ```
@@ -1662,34 +1666,54 @@ keepane trace-message 12 -w 60                 # a message sent there: what beca
 keepane link capture -S 100 100.64.0.3:7681/%worker   # what a pane there shows (shared with this machine)
 keepane link watch 100.64.0.3:7681/%worker            # that pane, live, in this terminal
 keepane link attach 100.64.0.3:7681 work              # that session, as if attached there (--full)
-keepane link mirror 100.64.0.3:7681                   # copy it again now (--stop: no copy)
-keepane show-mirror 100.64.0.3:7681                   # what the copy holds (-t %3: a pane's screen)
+keepane link mirror 100.64.0.3:7681                   # follow its sessions again now (--stop: not until asked)
+keepane show-mirror 100.64.0.3:7681                   # what is kept of it here (-t %3: a pane's screen)
+keepane link list -J                                  # the paired machines as JSON, none of them asked
 ```
 
-Every session of a machine that gave this one `--full` is a session here
-too, named after it: `work@100.64.0.3:7681`. Each paired machine is
-copied by itself over an encrypted connection; one that has not given
-`--full` says no, and is asked again once a minute. Such a session is
-attached to, switched to, looked at and typed into as any other, with
-this machine's keys, theme and copy mode; what is typed goes to the pane
-there (while the connection is down it is let go, and `show-mirror`
-counts it). `100.64.0.3:7681/work` names it in a command,
-`100.64.0.3:7681/%3` its pane 3, and `#{pane_machine}` is
-`100.64.0.3:7681` in it, `#{pane_host}` that machine's name. Its panes
-keep their names there (`#{pane_name}`, `C-b v`), but `%name` here is
-always this machine's pane. A split, a kill, a resize, a zoom or a rename
-of it (by its keys, the mouse on a border, or a command) is done there,
-by that machine, and shows here when done; a split or a new window puts
-the eye here on the new pane, and leaves that machine's own terminals
-looking where they were (keepane 0.69 or later there). A zoom zooms the
-pane it is asked for, there too. The pane looked at here is chosen here:
-what that machine looks at, a zoom moved there included, changes it only
-when it is gone. A pane never moves between machines, and piping,
-recording or saving it from here is refused. Looking at it never resizes it there. A
-terminal smaller than the session shows part of it, panned as for any
-session too big for it. That machine needs keepane 0.63 or later to take
-these. It is not saved here, and the machines
-that copy this one do not see it.
+The sessions of a machine that gave this one `--full` are worked in from
+here. They are that machine's, and are shown under it and nowhere else:
+in the chart of `C-b w` (and `C-b s`) each paired machine is a block with
+its sessions below it; the tree and the list give each machine a heading;
+`C-b v` groups the panes by machine. `list-sessions` lists this machine's
+alone, and `C-b )` `(` go round the sessions of the machine the current
+one is of. Enter on one goes into it: it is looked at and typed into as
+any other, with this machine's keys, theme and copy mode; what is typed
+goes to the pane there (while the connection is down it is let go, and
+`show-mirror` counts it). Its status line reads `work@100.64.0.3:7681`;
+`100.64.0.3:7681/work` names it in a command, `100.64.0.3:7681/%3` its
+pane 3, and `#{pane_machine}` is `100.64.0.3:7681` in it, `#{pane_host}`
+that machine's name. Its panes keep their names there (`#{pane_name}`,
+`C-b v`), but `%name` here is always this machine's pane.
+
+A split, a kill, a resize, a zoom or a rename of it (by its keys, the
+mouse on a border, or a command) is done there, by that machine, and
+shows here when done. A kill by a key asks first and says where: `on
+DFINE (100.64.0.3:7681): kill-pane 1? (y/n)`. A session killed from
+another machine keeps its save there, so that machine's next start
+brings it back; one killed there by hand stays away, as always. A split
+or a new window puts the eye here on the new pane, and leaves that
+machine's own terminals looking where they were (keepane 0.69 or later
+there). A zoom zooms the pane it is asked for, there too. The pane looked
+at here is chosen here: what that machine looks at, a zoom moved there
+included, changes it only when it is gone. A pane never moves between
+machines, and piping, recording or saving it from here is refused.
+Looking at it never resizes it there. A terminal smaller than the session
+shows part of it, panned as for any session too big for it. Each paired
+machine is followed by itself over an encrypted connection; one that has
+not given `--full` says no, and is asked again once a minute. That
+machine needs keepane 0.63 or later. Its sessions are not saved here,
+and a third machine does not see them through this one. (Up to 0.71
+they were listed among this machine's own sessions, as copies.)
+
+A paired machine can be set aside without unpairing it. `keepane link
+disconnect 100.64.0.3:7681` stops this machine talking with it, both
+ways: its sessions go from here, nothing is asked of it or sent to it,
+and what it asks is refused, so it can do nothing here either. It stays
+paired, with what it was given, across restarts; `keepane link connect`
+(from outside a pane) talks with it again. In the chart of `C-b w`, on a
+machine's block, `c` connects, `x` disconnects and `D` forgets the
+pairing (asked first); in `C-b v`, `L` lists the machines for the same.
 
 A pane of another machine opens live here: Enter on it in the chart of
 `C-b w` opens a window watching it (Enter again goes to that window while
@@ -1705,10 +1729,9 @@ What is typed goes to that pane only when that machine gave this one
 all of them. A pane that is only shared is watched read-only, and `q`
 closes it.
 
-A machine that gave this one `--full` can be used as if you sat at it:
-Enter on one of its sessions in the chart (or on the machine, for the
-session it used last) opens a window attached to it there, and `keepane
-link attach` does the same in any terminal. That machine makes a client
+A machine that gave this one `--full` can also be used as if you sat at
+it: `keepane link attach 100.64.0.3:7681 [session]` opens, in any
+terminal, a session attached there. That machine makes a client
 of this window's size, as `keepane attach` there would, and draws it; the
 status line, the prefix, the bindings, copy mode and `C-b :` are all that
 machine's, so `C-b c` opens a window there. Every key goes there, the

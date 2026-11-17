@@ -8009,10 +8009,12 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     b.cli(&["send-keys", "-t", "wb:0.0", "echo mirror-one", "Enter"]).await;
     same("mirror-one").await;
 
-    // Its session is a session here, named with the machine; `host:port/`
-    // names it and its panes (by their ids there), a bare name does not.
+    // Its session is worked in from here, named with the machine, but it
+    // is that machine's: `list-sessions` lists this machine's alone.
+    // `host:port/` names it and its panes (by their ids there), a bare
+    // name does not.
     let (_, sessions, _) = a.cli(&["list-sessions"]).await;
-    assert!(sessions.contains(&format!("wb@{addr_b}:")) && sessions.contains("wa:"), "{sessions}");
+    assert!(sessions.contains("wa:") && !sessions.contains("wb"), "{sessions}");
     let size = "#{window_width}x#{window_height}";
     let real = b.cli(&["display-message", "-p", "-t", "wb", size]).await.1;
     let copied =
@@ -8206,6 +8208,199 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
     assert_eq!(a.cli(&["show-mirror"]).await.1.trim(), "", "stopped stays stopped");
     let (code, _, err) = a.cli(&["show-mirror", "-t", "%1", "127.0.0.9:1"]).await;
     assert!(code != 0 && err.contains("not paired"), "{err}");
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
+}
+
+/// A session is of one machine and is under that machine alone
+/// (docs/design/link.md, decision 20): another machine's sessions are not
+/// in this one's `list-sessions`, and in the picker they are under their
+/// machine's heading; the next session (`C-b )`) is the next of the machine
+/// the current one is of; a kill of one says which machine it is done on,
+/// and its save stays there to come back; disconnected, the two machines
+/// ask and answer each other nothing, still paired, until connected again.
+#[tokio::test(flavor = "multi_thread")]
+async fn another_machines_sessions_are_under_it_and_it_is_disconnected_and_connected() {
+    let _dir = link_test_dir();
+    let a = Harness::start("unda").await;
+    let b = Harness::start("undb").await;
+    let mut c = a.connect().await;
+    c.attach(&["new", "-s", "wa"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    b.cli(&["new", "-d", "-s", "second"]).await;
+    b.wait_capture("wb:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    assert_eq!(b.cli(&["link-allow", &addr_a, "--full"]).await.0, 0);
+    a.cli(&["link-mirror", &addr_b]).await;
+    let there = |name: &str| format!("{addr_b}/{name}");
+    a.wait_for_cli("its sessions here", &["has-session", "-t", &there("second")], |code, _| code == 0).await;
+
+    // This machine's list is this machine's.
+    let (_, sessions, _) = a.cli(&["list-sessions"]).await;
+    assert!(sessions.contains("wa:") && !sessions.contains("wb") && !sessions.contains("second"), "{sessions}");
+    // The picker (the plain list): this machine's session, then that
+    // machine's heading with its sessions under it, by their names there.
+    a.cli(&["set", "-g", "choose-tree-style", "list"]).await;
+    c.prefix('s').await;
+    let rows = |s: &vt100::Screen| s.rows(0, COLS).map(|r| r.trim_end().to_string()).collect::<Vec<_>>();
+    c.wait_for("the sessions by machine", |s| {
+        let r = rows(s);
+        let at = |what: &str| r.iter().position(|l| l.contains(what));
+        match (at(" wa:"), at(&addr_b), at(" wb:"), at(" second:")) {
+            (Some(own), Some(head), Some(wb), Some(second)) => own < head && head < wb && head < second,
+            _ => false,
+        }
+    })
+    .await;
+    assert!(!c.screen.screen().contents().contains("wb@"), "no address on a session under its machine");
+    // Killing one of them: the question says where it is done. Not done.
+    c.type_str("j").await;
+    c.type_str("x").await;
+    c.wait_for("the question names the machine", |s| {
+        let t = s.contents();
+        t.contains(&addr_b) && t.contains("kill session") && t.contains("(y/n)")
+    })
+    .await;
+    c.type_str("n").await;
+    c.type_str("q").await;
+    assert_eq!(a.cli(&["has-session", "-t", &there("wb")]).await.0, 0, "not killed");
+    // A pane of it (the last line of the tree): asked too, and where; a
+    // pane of this machine goes at once, as before (not tried here).
+    c.prefix('w').await;
+    c.wait_for("the tree", |s| s.contents().contains(&addr_b)).await;
+    c.type_str("G").await;
+    c.type_str("x").await;
+    c.wait_for("a pane there: asked, with its machine", |s| {
+        let t = s.contents();
+        t.contains(&addr_b) && t.contains("kill 1 pane? (y/n)")
+    })
+    .await;
+    c.type_str("n").await;
+    c.type_str("q").await;
+    assert_eq!(b.cli(&["list-panes", "-a"]).await.1.lines().count(), 2, "none killed there");
+
+    // In one of that machine's sessions, the next session is its next
+    // one, never this machine's.
+    c.prefix(':').await;
+    c.wait_for("the command prompt", |s| s.contents().contains(':')).await;
+    c.type_str(&format!("switch-client -t {}", there("wb"))).await;
+    c.enter().await;
+    let status = |s: &vt100::Screen| s.rows(0, COLS).last().unwrap_or_default();
+    c.wait_for("in wb there", |s| status(s).contains(&format!("wb@{addr_b}"))).await;
+    // Its pane closed by the key: asked, with the machine it is done on.
+    c.prefix('x').await;
+    c.wait_for("kill-pane there, said so", |s| {
+        let q = status(s);
+        q.contains("on ") && q.contains(&addr_b) && q.contains("kill-pane") && q.contains("(y/n)")
+    })
+    .await;
+    c.type_str("n").await;
+    c.prefix(')').await;
+    c.wait_for("its next one", |s| status(s).contains(&format!("second@{addr_b}"))).await;
+    c.prefix(')').await;
+    c.wait_for("round to wb, not to wa", |s| status(s).contains(&format!("wb@{addr_b}"))).await;
+    c.prefix(':').await;
+    c.type_str("switch-client -t wa").await;
+    c.enter().await;
+    let here = |s: &vt100::Screen| status(s).contains("wa") && !status(s).contains('@');
+    c.wait_for("back here", here).await;
+    c.prefix(')').await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(here(c.screen.screen()), "this machine has one session: it stays");
+
+    // A session killed from here is killed there, but its save is not put
+    // aside there: the next start of that server brings it back.
+    let (code, _, err) = a.cli(&["kill-session", "-t", &there("second")]).await;
+    assert_eq!(code, 0, "{err}");
+    b.wait_for_cli("killed there", &["has-session", "-t", "second"], |code, _| code != 0).await;
+    assert!(keepane::resurrect::find(&b.sessions_dir, "second").is_some(), "its save where it was");
+    assert!(keepane::resurrect::find(&b.sessions_dir.join("killed"), "second").is_none(), "not put aside");
+    // One killed there by hand is put aside, as before.
+    b.cli(&["new", "-d", "-s", "byhand"]).await;
+    b.wait_for_cli("saved", &["has-session", "-t", "byhand"], |code, _| code == 0).await;
+    assert_eq!(b.cli(&["save-session", "-t", "byhand"]).await.0, 0);
+    assert_eq!(b.cli(&["kill-session", "-t", "byhand"]).await.0, 0);
+    assert!(keepane::resurrect::find(&b.sessions_dir.join("killed"), "byhand").is_some(), "by hand: put aside");
+
+    // The machines as JSON, none asked.
+    let machines = async |h: &Harness| -> serde_json::Value {
+        let (code, out, err) = h.cli(&["link-list", "-J"]).await;
+        assert_eq!(code, 0, "{err}");
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"))
+    };
+    // (What was killed there goes from here when its change arrives.)
+    a.wait_for_cli("its one session left", &["link-list", "-J"], |_, out| out.contains("\"sessions\":1")).await;
+    let m = machines(&a).await;
+    assert_eq!((m[0]["addr"].as_str(), m[0]["connected"].as_bool()), (Some(addr_b.as_str()), Some(true)), "{m}");
+
+    // Disconnected here: its sessions go from here, nothing is asked of
+    // it, nothing it asks is answered; still paired, and said so.
+    let (code, out, err) = a.cli(&["link-disconnect", &addr_b]).await;
+    assert!(code == 0 && out.contains("still paired"), "{out}{err}");
+    assert_ne!(a.cli(&["has-session", "-t", &there("wb")]).await.0, 0, "its sessions are gone from here");
+    assert_eq!(a.cli(&["show-mirror"]).await.1.trim(), "");
+    let m = machines(&a).await;
+    assert_eq!((m[0]["connected"].as_bool(), m[0]["sessions"].as_u64()), (Some(false), Some(0)), "{m}");
+    let (_, list, _) = a.cli(&["link-list"]).await;
+    assert!(list.contains("disconnected here"), "{list}");
+    let (code, _, err) = a.cli(&["link-info", &addr_b]).await;
+    assert!(code != 0 && err.contains("is disconnected here"), "nothing asked: {err}");
+    let (code, _, err) = a.cli(&["send-message", "--to", &format!("{addr_b}/%1"), "hello"]).await;
+    assert!(code != 0 && err.contains("is disconnected here"), "no message sent: {err}");
+    let (code, _, err) = b.cli(&["link-info", &addr_a]).await;
+    assert!(code != 0 && err.contains("disconnected from yours"), "nothing answered: {err}");
+    let (code, out, _) = a.cli(&["link-disconnect", &addr_b]).await;
+    assert!(code == 0 && out.contains("already"), "{out}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(a.cli(&["show-mirror"]).await.1.trim(), "", "not taken up again by itself");
+    // The picker says so, on that machine's block in the chart.
+    a.cli(&["set", "-g", "choose-tree-style", "chart"]).await;
+    c.prefix('w').await;
+    c.wait_for("disconnected, in the chart", |s| s.contents().contains("disconnected")).await;
+    c.type_str("q").await;
+
+    // Connected again: its sessions are here again, and it is answered.
+    let (code, out, err) = a.cli(&["link-connect", &addr_b]).await;
+    assert!(code == 0 && out.contains("connected to"), "{out}{err}");
+    a.wait_for_cli("its sessions here again", &["has-session", "-t", &there("wb")], |code, _| code == 0).await;
+    assert_eq!(b.cli(&["link-info", &addr_a]).await.0, 0, "answered again");
+    // The same by keys, on that machine's block in the chart (up from this
+    // machine's session to this machine, along to the other): `x`
+    // disconnects, `c` connects, `D` asks before it forgets.
+    let connected = |want: bool| move |_: i32, out: &str| out.contains(&format!("\"connected\":{want}"));
+    c.prefix('w').await;
+    c.wait_for("the chart", |s| s.contents().contains("this machine")).await;
+    // (From the window it opens on: up to its session, to this machine;
+    // one more `k` stays there.)
+    for key in ["k", "k", "k", "l"] {
+        c.type_str(key).await;
+    }
+    c.wait_for("on the other machine: its keys", |s| s.contents().contains("x disconnect")).await;
+    c.type_str("x").await;
+    a.wait_for_cli("disconnected by the key", &["link-list", "-J"], connected(false)).await;
+    c.wait_for("said in its block", |s| s.contents().contains("disconnected")).await;
+    c.type_str("c").await;
+    a.wait_for_cli("connected by the key", &["link-list", "-J"], connected(true)).await;
+    c.type_str("D").await;
+    c.wait_for("forgetting asks", |s| s.contents().contains("forget") && s.contents().contains("(y/n)")).await;
+    c.type_str("n").await;
+    a.wait_for_cli("still paired after a no", &["link-list", "-J"], connected(true)).await;
+    // Forgotten after a yes: paired no more, on both.
+    c.type_str("D").await;
+    c.wait_for("forgetting asks again", |s| s.contents().contains("(y/n)")).await;
+    c.type_str("y").await;
+    a.wait_for_cli("gone from here", &["link-list", "-J"], |_, out| out.trim() == "[]").await;
+    b.wait_for_cli("gone from there", &["link-list", "-J"], |_, out| out.trim() == "[]").await;
     a.cli(&["kill-server"]).await;
     b.cli(&["kill-server"]).await;
 }

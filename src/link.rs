@@ -98,7 +98,8 @@ pub fn listen_addrs(bind: &[IpAddr]) -> Vec<IpAddr> {
 
 /// `keepane link <what> ...`: each is the server command `link-<what>`
 /// with the same words (`id`, `add`, `trust`, `list`, `panes`, `allow`,
-/// `share`, `unshare`, `remove`, `rekey`, and the rest of `WORDS`).
+/// `share`, `unshare`, `connect`, `disconnect`, `remove`, `rekey`, and the
+/// rest of `WORDS`).
 pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     const WORDS: &[&str] = &[
         "id",
@@ -114,6 +115,8 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
         "share",
         "unshare",
         "remove",
+        "connect",
+        "disconnect",
         "rekey",
         "clone",
         "push",
@@ -133,7 +136,7 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
                          unshare <host:port> <session|session:window|pane>... | unshare <host:port> --all | \
                          clone <host:port> [path] [--tell pane] | push [<host:port> [path]] [--tell pane] | push -l | \
                          send-agents [<host:port>] [dir] [-s chat-id]... [-n] | send-agents -l | \
-                         remove <host:port> | rekey";
+                         disconnect <host:port> | connect <host:port> | remove <host:port> | rekey";
     let Some(what) = args.first().map(String::as_str).filter(|w| WORDS.contains(w)) else {
         bail!("{USAGE}");
     };
@@ -490,12 +493,17 @@ pub struct Peer {
     /// address (or this machine itself), since plain HTTP on a LAN can be
     /// read by anyone on it (`full_network`).
     pub lan: bool,
+    /// Disconnected here (`link disconnect`): this machine asks it nothing
+    /// and answers it nothing until `link connect`; the pairing and what it
+    /// is given are kept (decision 20).
+    pub off: bool,
 }
 
 const TABLE_HEAD: &str = "# keepane link: the machines paired with this server (docs/design/link.md).\n\
                           # One a line: public key, address, then `full` when it has all of this\n\
                           # machine, and `lan` when it has that from any network, not only Tailscale.\n\
-                          # Without `full` it sees what is shared with it (`keepane link share`).\n";
+                          # Without `full` it sees what is shared with it (`keepane link share`).\n\
+                          # `off`: disconnected here (`keepane link disconnect`), still paired.\n";
 
 /// The permissions of keepane 0.55 and before, each on its own.
 const OLD_WORDS: [&str; 5] = ["shell", "screen", "panes", "push", "agents"];
@@ -528,7 +536,7 @@ pub fn parse_table_noting(text: &str) -> (Vec<Peer>, Vec<String>) {
         if old > 0 && !full {
             dropped.push(addr.to_string());
         }
-        out.push(Peer { key: key.to_string(), addr: addr.to_string(), full, lan: full && has("lan") });
+        out.push(Peer { key: key.to_string(), addr: addr.to_string(), full, lan: full && has("lan"), off: has("off") });
     }
     (out, dropped)
 }
@@ -538,7 +546,8 @@ pub fn format_table(peers: &[Peer]) -> String {
     for p in peers {
         let full = if p.full { " full" } else { "" };
         let lan = if p.full && p.lan { " lan" } else { "" };
-        s.push_str(&format!("{} {}{full}{lan}\n", p.key, p.addr));
+        let off = if p.off { " off" } else { "" };
+        s.push_str(&format!("{} {}{full}{lan}{off}\n", p.key, p.addr));
     }
     s
 }
@@ -943,19 +952,24 @@ mod tests {
         let k2 = Identity::make(&dir.join("2")).unwrap().public();
         let k3 = Identity::make(&dir.join("3")).unwrap().public();
         let peers = vec![
-            Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), full: true, lan: false },
-            Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), full: false, lan: false },
-            Peer { key: k3.clone(), addr: "10.0.0.3:7681".into(), full: true, lan: true },
+            Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), full: true, lan: false, off: false },
+            // Disconnected here (`link disconnect`): kept in the table, with
+            // what it has, and nothing of it without `full`.
+            Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), full: false, lan: false, off: true },
+            Peer { key: k3.clone(), addr: "10.0.0.3:7681".into(), full: true, lan: true, off: true },
         ];
         save_table(&dir, &peers).unwrap();
         assert_eq!(load_table(&dir), peers);
+        let text = format_table(&peers);
+        assert!(text.contains(&format!("{k2} [fd7a::1]:7681 off\n")), "{text}");
+        assert!(text.contains(&format!("{k3} 10.0.0.3:7681 full lan off\n")), "{text}");
         let hand =
             format!("# mine\n\n{k1} 1.2.3.4:5 full\nnot a line\n{k2} nothost\n{k1} 9.9.9.9:9\n{k2} 5.6.7.8:9 lan\n");
         assert_eq!(
             parse_table(&hand),
             vec![
-                Peer { key: k1.clone(), addr: "1.2.3.4:5".into(), full: true, lan: false },
-                Peer { key: k2.clone(), addr: "5.6.7.8:9".into(), full: false, lan: false },
+                Peer { key: k1.clone(), addr: "1.2.3.4:5".into(), full: true, lan: false, off: false },
+                Peer { key: k2.clone(), addr: "5.6.7.8:9".into(), full: false, lan: false, off: false },
             ],
             "lan is nothing without full"
         );

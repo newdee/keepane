@@ -323,7 +323,10 @@ impl Server {
                 // was. The pane the command put the eye on is the reply's,
                 // for that machine's eye to go to.
                 let view = View::of(self);
-                let (ok, text) = match self.exec(cmd, None) {
+                self.by_machine = true;
+                let out = self.exec(cmd, None);
+                self.by_machine = false;
+                let (ok, text) = match out {
                     super::Outcome::Error(e) => (false, e),
                     super::Outcome::Text(t) => (true, t),
                     _ => (true, String::new()),
@@ -369,6 +372,9 @@ pub(super) fn may_stream(peer: Option<&link::Peer>, ip: IpAddr, addr: &str) -> R
         None => Err(format!(
             "{ip} is not paired with this machine: `keepane link add` its web address here, or `keepane link trust`"
         )),
+        Some(p) if p.off => Err(format!(
+            "this machine is disconnected from {addr} (`keepane link connect {addr}` here talks with it again)"
+        )),
         Some(p) if !p.full => Err(format!(
             "{addr} does not have all of this machine, which a copy of its sessions takes: `keepane link allow {addr} --full` here (outside keepane)"
         )),
@@ -411,7 +417,7 @@ mod tests {
     use super::*;
 
     fn peer(full: bool, lan: bool) -> link::Peer {
-        link::Peer { key: "k".into(), addr: "a:1".into(), full, lan }
+        link::Peer { key: "k".into(), addr: "a:1".into(), full, lan, off: false }
     }
 
     #[test]
@@ -424,6 +430,9 @@ mod tests {
         assert!(may_stream(Some(&peer(true, false)), here, "x").is_ok(), "from this machine");
         assert!(may_stream(Some(&peer(true, false)), lan, "x").unwrap_err().contains("--full --lan"));
         assert!(may_stream(Some(&peer(true, true)), lan, "x").is_ok(), "--lan: any network");
+        // Disconnected here: no stream, whatever it was given.
+        let off = link::Peer { off: true, ..peer(true, true) };
+        assert!(may_stream(Some(&off), here, "x").unwrap_err().contains("disconnected"));
     }
 
     #[test]

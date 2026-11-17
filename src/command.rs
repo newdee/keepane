@@ -752,6 +752,10 @@ pub enum Cmd {
     },
     /// `link-list`: the machines paired with this server.
     LinkList,
+    /// `link-list -J`: the paired machines as JSON, from what this machine
+    /// knows of them now (none is asked): address, name, whether it is
+    /// connected here, what it has here, how many of its sessions are here.
+    LinkMachines,
     /// `link-panes host:port`: the panes of that machine.
     LinkPanes {
         addr: String,
@@ -854,6 +858,13 @@ pub enum Cmd {
         sessions: Vec<String>,
         dry: bool,
         list: bool,
+    },
+    /// `link-disconnect host:port` (`off`), `link-connect host:port`: stop
+    /// talking with a paired machine, both ways, still paired; and start
+    /// again (docs/design/link.md, decision 20).
+    LinkConnect {
+        addr: String,
+        off: bool,
     },
     /// `link-remove host:port`: unpair (both sides, when it can be reached).
     LinkRemove {
@@ -1898,6 +1909,7 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::LinkList => f.write_str("link-list"),
+            Cmd::LinkMachines => f.write_str("link-list -J"),
             Cmd::LinkPanes { addr } => write!(f, "link-panes {}", quote(addr)),
             Cmd::LinkInfo { addr } => write!(f, "link-info {}", quote(addr)),
             Cmd::LinkCapture { target, history } => {
@@ -2006,6 +2018,9 @@ impl fmt::Display for Cmd {
                     write!(f, " {}", quote(t))?;
                 }
                 Ok(())
+            }
+            Cmd::LinkConnect { addr, off } => {
+                write!(f, "{} {}", if *off { "link-disconnect" } else { "link-connect" }, quote(addr))
             }
             Cmd::LinkRemove { addr } => write!(f, "link-remove {}", quote(addr)),
             Cmd::LinkRekey => f.write_str("link-rekey"),
@@ -2562,6 +2577,8 @@ pub const COMMANDS: &[&str] = &[
     "feishu-allow",
     "feishu-remove",
     "link-remove",
+    "link-connect",
+    "link-disconnect",
     "link-trust",
     "list-buffers",
     "list-clients",
@@ -2827,13 +2844,15 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("link-id", &[]),
     ("link-inbound", &[]),
     ("link-info", &[]),
-    ("link-list", &[]),
+    ("link-list", &["-J"]),
     ("link-panes", &[]),
     ("link-rekey", &[]),
     ("feishu-status", &[]),
     ("feishu-allow", &["--shell", "--no-shell", "--screen", "--no-screen"]),
     ("feishu-remove", &[]),
     ("link-remove", &[]),
+    ("link-connect", &[]),
+    ("link-disconnect", &[]),
     ("link-trust", &["--full", "--lan"]),
     ("link-start", &["-s", "-n", "-m", "-c"]),
     ("link-kill", &[]),
@@ -4445,9 +4464,14 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::WebTails { lines: lines.ok_or_else(|| format!("{n}: how many lines, 1 to {MAX_TAILS}"))? }
         }
         "link-id" | "link-list" | "link-rekey" => {
+            let json = n == "link-list" && a.peek() == Some("-J");
+            if json {
+                a.next();
+            }
             a.none_left(n)?;
             match n {
                 "link-id" => Cmd::LinkId,
+                "link-list" if json => Cmd::LinkMachines,
                 "link-list" => Cmd::LinkList,
                 _ => Cmd::LinkRekey,
             }
@@ -4484,7 +4508,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::LinkAdd { url }
         }
-        "link-panes" | "link-remove" | "link-info" => {
+        "link-panes" | "link-remove" | "link-info" | "link-connect" | "link-disconnect" => {
             let addr = a.next().ok_or_else(|| format!("{n}: host:port required"))?.to_string();
             a.none_left(n)?;
             if !crate::link::valid_hostport(&addr) {
@@ -4493,6 +4517,8 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             match n {
                 "link-panes" => Cmd::LinkPanes { addr },
                 "link-info" => Cmd::LinkInfo { addr },
+                "link-connect" => Cmd::LinkConnect { addr, off: false },
+                "link-disconnect" => Cmd::LinkConnect { addr, off: true },
                 _ => Cmd::LinkRemove { addr },
             }
         }
@@ -5463,6 +5489,16 @@ mod tests {
         assert!(matches!(p("killw -a"), Cmd::KillWindow { all_but: true, .. }));
         assert!(matches!(p("killp -a -t :.1"), Cmd::KillPane { all_but: true, .. }));
         assert!(matches!(p("kill-session -a"), Cmd::KillSession { all_but: true, .. }));
+        // A paired machine disconnected and connected again; the machines
+        // as JSON. Each written back as it was typed.
+        assert!(matches!(p("link-disconnect 10.0.0.2:7681"), Cmd::LinkConnect { off: true, .. }));
+        assert!(matches!(p("link-connect 10.0.0.2:7681"), Cmd::LinkConnect { off: false, .. }));
+        assert!(matches!(p("link-list -J"), Cmd::LinkMachines));
+        assert!(matches!(p("link-list"), Cmd::LinkList));
+        for line in ["link-disconnect 10.0.0.2:7681", "link-connect 10.0.0.2:7681", "link-list -J"] {
+            assert_eq!(p(line).to_string(), line);
+        }
+        assert!(parse_line("link-connect nothost").is_err() && parse_line("link-list -x").is_err());
         assert!(matches!(p("send -l Enter"), Cmd::SendKeys { literal: true, .. }));
     }
 

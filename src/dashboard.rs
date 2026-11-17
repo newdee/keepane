@@ -41,6 +41,8 @@ pub const QUERIES: &[&str] = &[
     "share",
     // `show-options -gv dashboard-icons`: what marks [0]'s entries.
     "show-options",
+    // `link-list -J`: the paired machines, while `L` lists them.
+    "link-list",
 ];
 /// The only ones it sends to change anything.
 pub const ACTIONS: &[&str] = &[
@@ -54,6 +56,10 @@ pub const ACTIONS: &[&str] = &[
     "move-message",
     // Page 2: stop, extend, again; `S` in [0] shares.
     "share",
+    // `L`: a paired machine talked with again, no longer, or forgotten.
+    "link-connect",
+    "link-disconnect",
+    "link-remove",
 ];
 
 /// Whether `argv` is a change that waits for a yes: deleting a queued
@@ -65,6 +71,9 @@ pub fn needs_yes(argv: &[String]) -> bool {
         Some("set-work-mode") => argv.last().is_some_and(|m| m == "shell"),
         // A link handed out (a new one, or one more), or one ended.
         Some("share") => !matches!(argv.get(1).map(String::as_str), Some("-l" | "extend")),
+        // A machine let in again, or its pairing forgotten (to disconnect
+        // is taken back with a key).
+        Some("link-connect" | "link-remove") => true,
         _ => false,
     }
 }
@@ -508,6 +517,26 @@ enum Dialog {
     ShareFor { path: String, pick: usize, once: bool },
     /// How long a share goes on for from now (`e` on page 2).
     Extend { id: u32, pick: usize },
+    /// The paired machines (`L`): one picked with j/k, then `c` connect,
+    /// `x` disconnect, `D` forget.
+    Machines { pick: usize },
+}
+
+/// A paired machine, as `link-list -J` gives it.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MachineRow {
+    pub addr: String,
+    pub name: String,
+    pub connected: bool,
+    /// How many of its sessions are here.
+    pub sessions: usize,
+}
+
+impl MachineRow {
+    /// Its name and address, as the pane table's heading says a machine.
+    fn said(&self) -> String {
+        if self.name.is_empty() { self.addr.clone() } else { format!("{} ({})", self.name, self.addr) }
+    }
 }
 
 const MODES: [&str; 3] = ["normal", "shell", "ai"];
@@ -577,6 +606,8 @@ pub struct Board {
     pub share_pick: usize,
     pub shares_ended: bool,
     pub activity_top: usize,
+    /// The paired machines, read while `L` lists them.
+    pub machines: Vec<MachineRow>,
 }
 
 /// The board's pages: the panes, the shares.
@@ -804,6 +835,7 @@ impl Board {
             machine: machine::Machine::default(),
             files: files::Files::default(),
             page: 1,
+            machines: Vec::new(),
             shares: Vec::new(),
             share_pick: 0,
             shares_ended: true,
@@ -913,6 +945,34 @@ impl Board {
             .then(|| first.rsplit(" · ").next()?.strip_suffix(" connected")?.parse().ok())
             .flatten();
         self.address = crate::web::status_url(status).and_then(crate::link::hostport_of_url).map(String::from);
+    }
+
+    /// Whether the paired machines are to be read (`L` lists them).
+    pub fn wants_machines(&self) -> bool {
+        matches!(self.dialog, Some(Dialog::Machines { .. }))
+    }
+
+    /// The paired machines, as `link-list -J` gave them (anything else, an
+    /// older server's table: none).
+    pub fn set_machines(&mut self, json: &str) {
+        let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap_or_default();
+        self.machines = v
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|m| MachineRow {
+                        addr: m["addr"].as_str().unwrap_or_default().to_string(),
+                        name: m["name"].as_str().unwrap_or_default().to_string(),
+                        connected: m["connected"].as_bool().unwrap_or(true),
+                        sessions: m["sessions"].as_u64().unwrap_or(0) as usize,
+                    })
+                    .filter(|m| !m.addr.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(Dialog::Machines { pick }) = &mut self.dialog {
+            *pick = (*pick).min(self.machines.len().saturating_sub(1));
+        }
     }
 
     /// Page 2's list, as `share -l -J` gave it; the share picked stays
@@ -1208,6 +1268,11 @@ impl Board {
             }
             KeyCode::Char('<' | '>') if !k.ctrl && !k.alt => {
                 self.turn_page();
+                return Action::Redraw;
+            }
+            // The paired machines: connect, disconnect, forget.
+            KeyCode::Char('L') if !k.ctrl && !k.alt => {
+                self.dialog = Some(Dialog::Machines { pick: 0 });
                 return Action::Redraw;
             }
             KeyCode::Char(c @ ('0' | '1' | '2' | '3' | '4')) if plain => {
@@ -1530,6 +1595,40 @@ impl Board {
                 }
                 _ => Action::Redraw,
             },
+            Dialog::Machines { pick } => {
+                let Some(m) = self.machines.get(pick).cloned() else {
+                    // None paired (or not read yet): any key closes it.
+                    return Action::Redraw;
+                };
+                match k.code {
+                    KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
+                        self.dialog = Some(Dialog::Machines { pick: (pick + 1).min(self.machines.len() - 1) });
+                        Action::Redraw
+                    }
+                    KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => {
+                        self.dialog = Some(Dialog::Machines { pick: pick.saturating_sub(1) });
+                        Action::Redraw
+                    }
+                    KeyCode::Char('c') if m.connected => {
+                        self.note = Some(format!("{} is connected already", m.said()));
+                        Action::Redraw
+                    }
+                    KeyCode::Char('c') => self.act(
+                        format!("talk with {} again? It has again what it was given here.", m.said()),
+                        owned(&["link-connect", &m.addr]),
+                    ),
+                    KeyCode::Char('x') if !m.connected => {
+                        self.note = Some(format!("{} is disconnected already", m.said()));
+                        Action::Redraw
+                    }
+                    KeyCode::Char('x') => Action::Run(owned(&["link-disconnect", &m.addr])),
+                    KeyCode::Char('D') | KeyCode::DC => self.act(
+                        format!("forget {}? Pairing again takes `keepane link add`.", m.said()),
+                        owned(&["link-remove", &m.addr]),
+                    ),
+                    _ => Action::Redraw,
+                }
+            }
             Dialog::Mode { to, pick } => match k.code {
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.dialog = Some(Dialog::Mode { to, pick: (pick + 1).min(MODES.len() - 1) });
@@ -2158,6 +2257,30 @@ impl Board {
             Some(Dialog::Extend { id, pick }) => {
                 return format!("\x1b[1mshare {id} goes on for:\x1b[0m{}  j/k · Enter · Esc", choices(*pick));
             }
+            Some(Dialog::Machines { pick }) => {
+                if self.machines.is_empty() {
+                    return "\x1b[1mmachines:\x1b[0m none paired (`keepane link add <its web address>`)  any key"
+                        .into();
+                }
+                let all = self
+                    .machines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        let state = if !m.connected {
+                            "disconnected".to_string()
+                        } else if m.sessions > 0 {
+                            format!("{} sessions", m.sessions)
+                        } else {
+                            "connected".to_string()
+                        };
+                        let name = if m.name.is_empty() { &m.addr } else { &m.name };
+                        let text = format!(" {name} · {state} ");
+                        if i == *pick { format!("\x1b[7m{text}\x1b[0m") } else { text }
+                    })
+                    .collect::<String>();
+                return format!("\x1b[1mmachines:\x1b[0m{all}  j/k · c connect · x disconnect · D forget · Esc");
+            }
             _ => {}
         }
         if let Some(n) = &self.note {
@@ -2185,7 +2308,7 @@ impl Board {
         let all = if self.page == 2 {
             "Tab/0124 panel  ? keys  q quit"
         } else {
-            "Tab/01234 panel  T trace  / filter  ? keys  q quit"
+            "Tab/01234 panel  T trace  L machines  / filter  ? keys  q quit"
         };
         // Which page of how many, by the key that turns it, the number bold.
         let page = format!("{} page {}/{PAGES}", paint("1;36", "</>"), paint("1", &self.page.to_string()));
@@ -2612,6 +2735,8 @@ fn help_lines() -> Vec<String> {
         "  < / >                             page 1 (the panes) / page 2 (what is shared)",
         "  [ / ]                             change the tab on the right",
         "  T                                 the trace of the pane's agent",
+        "  L                                 the paired machines: j / k one, then c connect,",
+        "                                    x disconnect (still paired), D forget (asks)",
         "  PgUp / PgDn, C-b / C-f            page the right panel (C-u / C-d half a page;",
         "                                    in the prefix-v popup, C-b C-b sends C-b)",
         "  g / G, Home / End                 the first / last row of a list; top / bottom on the right",
@@ -3092,6 +3217,9 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
             }
             board.set_tasks(&lines(ask(&board.tasks_query())));
             board.set_web(&ask(&owned(&["web-status"])).1);
+            if board.wants_machines() {
+                board.set_machines(&ask(&owned(&["link-list", "-J"])).1);
+            }
             // Asked each time, so a `set` while the board is open shows.
             board.files.icons = files::Icons::parse(&ask(&owned(&["show-options", "-gv", "dashboard-icons"])).1);
             // The window's size, every time: a resize can pass unannounced
@@ -4719,5 +4847,63 @@ mod tests {
         b.focus = Panel::Panes;
         b.key(Key::plain(KeyCode::Char('T')));
         assert_eq!(b.tab, Tab::Trace);
+    }
+
+    /// `L`: the paired machines on the bottom line, one picked; `x` stops
+    /// talking with it at once, `c` and `D` (talk again, forget) ask first.
+    #[test]
+    fn l_lists_the_paired_machines_to_connect_disconnect_or_forget() {
+        let mut b = board();
+        assert!(!b.wants_machines());
+        assert_eq!(b.key(Key::ch('L')), Action::Redraw);
+        assert!(b.wants_machines(), "read while they are listed");
+        assert!(strip(&b.foot()).contains("none paired"), "{}", strip(&b.foot()));
+        b.set_machines(
+            r#"[{"addr":"10.0.0.2:7681","name":"mac","connected":true,"sessions":2},
+                {"addr":"10.0.0.3:7681","name":null,"connected":false,"sessions":0},
+                {"name":"no address"}]"#,
+        );
+        assert_eq!(b.machines.len(), 2, "one with no address is none");
+        let foot = strip(&b.foot());
+        assert!(foot.contains("mac · 2 sessions") && foot.contains("10.0.0.3:7681 · disconnected"), "{foot}");
+        // The first is picked: connected already; disconnected at once.
+        assert_eq!(b.key(Key::ch('c')), Action::Redraw);
+        assert_eq!(b.note.as_deref(), Some("mac (10.0.0.2:7681) is connected already"));
+        b.key(Key::ch('L'));
+        assert_eq!(b.key(Key::ch('x')), Action::Run(owned(&["link-disconnect", "10.0.0.2:7681"])));
+        assert!(!b.wants_machines(), "done: the list closes");
+        // The second, disconnected: talked with again after a yes.
+        b.key(Key::ch('L'));
+        b.key(Key::ch('j'));
+        b.key(Key::ch('j'));
+        assert_eq!(b.key(Key::ch('x')), Action::Redraw);
+        assert_eq!(b.note.as_deref(), Some("10.0.0.3:7681 is disconnected already"));
+        b.key(Key::ch('L'));
+        b.key(Key::ch('j'));
+        assert_eq!(b.key(Key::ch('c')), Action::Redraw);
+        assert!(strip(&b.foot()).contains("talk with 10.0.0.3:7681 again?"), "{}", strip(&b.foot()));
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["link-connect", "10.0.0.3:7681"])));
+        // Forgotten only after a yes; any other key leaves it.
+        b.key(Key::ch('L'));
+        assert_eq!(b.key(Key::ch('D')), Action::Redraw);
+        assert!(strip(&b.foot()).contains("forget mac (10.0.0.2:7681)?"), "{}", strip(&b.foot()));
+        assert_eq!(b.key(Key::ch('n')), Action::Redraw);
+        assert_eq!(b.note.as_deref(), Some("left as it was"));
+        b.key(Key::ch('L'));
+        b.key(Key::ch('D'));
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["link-remove", "10.0.0.2:7681"])));
+        // What it asks and what it runs are in the lists the board keeps to.
+        assert!(QUERIES.contains(&"link-list"));
+        for a in ["link-connect", "link-disconnect", "link-remove"] {
+            assert!(ACTIONS.contains(&a), "{a}");
+        }
+        assert!(needs_yes(&owned(&["link-connect", "a:1"])) && needs_yes(&owned(&["link-remove", "a:1"])));
+        assert!(!needs_yes(&owned(&["link-disconnect", "a:1"])));
+        // An older server's table, or none: no machines, and any key closes.
+        b.set_machines("MACHINE  KEY\n");
+        b.key(Key::ch('L'));
+        assert!(strip(&b.foot()).contains("none paired"));
+        assert_eq!(b.key(Key::ch('x')), Action::Redraw);
+        assert!(!b.wants_machines());
     }
 }

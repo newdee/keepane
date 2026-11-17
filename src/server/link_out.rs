@@ -114,6 +114,11 @@ impl Server {
         longest: Duration,
         op: LinkOp,
     ) -> Result<(), String> {
+        // Disconnected here: nothing is asked of it, but that it forget
+        // this machine (`link remove`).
+        if self.link_off(to) && !matches!(op, LinkOp::Remove { .. }) {
+            return Err(format!("{addr} is disconnected here: `keepane link connect {addr}` talks with it again"));
+        }
         let (port, _) = self.own_web()?;
         let nonce = link::nonce().map_err(|e| format!("link: {e:#}"))?;
         let time = link::now();
@@ -569,7 +574,13 @@ impl Server {
                 p.addr = addr.to_string();
                 full = p.full;
             }
-            None => l.peers.push(link::Peer { key: key.to_string(), addr: addr.to_string(), full: false, lan: false }),
+            None => l.peers.push(link::Peer {
+                key: key.to_string(),
+                addr: addr.to_string(),
+                full: false,
+                lan: false,
+                off: false,
+            }),
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);

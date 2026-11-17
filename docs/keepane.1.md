@@ -111,7 +111,7 @@ you: `done-events` `wait`; an agent's hook gives what it asks on standard
 input),
 `show-messages`, `clock-mode`, `dashboard` (panes, inboxes, tasks and the
 chosen pane's screen, to act on; the panes by session, and first by
-machine, its name and address, while another's sessions are copied here;
+machine, its name and address, while another's sessions are here;
 its Git tab, the pane's repository or
 files; from 150 columns, on the left, `[0]` the pane's directory, each
 entry an emoji of its kind (`dashboard-icons nerd`: a Nerd Font's icon),
@@ -328,45 +328,61 @@ one `--full`, else
 read-only (`q` closes it); it asks through `link-view` (the screen, or
 "same" since a stamp) and types through `link-keys` (key records).
 `keepane link attach <host:port> [session]` attaches to a session there
-(the one used last when none is named; Enter on a session or machine in
-`C-b w` opens a window running it), for a machine that gave this one
+(the one used last when none is named), for a machine that gave this one
 `--full`: that machine makes a client of this terminal's size
 (`link-attach`), draws it, and takes every key as its own, the prefix too
 (the pane here is put in `passthrough`; F12 gives the keys back);
 `link-view -c` and `link-keys -c` name that client. `prefix d` there ends
 it; a client not asked for in 15 seconds is let go there and made again.
-Every paired machine is copied by itself, and one that gave this one
+Every paired machine is followed by itself, and one that gave this one
 `--full` answers: one connection to its web port, encrypted (Noise IK
-with the two machines' link keys), protobuf inside; the copy starts from
-a snapshot of every pane and takes each change after it, and after a
+with the two machines' link keys), protobuf inside; it starts from a
+snapshot of every pane and takes each change after it, and after a
 dropped connection goes on from the last change it had. One that says no
 is asked again once a minute; `keepane link mirror <host:port>`
-(`link-mirror`) asks again now, `--stop` stops copying it. Its sessions
-are sessions here, named `name@host:port`: attached to, looked at and
-typed into (the keys go to the pane there; while the connection is down
-they are let go and counted), named in commands as `host:port/name` and
-`host:port/%N` (its pane N); `#{pane_machine}` is that `host:port` in
-them and `#{pane_host}` that machine's name (asked of it once). Their
-panes keep their names there (`#{pane_name}`), but `%name` always names a
-pane of this machine. A split, a kill, a resize, a zoom or a rename of
-one (keys, a
-border dragged, a command) is sent to that machine, done there and shown
-here when done (keepane 0.63 or later there). A split or a new window
+(`link-mirror`) asks again now, `--stop` stops until it is asked again.
+Its sessions are worked in from here, named `name@host:port`, but they
+are that machine's and are shown under it alone: under its block in the
+chart of `C-b w` and `C-b s` (a heading in the tree and the list), by
+machine in `C-b v`; `list-sessions` lists this machine's only, and
+`switch-client -n` / `-p` go round the sessions of the machine the
+current one is of. They are looked at and typed into (the keys go to the
+pane there; while the connection is down they are let go and counted),
+named in commands as `host:port/name` and `host:port/%N` (its pane N);
+`#{pane_machine}` is that `host:port` in them and `#{pane_host}` that
+machine's name (asked of it once). Their panes keep their names there
+(`#{pane_name}`), but `%name` always names a pane of this machine. A
+split, a kill, a resize, a zoom or a rename of one (keys, a border
+dragged, a command) is sent to that machine, done there and shown here
+when done (keepane 0.63 or later there). A kill by a key (`C-b x`,
+`C-b &`, `x` or `D` in `C-b w`) asks first and names the machine it is
+done on; a session killed from another machine keeps its save there
+(only one killed by hand there is put aside). A split or a new window
 puts the eye here on the new pane and leaves that machine's terminals
 where they were (0.69 or later there); a zoom zooms the pane asked for.
 The pane looked at here is chosen here: what that machine looks at (a
 zoom moved there included) changes it only when it is gone. A
 pane never moves between machines, and pipe-pane, record and
 save-session of one are refused. Looking at it never resizes it there.
-They are not saved, and machines that copy this one do not see them.
-`show-mirror` (`[host:port] [-t pane] [-J]`) lists the copies, one copy's
-sessions, or a pane's screen in it.
+They are not saved here, and a third machine does not see them through
+this one. `show-mirror` (`[host:port] [-t pane] [-J]`) lists the machines
+followed, one's sessions, or a pane's screen as kept here. In the chart
+of `C-b w`, on a machine's block, `c` connects it, `x` disconnects it
+and `D` forgets its pairing (asked first); the dashboard's `L` lists the
+machines for the same.
 `trace-message` of a message sent there asks
 that machine what became of it (queued, delivered, done or failed, a shell
 command's output; `-w` waits there). `keepane link remove <host:port>`
 (`link-remove`) unpairs, on both machines, and what was shared goes with
 it; `keepane link rekey` (`link-rekey`) makes a new key, after which every
-pairing has to be made again.
+pairing has to be made again. `keepane link disconnect <host:port>`
+(`link-disconnect`) stops this machine talking with a paired one, both
+ways: it is asked nothing (its sessions go from here, no message is sent
+to it) and answered nothing (its requests get 403), but stays paired with
+what it was given, across restarts too; `keepane link connect <host:port>`
+(`link-connect`, from outside a pane) talks with it again. `link list`
+says which machines are disconnected; `link list -J` gives the paired
+machines as JSON at once, none of them asked.
 
 A paired machine has one of two levels here, and nothing until one is
 given. `keepane link share <host:port> <target>...` (`link-share`) shares
@@ -388,8 +404,9 @@ name used again by something else is not shared; the marks go into the
 session's save and come back with `resume`. `keepane link allow <host:port>
 --full` (`link-allow`) gives it all of this machine, as if it sat here:
 every pane, typed into too (`link watch`), every session, attached to
-(`link attach`), copied (`link mirror`), its messages run in `shell`
-panes, it may start panes and send commits and projects here. Over plain
+(`link attach`) and worked in from there (`link mirror`), its messages
+run in `shell` panes, it may start panes and send commits and projects
+here. Over plain
 HTTP anyone on the network could read what goes between the two, so
 `--full` is taken only over Tailscale
 (100.64.0.0/10, fd7a:115c:a1e0::/48) or from this machine; from any other

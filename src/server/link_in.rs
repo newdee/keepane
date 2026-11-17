@@ -163,6 +163,15 @@ impl Server {
             return self.link_answer(&nonce, 401, why);
         }
         l.seen.insert(from.clone(), chrono::Local::now());
+        // Disconnected here: it is answered nothing, but that this machine
+        // is forgotten there (`link remove` there).
+        if peer.off && req.path != "/link/remove" {
+            return self.link_answer(
+                &nonce,
+                403,
+                "this machine is disconnected from yours (`keepane link connect` there talks with it again)".into(),
+            );
+        }
         // The key says who it is; the address is where it is now.
         if peer.addr != addr {
             if let Some(p) = l.peers.iter_mut().find(|p| p.key == from) {
@@ -301,7 +310,13 @@ impl Server {
                 p.addr = addr.to_string();
                 full = p.full;
             }
-            None => l.peers.push(link::Peer { key: from.to_string(), addr: addr.to_string(), full: false, lan: false }),
+            None => l.peers.push(link::Peer {
+                key: from.to_string(),
+                addr: addr.to_string(),
+                full: false,
+                lan: false,
+                off: false,
+            }),
         }
         l.seen.insert(from.to_string(), chrono::Local::now());
         if let Err(e) = self.save_peers() {

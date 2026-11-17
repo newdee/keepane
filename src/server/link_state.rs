@@ -186,12 +186,71 @@ impl Server {
                 Err(e) => Outcome::Error(e),
             },
             Cmd::LinkList => self.link_list(cid),
+            Cmd::LinkMachines => self.link_machines(),
             Cmd::LinkTrust { addr, key, full, lan } => self.link_trust(cid, addr, key, full, lan),
             Cmd::LinkAllow { addr, full, lan } => self.link_allow(cid, &addr, full, lan),
             Cmd::LinkShare { addr, targets, share } => self.link_share(cid, &addr, &targets, share),
+            Cmd::LinkConnect { addr, off } => self.link_connect(cid, &addr, off),
             Cmd::LinkRekey => self.link_rekey(),
             other => Outcome::Error(format!("not a link command: {other}")),
         }
+    }
+
+    /// `link-disconnect` (`off`) and `link-connect`: a paired machine this
+    /// one stops talking with, both ways (nothing asked of it, nothing
+    /// answered it), and talks with again; still paired, with what it was
+    /// given, and kept so across a restart (docs/design/link.md, decision
+    /// 20). Connecting lets it in again, so only a person outside every
+    /// pane does that; anyone may disconnect.
+    fn link_connect(&mut self, cid: Option<ClientId>, addr: &str, off: bool) -> Outcome {
+        if !off && self.caller_pane(cid).is_some() {
+            return Outcome::Error(not_from_a_pane("link-connect"));
+        }
+        let by = self.by(cid);
+        let l = match self.link() {
+            Ok(l) => l,
+            Err(e) => return Outcome::Error(e),
+        };
+        let Some(p) = l.peers.iter_mut().find(|p| p.addr == addr) else {
+            return Outcome::Error(format!("{addr} is not paired with this machine (`keepane link list`)"));
+        };
+        if p.off == off {
+            let is = if off { "disconnected" } else { "connected" };
+            return Outcome::Text(format!("{addr} is {is} already"));
+        }
+        p.off = off;
+        let key = p.key.clone();
+        if let Err(e) = self.save_peers() {
+            return Outcome::Error(e);
+        }
+        if off {
+            // Let go of at once: its sessions here and what it last said
+            // it shares; what it has of this machine (its stream) ends with
+            // the next change (`may_stream`).
+            self.mirror_remove(&key, "is disconnected here");
+            self.remote_views.remove(addr);
+        }
+        let what = if off { "disconnected" } else { "connected" };
+        self.link_note(
+            &format!("link: {addr} {what} by {by}"),
+            what,
+            &format!(",\"addr\":{},\"key\":{},\"by\":{}", js(addr), js(&key), js(&by)),
+        );
+        Outcome::Text(if off {
+            format!("disconnected from {addr}: still paired; `keepane link connect {addr}` talks with it again")
+        } else {
+            format!("connected to {addr}")
+        })
+    }
+
+    /// Whether the machine paired by `key` is disconnected here.
+    pub(super) fn link_off(&self, key: &str) -> bool {
+        self.link.as_ref().is_some_and(|l| l.peers.iter().any(|p| p.key == key && p.off))
+    }
+
+    /// Whether the machine paired at `addr` is disconnected here.
+    pub(super) fn link_off_at(&self, addr: &str) -> bool {
+        self.link.as_ref().is_some_and(|l| l.peers.iter().any(|p| p.addr == addr && p.off))
     }
 
     /// A machine let in by hand, by its key (what `keepane link id` prints
@@ -215,7 +274,7 @@ impl Server {
                 p.full = full;
                 p.lan = lan;
             }
-            None => l.peers.push(Peer { key: key.clone(), addr: addr.clone(), full, lan }),
+            None => l.peers.push(Peer { key: key.clone(), addr: addr.clone(), full, lan, off: false }),
         }
         if let Err(e) = self.save_peers() {
             return Outcome::Error(e);
@@ -324,6 +383,19 @@ mod tests {
             Outcome::Ok => "ok".into(),
             _ => "other".into(),
         }
+    }
+
+    /// `link-list -J` on a server that never paired: no machines, and no
+    /// key made for asking (as the follower of paired machines makes none).
+    #[test]
+    fn listing_machines_never_paired_makes_no_key() {
+        let name = format!("link-none-{}", std::process::id());
+        let dir = crate::link::dir(&name);
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = server(&name);
+        assert_eq!(text(s.exec_link_local(Cmd::LinkMachines, None)), "[]");
+        assert!(!dir.join("key").exists() && s.link.is_none(), "no key made");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Each server has a key of its own, kept between loads; a machine

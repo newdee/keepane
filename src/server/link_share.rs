@@ -465,6 +465,8 @@ impl Server {
             };
             // Copying this machine's sessions over a link stream right now.
             let here = if fed.contains(&p.key) { format!("{here}; copies it now") } else { here };
+            // Disconnected here (`link disconnect`): it has none of that now.
+            let here = if p.off { format!("{here}; disconnected here") } else { here };
             let seen = self
                 .link
                 .as_ref()
@@ -498,6 +500,40 @@ impl Server {
         }
         self.link_lists.insert(list, ListWait { cid, rows, waiting });
         Outcome::Pending
+    }
+
+    /// `link-list -J`: the paired machines as this machine knows them now,
+    /// none asked: for the dashboard's list of them and for scripts. A
+    /// machine that never paired has none, and no key is made for asking.
+    pub(super) fn link_machines(&mut self) -> Outcome {
+        if self.link.is_none() && !self.link_dir().join("authorized").exists() {
+            return Outcome::Text("[]".into());
+        }
+        let peers = match self.link() {
+            Ok(l) => l.peers.clone(),
+            Err(e) => return Outcome::Error(e),
+        };
+        let fed = self.feeds_to();
+        let machines: Vec<serde_json::Value> = peers
+            .iter()
+            .map(|p| {
+                let sessions =
+                    self.sessions.iter().filter(|s| s.remote.as_ref().is_some_and(|r| r.key == p.key)).count();
+                let seen = self.link.as_ref().and_then(|l| l.seen.get(&p.key)).map(|t| t.to_rfc3339());
+                serde_json::json!({
+                    "addr": p.addr,
+                    "name": self.machine_name(&p.addr),
+                    "key": link::fingerprint(&p.key),
+                    "connected": !p.off,
+                    "full": p.full,
+                    "lan": p.lan,
+                    "sessions": sessions,
+                    "streams": fed.contains(&p.key),
+                    "seen": seen,
+                })
+            })
+            .collect();
+        Outcome::Text(serde_json::Value::Array(machines).to_string())
     }
 
     /// A machine said what this one has there (or did not): the row filled

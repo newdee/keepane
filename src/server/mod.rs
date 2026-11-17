@@ -1287,6 +1287,10 @@ pub struct Server {
     /// is shutting down (then it is the shutdown that ended them, and
     /// `resume` is to bring them back).
     forget_after: Vec<(String, Instant)>,
+    /// A command of another machine is being done (`stream_command`): a
+    /// session it kills keeps its save, so the next start brings it back
+    /// (only one killed by hand here stays away; decision 20).
+    by_machine: bool,
     /// When shutdown, restart or logoff was last announced (`EndSession`):
     /// for a while after, nothing is forgotten (and if it was called off,
     /// forgetting goes on after that).
@@ -1517,6 +1521,7 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
             }
             // A panic inside a hook would otherwise leave the guard set forever.
             srv.in_hook = false;
+            srv.by_machine = false;
         }
         if srv.quit {
             srv.answer_waits_on_exit();
@@ -1767,6 +1772,7 @@ impl Server {
             events,
             last_saved: HashMap::new(),
             forget_after: Vec::new(),
+            by_machine: false,
             ending: None,
             next_msg: 0,
             observe: observe::Store::default(),
@@ -3367,7 +3373,14 @@ impl Server {
                 return Ok(s);
             }
         }
-        self.sessions.iter().max_by_key(|s| s.last_used).map(|s| s.id).ok_or_else(|| "no sessions".to_string())
+        // Named by nothing: this machine's last used one, never another
+        // machine's (decision 20: those are reached under their machine).
+        self.sessions
+            .iter()
+            .filter(|s| s.remote.is_none())
+            .max_by_key(|s| s.last_used)
+            .map(|s| s.id)
+            .ok_or_else(|| "no sessions".to_string())
     }
 
     fn resolve_window(&self, sid: SessionId, target: Option<&Target>) -> Result<usize, String> {
@@ -4517,7 +4530,9 @@ impl Server {
             }
             Cmd::ListSessions => {
                 let mut lines = Vec::new();
-                for s in &self.sessions {
+                // This machine's: another machine's are that machine's
+                // (`C-b w`, `C-b v`, `show-mirror`; decision 20).
+                for s in self.sessions.iter().filter(|s| s.remote.is_none()) {
                     let attached = self.clients.values().filter(|c| c.session == Some(s.id)).count();
                     let ago = s.created.elapsed().as_secs();
                     lines.push(format!(
@@ -4642,8 +4657,9 @@ impl Server {
                     for v in victims {
                         let name = self.session(v).map(|s| s.name.clone());
                         self.kill_session(v, "session killed");
-                        // Killed by hand: not back by itself at the next start.
-                        if let Some(name) = name {
+                        // Killed by hand: not back by itself at the next
+                        // start. Killed from another machine: it is.
+                        if let Some(name) = name.filter(|_| !self.by_machine) {
                             self.shelve_saved(&name);
                         }
                     }
@@ -6162,6 +6178,12 @@ impl Server {
                 let Some(cid) = cid else { return Outcome::Error("confirm-before: no client".into()) };
                 let label =
                     prompt.map(|p| self.expand_format(&p, cid)).unwrap_or_else(|| format!("Confirm '{cmd}'? (y/n)"));
+                // A kill done on another machine says so first: what it
+                // closes is there, not here.
+                let label = match self.kill_is_on(&cmd, Some(cid)) {
+                    Some(machine) => format!("on {machine}: {label}"),
+                    None => label,
+                };
                 if let Some(c) = self.clients.get_mut(&cid) {
                     c.prompt = Some(Prompt {
                         kind: PromptKind::Confirm(cmd),
@@ -6293,12 +6315,17 @@ impl Server {
                 let Some(cid) = cid else { return Outcome::Error("switch-client: no client".into()) };
                 let cur = self.clients.get(&cid).and_then(|c| c.session);
                 let Some(cur) = cur else { return Outcome::Error("client not attached".into()) };
-                let pos = self.sessions.iter().position(|s| s.id == cur).unwrap_or(0);
-                let n = self.sessions.len();
+                // The next and the one before: among the sessions of the
+                // machine this one is of (decision 20).
+                let machine = |s: &Session| s.remote.as_ref().map(|r| r.key.clone());
+                let of = self.session(cur).and_then(machine);
+                let ring: Vec<SessionId> = self.sessions.iter().filter(|s| machine(s) == of).map(|s| s.id).collect();
+                let pos = ring.iter().position(|id| *id == cur).unwrap_or(0);
+                let n = ring.len().max(1);
                 let sid = if next {
-                    self.sessions[(pos + 1) % n].id
+                    ring.get((pos + 1) % n).copied().unwrap_or(cur)
                 } else if prev {
-                    self.sessions[(pos + n - 1) % n].id
+                    ring.get((pos + n - 1) % n).copied().unwrap_or(cur)
                 } else if last {
                     let prev_session =
                         self.clients.get(&cid).and_then(|c| c.last_session).filter(|s| self.session(*s).is_some());
@@ -6623,8 +6650,10 @@ impl Server {
             c @ (Cmd::LinkId
             | Cmd::LinkTrust { .. }
             | Cmd::LinkList
+            | Cmd::LinkMachines
             | Cmd::LinkAllow { .. }
             | Cmd::LinkShare { .. }
+            | Cmd::LinkConnect { .. }
             | Cmd::LinkRekey) => self.exec_link_local(c, cid),
             c @ (Cmd::LinkAdd { .. }
             | Cmd::LinkPanes { .. }
@@ -8148,15 +8177,23 @@ impl Server {
             items.push(ChooserItem::Separator);
             lines.push("keepane".into());
         }
+        // A session is of one machine and is under that machine alone
+        // (docs/design/link.md, decision 20): this machine's first, then
+        // each other machine's under it.
+        let own: Vec<&Session> = self.sessions.iter().filter(|s| s.remote.is_none()).collect();
+        let of_machine = |addr: &str| -> Vec<&Session> {
+            self.sessions.iter().filter(|s| s.remote.as_ref().is_some_and(|r| r.addr == addr)).collect()
+        };
         // Paired with other machines, the chart has a row of them under
-        // the root, this one first.
-        let hosts = if chart && expand { self.chart_hosts() } else { Vec::new() };
+        // the root, this one first: with the windows, or as soon as a
+        // session of another machine is here to be under its own.
+        let hosts = if chart && (expand || own.len() < self.sessions.len()) { self.chart_hosts() } else { Vec::new() };
         if !hosts.is_empty() {
             items.push(ChooserItem::Host(None));
             lines.push(format!(
                 "{}\nthis machine · {}",
                 crate::sysinfo::hostname(),
-                crate::format::count(self.sessions.len(), "session")
+                crate::format::count(own.len(), "session")
             ));
         }
         // The chart shows the chosen branch, so nothing in it is folded.
@@ -8167,7 +8204,13 @@ impl Server {
             (true, true) => " · shared",
             (true, false) => " (shared)",
         };
-        for s in &self.sessions {
+        // A session's lines, then its windows' and their panes'.
+        let session_rows = |s: &Session, items: &mut Vec<ChooserItem>, lines: &mut Vec<String>| {
+            // Under its machine, a session of another needs no address.
+            let name = match &s.remote {
+                Some(r) => s.name.strip_suffix(&format!("@{}", r.addr)).unwrap_or(&s.name),
+                None => &s.name,
+            };
             let attached = self.clients.values().any(|c| c.session == Some(s.id));
             let open = expand && !folded(ChooserItem::Tree(s.id, None));
             let mark = shared(link_share::Spot::Session(s.id));
@@ -8176,7 +8219,7 @@ impl Server {
                 let fold = if expand && !open { " +" } else { "" };
                 format!(
                     "{}{sep}{}{}{mark}{fold}",
-                    s.name,
+                    name,
                     crate::format::count(s.windows.len(), "window"),
                     if attached { " · attached" } else { "" }
                 )
@@ -8184,13 +8227,13 @@ impl Server {
                 format!(
                     "{} {}: {} windows{}{mark}",
                     if open { "-" } else { "+" },
-                    s.name,
+                    name,
                     s.windows.len(),
                     if attached { " (attached)" } else { "" }
                 )
             });
             if !open {
-                continue;
+                return;
             }
             for (i, w) in s.windows.iter().enumerate() {
                 let flag = if i == s.cur {
@@ -8230,17 +8273,82 @@ impl Server {
                     });
                 }
             }
+        };
+        for s in &own {
+            session_rows(s, &mut items, &mut lines);
         }
+        if hosts.is_empty() {
+            // No row of machines (the tree, the list): each other machine a
+            // heading, its sessions under it.
+            let mut machines: Vec<&str> = Vec::new();
+            for r in self.sessions.iter().filter_map(|s| s.remote.as_ref()) {
+                if !machines.contains(&r.addr.as_str()) {
+                    machines.push(&r.addr);
+                }
+            }
+            for addr in machines {
+                items.push(ChooserItem::Separator);
+                lines.push(match self.machine_name(addr) {
+                    Some(name) => format!("{name} · {addr}"),
+                    None => addr.to_string(),
+                });
+                for s in of_machine(addr) {
+                    session_rows(s, &mut items, &mut lines);
+                }
+            }
+        }
+        // A machine in the chart: its sessions when they are here (it gave
+        // this one all of it), else what it shares, as it last said.
         for (m, addr) in hosts.iter().enumerate() {
-            self.remote_lines(m as u16, addr, &mut items, &mut lines);
+            let theirs = of_machine(addr);
+            self.remote_lines(
+                m as u16,
+                addr,
+                (!theirs.is_empty()).then_some(theirs.len()),
+                expand,
+                &mut items,
+                &mut lines,
+            );
+            for s in theirs {
+                session_rows(s, &mut items, &mut lines);
+            }
         }
         Some((items, lines))
     }
 
     /// A paired machine in the chart: its block (what is known of it), then
-    /// its sessions, windows and panes as it last said them.
-    fn remote_lines(&self, m: u16, addr: &str, items: &mut Vec<ChooserItem>, lines: &mut Vec<String>) {
+    /// its sessions, windows and panes as it last said them (the windows
+    /// and panes with `expand`). `here`: how many of its sessions are here
+    /// to be worked in (it gave this machine all of it); the caller lists
+    /// those under the block, and what it shares is not listed twice.
+    fn remote_lines(
+        &self,
+        m: u16,
+        addr: &str,
+        here: Option<usize>,
+        expand: bool,
+        items: &mut Vec<ChooserItem>,
+        lines: &mut Vec<String>,
+    ) {
         use crate::format::count;
+        // Disconnected here (`link disconnect`): said, nothing under it.
+        if self.link_off_at(addr) {
+            items.push(ChooserItem::Host(Some(m)));
+            lines.push(match self.machine_name(addr) {
+                Some(name) => format!("{name}\n{addr} · disconnected"),
+                None => format!("{addr}\ndisconnected"),
+            });
+            return;
+        }
+        if let Some(n) = here {
+            items.push(ChooserItem::Host(Some(m)));
+            let about = count(n, "session");
+            lines.push(match self.machine_name(addr) {
+                Some(name) => format!("{name}\n{addr} · {about}"),
+                None => format!("{addr}\n{about}"),
+            });
+            return;
+        }
         let view = self.remote_views.get(addr);
         let panes: &[link_tree::RemotePane] = view.map(|v| v.panes.as_slice()).unwrap_or_default();
         let mut sessions: Vec<u32> = Vec::new();
@@ -8282,6 +8390,9 @@ impl Server {
             let name = of_s[0].session_name.clone().unwrap_or_else(|| format!("${s}"));
             items.push(ChooserItem::Remote(m, s, None, None));
             lines.push(format!("{name}\n{}", count(windows.len(), "window")));
+            if !expand {
+                continue;
+            }
             for w in windows {
                 let of_w: Vec<&&link_tree::RemotePane> = of_s.iter().filter(|p| p.window == w).collect();
                 let first = of_w[0];
@@ -8579,6 +8690,19 @@ impl Server {
             // The task board and the tree act on the tagged lines, else the
             // one under the cursor, and stay open (the list is live, so the
             // rows change in place). A session asks first.
+            // Another machine under the cursor: `c` talks with it again,
+            // `x` stops (still paired), `D` forgets the pairing (asked
+            // first; decision 20).
+            (KeyCode::Char('c' | 'x' | 'D') | KeyCode::DC, false, false)
+                if matches!(ch.items.get(ch.sel), Some(ChooserItem::Host(Some(_)))) =>
+            {
+                let Some(ChooserItem::Host(Some(m))) = ch.items.get(ch.sel).copied() else { return };
+                let key = match k.code {
+                    KeyCode::Char(c @ ('c' | 'x')) => c,
+                    _ => 'D',
+                };
+                self.picker_machine(cid, m, key);
+            }
             // `s` in the tree: what is under the cursor (or tagged) shared
             // with a paired machine, or no longer (`link-share`).
             (KeyCode::Char('s'), false, false) if matches!(ch.kind, ChooserKind::Tree { .. }) => {
@@ -8655,10 +8779,16 @@ impl Server {
                         return;
                     }
                     Some(ChooserItem::Host(Some(m))) => {
-                        c.chooser = None;
-                        if let Some(addr) = self.chart_hosts().get(m as usize).cloned() {
-                            self.attach_remote(cid, &addr, None);
+                        let Some(addr) = self.chart_hosts().get(m as usize).cloned() else { return };
+                        // Its sessions are under it: one of them is gone into.
+                        if self.sessions.iter().any(|s| s.remote.as_ref().is_some_and(|r| r.addr == addr)) {
+                            self.message(cid, "Enter on one of its sessions, windows or panes");
+                            return;
                         }
+                        if let Some(c) = self.clients.get_mut(&cid) {
+                            c.chooser = None;
+                        }
+                        self.attach_remote(cid, &addr, None);
                         return;
                     }
                     Some(ChooserItem::Host(None)) => {
@@ -8720,27 +8850,79 @@ impl Server {
         }
     }
 
+    /// A key on another machine's block in the chart: `c` connect, `x`
+    /// disconnect (at once: it is taken back with `c`), `D` its pairing
+    /// forgotten, asked first, since pairing again takes its web address.
+    fn picker_machine(&mut self, cid: ClientId, m: u16, key: char) {
+        let Some(addr) = self.chart_hosts().get(m as usize).cloned() else { return };
+        if key == 'D' {
+            let said = match self.machine_name(&addr) {
+                Some(name) => format!("{name} ({addr})"),
+                None => addr.clone(),
+            };
+            if let Some(c) = self.clients.get_mut(&cid) {
+                c.prompt = Some(Prompt {
+                    kind: PromptKind::Confirm(Box::new(Cmd::LinkRemove { addr })),
+                    label: format!("forget {said}? pairing again takes `link add` (y/n) "),
+                    input: String::new(),
+                    cursor: 0,
+                    hint: None,
+                    browse: None,
+                });
+            }
+            return;
+        }
+        match self.exec(Cmd::LinkConnect { addr, off: key == 'x' }, Some(cid)) {
+            Outcome::Text(t) => self.message(cid, t.trim()),
+            Outcome::Error(e) => self.message(cid, &e),
+            _ => {}
+        }
+    }
+
     /// `x` (or `r`, `D`) on picker lines: a session among them is asked
     /// about first, since killing it cannot be undone; the rest goes at once.
     fn picker_act(&mut self, cid: ClientId, targets: Vec<ChooserItem>, restart: bool, forget: bool) {
+        // Another machine's: said in the question, and asked for a window
+        // or a pane too, since what goes is there, not here (decision 20).
+        let there = targets.iter().find_map(|t| match t {
+            ChooserItem::Tree(sid, _) | ChooserItem::Job(sid, ..) => self.machine_said(*sid),
+            _ => None,
+        });
         let names: Vec<String> = targets
             .iter()
             .filter_map(|t| match t {
-                ChooserItem::Tree(sid, None) => self.session(*sid).map(|s| s.name.clone()),
+                ChooserItem::Tree(sid, None) => self.session(*sid).map(|s| match &s.remote {
+                    Some(r) => s.name.strip_suffix(&format!("@{}", r.addr)).unwrap_or(&s.name).to_string(),
+                    None => s.name.clone(),
+                }),
                 _ => None,
             })
             .collect();
-        if restart || names.is_empty() {
+        if restart || (names.is_empty() && there.is_none()) {
             return self.picker_run(cid, targets, restart, forget);
         }
-        let what = if forget {
+        let on = there.map(|m| format!("on {m}: ")).unwrap_or_default();
+        let what = if names.is_empty() {
+            let count = |f: fn(&ChooserItem) -> bool, word| {
+                let n = targets.iter().filter(|t| f(t)).count();
+                (n > 0).then(|| crate::format::count(n, word))
+            };
+            let parts: Vec<String> = [
+                count(|t| matches!(t, ChooserItem::Tree(_, Some(_))), "window"),
+                count(|t| matches!(t, ChooserItem::Job(..)), "pane"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            format!("{on}kill {}? (y/n) ", parts.join(" and "))
+        } else if forget {
             format!(
-                "kill and forget {} {} (resume will not bring it back)? (y/n) ",
+                "{on}kill and forget {} {} (resume will not bring it back)? (y/n) ",
                 if names.len() == 1 { "session" } else { "sessions" },
                 names.join(", ")
             )
         } else {
-            format!("kill {} {}? (y/n) ", if names.len() == 1 { "session" } else { "sessions" }, names.join(", "))
+            format!("{on}kill {} {}? (y/n) ", if names.len() == 1 { "session" } else { "sessions" }, names.join(", "))
         };
         if let Some(c) = self.clients.get_mut(&cid) {
             c.prompt = Some(Prompt {
@@ -10485,8 +10667,11 @@ impl Server {
             // `t tag` in the hint, which still works: the line stays within
             // 80 columns.
             let paired = self.link.as_ref().is_some_and(|l| !l.peers.is_empty());
+            let on_machine = matches!(ch.items.get(ch.sel), Some(ChooserItem::Host(Some(_))));
             let actions = match ch.kind {
                 ChooserKind::Jobs => "Enter go  x kill  r restart  t tag  f filter",
+                // On another machine: what the keys do to it.
+                ChooserKind::Tree { .. } if on_machine => "c connect  x disconnect  D forget  a all  v tree",
                 ChooserKind::Tree { style: TreeStyle::Chart, .. } if ch.all && paired => {
                     "x kill  D delete  s share  f filter  a branch  v tree"
                 }

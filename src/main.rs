@@ -83,7 +83,8 @@ Panes on other machines (both run `keepane web`; docs/design/link.md):
   clone host:port [path] [--tell pane]   push [host:port [path]] [--tell pane]   push -l   (commits of this repository there; docs/design/link-push.md)
   send-agents [host:port] [dir] [-s chat-id]... [-n]   send-agents -l   (this project and its agents' chats there; docs/design/agent-sync.md)
   link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane
-  link id   link trust host:port key [--full [--lan]]   link remove host:port   link rekey
+  link disconnect host:port   (stop talking with it, both ways; still paired)   link connect host:port   link remove host:port   (unpair: `link add` again to come back)
+  link id   link trust host:port key [--full [--lan]]   link rekey
 Panes from a Feishu (Lark) app of your own (set -g feishu-app-id / feishu-app-secret; docs/design/feishu.md):
   feishu   (connection and who is let in)   feishu allow ou_... [--shell|--no-shell] [--screen|--no-screen]   feishu remove ou_...
 Keys not arriving?  show-keys   (prints each key as the console hands it over and as keepane reads it; q quits)

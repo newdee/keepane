@@ -537,6 +537,30 @@ fn there_targets(cmd: &mut Cmd) -> Option<Vec<(&mut Option<Target>, Level)>> {
     })
 }
 
+impl Server {
+    /// The machine a session is of, as a person reads it: `DFINE
+    /// (100.64.0.3:7681)`, its address alone until it said its name; none
+    /// for a session of this machine.
+    pub(super) fn machine_said(&self, sid: super::SessionId) -> Option<String> {
+        let addr = &self.session(sid)?.remote.as_ref()?.addr;
+        Some(match self.machine_name(addr) {
+            Some(name) => format!("{name} ({addr})"),
+            None => addr.clone(),
+        })
+    }
+
+    /// The other machine a kill is done on (`kill-pane`, `kill-window`,
+    /// `kill-session` of a session of it): said in the question before
+    /// it, since what it closes is not on this machine (decision 20).
+    pub(super) fn kill_is_on(&self, cmd: &Cmd, cid: Option<super::ClientId>) -> Option<String> {
+        let target = match cmd {
+            Cmd::KillPane { target, .. } | Cmd::KillWindow { target, .. } | Cmd::KillSession { target, .. } => target,
+            _ => return None,
+        };
+        self.machine_said(self.resolve_session(target.as_ref(), cid).ok()?)
+    }
+}
+
 /// The target a command is about first: its session is the one a split or
 /// a new window puts the eye in.
 fn first_target(cmd: &Cmd) -> Option<&Target> {

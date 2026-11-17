@@ -6142,3 +6142,23 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 
 - CI（提交 b02a7e9，run 44016610551）：web、ubuntu、windows、macOS 四项一次通过。
 - 发布：v0.71.0（第 197 条），tag 在 b02a7e9。Release run 44017234953 成功，13 个文件；Homebrew formula run 44018248587 第一次 macOS 的 job 失败（"release not found"，GitHub 接口的瞬时失败，ubuntu 的 job 同样的步骤成功），重跑失败的 job 后通过，3 个 sha256 与发布文件一致；manifests 已拉取（bf2882a）；winget 新开 PR #481995。演示图没重拍：没有图拍到 Git 标签页的文件树。- 另：2026-11-17 02:01 用户的 Windows server 退出，查明是 Mac 经 link 发来 `kill-pane`（rex-rsi-check 的最后一个 pane）和 `kill-session -t $8`（Dfine），证据在事件日志；用户在 Mac 的 `C-b w` 里看到 Windows 的 session 列在本机组下，觉得乱而关掉。由此定下的改动（远程 session 只按机器分组显示、不再有"复制"的说法、connect / disconnect / delete、远程 kill 不移走存档）另立条目。当时还说过 server.log 少了 `kill-session` 那一行，是查日志时筛选词漏了它，日志里有这一行，不是 bug。
+## 198. 远程 session 只按机器分组显示；connect / disconnect / delete
+
+用户：2026-11-17 凌晨两点 Windows 上的 pane"莫名其妙只剩一个"。查明（事件日志 `events\default\2026-11-17.jsonl`）：Mac 经 link 发来 `kill-pane -t $1:@6.%7`（rex-rsi-check 的最后一个 pane）和 `kill-session -t $8`（Dfine），Windows 的 server 没有 session 后退出。用户说当时在 Mac 的 `C-b w` 里看到 Windows 的 session 列在本机组下，觉得乱，就关了；又说"从别的机器复制过来这个概念有问题……c-b w 和 c-b v 仅仅只是分组显示而已"，并要 connect / disconnect / delete。"改吧，按推荐来"。设计见 `docs/design/link.md` 第 20 条。
+
+- 定性：结构缺陷。别的机器的 session 进了本机的 `sessions`，所有列表、切换、默认目标都把它当本机的；对它的 kill 又照第 17 条发回原机器，界面上没有任何"这是另一台的"提示。不是某一处的边界遗漏，而是"本机的 session"这个集合在每个入口都没有分开。收敛：本机组只取 `remote.is_none()`，别的机器的按 `remote.addr` 归到它的机器下面（`chooser_lines` 一处），`list-sessions`、`resolve_session` 的默认、`switch-client -n/-p` 各补一处；kill 的提示统一走 `machine_said` / `kill_is_on`。
+- 同类搜过：所有遍历 `self.sessions` 的 70 多处逐一看过。按 id 查找的不受影响；"全部"类（`list-windows -a`、`list-panes -a`、`find-window`、`find-text`、`-t` 补全）照旧包含别的机器的，每行带着机器，dashboard 靠 `list-panes -a` 分组，写进了设计文档。飞书 `/panes` 和手机页也列出别的机器的 pane（0.62 起），记为遗留，等用户定。
+- 会不会引入新 bug：没配对时结构图、列表和以前一样（原有测试全过）；本机的窗口、pane 在 `C-b w` 里按 `x` 仍立即关，只有别的机器的才问；本机亲手 kill 的 session 仍把存档移到一边（新 e2e 断言）；旧的配对表没有 `off` 读作已连接，旧版本读到 `off` 忽略它。
+- 撤回一句话：查原因时我说过"server.log 少了 kill-session 那一行，是 bug"。那一行在日志里，是我的筛选词漏了它，不是 bug，没有改。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 0 | 实现 | 分组（结构图机器框下面是它的 session；树和列表每台机器一行标题；本机组和计数只算本机的）、`list-sessions` 只列本机、`C-b )` `(` 在同一台机器的 session 之间转、不带目标时取本机的；kill 的提示带机器名（`C-b x`、`C-b &`、`C-b w` 的 `x`/`D`，别的机器的窗口和 pane 也问）；远程发来的 kill 不移走存档（`by_machine`）；`link disconnect` / `connect`（`Peer.off`，表里写 `off`；发出、收进、实时流、跟随、清单、机器名六处都跳过）、`link list -J`；结构图机器框上 `c`/`x`/`D`，dashboard `L`。新单元测试 3 个、e2e 1 个（两台真 server）。18 个变异体：16 个被单元或 e2e 抓到；1 个因替换文字出现两次跳过、1 个（不跟随断开的机器）单元测试抓不到（夹具的密钥不是真的，本来就跟随不了），改用 e2e 重跑，两个都被抓到；删掉那条什么都没测到的单元断言。Windows 671 / 11 / 165，Linux 655 / 162 | 实现中，不计 |
+| 1 | 静态一致性 | 逐句对设计文档第 20 条、README 中英、man、tmux-parity。发现：第 20 条写的提示格式（`kill session Dfine on DFINE (…)?`）和实现（`on DFINE (…): kill session Dfine?`）不同；没写 `link connect` 只能在 pane 之外、`x` 断开不问、`link list -J` | 有发现，不计 |
+| 2 | 全局不变量 | "别的机器的 session 只在它名下，本机列表、默认目标都不含它"：列出全部遍历 `self.sessions` 的地方逐一判断（见上）。发现：设计文档"本机的列表只有本机的"会被读成所有列表，补写"全部"类列表的规则和飞书、手机页的遗留 | 有发现，不计 |
+| 3 | 代码正确性、错误路径 | 发现两处：`link list -J` 在从没配对的机器上会生成密钥对（`mirror_peers` 特意避免这件事），加守卫和测试（去掉守卫测试就失败）；`C-b w` 里 `D` 再 `y` 的路径没测到，e2e 改成按 `D`、`n`（仍配对）再 `D`、`y`（两边都删了） | 有发现，不计 |
+| 4 | 边界与退化输入 | 没有配对的机器、旧表无 `off`、列表或结构图开着时机器被删、本机 session 名本身含 `@`、远程只有一个 session 时 `C-b )`、断开时有在途命令：逐项对代码和测试。Windows 672 / 11 / 165，Linux 656 / 162 | 干净 1/3 |
+| 5 | 真二进制 | 两台临时 server（`-L`、各自的 sessions 目录）15 项全过，连跑 2 次：A 的 `ls` 只有 A 的；A 关掉 B 的 victim，B 上存档留在原处，B 亲手关的 byhand 移到 `killed`；B 的 server 退出再启动，victim 和 keep 回来、byhand 没回来；B 换了 web 端口，A 按密钥跟到新地址；`keepane link disconnect` / `list -J` / `list` / `info`（被拒）/ `connect`、`keepane link` 的用法都对。（中途改了几次检查脚本本身：启动 server 的方式、B 重启后换端口。）Windows 672 / 11 / 165 | 干净 2/3 |
+| 6 | 可复现性 | e2e 全量连跑 3 次都是 165；新 e2e 再跑 5 次；lib 连跑 2 次都是 672。Linux 656 / 162 | 干净（3/3），验收通过 |
+
+- 遗留：飞书机器人的 `/panes` 和手机页列出别的机器的 pane，能经这台机器打字（0.62 起），要不要挡等用户定。两台都要升级：分组和断开在看的那台生效，"远程 kill 不移走存档"在被 kill 的那台生效。演示图没重拍：dashboard 底栏新加的 `L machines` 在 `T trace` 后面，现有截图在那之前就被截断；结构图的演示图没有配对的机器。

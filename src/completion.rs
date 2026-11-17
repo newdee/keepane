@@ -92,6 +92,8 @@ pub fn complete(
                 "attach",
                 "capture",
                 "clone",
+                "connect",
+                "disconnect",
                 "id",
                 "info",
                 "kill",
