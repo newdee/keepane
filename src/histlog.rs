@@ -31,10 +31,10 @@ pub const DAY_CAP: u64 = 20 * 1024 * 1024;
 /// (the tests do, and so stay out of the real directory), else
 /// `%LOCALAPPDATA%\keepane\history`.
 pub fn default_dir() -> PathBuf {
-    if let Some(d) = crate::legacy::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d).join("history");
     }
     crate::logger::log_dir().join("history")
@@ -44,13 +44,13 @@ pub fn default_dir() -> PathBuf {
 /// else beside moved saved sessions or history (the tests move those, and
 /// so stay out of the real directory), else `%LOCALAPPDATA%\keepane\events`.
 pub fn events_dir() -> PathBuf {
-    if let Some(d) = crate::legacy::var_os("KEEPANE_EVENTS_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_EVENTS_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d).join("events");
     }
-    if let Some(d) = crate::legacy::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
         let mut d = d;
         d.push("-events");
         return PathBuf::from(d);
@@ -62,10 +62,10 @@ pub fn events_dir() -> PathBuf {
 /// sessions or history (the tests move those), else
 /// `%LOCALAPPDATA%\keepane\chat`.
 pub fn chat_dir() -> PathBuf {
-    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d).join("chat");
     }
-    if let Some(d) = crate::legacy::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
         let mut d = d;
         d.push("-chat");
         return PathBuf::from(d);

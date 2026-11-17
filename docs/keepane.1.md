@@ -160,6 +160,17 @@ settled. What a pane is up to is `#{pane_state}`: idle, busy, typing (keys
 with no Enter), no-agent (an `ai` pane back at its shell), unknown (a shell
 whose prompt hook was never heard), exited, or `-`.
 
+The tools `keepane mcp` offers an agent (each one of the commands above,
+as the pane it serves): `list_panes`, `read_screen`, `send_message`,
+`reply`, `wait_message`, `current_message`, `list_messages`,
+`trace_message`, `wait_output`, `drop_message`, `move_message`,
+`set_status`, `create_session`, `create_window`, `split_pane`,
+`set_work_mode`, `rename_pane`, `kill_pane`, `list_tasks`, `show_task`,
+`query_events`, `list_ssh_hosts`; with other machines, `list_links`,
+`link_info`, `create_remote_pane`, `push_repo`; the group chat's
+`chat_list`, `chat_new`, `chat_join`, `chat_say`, `chat_read`,
+`chat_who`.
+
 ### Group chat
 
 Channels where panes talk together (docs/design/chat.md): `chat-new`,
@@ -230,8 +241,8 @@ this version), `import-config` (bring what keepane can use from a tmux
 config), `completion` (a Tab completer for PowerShell, bash, zsh or fish), `man`
 (this page),
 `web` (the panes on a phone), `link` (panes on other machines), `show-keys`
-(what the terminal sends for each key), `migrate` (from wmux, keepane's old
-name), `startup` (`on`, `off`, `status`: start the server at logon, every
+(what the terminal sends for each key), `startup` (`on`, `off`, `status`:
+start the server at logon, every
 saved session restored: on Windows a `Run` value, on macOS a launchd agent in
 `~/Library/LaunchAgents`, on Linux a systemd user unit enabled for
 `default.target`, with the `PATH`, `SHELL` and locale it ran with). On
@@ -454,9 +465,9 @@ from a terminal outside keepane or the `C-b :` prompt, never from inside a
 pane (`link-trust --full` too); taking back (`link unshare`) is anyone's.
 An answer to a message a pane here sent goes back to that pane, shared or
 not. The five permissions of keepane 0.55 and before (`--shell`,
-`--screen`, `--panes`, `--push`, `--agents`, `--all`) are gone: a machine
-that had all five has `--full`, one that had some of them has nothing, and
-the status line says which, once.
+`--screen`, `--panes`, `--push`, `--agents`, `--all`) are gone, and from
+0.77 a table with them is not read in their words: give such a machine
+`--full` or share with it again.
 `keepane link start <host:port> [-s session] [-n name] [-m mode]
 [-c dir] [-- program args]` (`link-start`) starts a pane
 on a machine that gave this one `--full`: one of its `agent-commands` (with
@@ -732,7 +743,8 @@ bars are green at the bottom, yellow higher up and red at the top.
 a pane, never the one it had before; `cycle` takes them in turn; a name
 sets that one; `off`, or `animation off`, leaves the clock still
 (`aquarium`, `life`, `donut`, `weather`, `hourglass`, `orbits` and
-`radar`, taken out in 0.46, give `random`). Under a clock, `/` turns to
+`radar` were taken out in 0.46, and from 0.77 are refused as any other
+name). Under a clock, `/` turns to
 the next kind and `?` to the one before, its name shown for a second;
 that holds until the clock goes, the option is not changed (`/` starts one
 under `clock-mode-animation off`, none under `animation off`). The clock
@@ -781,6 +793,155 @@ sessions when `sessions-dir` or `KEEPANE_SESSIONS_DIR` moves them) keeps
 the used ones: names, users, ports, times, counts, and the names `d` took
 off. No password or key is read or kept.
 
+### Every option
+
+Set with `set -g` (`set -gu` back to the default), read with
+`show-options -g`. A name may be shortened while it stays one option's.
+*(theme)* is the built-in theme's value (`theme`).
+
+| Option | Default | What |
+|---|---|---|
+| `prefix` | `C-b` | The prefix key. |
+| `default-shell` | `pwsh` on Windows, else `$SHELL` (or `/bin/sh`) | What a new pane runs when no program is given. |
+| `default-command` | empty | A whole command line that replaces `default-shell` when set. |
+| `mouse` | `on` | Clicks select panes and windows, drag resizes, the wheel scrolls. |
+| `history-limit` | `5000` | Lines of scrollback a pane keeps. |
+| `status` | `on` | The status line. |
+| `status-position` | `bottom` | `top` or `bottom`. |
+| `status-left` | *(theme)* | The status line's left part (a format). |
+| `status-right` | *(theme)* | Its right part (a format). |
+| `status-left-length` | `40` | The most columns of the left part. |
+| `status-right-length` | `100` | The most columns of the right part. |
+| `status-justify` | `left` | Where the window list sits: `left`, `centre`, `right`, `absolute-centre`. |
+| `status-style` | *(theme)* | The status line's colours. |
+| `status-bg` | *(theme)* | tmux's: `status-style`'s background alone. |
+| `status-fg` | *(theme)* | tmux's: `status-style`'s foreground alone. |
+| `window-status-separator` | empty | Text between window labels. |
+| `status-interval` | `15` | Seconds between runs of `#(command)` pieces. |
+| `window-status-format` | *(theme)* | A window's label (a format). |
+| `window-status-current-format` | *(theme)* | The current window's label. |
+| `pane-border-style` | *(theme)* | The lines between panes. |
+| `pane-active-border-style` | *(theme)* | The active pane's lines. |
+| `pane-border-lines` | `heavy` | `heavy`, `single`, `double` or `simple` (ASCII). |
+| `pane-frames` | `off` | Each pane in a rounded frame of its own. |
+| `display-panes-colour` | `blue` | `display-panes`: the other panes' numbers. |
+| `display-panes-active-colour` | `red` | `display-panes`: the active pane's number. |
+| `clock-mode-style` | `24` | `clock-mode`: hours as `12` or `24`. |
+| `clock-mode-colour` | `default` | The big digits' colour (`default`: the active border's). |
+| `clock-mode-info` | `on` | The lines under the clock (date, waits, pane, machine). |
+| `clock-mode-zones` | empty | Other places' time under the date (IANA names, 8 at most). |
+| `clock-mode-animation` | `random` | What moves under the clock (a name, `random`, `cycle`, `off`). |
+| `clock-mode-look` | `plain` | The characters it is drawn in: `plain`, `dots`, `blocks`, `binary`. |
+| `base-index` | `0` | The first window's number. |
+| `remain-on-exit` | `off` | A pane stays, saying why, when its program exits. |
+| `save-history` | `500` | Scrollback lines saved with a session (`all`, or 0 for none). |
+| `monitor-activity` | `off` | Mark a background window that prints (`#`). |
+| `monitor-bell` | `on` | Mark a window that rings the bell (`!`). |
+| `monitor-silence` | `0` | Mark a window quiet this many seconds (`~`); 0 never. |
+| `visual-bell` | `off` | Say a bell on the status line instead of ringing. |
+| `visual-activity` | `off` | Say activity on the status line too. |
+| `notify` | `off` | A desktop notification for each alert and done pane. |
+| `update-check` | `on` | Ask GitHub once a day whether a newer keepane is out. |
+| `agent-cost` | `on` | Price agents' tokens by LiteLLM's list (fetched once a day). |
+| `pane-border-status` | `off` | A line of text on each pane's `top` or `bottom` border. |
+| `pane-border-format` | *(theme)* | That line (a format). |
+| `pane-base-index` | `0` | The first pane's number. |
+| `display-time` | `1500` | Milliseconds a message stays on the status line. |
+| `repeat-time` | `500` | Milliseconds a repeatable key may follow without the prefix. |
+| `prefix-hint` | `on` | After the prefix, a panel of what the next key does. |
+| `prefix-hint-delay` | `500` | Milliseconds before that panel shows (0: at once). |
+| `plugin-path` | `~/.keepane/plugins` | Where `@plugin` and `load-plugin` look. |
+| `autosave` | `on` | Save the sessions after every change of shape and on exit. |
+| `restore-on-start` | `on` | Restore every saved session when the server starts with none. |
+| `sessions-dir` | *(data directory)*`/sessions` | Where sessions are saved. |
+| `window-size` | `latest` | Whose size a session takes: `latest`, `smallest`, `largest`, `manual`. |
+| `default-terminal` | `xterm-256color` | `TERM` in panes on Linux and macOS. |
+| `pane-timestamps` | `off` | When each command ran, and how it went, at its line's end. |
+| `log-history` | `on` | Keep what panes print on disk (`choose-history`). |
+| `log-history-days` | `30` | Days kept; 0 all. |
+| `log-history-dir` | *(data directory)*`/history` | Where. |
+| `undo-kill-time` | `10` | Seconds a killed pane or window waits for `undo-kill`. |
+| `keep-zoom` | `on` | A zoomed window stays zoomed when another of its panes is selected. |
+| `animation` | `on` | A frame flies to the pane the keys now go to. |
+| `animation-time` | `160` | Its milliseconds (0: off). |
+| `message-hop-limit` | `8` | The most hops a chain of messages may take. |
+| `message-envelope` | `fields` | A message's header: `fields` or `json`. |
+| `message-inbox-limit` | `100` | The most messages one inbox holds. |
+| `message-max-size` | `64K` | The most bytes one message holds. |
+| `message-wait-max` | `600` | The longest `-w`, in seconds. |
+| `agent-pane-limit` | `8` | The most panes a pane (and those it made) may make. |
+| `agent-commands` | `pwsh powershell claude codex` on Windows, else `bash zsh sh claude codex` | What `create-pane` may start. |
+| `done-events` | `command agent wait` | What counts as done: `command`, `agent`, `wait`, `task`, `exit`, `bell`. |
+| `done-after` | `30` | Seconds a command must run to count. |
+| `done-lines` | `5` | Last lines that go with a telling. |
+| `done-panes` | `named` | Which panes: `named` (a name, or `ai`/`shell` mode) or `all`. |
+| `done-webhook` | empty | An HTTP(S) address told each time. |
+| `done-webhook-format` | `json` | Its body: `json`, `text`, `feishu`, `wecom`, `dingtalk`, `slack`, `discord`. |
+| `done-webhook-secret` | empty | The secret a Feishu or DingTalk bot checks signatures with. |
+| `feishu-app-id` | empty | A Feishu (Lark) app of one's own: its id. |
+| `feishu-app-secret` | empty | Its secret (`show-options` prints `(set)`). |
+| `feishu-domain` | `feishu` | `feishu`, `lark`, or an address. |
+| `feishu-notify` | `on` | Tellings go to the people let in. |
+| `event-log` | `on` | What happens to messages and panes, a JSON Lines file a day. |
+| `event-log-days` | `30` | Days kept. |
+| `event-log-max` | `20M` | The most bytes one day's file holds. |
+| `git-command` | empty | The git to run (empty: the one found). |
+| `link-clone-dir` | `~/keepane` | Where a repository another machine clones here goes. |
+| `link-push-limit` | `200M` | The largest bundle of commits sent or taken. |
+| `link-agents-limit` | `1G` | The largest `send-agents` pack. |
+| `web-upload-dir` | `keepane-uploads` | Where a file sent from the phone goes (under the pane's directory). |
+| `web-upload-max` | `2G` | The largest file the phone page takes. |
+| `hint-open` | empty | What opens a path picked in `hints` (empty: VS Code, `$EDITOR`, the desktop). |
+| `theme` | `paper-dark` | The built-in theme last set: `paper`, `paper-dark`, `tokyo-night`, `tokyo-day`. |
+| `window-style` | *(theme)* | The panes' own colours. |
+| `pane-colours` | *(theme)* | The 16 colours drawn for a program's first 16. |
+| `choose-tree-style` | `chart` | How `choose-tree` shows at first: `chart`, `tree` or `list`. |
+| `dashboard-icons` | `emoji` | The dashboard's `[0] Files` marks: `emoji` or `nerd`. |
+| `chat-days` | `30` | Days a group chat line is kept (0: all). |
+| `synchronize-panes` | `off` | Keys typed go to every pane of the window. |
+### Every format variable
+
+`#{name}` in a format (the status line, `display-message -p`, `-F`);
+flags are `1` or `0`. `#{?name,yes,no}` chooses, `#{=N:name}` cuts,
+`#{b:name}` takes the last part of a path, as in tmux.
+
+| Variable | What |
+|---|---|
+| `session_name` (`S`), `session_id` | The session's name; its id (`$`*N*). |
+| `session_windows`, `session_attached` | Its windows; the clients attached to it. |
+| `session_created`, `session_activity`, `session_last_attached` | When it was made, last active, last attached (seconds since 1970). |
+| `window_name` (`W`), `window_id`, `window_index` (`I`) | The window's name, id (`@`*N*), number. |
+| `window_panes`, `window_width`, `window_height`, `window_layout` | Its panes; its size; its layout (tmux's form). |
+| `window_flags` (`F`) | Its marks: `*` current, `-` last, `#` activity, `!` bell, `~` silence, `@` message, `Z` zoomed, `S` keys go to all its panes. |
+| `window_active`, `window_last_flag`, `window_zoomed_flag` | Flags: current, the last one, zoomed. |
+| `window_bell_flag`, `window_activity_flag`, `window_silence_flag` | Flags: rang, printed, went quiet. |
+| `window_start_flag`, `window_end_flag`, `window_activity` | First, last in the list; when it last printed. |
+| `pane_index` (`P`), `pane_id` (`D`), `pane_title` (`T`), `pane_name` | The pane's number, id (`%`*N*), title, name. |
+| `pane_address` | Where it is: `$`*s*`:@`*w*`.%`*p*. |
+| `pane_current_command`, `pane_pid_command`, `pane_start_command` | What runs in front; what its process runs; what it was started with. |
+| `pane_current_path`, `pane_current_path_short` | Its directory; the same, shortened. |
+| `pane_work_mode`, `pane_state`, `pane_idle`, `pane_unheard` | Its work mode; `idle`, `busy`, `typing`, `no-agent`, `unknown`, `exited` or `-`; idle; its agent never said it is free. |
+| `pane_inbox`, `pane_message`, `pane_status` | Messages waiting; the one it works on; what it said it does (`pane-status`). |
+| `pane_width`, `pane_height`, `pane_top`, `pane_left`, `pane_bottom`, `pane_right` | Its size and where its edges are. |
+| `pane_at_top`, `pane_at_bottom`, `pane_at_left`, `pane_at_right` | Flags: at the window's edge. |
+| `pane_active`, `pane_last`, `pane_dead`, `pane_in_mode`, `pane_synchronized`, `pane_passthrough` | Flags: active, the last one, its program exited, in copy mode, keys go to all, passthrough allowed. |
+| `pane_dead_status`, `pane_dead_time` | How its program exited, and when. |
+| `pane_pid`, `pane_start_time`, `pane_activity`, `pane_output_count` | Its process; when it started; when it last printed; how many times it has printed. |
+| `pane_mode`, `alternate_on`, `mouse_any_flag`, `cursor_x`, `cursor_y` | Its mode's name; flags: alternate screen, mouse wanted; the cursor. |
+| `history_size`, `history_limit` | Scrollback lines kept, and the most. |
+| `pane_last_line` | The last line its last command printed. |
+| `pane_ssh_host` | The machine its `ssh` is on, when it runs one. |
+| `pane_machine`, `pane_host`, `pane_watch` | Another machine's pane: its `host:port`, its name, the watch's label. |
+| `agent`, `agent_model`, `agent_cost`, `agent_tokens`, `agent_context` | The agent it runs, its model, cost, tokens, context used. |
+| `agent_limit`, `agent_cpu`, `agent_mem`, `agent_tools`, `agent_turns` | Its plan's limits used (Codex), CPU, memory, tools called, replies. |
+| `client_name`, `client_session`, `client_width`, `client_height` | The client: its name, its session, its size. |
+| `client_created`, `client_activity`, `client_prefix` | When it attached, last typed; flag: the prefix was pressed. |
+| `host` (`H`), `host_short` (`h`), `socket_path`, `pid`, `version` | This machine's name, short; the server's socket, process, version. |
+| `cpu_percentage`, `ram_percentage`, `ram_used`, `uptime` | This machine's CPU, memory used, how long it has run. |
+| `battery_percentage`, `battery_charging` | Its battery, and whether it charges. |
+| `local_ip`, `public_ip`, `web_url`, `web_clients` | Its addresses; the phone page's address and how many look at it. |
+| `git_branch`, `git_head`, `git_changed`, `git_ahead`, `git_behind`, `git_conflicts`, `git_marks` | The pane's repository: branch, commit, files changed, commits ahead and behind, conflicts, all in one. |
+| `keepane_update` | A newer keepane, when one is out. |
 ## ENVIRONMENT
 
 `KEEPANE`
@@ -805,6 +966,38 @@ off. No password or key is read or kept.
 : A price list (LiteLLM's form) to price the agents' tokens by, instead of
   the one fetched; nothing is fetched.
 
+`KEEPANE_LOG_DIR`
+: The data directory, instead of the system's (logs, and where the
+  others below go when they are not set).
+
+`KEEPANE_LOG`
+: How much `server.log` says: `error`, `warn`, `info` (the default),
+  `debug` or `trace`.
+
+`KEEPANE_LOG_MAX`
+: Bytes `server.log` grows to before it moves aside (a new one starts).
+
+`KEEPANE_HISTORY_DIR`
+: Where what panes print is kept, unless `log-history-dir` says.
+
+`KEEPANE_EVENTS_DIR`
+: Where the event log goes.
+
+`KEEPANE_LINK_DIR`
+: Where the link keys, the paired machines and the Feishu accounts are
+  kept (a folder a socket under it).
+
+`KEEPANE_NO_TOAST`
+: Set, no desktop notification is raised.
+
+`KEEPANE_SCOOP_UPDATE`
+: The command `keepane update` runs for a Scoop install, instead of
+  `scoop update keepane`.
+
+`KEEPANE_CLAUDE_DIR`
+: Where `keepane setup claude` writes, instead of `~/.claude` (or
+  `CLAUDE_CONFIG_DIR`).
+
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`
 : Where Claude Code and Codex keep their transcripts, as the agents
   themselves read them (the server's own environment).
@@ -824,9 +1017,9 @@ off. No password or key is read or kept.
   log, `prices.json` (the agents' price list, as last fetched), `web.key` (the phone's code kept by `keepane web --keep-key`), and
   `link/`*socket*`/`: a server's key pair (`key`, readable by its user alone)
   and the machines it lets in (`authorized`: a public key, an address, and
-  `shell` and `screen` for what they may do, one machine a line), and the
-  Feishu accounts let in (`feishu-users`: an open_id, `shell=` and
-  `screen=`, one account a line, readable by its user alone). Beside
+  `full`, `lan` and `off`, one machine a line), and the Feishu accounts let
+  in (`feishu-users`: an open_id, `shell=`, `screen=` and `remote=`, one
+  account a line, readable by its user alone). Beside
   the saved sessions, `environment/`*socket*`.json` keeps
   `set-environment`'s table, and `.ps1`, `.sh` and `.fish` beside it its
   changes for the shells' prompt hook. `shell/` holds the start files that

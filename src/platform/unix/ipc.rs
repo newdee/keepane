@@ -18,7 +18,7 @@ fn socket_dir() -> PathBuf {
 
 /// `$KEEPANE_TMPDIR`, else `$XDG_RUNTIME_DIR`, else `/tmp`.
 pub fn socket_base() -> PathBuf {
-    crate::legacy::var_os("KEEPANE_TMPDIR")
+    std::env::var_os("KEEPANE_TMPDIR")
         .or_else(|| std::env::var_os("XDG_RUNTIME_DIR"))
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)

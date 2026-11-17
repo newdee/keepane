@@ -169,12 +169,12 @@ pub(crate) fn said(what: &str, me: &Path, old: &Path, why: &Stale) -> String {
 
 /// This keepane, when it may take registrations over: only where it runs
 /// with the real places (not under a test's own directories, as
-/// `legacy::uses_real_dirs` says), and not from cargo's target folder. A
+/// `logger::uses_real_dirs` says), and not from cargo's target folder. A
 /// keepane just built is newer than the installed one whenever the version
 /// was raised for a release: it must not take the installed one's place
 /// (`cargo clean` would then leave logon with nothing to start).
 pub(crate) fn installed_self() -> Option<PathBuf> {
-    if !crate::legacy::uses_real_dirs() {
+    if !crate::logger::uses_real_dirs() {
         return None;
     }
     let me = std::env::current_exe().ok()?;

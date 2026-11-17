@@ -330,7 +330,7 @@ mod toast {
     pub fn show(title: &str, body: &str, action: Option<&str>) -> bool {
         // Tests and CI: no toasts, and no registry entries pointing at a
         // test binary (the balloon needs neither).
-        if crate::legacy::var_os("KEEPANE_NO_TOAST").is_some() {
+        if std::env::var_os("KEEPANE_NO_TOAST").is_some() {
             return false;
         }
         if !registered() {

@@ -96,7 +96,7 @@ keepane link allow 192.168.1.20:7681 --full    # 或者整台电脑都给它
 
 ## `keepane link allow --shell` 提示权限改成了两档
 
-**为什么。** 0.55 及以前，`link allow` 有五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`，以及 `--all`）。从 0.56 起只有两档：共享的部分（`keepane link share`），或者整台电脑（`--full`）。升级后，五个全开的机器算 `--full`；只开了部分的算什么都不给，状态栏会提示一次是哪几台。
+**为什么。** 0.55 及以前，`link allow` 有五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`，以及 `--all`）。从 0.56 起只有两档：共享的部分（`keepane link share`），或者整台电脑（`--full`）。到 0.76 为止还读得懂旧表（五个全开算 `--full`）；从 0.77 起不再读这些词，0.56 以前配对、之后没再授权过的机器什么都没有。
 
 **怎么办。** 把它需要的部分共享出去（`keepane link share <主机:端口> <session|窗口|pane>`），或者给 `--full`。
 

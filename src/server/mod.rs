@@ -2494,29 +2494,18 @@ impl Server {
             // `user/repo` (TPM style) -> last component.
             let short = name.rsplit(['/', '\\']).next().unwrap_or(name);
             let cand = base.join(short);
-            // Plugins installed under wmux's name (up to 0.13.1) are found
-            // there while the default place has none.
-            let old = std::path::PathBuf::from(expand_home("~/.wmux/plugins")).join(short);
             if cand.is_dir() {
                 cand
-            } else if self.opts.plugin_path == Options::default().plugin_path && old.is_dir() {
-                old
             } else {
                 return Err(format!("plugin not found: {name} (looked in {})", base.display()));
             }
         };
         let short = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let entry = [
-            format!("{short}.keepane"),
-            "plugin.keepane".into(),
-            "plugin.conf".into(),
-            format!("{short}.wmux"),
-            "plugin.wmux".into(),
-        ]
-        .iter()
-        .map(|f| dir.join(f))
-        .find(|p| p.is_file())
-        .ok_or_else(|| format!("{}: no {short}.keepane or plugin.keepane", dir.display()))?;
+        let entry = [format!("{short}.keepane"), "plugin.keepane".into(), "plugin.conf".into()]
+            .iter()
+            .map(|f| dir.join(f))
+            .find(|p| p.is_file())
+            .ok_or_else(|| format!("{}: no {short}.keepane or plugin.keepane", dir.display()))?;
         let dir_s = dir.to_string_lossy().into_owned();
         if self.plugins.contains(&dir_s) {
             return Ok(());
@@ -11844,7 +11833,7 @@ mod tests {
     /// (Read only: nothing is written there.)
     #[test]
     fn a_server_saves_in_the_directory_of_its_socket() {
-        if crate::legacy::var("KEEPANE_SESSIONS_DIR").is_some_and(|d| !d.is_empty()) {
+        if std::env::var("KEEPANE_SESSIONS_DIR").ok().is_some_and(|d| !d.is_empty()) {
             return; // moved by the environment for every server alike
         }
         for (socket, dir) in [("default", "sessions"), ("lab", "sessions-lab")] {

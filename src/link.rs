@@ -55,11 +55,11 @@ pub const H_PROOF: &str = "x-keepane-proof";
 /// directory per socket, since each server is an end of its own on the
 /// network (it has its own web port).
 pub fn dir(socket: &str) -> PathBuf {
-    let base = if let Some(d) = crate::legacy::var_os("KEEPANE_LINK_DIR").filter(|d| !d.is_empty()) {
+    let base = if let Some(d) = std::env::var_os("KEEPANE_LINK_DIR").filter(|d| !d.is_empty()) {
         PathBuf::from(d)
-    } else if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+    } else if let Some(d) = std::env::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
         PathBuf::from(d).join("link")
-    } else if let Some(d) = crate::legacy::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
+    } else if let Some(d) = std::env::var_os("KEEPANE_HISTORY_DIR").filter(|d| !d.is_empty()) {
         let mut d = d;
         d.push("-link");
         PathBuf::from(d)
@@ -505,20 +505,11 @@ const TABLE_HEAD: &str = "# keepane link: the machines paired with this server (
                           # Without `full` it sees what is shared with it (`keepane link share`).\n\
                           # `off`: disconnected here (`keepane link disconnect`), still paired.\n";
 
-/// The permissions of keepane 0.55 and before, each on its own.
-const OLD_WORDS: [&str; 5] = ["shell", "screen", "panes", "push", "agents"];
-
-/// The table's lines back; comments, blank and malformed lines skipped.
+/// The table's lines back; comments, blank and malformed lines skipped,
+/// and words it does not know (keepane 0.55's five permissions were read
+/// until 0.76) left out.
 pub fn parse_table(text: &str) -> Vec<Peer> {
-    parse_table_noting(text).0
-}
-
-/// The table's lines back, and the machines a table of keepane 0.55 or
-/// before gave some of the five old permissions but not all: those are no
-/// level of now, and are left with nothing (what had all five is `full`).
-pub fn parse_table_noting(text: &str) -> (Vec<Peer>, Vec<String>) {
     let mut out: Vec<Peer> = Vec::new();
-    let mut dropped = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -531,14 +522,10 @@ pub fn parse_table_noting(text: &str) -> (Vec<Peer>, Vec<String>) {
         }
         let rest: Vec<&str> = f.collect();
         let has = |w: &str| rest.contains(&w);
-        let old = OLD_WORDS.iter().filter(|w| has(w)).count();
-        let full = has("full") || old == OLD_WORDS.len();
-        if old > 0 && !full {
-            dropped.push(addr.to_string());
-        }
+        let full = has("full");
         out.push(Peer { key: key.to_string(), addr: addr.to_string(), full, lan: full && has("lan"), off: has("off") });
     }
-    (out, dropped)
+    out
 }
 
 pub fn format_table(peers: &[Peer]) -> String {
@@ -561,11 +548,7 @@ pub fn full_network(ip: IpAddr) -> bool {
 }
 
 pub fn load_table(dir: &Path) -> Vec<Peer> {
-    load_table_noting(dir).0
-}
-
-pub fn load_table_noting(dir: &Path) -> (Vec<Peer>, Vec<String>) {
-    std::fs::read_to_string(dir.join("authorized")).map(|t| parse_table_noting(&t)).unwrap_or_default()
+    std::fs::read_to_string(dir.join("authorized")).map(|t| parse_table(&t)).unwrap_or_default()
 }
 
 pub fn save_table(dir: &Path, peers: &[Peer]) -> Result<()> {
@@ -973,17 +956,10 @@ mod tests {
             ],
             "lan is nothing without full"
         );
-        // A table of keepane 0.55: all five old permissions are `full`; some
-        // of them are no level of now, so nothing, and said; none is none.
-        let old =
-            format!("{k1} 1.1.1.1:1 shell screen panes push agents\n{k2} 2.2.2.2:2 screen shell\n{k3} 3.3.3.3:3\n");
-        let (peers, dropped) = parse_table_noting(&old);
-        assert_eq!(peers.iter().map(|p| p.full).collect::<Vec<_>>(), [true, false, false]);
-        assert_eq!(dropped, ["2.2.2.2:2"]);
-        // Written in the words of now, it reads back the same, and is no
-        // longer the old table.
-        let (again, dropped) = parse_table_noting(&format_table(&peers));
-        assert_eq!((again, dropped.len()), (peers, 0));
+        // keepane 0.55's five words are not read any more (since 0.77): a
+        // machine with them only has nothing, as one with no word.
+        let old = format!("{k1} 1.1.1.1:1 shell screen panes push agents\n{k3} 3.3.3.3:3\n");
+        assert_eq!(parse_table(&old).iter().map(|p| p.full).collect::<Vec<_>>(), [false, false]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

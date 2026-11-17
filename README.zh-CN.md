@@ -351,7 +351,7 @@ pane 放大、还原及焦点切换带有动画，默认持续 160 毫秒。程�
 
 时钟下方信息行的最后一行是 keepane 自己的情况：会话数、pane 数，以及启动以来送达的消息数。
 
-`pulse`、`matrix`、`starfield` 的颜色，以及鲨鱼的眼睛和盆景的叶子，随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 13 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。`aquarium`、`life`、`donut`、`weather`、`hourglass`、`orbits`、`radar` 在 0.46 去掉了，配置里还写着它们的，按 `random` 处理。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有中断和功耗数字，上下文切换和线程数只算你能查看的进程，不是整个系统的；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
+`pulse`、`matrix`、`starfield` 的颜色，以及鲨鱼的眼睛和盆景的叶子，随 CPU 温度从绿色变为黄色再变为红色，读不到温度时随 CPU 负载变化；`bars` 的柱子下段绿色、中段黄色、顶段红色。`random`（默认）每次在 pane 上打开时钟时从 13 种里随机选 1 种，不会和这个 pane 上一次的相同；`cycle` 轮流使用；写名字就固定用那一种；`off` 或 `animation off` 时钟就不动。`aquarium`、`life`、`donut`、`weather`、`hourglass`、`orbits`、`radar` 在 0.46 去掉了；从 0.77 起，配置里还写着它们的会和别的错名字一样报错。时钟显示时按 `/` 换下一种、按 `?` 换上一种，动画名在右上角显示 1 秒；只管这一次显示，不改选项（`clock-mode-animation off` 时按 `/` 会开始动画，`animation off` 时不会）。时钟只在按 `q` 时退出（tmux 是按任意键退出）；时钟显示时前缀键照常可用。动画只用主题的 16 种颜色（`pane-colours`；主题没设时用终端自己的颜色），所以每个主题有各自的配色。只在时钟显示时读取机器数据，每秒读 2 次。系统给不出的数字就不显示，不会编造：macOS 没有中断和功耗数字，上下文切换和线程数只算你能查看的进程，不是整个系统的；温度只来自真实的 CPU 传感器（Linux：thermal zone 和 hwmon；Windows：运行中的 LibreHardwareMonitor 或 OpenHardwareMonitor，因为 Windows 自带的 ACPI thermal zone 在很多机器上是个固定值；macOS：没有）。CPU 功耗来自 CPU 自带的功耗计（RAPL）：Windows 上有这个功耗计的 CPU 任何用户都能读；Linux 大多数系统只允许 root 读（`/sys/class/powercap`），所以只在能读时显示。
 
 日期（和其他地方的时间）下面紧接着用黄色写一行“等你处理”，覆盖所有 session：先列等你的 agent（它的权限 hook 运行了 `pane-wait`，显示为 `work:1.0 claude waits`，它继续往下做后消失），再列状态栏上带标记的窗口（各 session 的当前窗口不会有标记）：`bell`、`message`、`activity`、`silence`。没有要处理的就不显示这一行。
 
@@ -768,7 +768,7 @@ keepane link allow 100.64.0.3:7681 --none        # 什么都不给，共享的�
 
 `--full` 就是全部：所有 pane 都能看到，也能在里面打字（`keepane link watch`），所有 session 都能在对方那边进去操作（列在对方 `C-b w` 里这台机器的名下），发来的消息在 `shell` pane 里执行，还能在这边开 pane、送提交和项目。普通 HTTP 在局域网里谁都能抓包看到，所以 `--full` 只对 Tailscale 地址（或本机）生效；从局域网地址来的请求只按共享的部分处理，并且会说明原因。`--full --lan` 则对任何网络都生效。
 
-共享和 `--full` 都要在 keepane 之外的终端里、或者 `C-b :` 提示符里做，不能在 pane 里做，否则 agent 就能自己把别的机器放进来。这台电脑的 pane 发出去的消息，对方的回信总能回到发信的 pane，不管这个 pane 有没有共享。0.56 和 0.57 里，共享出去的 `shell` pane 会执行对方发来的消息。0.55 及以前是五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`）；五个全开的机器升级后算 `--full`，只开了部分的算什么都不给，状态栏会提示一次是哪几台。
+共享和 `--full` 都要在 keepane 之外的终端里、或者 `C-b :` 提示符里做，不能在 pane 里做，否则 agent 就能自己把别的机器放进来。这台电脑的 pane 发出去的消息，对方的回信总能回到发信的 pane，不管这个 pane 有没有共享。0.56 和 0.57 里，共享出去的 `shell` pane 会执行对方发来的消息。0.55 及以前是五个开关（`--shell`、`--screen`、`--panes`、`--push`、`--agents`）。到 0.76 为止还读得懂那时的表（五个全开算 `--full`）；从 0.77 起不再读这些词：0.56 以前配对、之后没再授权过的机器什么都没有，要重新 `link allow --full` 或 `link share`。
 
 ```powershell
 keepane link disconnect 100.64.0.3:7681        # 断开：两边互不通，配对保留（link connect 恢复）
@@ -850,7 +850,7 @@ go on there: cd /home/me/keepane/from/laptop/app
 
 ## 手册
 
-`keepane man` 以 Markdown 格式打印完整手册（所有命令、默认按键、配置、环境变量和文件位置），内容就是 [docs/keepane.1.md](docs/keepane.1.md)，可以直接阅读，也可以交给程序或 AI 去读。`keepane man --roff` 把它输出成 man 页面；用 Homebrew 安装会自动装好，所以可以直接用 `man keepane` 查看。
+`keepane man` 以 Markdown 格式打印完整手册（所有命令、默认按键、配置、环境变量和文件位置），内容就是 [docs/keepane.1.md](docs/keepane.1.md)，可以直接阅读，也可以交给程序或 AI 去读。`keepane man --roff` 把它输出成 man 页面；用 Homebrew 安装会自动装好，所以可以直接用 `man keepane` 查看。手册列出了每个选项、格式变量、环境变量和 MCP 工具，测试保证一个不漏。keepane 1.x 保留哪些、不保证哪些（群聊在某个版本宣布稳定之前都是试验性的），见 [docs/compatibility.md](docs/compatibility.md)。
 
 ## 配置
 
@@ -1093,8 +1093,7 @@ pane 消息：`shell` 工作模式依赖 keepane 的提示符钩子（PowerShell
 
 从 wmux 过来：
 
-- `keepane migrate` 一次搬完：还在运行的 wmux 服务端里的会话（先存盘、停掉旧服务端，再在 keepane 里恢复，布局、历史、目录都在；里面的程序会重新启动，和 `restart-server` 一样），wmux 存在 `%LOCALAPPDATA%\wmux` 下的东西（会话存档、历史记录、手机端密钥），开机启动、Windows Terminal 的 profile、通知链接。如果 keepane 里已经有同名会话，wmux 的那个会以 `<名字>-wmux` 恢复在旁边，两个都保留。wmux 服务端还在运行时启动 keepane，会提示你这件事。
-- 你的 `~/.wmux.conf` 照样生效，`WMUX_*` 环境变量、`~/.wmux/plugins` 和 `*.wmux` 插件文件也都认，想改名时再改成 `~/.keepane.conf`、`KEEPANE_*`、`~/.keepane/plugins`、`*.keepane`。
+- 到 0.76 为止，keepane 认 wmux 的旧名字，`keepane migrate` 能一次把 wmux 的东西搬过来；从 0.77 起两样都没有了。要么先装一次 keepane 0.76，运行 `keepane migrate`（搬还在运行的 wmux 服务端里的会话、`%LOCALAPPDATA%\wmux` 下的东西、开机启动、Windows Terminal 的 profile、通知链接）；要么手动改名：`~/.wmux.conf` 改成 `~/.keepane.conf`，`WMUX_*` 改成 `KEEPANE_*`，`~/.wmux/plugins` 改成 `~/.keepane/plugins`，`*.wmux` 插件文件改成 `*.keepane`，没有服务端在运行时把 `%LOCALAPPDATA%\wmux` 改成 `%LOCALAPPDATA%\keepane`。
 - MSI 会替换掉"应用和功能"里的 wmux。`wmux update` 已经找不到新版了，请从 Releases 手动装一次 keepane。用 scoop 的话：`scoop uninstall wmux`，再装 keepane 的清单（见“安装”一节）。
 - 仓库搬到了 github.com/newdee/keepane（旧链接会跳转过去），网站在 dfine.tech/keepane。
 - `$PROFILE` 里的 `tmux` 或 `wmux` 别名要改成指向 keepane。

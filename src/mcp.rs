@@ -35,6 +35,11 @@ fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value
     })
 }
 
+/// The tools' names, as `tools/list` gives them.
+pub fn tool_names() -> Vec<String> {
+    tools().iter().filter_map(|t| t["name"].as_str().map(String::from)).collect()
+}
+
 fn tools() -> Vec<Value> {
     let s = |d: &str| json!({ "type": "string", "description": d });
     let n = |d: &str| json!({ "type": "integer", "description": d });

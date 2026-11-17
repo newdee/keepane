@@ -110,22 +110,6 @@ pub fn remove(socket: &str) -> Result<String> {
     remove_named(&value_name(socket))
 }
 
-/// The Run value wmux (keepane's old name, up to 0.13.1) used for `socket`.
-fn legacy_value_name(socket: &str) -> String {
-    if socket == "default" { "wmux".to_string() } else { format!("wmux-{socket}") }
-}
-
-/// The logon command an old wmux registered for `socket`, when there is one
-/// and it is ours (`is_our_old_command`), not another program's.
-pub fn legacy_status(socket: &str) -> Result<Option<String>> {
-    Ok(status_named(&legacy_value_name(socket))?.filter(|c| crate::legacy::is_our_old_command(c)))
-}
-
-/// Remove the old wmux logon command of `socket`.
-pub fn remove_legacy(socket: &str) -> Result<String> {
-    remove_named(&legacy_value_name(socket))
-}
-
 fn remove_named(name: &str) -> Result<String> {
     let Some(key) = Key::open(RUN_KEY, KEY_SET_VALUE)? else {
         return Ok(format!("{name}: not installed"));

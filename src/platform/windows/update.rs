@@ -235,7 +235,7 @@ pub fn is_under(path: &Path, dir: &Path) -> bool {
 /// Where the Scoop update a copy of keepane finishes says what it did.
 /// (Beside the sessions when `KEEPANE_SESSIONS_DIR` moves them: tests do.)
 pub fn update_log() -> PathBuf {
-    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d).join("update.log");
     }
     crate::logger::log_dir().join("update.log")
@@ -320,7 +320,7 @@ pub async fn finish_scoop(socket: &str, args: &[String]) -> Result<i32> {
         blockers = scoop_blockers(&app_dir);
     }
     let installed = if blockers.is_empty() {
-        let command = crate::legacy::var("KEEPANE_SCOOP_UPDATE").unwrap_or_else(|| "scoop update keepane".into());
+        let command = std::env::var("KEEPANE_SCOOP_UPDATE").ok().unwrap_or_else(|| "scoop update keepane".into());
         // scoop is a .cmd/.ps1 shim, which Command::new would not find
         // (it looks for scoop.exe): let cmd resolve it.
         let out = quiet(Command::new("cmd.exe").args(["/d", "/c", &command])).output();

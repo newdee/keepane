@@ -142,6 +142,77 @@ mod tests {
         }
     }
 
+    /// Every option is on the page, in "Every option": one added without a
+    /// line there fails here.
+    #[test]
+    fn every_option_is_on_the_page() {
+        let table = &MARKDOWN[MARKDOWN.find("### Every option").expect("the table")..];
+        let missing: Vec<&str> =
+            crate::config::KNOWN.iter().copied().filter(|o| !table.contains(&format!("| `{o}` |"))).collect();
+        assert!(missing.is_empty(), "not in docs/keepane.1.md's Every option: {missing:?}");
+    }
+
+    /// Every `KEEPANE_*` variable the code reads (as `"KEEPANE_…"` in
+    /// `src/`) is under ENVIRONMENT.
+    #[test]
+    fn every_environment_variable_is_on_the_page() {
+        let env = &MARKDOWN[MARKDOWN.find("## ENVIRONMENT").expect("the section")..];
+        let env = &env[..env.find("\n## ").unwrap_or(env.len())];
+        let mut read = std::collections::BTreeSet::new();
+        let mut dirs = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    for part in text.split("var_os(\"KEEPANE_").skip(1).chain(text.split("var(\"KEEPANE_").skip(1)) {
+                        let name: String = part.chars().take_while(|c| c.is_ascii_uppercase() || *c == '_').collect();
+                        read.insert(format!("KEEPANE_{name}"));
+                    }
+                }
+            }
+        }
+        assert!(read.len() > 10, "{read:?}");
+        // keepane's own, set for itself (a restart run detached, a replay
+        // not waited on) or for the tests: not for anyone to set.
+        const INTERNAL: [&str; 3] = ["KEEPANE_EXE", "KEEPANE_REPLAY_NO_WAIT", "KEEPANE_RESTART_DETACHED"];
+        let missing: Vec<&String> = read
+            .iter()
+            .filter(|v| !INTERNAL.contains(&v.as_str()) && !v.starts_with("KEEPANE_TEST_"))
+            .filter(|v| !env.contains(&format!("`{v}`")))
+            .collect();
+        assert!(missing.is_empty(), "not under ENVIRONMENT in docs/keepane.1.md: {missing:?}");
+    }
+
+    /// Every format variable (each name `Context::var` answers, as written
+    /// in src/format.rs) is in "Every format variable".
+    #[test]
+    fn every_format_variable_is_on_the_page() {
+        let src = include_str!("format.rs");
+        let body = &src[src.find("pub fn var(").expect("var")..];
+        let body = &body[..body.find("_ => return None").expect("its end")];
+        let table = &MARKDOWN[MARKDOWN.find("### Every format variable").expect("the table")..];
+        let names: Vec<&str> = body
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .filter(|n| n.len() > 1 && n.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .collect();
+        assert!(names.len() > 100, "{names:?}");
+        let missing: Vec<&&str> = names.iter().filter(|n| !table.contains(&format!("`{n}`"))).collect();
+        assert!(missing.is_empty(), "not in docs/keepane.1.md's Every format variable: {missing:?}");
+    }
+
+    /// Every MCP tool is on the page.
+    #[test]
+    fn every_mcp_tool_is_on_the_page() {
+        let missing: Vec<String> =
+            crate::mcp::tool_names().into_iter().filter(|t| !MARKDOWN.contains(&format!("`{t}`"))).collect();
+        assert!(missing.is_empty(), "not in docs/keepane.1.md: {missing:?}");
+    }
+
     #[test]
     fn markdown_becomes_roff() {
         let md = "# KEEPANE 1\n\n## NAME\n\nkeepane - a *thing*\nthat `runs -x`.\n\n### Sub\n\n\

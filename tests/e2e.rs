@@ -2544,11 +2544,9 @@ async fn under_the_clock_something_moves_with_the_machine() {
     }
     let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "unicorns"]).await;
     assert!(code != 0 && err.contains("one of bars, bonsai, cat, cycle, dino, fire, fireworks, matrix, off, penguins, pulse, random, sea, sharks, starfield, synthwave"), "{err}");
-    // One gone since 0.45, still in a config: random, no error.
+    // One gone since 0.45 (read as random until 0.76): refused as any other.
     let (code, _, err) = h.cli(&["set", "-g", "clock-mode-animation", "donut"]).await;
-    assert_eq!(code, 0, "{err}");
-    let (_, out, _) = h.cli(&["show-options", "-gv", "clock-mode-animation"]).await;
-    assert_eq!(out.trim(), "random");
+    assert!(code != 0 && err.contains("bad clock-mode-animation 'donut'"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -13401,7 +13399,27 @@ async fn the_hook_names_its_agents_transcript() {
         if v[0]["tokens"]["total"] == 1234 {
             break v[0].clone();
         }
-        assert!(Instant::now() < deadline, "its own transcript: {out}");
+        if Instant::now() >= deadline {
+            // What the pane runs, and under it, to see why no agent is found.
+            let (_, what, _) =
+                h.cli(&["display-message", "-p", "-t", "cx", "#{pane_pid} #{pane_current_command} #{pane_dead}"]).await;
+            #[cfg(unix)]
+            let tree = std::process::Command::new("ps")
+                .args(["-e", "-o", "pid=,ppid=,comm=,args="])
+                .output()
+                .map(|o| {
+                    let pid = what.split_whitespace().next().unwrap_or("").to_string();
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .filter(|l| l.split_whitespace().take(2).any(|f| f == pid) || l.contains("codex"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            #[cfg(not(unix))]
+            let tree = String::new();
+            panic!("its own transcript: {out}\npane: {what}\n{tree}");
+        }
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     assert_eq!(

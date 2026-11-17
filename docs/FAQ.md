@@ -148,9 +148,9 @@ unless `--full --lan`.
 **Why.** Up to 0.55, `link allow` had five permissions (`--shell`,
 `--screen`, `--panes`, `--push`, `--agents`, and `--all`). Since 0.56
 there are two levels: what is shared (`keepane link share`), or all of the
-machine (`--full`). A machine that had all five has `--full` after the
-update; one that had some of them has nothing, and the status line names
-it once.
+machine (`--full`). Up to 0.76 an old table was read (all five as
+`--full`); from 0.77 its words are not read, so a machine paired then and
+not given anything since has nothing.
 
 **What to do.** Share what it needs (`keepane link share <host:port>
 <session|window|pane>`), or give it `--full`.

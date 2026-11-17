@@ -184,7 +184,7 @@ impl SavedFile {
 /// that starts never brings back (and runs a second time) another one's
 /// sessions, nor serves its shares.
 pub fn default_dir(socket: &str) -> PathBuf {
-    if let Some(d) = crate::legacy::var("KEEPANE_SESSIONS_DIR")
+    if let Some(d) = std::env::var("KEEPANE_SESSIONS_DIR").ok()
         && !d.is_empty()
     {
         return PathBuf::from(d);

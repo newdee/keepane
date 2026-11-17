@@ -719,9 +719,10 @@ the bars are green at the bottom, yellow higher up and red at the top.
 `random` (the default) picks one of the 13
 each time the clock is put on a pane, never the one it had before; `cycle`
 takes them in turn; a name sets that one; `off`, or `animation off`, leaves
-the clock still. `aquarium`, `life`, `donut`, `weather`, `hourglass`,
-`orbits` and `radar` were taken out in 0.46; a config that still names one
-gets `random`. Under a clock, `/` turns to the next kind and `?` to the
+the clock still. (`aquarium`, `life`, `donut`, `weather`, `hourglass`,
+`orbits` and `radar` were taken out in 0.46; from 0.77 a config that
+still names one is told so, as with any other name.) Under a clock, `/`
+turns to the next kind and `?` to the
 one before, its name shown for a second; that holds until the clock goes,
 the option is not changed (`/` starts one under `clock-mode-animation off`,
 none under `animation off`). The clock stays until `q` (tmux's goes at any
@@ -1738,9 +1739,10 @@ Sharing and `--full` are given from a terminal outside keepane or at the
 machine in. An answer to a message a pane here sent comes back to that pane
 whether it is shared or not. In 0.56 and 0.57 a shared `shell` pane ran
 the messages of every machine it was shared with. Up to 0.55 there were five
-permissions (`--shell`, `--screen`, `--panes`, `--push`, `--agents`); a
-machine that had all five has `--full` now, one that had some has
-nothing, and the status line names it once.
+permissions (`--shell`, `--screen`, `--panes`, `--push`, `--agents`).
+Up to 0.76 a table of then was read (all five as `--full`); from 0.77 its
+words are not read: a machine paired before 0.56 and not given anything
+since has nothing until `link allow --full` or `link share`.
 
 ```powershell
 keepane link disconnect 100.64.0.3:7681        # stop talking with it, both ways; still paired (link connect: again)
@@ -1941,7 +1943,11 @@ over Tailscale, or on a network you trust. The design:
 the config, the environment and the files) as Markdown, the way
 [docs/keepane.1.md](docs/keepane.1.md) is written: for reading, or to hand to
 a program. `keepane man --roff` writes it as a manual page;
-Homebrew installs that, so `man keepane` works.
+Homebrew installs that, so `man keepane` works. It lists every command,
+option, format variable, environment variable and MCP tool, and the
+tests keep it so. What of it keepane 1.x keeps, and what it does not (the group
+chat is experimental until a release says otherwise):
+[docs/compatibility.md](docs/compatibility.md).
 
 ## Configuration
 
@@ -2416,20 +2422,16 @@ exist on GitHub, winget and crates.io, so from 0.14.0 it is keepane, from
 keep + pane: the programs in the panes keep running when the terminal is
 gone.
 
-Coming from wmux:
+Coming from wmux: up to 0.76, keepane read wmux's names and `keepane
+migrate` moved a wmux setup over in one go; from 0.77 neither is there.
+Either install keepane 0.76 once and run `keepane migrate` (it moves the
+sessions of a wmux server still running, what wmux kept in
+`%LOCALAPPDATA%\wmux`, the start at logon, the Windows Terminal profile
+and the notification link), or rename by hand: `~/.wmux.conf` to
+`~/.keepane.conf`, `WMUX_*` to `KEEPANE_*`, `~/.wmux/plugins` to
+`~/.keepane/plugins`, `*.wmux` plugin files to `*.keepane`, and
+`%LOCALAPPDATA%\wmux` to `%LOCALAPPDATA%\keepane` while no server runs.
 
-- `keepane migrate` moves everything in one go: the sessions of a wmux
-  server still running (saved, the old server stopped, restored in keepane
-  with their layout, history and directories; the programs in them start
-  again, as with `restart-server`), what wmux saved under
-  `%LOCALAPPDATA%\wmux` (sessions, history, the phone key), the start at
-  logon, the Windows Terminal profile and the notification link. A wmux
-  session whose name keepane already runs comes back beside it as
-  `<name>-wmux`. Starting keepane while a wmux server still runs says so.
-- Your `~/.wmux.conf` keeps working, and so do `WMUX_*` environment
-  variables, `~/.wmux/plugins` and `*.wmux` plugin files, until you rename
-  them (`~/.keepane.conf`, `KEEPANE_*`, `~/.keepane/plugins`,
-  `*.keepane`).
 - The MSI replaces the wmux one in "Apps & features". `wmux update` no
   longer finds anything: install keepane from the releases page once. With
   scoop, `scoop uninstall wmux` and install the keepane manifest (see

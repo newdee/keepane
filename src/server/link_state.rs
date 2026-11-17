@@ -110,25 +110,7 @@ impl Server {
             for d in ["incoming", "outgoing"] {
                 let _ = std::fs::remove_dir_all(dir.join(d));
             }
-            // A table of keepane 0.55 or before: written again in the words
-            // of now, and what no longer reads as a level said.
-            let (peers, dropped) = link::load_table_noting(&dir);
-            let was = std::fs::read_to_string(dir.join("authorized")).unwrap_or_default();
-            let mut notice = None;
-            if !was.is_empty() && was != link::format_table(&peers) {
-                if let Err(e) = link::save_table(&dir, &peers) {
-                    log::warn!("link: {e:#}");
-                }
-                if !dropped.is_empty() {
-                    let text = format!(
-                        "link: permissions are two levels now (0.56); {} had some of the old five and now sees nothing here: \
-                         keepane link share <host:port> <session|window|pane>, or link allow <host:port> --full",
-                        dropped.join(", ")
-                    );
-                    let list: Vec<String> = dropped.iter().map(|a| js(a)).collect();
-                    notice = Some((text, format!(",\"dropped\":[{}]", list.join(","))));
-                }
-            }
+            let peers = link::load_table(&dir);
             self.link = Some(LinkHost {
                 dir: dir.clone(),
                 id,
@@ -141,9 +123,6 @@ impl Server {
                 made: HashMap::new(),
                 incoming: HashMap::new(),
             });
-            if let Some((text, fields)) = notice {
-                self.link_note(&text, "levels", &fields);
-            }
         }
         Ok(self.link.as_mut().expect("just made"))
     }
@@ -473,8 +452,8 @@ mod tests {
         assert_eq!(peers.len(), 1);
         assert!(peers[0].full && !peers[0].lan && peers[0].key == ka, "read back");
 
-        // A table of 0.55: all five old permissions are full; some of them
-        // nothing, said; the file is written in the words of now.
+        // A table of 0.55 (its five words read until 0.76): the words are
+        // not read, so nothing is given; the file is left as it was.
         let table = dir.join(crate::histlog::safe_name("link-state-c"));
         std::fs::create_dir_all(&table).unwrap();
         let k2 = crate::link::Identity::make(&dir.join("k2")).unwrap().public();
@@ -485,13 +464,9 @@ mod tests {
         .unwrap();
         let mut c = server("link-state-c");
         let peers = c.link().unwrap().peers.clone();
-        assert_eq!(peers.iter().map(|p| p.full).collect::<Vec<_>>(), [true, false]);
+        assert_eq!(peers.iter().map(|p| p.full).collect::<Vec<_>>(), [false, false]);
         let now = std::fs::read_to_string(table.join("authorized")).unwrap();
-        assert!(now.contains(&format!("{ka} 10.0.0.1:7681 full\n")) && !now.contains("shell"), "{now}");
-        assert!(
-            c.messages.iter().any(|m| m.contains("two levels now") && m.contains("10.0.0.2:7681")),
-            "the machine that lost its permissions is named"
-        );
+        assert!(now.contains("shell screen panes push agents"), "not written over: {now}");
 
         let rekey = text(b.exec_link_local(Cmd::LinkRekey, None));
         assert!(rekey.contains("pair again"), "{rekey}");

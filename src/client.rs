@@ -45,14 +45,6 @@ async fn connect(pipe: &str, autostart: bool, socket: &str) -> Result<Stream> {
 /// its whole life and the caller would never see EOF. Call CreateProcessW
 /// directly instead.
 fn start_server(socket: &str) -> Result<()> {
-    // A new server beside an old wmux one still holding the sessions: say
-    // how to bring them over rather than start from nothing unawares.
-    if server_running(&crate::legacy::pipe_name(socket)) {
-        eprintln!(
-            "note: a wmux server (keepane's old name) is still running with its sessions; \
-             `keepane migrate` moves them here"
-        );
-    }
     spawn_server(socket)
 }
 
@@ -137,14 +129,9 @@ pub async fn query_as(socket: &str, argv: &[&str], pane: Option<u32>) -> Result<
     query_pipe(&pipe_name(socket), socket, argv, pane).await
 }
 
-/// As `query`, to the server listening on `pipe` (an old wmux one, for
-/// `migrate`); `socket` names it in errors.
-pub async fn query_pipe(
-    pipe: &str,
-    socket: &str,
-    argv: &[&str],
-    pane_env: Option<u32>,
-) -> Result<(i32, String, String)> {
+/// As `query`, to the server listening on `pipe`; `socket` names it in
+/// errors.
+async fn query_pipe(pipe: &str, socket: &str, argv: &[&str], pane_env: Option<u32>) -> Result<(i32, String, String)> {
     let conn = connect(pipe, false, socket).await?;
     let (mut rd, mut wr) = tokio::io::split(conn);
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
@@ -253,173 +240,6 @@ pub async fn restart_server(socket: &str) -> Result<i32> {
     Ok(code)
 }
 
-/// `keepane migrate`: from wmux (keepane's name up to 0.13.1) to keepane in
-/// one go. The sessions of a wmux server still running are saved, the old
-/// server is told to go, and they are restored here with their layout,
-/// history and directories (the programs in them start again, as with
-/// `restart-server`). The data directory moves (`legacy::move_tree`), and
-/// what wmux registered for itself is registered as keepane instead: the
-/// logon command, the Windows Terminal profile, the notification link.
-pub async fn migrate(socket: &str) -> Result<i32> {
-    let mut lines = Vec::new();
-    let old_pipe = crate::legacy::pipe_name(socket);
-    let mut sessions: Vec<String> = Vec::new();
-    // Where the old server saves (its config may have moved it).
-    let mut old_saves: Option<std::path::PathBuf> = None;
-    if server_running(&old_pipe) {
-        let (code, dir, _) = query_pipe(&old_pipe, socket, &["show-options", "-gv", "sessions-dir"], None).await?;
-        if code == 0 && !dir.trim().is_empty() {
-            old_saves = Some(std::path::PathBuf::from(dir.trim()));
-        }
-        let (_, list, _) = query_pipe(&old_pipe, socket, &["list-sessions"], None).await?;
-        sessions = list
-            .lines()
-            .filter_map(|l| l.split_once(':').map(|(n, _)| n.to_string()))
-            .filter(|n| !n.is_empty())
-            .collect();
-        let (code, _, err) = query_pipe(&old_pipe, socket, &["save-session", "-a"], None).await?;
-        if code != 0 && !sessions.is_empty() {
-            bail!("the wmux server could not save its sessions, and is left running: {}", err.trim());
-        }
-        let (code, _, err) = query_pipe(&old_pipe, socket, &["kill-server"], None).await?;
-        if code != 0 {
-            bail!("the wmux server would not stop: {}", err.trim());
-        }
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while server_running(&old_pipe) {
-            if Instant::now() > deadline {
-                bail!("the wmux server did not exit");
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        lines.push(format!("wmux server: saved {} session(s) and stopped", sessions.len()));
-    } else {
-        lines.push("wmux server: none running".to_string());
-    }
-    // The real data directory and the registrations move only where this
-    // runs with the real places, never under a test's own directories.
-    let real = crate::legacy::uses_real_dirs();
-    if real {
-        let new = crate::logger::log_dir();
-        if let Some(old) = crate::legacy::old_data_dir(&new).filter(|o| o.is_dir()) {
-            let (moved, stayed) = crate::legacy::move_tree(&old, &new);
-            lines.push(format!(
-                "data: {} moved from {} to {}",
-                crate::format::count(moved, "file"),
-                old.display(),
-                new.display()
-            ));
-            if stayed > 0 {
-                lines.push(format!(
-                    "data: {} already here or in use stayed in {}",
-                    crate::format::count(stayed, "file"),
-                    old.display()
-                ));
-            }
-        }
-    }
-    if !sessions.is_empty() {
-        let pipe = pipe_name(socket);
-        if !server_running(&pipe) {
-            spawn_server(socket)?;
-            let deadline = Instant::now() + Duration::from_secs(15);
-            while !server_running(&pipe) {
-                if Instant::now() > deadline {
-                    bail!("the keepane server did not start (see {})", server_log().display());
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-        // A name keepane already runs is left alone: restoring it would only
-        // attach to keepane's own, and wmux's save of it stays where it was.
-        let (_, live, _) = query(socket, &["list-sessions"]).await?;
-        let live: Vec<String> = live.lines().filter_map(|l| l.split_once(':').map(|(n, _)| n.to_string())).collect();
-        let (_, here, _) = query(socket, &["show-options", "-gv", "sessions-dir"]).await?;
-        let here = std::path::PathBuf::from(here.trim());
-        for s in &sessions {
-            if live.contains(s) {
-                lines.push(restore_beside(socket, s, &live, old_saves.as_deref(), &here).await?);
-                continue;
-            }
-            let (code, _, err) = query(socket, &["restore-session", s]).await?;
-            lines.push(if code == 0 {
-                format!("session {s}: restored")
-            } else {
-                format!("session {s}: {}", err.trim())
-            });
-        }
-    }
-    // The logon start, the Windows Terminal profile and the notification
-    // link: Windows's (wmux never ran anywhere else).
-    #[cfg(windows)]
-    if real {
-        if crate::startup::legacy_status(socket)?.is_some() {
-            crate::startup::install(socket)?;
-            crate::startup::remove_legacy(socket)?;
-            lines.push("start at logon: moved to keepane".to_string());
-        }
-        if let Ok(dir) = crate::wt::fragments_dir()
-            && let Some(old_dir) = dir.parent().map(|p| p.join(crate::legacy::OLD))
-        {
-            let name = if socket == "default" { "wmux.json".to_string() } else { format!("wmux-{socket}.json") };
-            if old_dir.join(&name).is_file() {
-                crate::wt::install_in(&dir, socket)?;
-                let _ = std::fs::remove_file(old_dir.join(&name));
-                let _ = std::fs::remove_dir(&old_dir);
-                lines.push("Windows Terminal profile: now keepane".to_string());
-            }
-        }
-        if crate::notify::registration::command_of(crate::legacy::OLD)
-            .is_some_and(|c| crate::legacy::is_our_old_command(&c))
-        {
-            crate::notify::registration::unregister(crate::legacy::OLD, crate::legacy::OLD)?;
-            lines.push("notification link: wmux's removed (keepane registers its own)".to_string());
-        }
-    }
-    for l in &lines {
-        println!("{l}");
-    }
-    if !sessions.is_empty() {
-        println!("`keepane attach` to go back to them");
-    }
-    Ok(0)
-}
-
-/// `migrate`, for a wmux session whose name keepane already runs: wmux's
-/// comes back beside it as `<name>-wmux` (from its save in `old_saves`,
-/// where a moved one stayed since keepane's own file was there first, else
-/// in `here`), so neither is lost.
-async fn restore_beside(
-    socket: &str,
-    name: &str,
-    live: &[String],
-    old_saves: Option<&std::path::Path>,
-    here: &std::path::Path,
-) -> Result<String> {
-    use crate::resurrect::{SavedFile, file_for, find};
-    let taken = |n: &str| live.iter().any(|l| l == n) || find(here, n).is_some();
-    let mut new_name = format!("{name}-wmux");
-    let mut i = 2;
-    while taken(&new_name) {
-        new_name = format!("{name}-wmux{i}");
-        i += 1;
-    }
-    let saved = old_saves.and_then(|d| find(d, name)).or_else(|| find(here, name));
-    let Some(mut file) = saved.and_then(|p| SavedFile::load(&p).ok()) else {
-        return Ok(format!(
-            "session {name}: keepane already runs one by this name, and wmux's save of it was not found"
-        ));
-    };
-    file.session.name = new_name.clone();
-    file.save(&file_for(here, &new_name)).map_err(|e| anyhow::anyhow!(e))?;
-    let (code, _, err) = query(socket, &["restore-session", &new_name]).await?;
-    Ok(if code == 0 {
-        format!("session {name}: keepane already runs one by this name; wmux's is restored beside it as {new_name}")
-    } else {
-        format!("session {name}: saved as {new_name}, not restored: {}", err.trim())
-    })
-}
-
 /// Where a restart run outside a pane leaves its result.
 /// (Beside the sessions when `KEEPANE_SESSIONS_DIR` moves them: tests do.)
 /// The server's log, where a server that did not come up says why.
@@ -428,7 +248,7 @@ fn server_log() -> std::path::PathBuf {
 }
 
 fn restart_log() -> std::path::PathBuf {
-    if let Some(d) = crate::legacy::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_SESSIONS_DIR").filter(|d| !d.is_empty()) {
         return std::path::PathBuf::from(d).join("restart.log");
     }
     crate::logger::log_dir().join("restart.log")

@@ -17,7 +17,6 @@ pub(crate) const LOCAL: &[&str] = &[
     "link",
     "man",
     "mcp",
-    "migrate",
     "restart-server",
     "setup",
     "show-keys",

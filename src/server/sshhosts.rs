@@ -558,7 +558,7 @@ pub(super) fn shown<'a>(all: &'a [Row], items: &[super::ChooserItem]) -> Vec<&'a
 impl Server {
     fn ssh_book_path(&self) -> PathBuf {
         let moved = !self.opts.sessions_dir.is_empty()
-            || crate::legacy::var_os("KEEPANE_SESSIONS_DIR").is_some_and(|d| !d.is_empty());
+            || std::env::var_os("KEEPANE_SESSIONS_DIR").is_some_and(|d| !d.is_empty());
         book_path(&self.sessions_dir(), moved)
     }
 
@@ -573,7 +573,7 @@ impl Server {
     pub(super) fn ssh_refresh(&mut self) {
         let path = self.ssh_book_path();
         let book = self.ssh.book.get_or_insert_with(|| Book::load(&path));
-        if !crate::legacy::uses_real_dirs() {
+        if !crate::logger::uses_real_dirs() {
             return;
         }
         let home = dirs::home_dir().unwrap_or_default();

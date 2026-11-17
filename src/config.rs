@@ -259,10 +259,6 @@ pub const CLOCK_ANIMATIONS: &[&str] = &[
     "synthwave",
 ];
 
-/// The animations keepane had up to 0.45: a config that still names one
-/// gets `random`, not an error.
-pub const CLOCK_ANIMATIONS_GONE: &[&str] = &["aquarium", "donut", "hourglass", "life", "orbits", "radar", "weather"];
-
 /// What `clock-mode-look` can be.
 pub const CLOCK_LOOKS: &[&str] = &["binary", "blocks", "dots", "plain"];
 
@@ -1066,9 +1062,7 @@ impl Options {
             }
             "clock-mode-info" => self.clock_mode_info = parse_bool(value)?,
             "clock-mode-zones" => self.clock_mode_zones = parse_zones(value)?,
-            "clock-mode-animation" if CLOCK_ANIMATIONS_GONE.contains(&value.trim()) => {
-                self.clock_mode_animation = "random".into()
-            }
+
             "clock-mode-animation" => self.clock_mode_animation = one_of(name, value, CLOCK_ANIMATIONS)?,
             "clock-mode-look" => self.clock_mode_look = one_of(name, value, CLOCK_LOOKS)?,
             "pane-border-lines" => self.pane_border_lines = one_of(name, value, PANE_BORDER_LINES)?,
@@ -1434,7 +1428,7 @@ impl Options {
 /// Candidate config file locations, first existing wins.
 pub fn config_paths() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    if let Some(p) = crate::legacy::var("KEEPANE_CONFIG") {
+    if let Ok(p) = std::env::var("KEEPANE_CONFIG") {
         v.push(PathBuf::from(p));
     }
     if let Some(home) = dirs::home_dir() {
@@ -1444,13 +1438,8 @@ pub fn config_paths() -> Vec<PathBuf> {
     if let Some(cfg) = dirs::config_dir() {
         v.push(cfg.join("keepane").join("keepane.conf"));
     }
-    // keepane was wmux up to 0.13.1: a config under the old name still counts.
-    // A tmux config does not: `keepane import-config` brings over what
-    // keepane can use from one, when asked.
-    if let Some(home) = dirs::home_dir() {
-        v.push(home.join(".wmux.conf"));
-        v.push(home.join(".config").join("wmux").join("wmux.conf"));
-    }
+    // A tmux config does not count: `keepane import-config` brings over
+    // what keepane can use from one, when asked.
     v
 }
 
@@ -1803,14 +1792,11 @@ mod tests {
         let e = o.set("clock-mode-animation", "unicorns").unwrap_err();
         assert!(e.contains("one of bars, bonsai, cat, cycle, dino, fire, fireworks, matrix, off, penguins"), "{e}");
         assert_eq!(o.clock_mode_animation, "dino", "a refused value leaves the old one");
-        // One keepane had up to 0.45, still named in a config: random, no
-        // error.
-        for gone in CLOCK_ANIMATIONS_GONE {
-            assert!(!CLOCK_ANIMATIONS.contains(gone), "{gone}");
-            o.set("clock-mode-animation", "dino").unwrap();
-            o.set("clock-mode-animation", gone).unwrap();
-            assert_eq!(o.get("clock-mode-animation").as_deref(), Some("random"), "{gone}");
-        }
+        // One keepane had up to 0.45 (read as random until 0.76): refused,
+        // as any other value it does not have.
+        o.set("clock-mode-animation", "dino").unwrap();
+        assert!(o.set("clock-mode-animation", "aquarium").is_err());
+        assert_eq!(o.clock_mode_animation, "dino");
         assert_eq!(option_values("clock-mode-animation"), CLOCK_ANIMATIONS);
         assert_eq!(resolve_name("clock-mode-a").as_deref(), Ok("clock-mode-animation"));
         // The characters it is drawn in: its own by default, or a set.
@@ -2099,18 +2085,17 @@ mod tests {
         }
     }
 
-    /// keepane's own config first, then one under the old name (wmux, up to
-    /// 0.13.1); never tmux's (`import-config` brings that over when asked).
+    /// keepane's own config only: not tmux's (`import-config` brings that
+    /// over when asked), nor one under keepane's old name (wmux, up to
+    /// 0.13.1; read until 0.76).
     #[test]
-    fn a_config_under_the_old_name_still_counts() {
+    fn only_keepanes_own_config_counts() {
         let paths: Vec<String> = config_paths()
             .iter()
             .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .filter(|n| n.ends_with(".conf"))
             .collect();
-        let at = |name: &str| paths.iter().position(|p| p == name).unwrap_or_else(|| panic!("{name} in {paths:?}"));
-        assert!(at(".keepane.conf") < at(".wmux.conf"), "{paths:?}");
-        assert!(paths.iter().any(|p| p == "wmux.conf"), "~/.config/wmux/wmux.conf too: {paths:?}");
-        assert!(!paths.iter().any(|p| p.ends_with("tmux.conf")), "tmux's is not read: {paths:?}");
+        assert!(paths.iter().any(|p| p == ".keepane.conf"), "{paths:?}");
+        assert!(paths.iter().all(|p| p == ".keepane.conf" || p == "keepane.conf"), "{paths:?}");
     }
 }

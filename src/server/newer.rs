@@ -44,7 +44,7 @@ impl Server {
 
     /// Every tick: ask when it is time (and allowed).
     pub(super) fn newer_tick(&mut self) {
-        let off = !self.opts.update_check || crate::legacy::var_os("KEEPANE_NO_UPDATE_CHECK").is_some();
+        let off = !self.opts.update_check || std::env::var_os("KEEPANE_NO_UPDATE_CHECK").is_some();
         let now = SystemTime::now();
         if off || self.newer.asking || self.started.elapsed() < FIRST_AFTER || self.newer.due.is_some_and(|d| now < d) {
             return;

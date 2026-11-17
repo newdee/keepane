@@ -68,8 +68,18 @@ impl log::Log for FileLogger {
     fn flush(&self) {}
 }
 
+/// Whether this process uses the real data directory: no test or user
+/// override of where keepane keeps things. What touches the real
+/// registrations (taking them over after an update, ssh's known hosts) is
+/// only done then.
+pub fn uses_real_dirs() -> bool {
+    ["KEEPANE_LOG_DIR", "KEEPANE_SESSIONS_DIR", "KEEPANE_HISTORY_DIR", "KEEPANE_CONFIG"]
+        .iter()
+        .all(|v| std::env::var_os(v).is_none_or(|x| x.is_empty()))
+}
+
 pub fn log_dir() -> std::path::PathBuf {
-    if let Some(d) = crate::legacy::var_os("KEEPANE_LOG_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = std::env::var_os("KEEPANE_LOG_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
     dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("keepane")
@@ -80,7 +90,7 @@ pub fn init(name: &str) {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{name}.log"));
     let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) else { return };
-    let level = match crate::legacy::var("KEEPANE_LOG").as_deref() {
+    let level = match std::env::var("KEEPANE_LOG").ok().as_deref() {
         Some("trace") => log::LevelFilter::Trace,
         Some("debug") => log::LevelFilter::Debug,
         Some("warn") => log::LevelFilter::Warn,
@@ -88,7 +98,7 @@ pub fn init(name: &str) {
         _ => log::LevelFilter::Info,
     };
     let max =
-        crate::legacy::var("KEEPANE_LOG_MAX").and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(MAX_BYTES);
+        std::env::var("KEEPANE_LOG_MAX").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(MAX_BYTES);
     let written = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut state = State { file, path, written, max };
     // Already over the limit (from before rotation existed): start fresh.

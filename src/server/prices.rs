@@ -169,7 +169,7 @@ impl Server {
         }
         // A list of one's own (LiteLLM's form; a machine kept offline, the
         // tests): read once, nothing fetched.
-        if let Some(own) = crate::legacy::var_os("KEEPANE_PRICE_LIST") {
+        if let Some(own) = std::env::var_os("KEEPANE_PRICE_LIST") {
             if self.prices.due.is_none() {
                 let now = SystemTime::now();
                 let secs = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());

@@ -45,7 +45,6 @@ Resume after a reboot (sessions autosave to the data directory's sessions folder
   Windows: a Run value, macOS: a launchd agent, Linux: a systemd user unit)
   windows-terminal install|remove|status   (Windows: a keepane profile in the Windows Terminal dropdown)
 Upgrading:  version (this keepane and the server's)   update [--check]   restart-server (sessions move to this version)
-  migrate   (from wmux, keepane's old name: sessions, saved data, logon start, Windows Terminal profile)
 On a phone:  web [--port N] [--bind IP[,IP...]] [--read-only] [--keep-key]   (prints a QR code; scan it on the same network;
   served again when the sessions are restored, until `web stop`)
   share PATH [--for 2h] [--once]   (a file or a folder by a link and a QR code; 24h unless --for; kept, back on the same link at the next start)   share [-l [-J]]   share stop ID|--all   share extend ID [--for 7d]   share again ID
@@ -211,8 +210,6 @@ fn main() {
     if args.is_empty() {
         args = keepane::command::bare_start();
     }
-    // Up from wmux (keepane's old name): its data directory moves here the
-    // first time, unless a wmux server still uses it (`migrate` then).
     // `update`'s copy outside Scoop's folder, finishing it (Windows only):
     // the registrations are not its to take over.
     #[cfg(windows)]
@@ -224,14 +221,11 @@ fn main() {
         });
         std::process::exit(code);
     }
-    if args[0] != "__server" && args[0] != "migrate" {
-        keepane::legacy::move_data_dir_at_start();
-    }
     // The logon command and the Windows Terminal profile run keepane by its
     // full path: after an update into a folder of its own, this newer one
     // takes them over (keepane::takeover). Not in the server,
     // not on every Tab, not in the commands that set these themselves.
-    if !matches!(args[0].as_str(), "__server" | "__complete" | "migrate" | "startup" | "windows-terminal" | "wt") {
+    if !matches!(args[0].as_str(), "__server" | "__complete" | "startup" | "windows-terminal" | "wt") {
         for line in keepane::startup::refresh_registrations(&socket) {
             eprintln!("keepane: {line}");
         }
@@ -327,8 +321,6 @@ fn main() {
         "version" => Some(rt.block_on(client::version(&socket))),
         "restart-server" => Some(rt.block_on(client::restart_server(&socket))),
         // From wmux (keepane's old name): sessions, data and registrations.
-        "migrate" if args.len() > 1 => Some(Err(anyhow::anyhow!("migrate: takes no arguments"))),
-        "migrate" => Some(rt.block_on(client::migrate(&socket))),
         "update" => Some(rt.block_on(keepane::update::run(&socket, &args[1..]))),
         // The panes on a phone: a client of the server that also answers
         // HTTP on the local network, until Ctrl+C.

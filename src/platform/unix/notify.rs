@@ -8,7 +8,7 @@ pub fn notify(title: &str, body: &str) -> bool {
 
 /// The same, with the action a Windows toast's button would take (not here).
 pub fn notify_with(title: &str, body: &str, _action: Option<&str>) -> bool {
-    if crate::legacy::var_os("KEEPANE_NO_TOAST").is_some() {
+    if std::env::var_os("KEEPANE_NO_TOAST").is_some() {
         return false;
     }
     let status = if cfg!(target_os = "macos") {
