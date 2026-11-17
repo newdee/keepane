@@ -63,8 +63,8 @@ pub(super) fn unheard_advice(pid: PaneId, program: Option<&str>) -> String {
     // Claude Code's, Codex's and pi's transcripts say when a turn is over:
     // free then, the hook only sooner. The others' are not read: without
     // the hook, they wait.
-    let pi = program.is_some_and(|p| super::done::program_name(p) == "pi");
-    let read = pi || matches!(agent, Some(crate::setup::Agent::Claude | crate::setup::Agent::Codex));
+    let read =
+        matches!(agent, Some(crate::setup::Agent::Claude | crate::setup::Agent::Codex | crate::setup::Agent::Pi));
     let without = if read {
         "without one keepane goes by its transcript, about 3 s late at the most, once its first turn is over"
     } else {
@@ -625,13 +625,16 @@ impl Server {
         };
         // What its hook said of its session: which transcript is this
         // pane's agent's, and its model (`agents::Bind`). Whatever its mode.
-        if said != HookSaid::default() {
-            self.agents_bind(me, said);
+        if said.session.is_some() || said.transcript.is_some() || said.model.is_some() {
+            self.agents_bind(me, said.clone());
         }
         // A turn that ended: the agent was heard from before (its first word
         // is its session starting) and was not already free.
         let turn = self.find_pane(me).is_some_and(|p| !p.actor.unheard() && !p.actor.idle());
-        self.agent_ready(me, turn, None);
+        // Its stop hook says the person broke the turn off (Cursor's
+        // `status`): the message it worked on ends unfinished, not told.
+        let broken_off = said.status.as_deref().map(|s| s == "aborted");
+        self.agent_ready(me, turn, broken_off);
         Outcome::Ok
     }
 

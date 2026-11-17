@@ -1,6 +1,6 @@
 # agent 的状态和用量更准：Codex、Cursor（设计稿）
 
-状态：第 1、2 步已实现（0.74.0，验收第 200 条），第 3 步 0.75.0，第 4、5 步其后。2026-11-17 用户提出"之前对于 claude 的余额和状态以及 trace、hook 等，显示的较为准确，但是 codex 和 cursor 这些并不准，可以参照一下 herdr 怎么做的"。调研 herdr 0.9.5（herdrdev/herdr）后给出五步方案，用户说"改吧，都按推荐来"。
+状态：第 1、2 步已实现（0.74.0，验收第 200 条），第 3、4、5 步已实现（0.75.0，验收第 201 条）。2026-11-17 用户提出"之前对于 claude 的余额和状态以及 trace、hook 等，显示的较为准确，但是 codex 和 cursor 这些并不准，可以参照一下 herdr 怎么做的"。调研 herdr 0.9.5（herdrdev/herdr）后给出五步方案，用户说"改吧，都按推荐来"。
 
 ## 调研结论（对照 herdr）
 
@@ -40,7 +40,31 @@
 - Codex 的忙和闲不看屏幕：会话记录更准（herdr 调研的结论 6）。Claude 不看屏幕：它的 hook 报等人。
 - 每秒一次是 server 已有的节拍；为此另加一个更快的节拍不值得。所以等人在 1 秒内出现，结束和 Cursor 变空闲最多晚 2 秒。
 
+## 第 3 步：Codex 的数字
+
+- 花费：Codex 的 `token_count` 是累计数。记下上一次的累计，每次只把增加的部分记到当时的模型上；哪一项变小了（同一文件里开了新会话），这一次全部算新的。另外读 `cache_write_input_tokens`（写缓存），并和 `cached_input_tokens` 一样从 `input_tokens` 里扣掉（Codex 的 `total_tokens` 等于输入加输出，所以两种缓存都算在输入里；本机样本的写缓存是 0，这一点没能用真实数据核对，扣掉是两种错法里较小的那个：不扣会把写缓存的 token 算两遍）。`reasoning_output_tokens` 已经含在 `output_tokens` 里（`total_tokens = input + output`），不重复算。
+- 上下文：现在的上下文是 `last_token_usage.total_tokens`（没有时用输入加输出），占比按 Codex 自己的算法 `(上下文 − 12000) / (窗口 − 12000)`；窗口不大于 12000 时不给占比。Claude 和 pi 的基数是 0，算法不变。
+- 限额：`rate_limits.primary`、`secondary` 各取 `used_percent`、`window_minutes`、`resets_at`（旧版本是 `resets_in_seconds`，按这一行的时间换算）。都没有时不显示。显示在 `list-agents -J` 的 `limits`、纯文本行末的 `limit 34%/12%`（只有知道时才加，原来的行不变）、格式变量 `#{agent_limit}`。原方案说"像 Claude 的余额一样显示"，实现时发现 keepane 对 Claude 也不显示限额，所以新加这几处。dashboard 不变。
+
+## 第 4 步：Cursor 的 hooks（范围收窄）
+
+本机没有 Cursor CLI，它的 hook 格式只来自文档和社区帖子，调研报告已经标出"没能核实"。所以只做格式有文档、改动小、能测的一项：
+
+- **做了**：`stop` hook 的 `status`。`pane-ready` 把它作为 `--status` 交给 server（只认 `completed`、`aborted`、`error`）；`aborted` 是人打断了回合，它正在处理的消息记为 `abandoned`、不通知"做完了"，和会话记录里的 `turn_aborted` 一样。
+- **没做**：`beforeSubmitPrompt` 记"在忙"。提示要么是打进去的（回车已经记为在忙），要么是 keepane 送进去的（投递已经记为在忙），加了也没有新信息。
+- **没做**：工具前后的 hook 进 Trace。事件名和载荷都无法核实，按猜的格式画 Trace，错的步骤比没有更糟。等有了 Cursor CLI 再做。
+- 模型：所有 hook 都跑 `pane-ready`，第 1 步已经从它们的 `model` 取到。
+
+## 第 5 步：pi 的扩展
+
+- `keepane setup pi`：写 `<PI_CODING_AGENT_DIR 或 ~/.pi/agent>/extensions/keepane.ts`，在 `session_start` 和 `agent_end` 时用 `pi.exec("keepane", ["pane-ready", "-q"])`（不经 shell，失败不管）。`--install` 前照例先显示；原来有同名的别人的文件，先备份。
+- pi 不接 MCP 服务端：`setup` 的状态表 MCP 一栏写 `-`，计划里说明它用 shell 里的 `keepane` 发消息。
+- pi 的会话记录本来就会说回合结束（最多晚约 3 秒），扩展只是更快。
+- 连带：`setup` 认得 `pi` 这个程序名后，`create-pane pi` 默认是 `ai` 模式（和别的 agent 一样），没有 hook 时的提示也会说 `keepane setup pi --install`。
 ## 验收要点
 
 - 第 1 步：hook 指定的会话记录在猜不到的地方也读到；同目录更新的文件不被算进来；模型先显示 hook 给的；手工运行不等待；`-t` 加这几个参数被拒；之后才启动的 agent 不拿旧的指定。
+- 第 3 步：中途换模型时分段计价；累计数重新开始时从头算；上下文占比与 Codex 一致（62000 / 112000 → 50%）；两种限额格式都读得出，没有时为空。
+- 第 4 步：stop 的 `aborted` 让消息记为 abandoned，`completed` 记为 done；不是这三个词的不取。
+- 第 5 步：`setup pi --install` 写出扩展、第二次不改、原有文件备份；状态表 MCP 一栏为 `-`；真 pi 带这个扩展跑一回合，pane 立刻空闲。
 - 第 2 步：Codex、Cursor 的提问出现时等人、只通知一次、消失后结束；Cursor 显示 `ctrl+c to stop` 后消失，pane 回到空闲；别的 agent 不受影响；屏幕上更早的提问（不在最后几行）不算。

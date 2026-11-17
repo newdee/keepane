@@ -143,13 +143,16 @@ window named after it; `s` connects in a split, `y` copies the command,
 `move-message`, `pane-ready`, `pane-status`, `list-tasks`, `show-task` (`-J`),
 `list-events`, `create-pane`, `mcp` (MCP for an agent in a pane), `setup`
 (`setup` alone lists the agents and what each lacks; `setup claude`, `codex`,
-`gemini`, `cursor` or `opencode` with `--install` adds the hook that says when
+`gemini`, `cursor`, `opencode` or `pi` (an extension; pi takes no MCP
+server) with `--install` adds the hook that says when
 the agent is free, the one that says when it waits for you (Claude Code,
 Codex, Gemini CLI: `pane-wait`), and keepane's MCP server). Claude
 Code's, Codex's and pi's transcripts say it too, about 3 seconds late at
 the most, with no hook. Run by a hook, `pane-ready` reads the hook's JSON
 on standard input and passes on its session, transcript and model
-(`--session`, `--transcript`, `--model`): that transcript is the pane's
+(`--session`, `--transcript`, `--model`; `--status aborted`, from Cursor's
+stop hook, ends the message it worked on unfinished): that transcript is
+the pane's
 agent's, no guess made. Codex's and Cursor's screens say when they wait for
 you, and Cursor's when it works ("ctrl+c to stop"). A message to an
 `ai` pane is pasted, and its Enter comes on its own once the paste has
@@ -757,7 +760,10 @@ While a pane runs an agent (Claude Code, Codex, pi), the server reads the
 transcript the agent writes and gives its figures to `list-agents`, the
 dashboard, the phone page and the formats `agent`, `agent_model`,
 `agent_cost`, `agent_tokens`, `agent_context`, `agent_cpu`, `agent_mem`,
-`agent_tools` and `agent_turns`. Cost prices the tokens by LiteLLM's public
+`agent_tools`, `agent_turns` and `agent_limit` (Codex's plan limits used,
+`34%/12%`; `list-agents -J` gives each window's share, length and reset).
+Codex's context share leaves out the 12,000 tokens any session starts
+with, as Codex shows it. Cost prices the tokens by LiteLLM's public
 list, fetched with `curl` once a day (an hour later after a failed try)
 while an agent runs (pi says its own); these are API list prices, not what a subscription is billed. A
 cost with `+` after it left out a model the list does not have.

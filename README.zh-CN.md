@@ -20,7 +20,7 @@ keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程�
 - 脱离后，pane 里的程序继续运行。重启电脑后用 `keepane resume` 恢复布局；误关的 pane 可在 10 秒内按 `C-b u` 找回。
 - 给 pane 命名后，就能向它发消息。消息先进入收件箱，等 pane 准备好再投递：shell 回到提示符时执行命令，其他程序主动读取。
 - 每条消息都有固定格式的信封，记录发送方、接收方和任务。事件日志保留 30 天；按 `C-b v` 可查看 pane、消息和任务。
-- 人、脚本和 AI agent 使用同一套消息机制；agent 也可通过内置的 MCP 服务端操作。`keepane setup` 可以给 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode 配好 hook，每轮结束时把下一条消息交给它。
+- 人、脚本和 AI agent 使用同一套消息机制；agent 也可通过内置的 MCP 服务端操作。`keepane setup` 可以给 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode、pi 配好 hook，每轮结束时把下一条消息交给它。
 - 同一个局域网或 Tailscale 里的两台电脑，像 `ssh-copy-id` 那样配对一次，之后一台上的 pane 就能给另一台上的 pane 发消息、派命令（`keepane link`）。每台电脑自己决定共享哪些 session、窗口或 pane，或者把整台电脑都交给对方。
 - 在手机上，通过 Wi-Fi 或 Tailscale，`keepane web` 可以查看所有窗口和 pane，每个是忙是闲、收件箱里排着什么；在手机上输入的命令在电脑上执行。
 - 支持 tmux 风格的 `C-b` 前缀、分屏、copy mode、命令行、配置写法（`keepane import-config` 可以导入现成的 `.tmux.conf`）、格式串、hook 和插件。
@@ -126,11 +126,11 @@ keepane chat list --tag ci
 
 （录屏里的 agent 是替身，按 Claude Code 和 Codex 的格式写会话记录；keepane 读真的 agent 也是一样。）
 
-keepane 认得 pane 里跑的 agent：Claude Code、Codex、pi 和 Cursor CLI（看程序名，或看 `node` 跑的是什么；Cursor 的 `agent` 只认 Cursor 自己目录里的那个）。keepane 不读 Cursor 的对话，所以 Cursor 只有 CPU 和内存。其余每个 agent 都会为它的工作目录写一份会话记录（`~/.claude/projects`、`~/.codex/sessions`、`~/.pi/agent/sessions`；也认 server 启动时的 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`）。keepane 每 2 秒读一次，只读上次之后新写的部分，从中得到模型、用掉的 token、调用工具的次数、回复的次数、上下文占了多少；再从进程表读 agent 及其子进程的 CPU 和内存。Claude Code 的 subagent 算在它的 pane 上。
+keepane 认得 pane 里跑的 agent：Claude Code、Codex、pi 和 Cursor CLI（看程序名，或看 `node` 跑的是什么；Cursor 的 `agent` 只认 Cursor 自己目录里的那个）。keepane 不读 Cursor 的对话，所以 Cursor 只有 CPU、内存和它的 hook 报的模型。其余每个 agent 都会为它的工作目录写一份会话记录（`~/.claude/projects`、`~/.codex/sessions`、`~/.pi/agent/sessions`；也认 server 启动时的 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`）。keepane 每 2 秒读一次，只读上次之后新写的部分，从中得到模型、用掉的 token、调用工具的次数、回复的次数、上下文占了多少；再从进程表读 agent 及其子进程的 CPU 和内存。Claude Code 的 subagent 算在它的 pane 上。Codex 的数字按 Codex 自己的算法：上下文占比扣掉任何会话开头都有的 12000 个 token（和它自己状态栏显示的一样）；它的服务商给出套餐限额时（`rate_limits`：5 小时窗口和每周窗口，各用了多少、何时重置），也一并读出。
 
-花费：pi 自己记了花费，直接用。其余的按 [LiteLLM 的公开价目表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) 给每个模型的 token（新输入、读缓存、写缓存、输出）分别计价。价目表用 `curl` 下载，一天一次（失败了 1 小时后再试），只在有 pane 跑 agent 时才下载，存在数据目录里。表上是各家的 API 标价：订阅（Claude Max、ChatGPT Pro）另有计费，所以这个数是“同样的活走 API 要花多少”。价目表里没有的模型不计价，这时花费后面带 `+`（`$2.10+`：至少这么多）。`set -g agent-cost off` 不下载，也不显示花费；环境变量 `KEEPANE_PRICE_LIST` 可以指定自己的价目表（LiteLLM 的格式）。
+花费：pi 自己记了花费，直接用。其余的按 [LiteLLM 的公开价目表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) 给每个模型的 token（新输入、读缓存、写缓存、输出）分别计价；Codex 的累计数每次增加的部分记到当时的模型上，会话中途换了模型就分段计价。价目表用 `curl` 下载，一天一次（失败了 1 小时后再试），只在有 pane 跑 agent 时才下载，存在数据目录里。表上是各家的 API 标价：订阅（Claude Max、ChatGPT Pro）另有计费，所以这个数是“同样的活走 API 要花多少”。价目表里没有的模型不计价，这时花费后面带 `+`（`$2.10+`：至少这么多）。`set -g agent-cost off` 不下载，也不显示花费；环境变量 `KEEPANE_PRICE_LIST` 可以指定自己的价目表（LiteLLM 的格式）。
 
-在哪里看：dashboard 的 pane 列表（`claude $2.10 34%`：花费、上下文），所选 pane 上方一行列出全部数字；手机网页上 agent pane 的卡片多一行；`keepane list-agents`（`-J` 输出 JSON，每个数都是数字，不知道的是 `null`）；还有格式变量 `agent` `agent_model` `agent_cost` `agent_tokens` `agent_context` `agent_cpu` `agent_mem` `agent_tools` `agent_turns`，可以放进边框或状态栏：
+在哪里看：dashboard 的 pane 列表（`claude $2.10 34%`：花费、上下文），所选 pane 上方一行列出全部数字；手机网页上 agent pane 的卡片多一行；`keepane list-agents`（`-J` 输出 JSON，每个数都是数字，不知道的是 `null`）；还有格式变量 `agent` `agent_model` `agent_cost` `agent_tokens` `agent_context` `agent_cpu` `agent_mem` `agent_tools` `agent_turns` `agent_limit`（Codex 的限额用量，`34%/12%`），可以放进边框或状态栏：
 
 ```tmux
 set -g pane-border-status top
@@ -559,8 +559,9 @@ pane 里的 agent 收发的是和别人一样的消息。要让它顺畅，需�
 | Gemini CLI | `gemini` | `~/.gemini/settings.json` 里的 `SessionStart`、`AfterAgent` | `Notification` | 同一个文件的 `mcpServers` |
 | Cursor CLI | `cursor` | `~/.cursor/hooks.json` 里的 `sessionStart`、`stop` | 没有 | `~/.cursor/mcp.json` |
 | opencode | `opencode` | 一个插件 `~/.config/opencode/plugins/keepane.js`，启动时和 `session.idle` 时运行 | 没有 | `opencode.json` 的 `mcp` |
+| pi | `pi` | 一个扩展 `~/.pi/agent/extensions/keepane.ts`，在 `session_start` 和 `agent_end` 时运行 | 没有 | 没有（pi 不接 MCP 服务端；它在自己的 shell 里用 `keepane` 发消息） |
 
-hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。它读 hook 在标准输入上给的内容（最多 1 秒，手工运行时什么都不读）：会话、会话记录的路径、模型。这份会话记录就算这个 pane 的 agent 的，放在哪里都读（比如几周前的 Codex 会话被续上），同一目录里别的文件不会被算进来（比如别的程序的会话）；模型从一开始就显示，不用等会话记录写出来。没有 hook 时照旧去猜：这个目录里最后启动的那个同类 agent。
+hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。Cursor 的 stop hook 说回合是被人打断的（`status` 为 `aborted`）时，它正在处理的消息记为没做完，和 Codex 会话记录里说的一样。它读 hook 在标准输入上给的内容（最多 1 秒，手工运行时什么都不读）：会话、会话记录的路径、模型。这份会话记录就算这个 pane 的 agent 的，放在哪里都读（比如几周前的 Codex 会话被续上），同一目录里别的文件不会被算进来（比如别的程序的会话）；模型从一开始就显示，不用等会话记录写出来。没有 hook 时照旧去猜：这个目录里最后启动的那个同类 agent。
 
 Codex 和 Cursor 问你问题时，会话记录里一个字也不写，所以 keepane 按 herdr 的规则读它们的屏幕：Codex 的标题出现 "Action Required"，或最后几行出现 "press enter to confirm or esc to cancel"、"enter to submit answer"、"allow command?"；Cursor 的 "waiting for approval"、"run this command?"。这和等待 hook 报的等待一样（Trace、时钟、`done-events`），屏幕不再显示时结束。Cursor 最后几行出现 "ctrl+c to stop" 表示它在干活，这行消失 2 秒后 pane 回到空闲，不需要 hook；但最后一次看到它在干活之后有人按了键或送进了消息，就不算（那是 stop hook 已经结束的回合，下一个还没画出来）。设计稿：[docs/design/agent-accuracy.md](docs/design/agent-accuracy.md)。
 

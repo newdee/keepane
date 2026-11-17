@@ -76,7 +76,7 @@ since its agent started ...`, and the dashboard and the phone mark the pane.
 
 ```sh
 keepane setup                    # each agent: on this machine? hook? MCP server?
-keepane setup codex --install    # or claude, gemini, cursor, opencode
+keepane setup codex --install    # or claude, gemini, cursor, opencode, pi
 ```
 
 Every file is backed up first and only keepane's entries are added. Then

@@ -31,8 +31,8 @@ have paired. The usual tmux keys, commands and config file keep working.
   the panes, messages and tasks.
 - People, scripts and AI agents use the same messages; an agent can also
   work through the built-in MCP server, and `keepane setup` hooks up Claude
-  Code, Codex, Gemini CLI, Cursor CLI or opencode so that it is handed its
-  next message when a turn ends.
+  Code, Codex, Gemini CLI, Cursor CLI, opencode or pi so that it is handed
+  its next message when a turn ends.
 - Two computers on one network or on Tailscale pair once, the way
   `ssh-copy-id` works, and from then on panes on one send messages and
   commands to panes on the other (`keepane link`). Each machine shares the
@@ -292,17 +292,24 @@ Codex's transcripts; keepane reads the real ones the same way.)
 keepane knows the agents its panes run: Claude Code, Codex, pi and Cursor
 CLI (by the program's name, or by what `node` runs; Cursor's `agent` only
 from Cursor's own folder). keepane does not read Cursor's chats: for it,
-only the CPU and memory. For each of the others, it reads the transcript
+the CPU and memory, and the model its hook names. For each of the others,
+it reads the transcript
 the agent writes for its directory (`~/.claude/projects`, `~/.codex/sessions`,
 `~/.pi/agent/sessions`; `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, as the server
 was started with, are followed),
 only the part written since the last read, every two seconds. From it come
 the model, the tokens used, the tools called, the replies made and how full
 the context is; from the process table, the CPU and memory of the agent and
-everything under it. Claude Code's subagents count toward its pane.
+everything under it. Claude Code's subagents count toward its pane. Codex's
+figures are taken as Codex has them: how full the context is past the 12,000
+tokens any session starts with (the share its own status line shows), and
+its plan's limits (`rate_limits`: the five-hour and the weekly window, the
+share used and when each starts again) when its provider says them.
 
 The cost: pi says its own. For the others, keepane prices each model's tokens
-(fresh, cached, written to the cache, received) by
+(fresh, cached, written to the cache, received; what each of Codex's
+running totals adds goes to the model of that moment, so a model switched
+mid-session is priced part by part) by
 [LiteLLM's public price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json),
 fetched with `curl` once a day (an hour later after a failed try), only while
 a pane runs an agent, and kept in the data directory. The list is the providers' list prices: a
@@ -318,7 +325,8 @@ and a line over the chosen pane with everything; a line on each agent's card
 on the phone page; `keepane list-agents` (`-J` for JSON, every figure a
 number, `null` when not known); and the format variables `agent` `agent_model` `agent_cost`
 `agent_tokens` `agent_context` `agent_cpu` `agent_mem` `agent_tools`
-`agent_turns`, for a border or the status line:
+`agent_turns` `agent_limit` (Codex's limits used, `34%/12%`), for a border
+or the status line:
 
 ```tmux
 set -g pane-border-status top
@@ -1186,10 +1194,14 @@ each file backed up first and only keepane's entries added:
 | Gemini CLI | `gemini` | `SessionStart`, `AfterAgent` in `~/.gemini/settings.json` | `Notification` | `mcpServers` there |
 | Cursor CLI | `cursor` | `sessionStart`, `stop` in `~/.cursor/hooks.json` | none | `~/.cursor/mcp.json` |
 | opencode | `opencode` | a plugin, `~/.config/opencode/plugins/keepane.js`, on start and `session.idle` | none | `mcp` in `opencode.json` |
+| pi | `pi` | an extension, `~/.pi/agent/extensions/keepane.ts`, on `session_start` and `agent_end` | none | none (pi takes no MCP server; it sends with `keepane` in its shell) |
 
 Each runs `keepane pane-ready -q`, which is quiet outside keepane and
-ignored in panes not in `ai` mode. It reads what the hook gives it on
-standard input (a second at most; nothing when run by hand): the session,
+ignored in panes not in `ai` mode. When Cursor's stop hook says the
+person broke the turn off (`status` `aborted`), the message it worked on
+ends unfinished, as Codex's transcript says it. It reads what the hook
+gives it on standard input (a second at most; nothing when run by hand):
+the session,
 its transcript and its model. That transcript is then the pane's agent's,
 read wherever it is (a Codex session resumed from weeks ago), and no other
 file in its directory is taken for it (another program's session there);

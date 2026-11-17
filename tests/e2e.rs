@@ -13192,6 +13192,33 @@ async fn a_wait_codexs_screen_shows_outlasts_its_transcript() {
     h.cli(&["kill-server"]).await;
     let _ = std::fs::remove_dir_all(&root);
 }
+/// An agent's stop hook that says how its turn ended (Cursor's `status`):
+/// `aborted`, the person broke it off, ends the message it worked on
+/// unfinished (`abandoned`, not told as finished); `completed`, done.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_hook_says_a_turn_was_broken_off() {
+    let h = Harness::start("stop-status").await;
+    h.cli(&["new", "-d", "-s", "st"]).await;
+    let pane = pane_id(&h, "st:0.0").await;
+    h.cli(&["set-work-mode", "-t", "st", "ai"]).await;
+    let ended = async |hook: &str| -> String {
+        h.cli(&["pane-ready", "-t", "st"]).await;
+        let (_, sent, _) = h.cli(&["send-message", "-t", "st", "a task"]).await;
+        let id = msg_id(&sent);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !h.cli(&["trace-message", &id]).await.1.starts_with(&format!("#{id} delivered")) {
+            assert!(Instant::now() < deadline, "#{id} never delivered");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(run_hook(&h.socket, Some(pane), &["pane-ready", "-q"], hook).0, 0);
+        h.cli(&["trace-message", &id]).await.1
+    };
+    let t = ended(r#"{"conversation_id":"c","hook_event_name":"stop","status":"aborted"}"#).await;
+    assert!(t.lines().next().is_some_and(|l| l.contains(" abandoned")), "{t}");
+    let t = ended(r#"{"conversation_id":"c","hook_event_name":"stop","status":"completed"}"#).await;
+    assert!(t.lines().next().is_some_and(|l| l.contains(" done")), "{t}");
+    h.cli(&["kill-server"]).await;
+}
 /// What Cursor's screen says (docs/design/agent-accuracy.md, step 2): a
 /// question in its last lines is a wait for the person (in the Trace, and
 /// told as `done-events` `wait`), over when the screen stops showing it;
@@ -13381,6 +13408,20 @@ async fn the_hook_names_its_agents_transcript() {
         (a["agent"].as_str(), a["model"].as_str(), a["transcripts"].as_u64()),
         (Some("codex"), Some("gpt-5.5"), Some(1))
     );
+    // Codex's plan limits, as its next running totals say them.
+    let limits = serde_json::json!({"type": "event_msg", "payload": {"type": "token_count", "info": null,
+        "rate_limits": {"primary": {"used_percent": 34.0, "window_minutes": 300, "resets_at": 1763400000},
+                        "secondary": {"used_percent": 12.4, "window_minutes": 10080, "resets_at": 1763900000}}}});
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&mine)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{limits}\n").as_bytes()))
+        .unwrap();
+    h.wait_for_cli("its limits", &["display-message", "-p", "-t", "cx", "#{agent_limit}"], |_, out| {
+        out.trim() == "34%/12%"
+    })
+    .await;
+    assert!(h.cli(&["list-agents"]).await.1.trim_end().ends_with(" limit 34%/12%"));
     // By hand (a console, or nothing on standard input): nothing bound, no
     // waiting either.
     let started = Instant::now();

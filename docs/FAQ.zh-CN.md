@@ -56,7 +56,7 @@ Codex 的 issue 里有人报告，在普通屏幕上它有时仍会整屏重画�
 
 ```sh
 keepane setup                    # 每个 agent：本机装没装、hook 配没配、MCP 注册没有
-keepane setup codex --install    # 或 claude、gemini、cursor、opencode
+keepane setup codex --install    # 或 claude、gemini、cursor、opencode、pi
 ```
 
 改每个文件之前都会先备份，只加 keepane 自己的条目。装好后在 pane 里重新启动 agent。Codex 的新 hook 要你信任一次才会运行：在 Codex 里输入 `/hooks`，信任 keepane 的那几条。其他 agent 只要能在每轮结束时运行一条命令，让它运行 `keepane pane-ready -q` 就行。

@@ -174,6 +174,8 @@ pub struct Context {
     pub agent_cost: String,
     pub agent_tokens: String,
     pub agent_context: String,
+    /// The plan's limits used, as the agent says (Codex): `34%/12%`.
+    pub agent_limit: String,
     pub agent_cpu: String,
     pub agent_mem: String,
     pub agent_tools: String,
@@ -399,6 +401,7 @@ impl Context {
             "agent_cost" => self.agent_cost.clone(),
             "agent_tokens" => self.agent_tokens.clone(),
             "agent_context" => self.agent_context.clone(),
+            "agent_limit" => self.agent_limit.clone(),
             "agent_cpu" => self.agent_cpu.clone(),
             "agent_mem" => self.agent_mem.clone(),
             "agent_tools" => self.agent_tools.clone(),

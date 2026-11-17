@@ -17,7 +17,10 @@
 //! and is left alone), run once the user trusts them (`/hooks`); Gemini CLI
 //! `AfterAgent`/`SessionStart` in `~/.gemini/settings.json`; Cursor CLI
 //! `stop`/`sessionStart` in `~/.cursor/hooks.json`; opencode has no such
-//! hook but plugins, and a small one runs the command on `session.idle`.
+//! hook but plugins, and a small one runs the command on `session.idle`;
+//! pi has extensions, and a small one runs it on `session_start` and
+//! `agent_end` (2026-11; its transcript says so too, two seconds later).
+//! pi has no MCP: it sends messages with `keepane` in its shell.
 //!
 //! The waiting hook (2026-11): Claude Code's `Notification` for a
 //! permission prompt or a question left unanswered about six seconds
@@ -50,9 +53,10 @@ pub enum Agent {
     Gemini,
     Cursor,
     Opencode,
+    Pi,
 }
 
-pub const AGENTS: [Agent; 5] = [Agent::Claude, Agent::Codex, Agent::Gemini, Agent::Cursor, Agent::Opencode];
+pub const AGENTS: [Agent; 6] = [Agent::Claude, Agent::Codex, Agent::Gemini, Agent::Cursor, Agent::Opencode, Agent::Pi];
 
 impl Agent {
     /// The word `keepane setup` takes.
@@ -63,7 +67,13 @@ impl Agent {
             Agent::Gemini => "gemini",
             Agent::Cursor => "cursor",
             Agent::Opencode => "opencode",
+            Agent::Pi => "pi",
         }
+    }
+
+    /// Whether it takes MCP servers (pi does not).
+    fn has_mcp(self) -> bool {
+        self != Agent::Pi
     }
 
     fn label(self) -> &'static str {
@@ -73,6 +83,7 @@ impl Agent {
             Agent::Gemini => "Gemini CLI",
             Agent::Cursor => "Cursor CLI",
             Agent::Opencode => "opencode",
+            Agent::Pi => "pi",
         }
     }
 
@@ -148,6 +159,11 @@ fn places(agent: Agent, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Pl
             let mcp = if !json.exists() && jsonc.exists() { jsonc } else { json };
             Places { hooks: dir.join("plugins").join("keepane.js"), mcp, cli_env: None }
         }
+        Agent::Pi => {
+            let dir = set("PI_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".pi").join("agent"));
+            let file = dir.join("extensions").join("keepane.ts");
+            Places { hooks: file.clone(), mcp: file, cli_env: None }
+        }
     }
 }
 
@@ -159,6 +175,7 @@ fn events(agent: Agent) -> [&'static str; 2] {
         Agent::Gemini => ["SessionStart", "AfterAgent"],
         Agent::Cursor => ["sessionStart", "stop"],
         Agent::Opencode => ["plugin start", "session.idle"],
+        Agent::Pi => ["session_start", "agent_end"],
     }
 }
 
@@ -169,7 +186,7 @@ fn wait_event(agent: Agent) -> Option<(&'static str, Option<&'static str>)> {
         Agent::Claude => Some(("Notification", Some("permission_prompt|elicitation_dialog"))),
         Agent::Codex => Some(("PermissionRequest", None)),
         Agent::Gemini => Some(("Notification", None)),
-        Agent::Cursor | Agent::Opencode => None,
+        Agent::Cursor | Agent::Opencode | Agent::Pi => None,
     }
 }
 
@@ -253,10 +270,13 @@ pub fn hook_said(input: &str) -> Vec<String> {
         _ => None,
     };
     let mut out = Vec::new();
+    // How its turn ended (Cursor's stop hook): one of its words only.
+    let status = first(&["status"]).filter(|s| matches!(s.as_str(), "completed" | "aborted" | "error"));
     for (flag, val) in [
         ("--session", first(&["session_id", "conversation_id"])),
         ("--transcript", first(&["transcript_path"])),
         ("--model", model),
+        ("--status", status),
     ] {
         if let Some(val) = val {
             out.extend([flag.to_string(), val]);
@@ -307,6 +327,32 @@ export const KeepanePlugin = async ({ $ }) => {
   }
 }
 ";
+
+/// pi's extension: the command when a session starts and each time the
+/// agent is done (`agent_end`). `exec` runs it without a shell; a failure is
+/// nobody's business but keepane's.
+pub const PI_EXTENSION: &str = "\
+// keepane: tells keepane when pi is free for its next message
+// (`keepane setup pi`). Outside a keepane pane it does nothing.
+export default function (pi: any) {
+  const ready = async () => {
+    try {
+      await pi.exec(\"keepane\", [\"pane-ready\", \"-q\"])
+    } catch {}
+  }
+  pi.on(\"session_start\", ready)
+  pi.on(\"agent_end\", ready)
+}
+";
+
+/// The file an agent's hook is all of (opencode's plugin, pi's extension).
+fn own_file(agent: Agent) -> Option<&'static str> {
+    match agent {
+        Agent::Opencode => Some(OPENCODE_PLUGIN),
+        Agent::Pi => Some(PI_EXTENSION),
+        _ => None,
+    }
+}
 
 fn obj<'a>(v: &'a mut Value, what: &str) -> Result<&'a mut serde_json::Map<String, Value>> {
     v.as_object_mut().with_context(|| format!("{what} is not a JSON object"))
@@ -440,7 +486,7 @@ fn edit_json(path: &Path, f: impl FnOnce(Value) -> Result<(Value, bool)>) -> Res
 fn hooked(agent: Agent, p: &Places) -> bool {
     let Ok(Some(t)) = read(&p.hooks) else { return false };
     match agent {
-        Agent::Opencode => t.contains(HOOK_MARK),
+        Agent::Opencode | Agent::Pi => t.contains(HOOK_MARK) || t.contains("\"pane-ready\""),
         Agent::Cursor => {
             serde_json::from_str(&t).ok().and_then(|v| with_cursor_hooks(v).ok()).is_some_and(|(_, changed)| !changed)
         }
@@ -450,6 +496,9 @@ fn hooked(agent: Agent, p: &Places) -> bool {
 
 /// Whether keepane's MCP server is registered with the agent.
 fn registered(agent: Agent, p: &Places) -> bool {
+    if !agent.has_mcp() {
+        return false;
+    }
     let Ok(Some(t)) = read(&p.mcp) else { return false };
     match agent {
         // TOML: a table of its own.
@@ -507,8 +556,10 @@ fn mcp_by_hand(agent: Agent, p: &Places) -> String {
 }
 
 fn hooks_snippet(agent: Agent) -> String {
+    if let Some(text) = own_file(agent) {
+        return text.to_string();
+    }
     let v = match agent {
-        Agent::Opencode => return OPENCODE_PLUGIN.to_string(),
         Agent::Cursor => with_cursor_hooks(json!({})).map(|(v, _)| v),
         _ => with_hooks(json!({}), agent).map(|(v, _)| v),
     };
@@ -529,8 +580,12 @@ fn print_plan(agent: Agent, p: &Places) {
     }
     println!("{}", hooks_snippet(agent));
     println!();
-    println!("2. keepane's MCP server:");
-    println!("   {}", mcp_by_hand(agent, p));
+    if agent.has_mcp() {
+        println!("2. keepane's MCP server:");
+        println!("   {}", mcp_by_hand(agent, p));
+    } else {
+        println!("2. No MCP server: {} takes none; it sends with `keepane` in its shell.", agent.label());
+    }
     println!();
     if agent == Agent::Codex {
         println!("Codex runs a new hook only once you trust it: in Codex, /hooks, and trust keepane's.");
@@ -542,32 +597,34 @@ fn install(agent: Agent, p: &Places) -> Result<()> {
     let [start, end] = events(agent);
     // Whether the MCP server was added along with the hooks (one file).
     let mut together = None;
-    let hooks_changed = match agent {
-        Agent::Opencode => {
-            if read(&p.hooks)?.is_some_and(|t| t.contains(HOOK_MARK)) {
+    let hooks_changed = match own_file(agent) {
+        Some(text) => {
+            if hooked(agent, p) {
                 false
             } else {
                 // Its own file: an old one of another making is kept aside.
                 let old = read(&p.hooks)?;
-                write_backed_up(&p.hooks, old.as_deref(), OPENCODE_PLUGIN)?;
+                write_backed_up(&p.hooks, old.as_deref(), text)?;
                 true
             }
         }
-        Agent::Cursor => edit_json(&p.hooks, with_cursor_hooks)?,
-        // Hooks and MCP servers in one file (Gemini CLI): one edit, one
-        // backup of the file as the user had it.
-        _ if p.hooks == p.mcp => {
-            let (mut hooks, mut mcp) = (false, false);
-            edit_json(&p.hooks, |v| {
-                let (v, h) = with_hooks(v, agent)?;
-                let (v, m) = with_mcp(v, agent)?;
-                (hooks, mcp) = (h, m);
-                Ok((v, h || m))
-            })?;
-            together = Some(mcp);
-            hooks
-        }
-        _ => edit_json(&p.hooks, |v| with_hooks(v, agent))?,
+        None => match agent {
+            Agent::Cursor => edit_json(&p.hooks, with_cursor_hooks)?,
+            // Hooks and MCP servers in one file (Gemini CLI): one edit, one
+            // backup of the file as the user had it.
+            _ if p.hooks == p.mcp => {
+                let (mut hooks, mut mcp) = (false, false);
+                edit_json(&p.hooks, |v| {
+                    let (v, h) = with_hooks(v, agent)?;
+                    let (v, m) = with_mcp(v, agent)?;
+                    (hooks, mcp) = (h, m);
+                    Ok((v, h || m))
+                })?;
+                together = Some(mcp);
+                hooks
+            }
+            _ => edit_json(&p.hooks, |v| with_hooks(v, agent))?,
+        },
     };
     if hooks_changed {
         match wait_event(agent) {
@@ -580,7 +637,9 @@ fn install(agent: Agent, p: &Places) -> Result<()> {
     } else {
         println!("the hooks are already in {}", p.hooks.display());
     }
-    if let Some(added) = together {
+    if !agent.has_mcp() {
+        println!("no MCP server: {} takes none", agent.label());
+    } else if let Some(added) = together {
         if added {
             println!("registered the keepane MCP server in {}", p.mcp.display());
         } else {
@@ -625,8 +684,9 @@ fn print_status(home: &Path, env: &dyn Fn(&str) -> Option<String>) {
         let p = places(a, home, env);
         let here = crate::config::which(a.program()).is_some();
         let (h, m) = (hooked(a, &p), registered(a, &p));
-        println!("{:<12} {:<13} {:<6} {:<5}", a.label(), if here { a.program() } else { "-" }, yes(h), yes(m));
-        if (here || h || m) && !(h && m) {
+        let mcp = if a.has_mcp() { yes(m) } else { "-" };
+        println!("{:<12} {:<13} {:<6} {:<5}", a.label(), if here { a.program() } else { "-" }, yes(h), mcp);
+        if (here || h || m) && !(h && (m || !a.has_mcp())) {
             missing.push(a);
         }
     }
@@ -836,6 +896,31 @@ mod tests {
     }
 
     /// Claude Code's own directory (`CLAUDE_CONFIG_DIR`) holds both files;
+    /// pi: its extension in its own directory (`PI_CODING_AGENT_DIR`),
+    /// written once, an older file of another making backed up; no MCP
+    /// server, which takes none.
+    #[test]
+    fn pi_gets_an_extension_and_no_mcp() {
+        let dir = temp("pi");
+        let env = |k: &str| (k == "PI_CODING_AGENT_DIR").then(|| dir.to_string_lossy().into_owned());
+        let p = places(Agent::Pi, Path::new("/nowhere"), &env);
+        let file = dir.join("extensions").join("keepane.ts");
+        assert_eq!(p.hooks, file);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "// someone else's\n").unwrap();
+        assert!(!hooked(Agent::Pi, &p));
+        install(Agent::Pi, &p).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), PI_EXTENSION);
+        assert!(hooked(Agent::Pi, &p) && !registered(Agent::Pi, &p));
+        assert_eq!(backups(file.parent().unwrap()).len(), 1, "the other file kept aside");
+        install(Agent::Pi, &p).unwrap();
+        assert_eq!(backups(file.parent().unwrap()).len(), 1, "a second run writes nothing");
+        assert!(PI_EXTENSION.contains("\"pane-ready\", \"-q\"") && PI_EXTENSION.contains("agent_end"));
+        assert_eq!((Agent::parse("pi"), Agent::of_program("pi.cmd")), (Some(Agent::Pi), None));
+        assert_eq!(Agent::of_program("/usr/local/bin/pi"), Some(Agent::Pi));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// opencode's JSONC config, with comments, is found and left alone.
     #[test]
     fn claude_config_dir_and_opencode_jsonc() {
@@ -961,6 +1046,9 @@ mod tests {
         );
         let cursor = r#"{"conversation_id":"c9","generation_id":"g","model":"gpt-5","hook_event_name":"sessionStart"}"#;
         assert_eq!(hook_said(cursor), ["--session", "c9", "--model", "gpt-5"]);
+        let stop = r#"{"conversation_id":"c9","hook_event_name":"stop","status":"aborted","loop_count":0}"#;
+        assert_eq!(hook_said(stop), ["--session", "c9", "--status", "aborted"]);
+        assert_eq!(hook_said(r#"{"status":"whatever"}"#), Vec::<String>::new(), "not one of its words");
         let object = r#"{"session_id":"s","model":{"id":"opus","display_name":"Opus"}}"#;
         assert_eq!(hook_said(object), ["--session", "s", "--model", "opus"]);
         // Nothing to take: not JSON, empty words, a control character.

@@ -157,6 +157,9 @@ pub struct HookSaid {
     pub session: Option<String>,
     pub transcript: Option<String>,
     pub model: Option<String>,
+    /// How its turn ended, when its stop hook says (Cursor's `status`):
+    /// `aborted` is the person breaking it off.
+    pub status: Option<String>,
 }
 
 /// What a `chat-*` command is asked (docs/design/chat.md). A channel is
@@ -1412,9 +1415,12 @@ impl fmt::Display for Cmd {
                     f.write_str(" -q")?;
                 }
                 fmt_target(f, target)?;
-                for (flag, v) in
-                    [("--session", &said.session), ("--transcript", &said.transcript), ("--model", &said.model)]
-                {
+                for (flag, v) in [
+                    ("--session", &said.session),
+                    ("--transcript", &said.transcript),
+                    ("--model", &said.model),
+                    ("--status", &said.status),
+                ] {
                     if let Some(v) = v {
                         write!(f, " {flag} {}", quote(v))?;
                     }
@@ -3066,7 +3072,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("trace-message", &["-w", "-J"]),
     ("drop-message", &["-u"]),
     ("move-message", &[]),
-    ("pane-ready", &["-q", "-t", "--session", "--transcript", "--model"]),
+    ("pane-ready", &["-q", "-t", "--session", "--transcript", "--model", "--status"]),
     ("pane-wait", &["-q", "-t"]),
     ("pane-status", &[]),
     ("set-work-mode", &["-t"]),
@@ -3786,12 +3792,15 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     "--session" => said.session = Some(a.value("--session")?.to_string()),
                     "--transcript" => said.transcript = Some(a.value("--transcript")?.to_string()),
                     "--model" => said.model = Some(a.value("--model")?.to_string()),
+                    "--status" => said.status = Some(a.value("--status")?.to_string()),
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
             if target.is_some() && said != HookSaid::default() {
-                return Err(format!("{n}: --session, --transcript and --model are the pane's own agent's (no -t)"));
+                return Err(format!(
+                    "{n}: --session, --transcript, --model and --status are the pane's own agent's (no -t)"
+                ));
             }
             Cmd::PaneReady { quiet, target, said }
         }
@@ -6091,6 +6100,7 @@ mod tests {
             "web-tails 4",
             "pane-wait -q",
             "pane-ready -q --session 0193-ab --transcript \"C:\\Users\\me\\.codex\\sessions\\a b.jsonl\" --model gpt-5.5",
+            "pane-ready -q --status aborted",
             "pane-ready -t %3",
             "feishu-status",
             "feishu-allow ou_ab12",

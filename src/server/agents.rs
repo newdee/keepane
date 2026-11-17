@@ -98,17 +98,91 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// All of them, each counted once.
+    /// All of them, each counted once. (Numbers a transcript gives are the
+    /// agent's to write: sums saturate rather than overflow.)
     pub fn total(&self) -> u64 {
-        self.input + self.cache_read + self.cache_write + self.output
+        self.input.saturating_add(self.cache_read).saturating_add(self.cache_write).saturating_add(self.output)
     }
 
     fn add(&mut self, o: &Tokens) {
-        self.input += o.input;
-        self.cache_read += o.cache_read;
-        self.cache_write += o.cache_write;
-        self.cache_write_1h += o.cache_write_1h;
-        self.output += o.output;
+        self.input = self.input.saturating_add(o.input);
+        self.cache_read = self.cache_read.saturating_add(o.cache_read);
+        self.cache_write = self.cache_write.saturating_add(o.cache_write);
+        self.cache_write_1h = self.cache_write_1h.saturating_add(o.cache_write_1h);
+        self.output = self.output.saturating_add(o.output);
+    }
+
+    /// What `now` has that `self` had not: each count's growth. A count
+    /// that went down means the totals began again: then all of `now`.
+    fn since(&self, now: &Tokens) -> Tokens {
+        let down = now.input < self.input
+            || now.cache_read < self.cache_read
+            || now.cache_write < self.cache_write
+            || now.output < self.output;
+        if down {
+            return *now;
+        }
+        Tokens {
+            input: now.input - self.input,
+            cache_read: now.cache_read - self.cache_read,
+            cache_write: now.cache_write - self.cache_write,
+            cache_write_1h: now.cache_write_1h.saturating_sub(self.cache_write_1h),
+            output: now.output - self.output,
+        }
+    }
+}
+
+/// How much of an agent's plan's limits is used, as it says (Codex's
+/// `rate_limits`): its main window (five hours) and its second (a week).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Limits {
+    pub primary: Option<LimitWindow>,
+    pub secondary: Option<LimitWindow>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LimitWindow {
+    pub used_percent: f64,
+    pub window_minutes: Option<u64>,
+    /// When it starts again, seconds since 1970.
+    pub resets_at: Option<i64>,
+}
+
+impl LimitWindow {
+    /// Codex's `{"used_percent", "window_minutes", "resets_at"}` (older:
+    /// `resets_in_seconds`, from the line's time).
+    fn of(v: &Value, at: i64) -> Option<LimitWindow> {
+        let used = v["used_percent"].as_f64()?;
+        let resets_at =
+            v["resets_at"].as_i64().or_else(|| v["resets_in_seconds"].as_i64().map(|s| at.saturating_add(s)));
+        Some(LimitWindow { used_percent: used, window_minutes: v["window_minutes"].as_u64(), resets_at })
+    }
+
+    fn json(&self) -> Value {
+        serde_json::json!({
+            "used_percent": self.used_percent,
+            "window_minutes": self.window_minutes,
+            "resets_at": self.resets_at,
+        })
+    }
+}
+
+impl Limits {
+    /// `34%/12%`: each window's share used, rounded; empty when none known.
+    pub fn text(&self) -> String {
+        let pct = |w: &Option<LimitWindow>| w.map(|w| format!("{:.0}%", w.used_percent));
+        match (pct(&self.primary), pct(&self.secondary)) {
+            (Some(a), Some(b)) => format!("{a}/{b}"),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => String::new(),
+        }
+    }
+
+    fn json(&self) -> Value {
+        serde_json::json!({
+            "primary": self.primary.map(|w| w.json()),
+            "secondary": self.secondary.map(|w| w.json()),
+        })
     }
 }
 
@@ -127,6 +201,14 @@ pub struct Usage {
     /// window when the agent says it (Codex).
     pub context: u64,
     pub window: Option<u64>,
+    /// What of the context the agent does not count as used (Codex: 12000,
+    /// its own figure for what any session starts with), so the share is
+    /// the one it shows.
+    pub context_base: u64,
+    /// Its plan's limits, when it says them (Codex).
+    pub limits: Option<Limits>,
+    /// The running totals last read (Codex), for what each new one adds.
+    pub running: Tokens,
     /// Tools called, replies made.
     pub tools: u64,
     pub turns: u64,
@@ -176,6 +258,10 @@ impl Usage {
             self.model = other.model.clone();
             self.context = other.context;
             self.window = other.window;
+            self.context_base = other.context_base;
+        }
+        if latest && other.limits.is_some() {
+            self.limits = other.limits;
         }
         // The agent's own turns (not a helper's), the latest of its
         // transcripts'.
@@ -263,11 +349,13 @@ fn claude(v: &Value, u: &mut Usage, seen: &mut HashSet<String>) {
     };
     let mut t = Tokens::default();
     for p in &parts {
-        t.input += n(&p["input_tokens"]);
-        t.cache_read += n(&p["cache_read_input_tokens"]);
-        t.cache_write += n(&p["cache_creation_input_tokens"]);
-        t.cache_write_1h += n(&p["cache_creation"]["ephemeral_1h_input_tokens"]);
-        t.output += n(&p["output_tokens"]);
+        t.add(&Tokens {
+            input: n(&p["input_tokens"]),
+            cache_read: n(&p["cache_read_input_tokens"]),
+            cache_write: n(&p["cache_creation_input_tokens"]),
+            cache_write_1h: n(&p["cache_creation"]["ephemeral_1h_input_tokens"]),
+            output: n(&p["output_tokens"]),
+        });
     }
     let model = m["model"].as_str().filter(|m| !m.starts_with('<'));
     if model.is_none() && m["model"].is_string() {
@@ -275,8 +363,9 @@ fn claude(v: &Value, u: &mut Usage, seen: &mut HashSet<String>) {
     }
     u.count(model, t);
     if let Some(last) = parts.last() {
-        u.context =
-            n(&last["input_tokens"]) + n(&last["cache_read_input_tokens"]) + n(&last["cache_creation_input_tokens"]);
+        u.context = n(&last["input_tokens"])
+            .saturating_add(n(&last["cache_read_input_tokens"]))
+            .saturating_add(n(&last["cache_creation_input_tokens"]));
     }
     u.turns += 1;
 }
@@ -332,6 +421,17 @@ fn claude_turn(v: &Value, u: &mut Usage) {
     u.turn = Some(Turn { over, at: line_time(v) });
 }
 
+/// How full the context is, percent, as the agent shows it: past `base`
+/// (what any session starts with) of the window past it; none for a
+/// window no bigger than that.
+fn context_share(context: u64, window: u64, base: u64) -> Option<u32> {
+    (window > base).then(|| (context.saturating_sub(base).min(window - base) * 100 / (window - base)) as u32)
+}
+
+/// Tokens Codex leaves out of a context's share: what any session starts
+/// with (its prompt, its tools), as its own status line counts.
+const CODEX_BASE: u64 = 12_000;
+
 fn codex(v: &Value, u: &mut Usage) {
     let p = &v["payload"];
     match (v["type"].as_str(), p["type"].as_str()) {
@@ -340,20 +440,45 @@ fn codex(v: &Value, u: &mut Usage) {
                 u.model = m.to_string();
             }
         }
-        // Running totals: what they say now is all of it, put down to the
-        // model of the moment. Its input counts the cached part too.
-        (Some("event_msg"), Some("token_count")) if !p["info"].is_null() => {
-            let total = &p["info"]["total_token_usage"];
-            let cached = n(&total["cached_input_tokens"]);
-            u.tokens = Tokens {
-                input: n(&total["input_tokens"]).saturating_sub(cached),
-                cache_read: cached,
-                output: n(&total["output_tokens"]),
-                ..Tokens::default()
+        // Running totals: what they say now is all of it; what each adds
+        // goes to the model of that moment (a session can change model).
+        // Its input counts the cached part too; its output, the reasoning.
+        (Some("event_msg"), Some("token_count")) => {
+            let info = &p["info"];
+            if !info.is_null() {
+                let total = &info["total_token_usage"];
+                let cached = n(&total["cached_input_tokens"]);
+                // Both parts of its input, as the cached one is (its
+                // `total_tokens` is input and output): each counted once.
+                let written = n(&total["cache_write_input_tokens"]);
+                let now = Tokens {
+                    input: n(&total["input_tokens"]).saturating_sub(cached.saturating_add(written)),
+                    cache_read: cached,
+                    cache_write: written,
+                    output: n(&total["output_tokens"]),
+                    ..Tokens::default()
+                };
+                let added = u.running.since(&now);
+                u.running = now;
+                u.tokens = now;
+                u.by_model.entry(u.model.clone()).or_default().add(&added);
+                // What is in its context now, as Codex counts it.
+                let last = &info["last_token_usage"];
+                u.context = last["total_tokens"]
+                    .as_u64()
+                    .unwrap_or_else(|| n(&last["input_tokens"]).saturating_add(n(&last["output_tokens"])));
+                u.window = info["model_context_window"].as_u64();
+                u.context_base = CODEX_BASE;
+            }
+            let at = line_time(v).timestamp();
+            let limits = &p["rate_limits"];
+            let l = Limits {
+                primary: LimitWindow::of(&limits["primary"], at),
+                secondary: LimitWindow::of(&limits["secondary"], at),
             };
-            u.by_model = BTreeMap::from([(u.model.clone(), u.tokens)]);
-            u.context = n(&p["info"]["last_token_usage"]["input_tokens"]);
-            u.window = p["info"]["model_context_window"].as_u64();
+            if l.primary.is_some() || l.secondary.is_some() {
+                u.limits = Some(l);
+            }
         }
         (Some("event_msg"), Some("task_started")) => {
             u.turns += 1;
@@ -405,7 +530,7 @@ fn pi(v: &Value, u: &mut Usage) {
     if let Some(c) = us["cost"]["total"].as_f64() {
         u.cost = Some(u.cost.unwrap_or(0.0) + c);
     }
-    u.context = t.input + t.cache_read + t.cache_write;
+    u.context = t.input.saturating_add(t.cache_read).saturating_add(t.cache_write);
     u.tools += m["content"].as_array().map_or(0, |c| c.iter().filter(|b| b["type"] == "toolCall").count() as u64);
     u.turns += 1;
 }
@@ -646,7 +771,13 @@ impl Stats {
             "tools": self.usage.tools,
             "turns": self.usage.turns,
             "transcripts": self.files,
+            "limits": self.usage.limits.map(|l| l.json()),
         })
+    }
+
+    /// Its plan's limits used: `34%/12%`, empty when not said.
+    pub fn limit_text(&self) -> String {
+        self.usage.limits.map(|l| l.text()).unwrap_or_default()
     }
 
     /// The `agent_*` formats.
@@ -655,6 +786,7 @@ impl Stats {
         ctx.agent_model = self.usage.model.clone();
         ctx.agent_cost = self.cost_text();
         ctx.agent_context = self.context_text();
+        ctx.agent_limit = self.limit_text();
         ctx.agent_cpu = format!("{:.0}%", self.cpu);
         ctx.agent_mem = crate::sysinfo::human_bytes(self.mem);
         [ctx.agent_tokens, ctx.agent_tools, ctx.agent_turns] = self.counts();
@@ -817,7 +949,7 @@ impl Watcher {
             }
             let price = prices.and_then(|p| p.of(&usage.model));
             let window = usage.window.or_else(|| price.and_then(|p| p.window));
-            let context_pct = window.filter(|w| *w > 0).map(|w| (usage.context.min(w) * 100 / w) as u32);
+            let context_pct = window.and_then(|w| context_share(usage.context, w, usage.context_base));
             let (cost, cost_partial) = if t.kind.read() { usage.priced(prices) } else { (None, false) };
             let own: Vec<&super::trace::Steps> =
                 t.tails.iter().filter(|tail| !tail.helper).map(|tail| &tail.steps).collect();
@@ -1123,8 +1255,11 @@ impl Server {
             .iter()
             .map(|(pane, at, a)| {
                 let [tokens, tools, turns] = a.counts().map(dash);
+                // The plan's limits at the end, only for an agent that says them.
+                let limit = a.limit_text();
+                let limit = if limit.is_empty() { String::new() } else { format!(" limit {limit}") };
                 format!(
-                    "{pane} {at} {} {} cost {} tokens {tokens} context {} cpu {:.0}% mem {} tools {tools} turns {turns}",
+                    "{pane} {at} {} {} cost {} tokens {tokens} context {} cpu {:.0}% mem {} tools {tools} turns {turns}{limit}",
                     a.kind.word(),
                     dash(a.usage.model.clone()),
                     dash(a.cost_text()),
@@ -1450,6 +1585,90 @@ mod tests {
         assert_eq!((u.turns, u.tools), (1, 1));
         assert_eq!(u.model, "gpt-5.5");
         assert_eq!(u.by_model, BTreeMap::from([("gpt-5.5".to_string(), t)]), "all of it, once");
+    }
+
+    /// Codex's figures as Codex has them: what each running total adds goes
+    /// to the model of that moment (a switch mid-session prices each part
+    /// at its own model), totals that start again count from nothing; the
+    /// context is what is in it now (`total_tokens`), its share past the
+    /// 12000 any session starts with; the plan's limits as it says them.
+    #[test]
+    fn codex_prices_each_part_at_its_model_and_says_its_limits() {
+        let tc = |input: u64, cached: u64, out: u64, last_total: u64, limits: &str| {
+            format!(
+                r#"{{"timestamp":"2026-11-17T10:00:00.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{input},"cached_input_tokens":{cached},"cache_write_input_tokens":5,"output_tokens":{out},"reasoning_output_tokens":3}},"last_token_usage":{{"input_tokens":1,"output_tokens":1,"total_tokens":{last_total}}},"model_context_window":112000}},"rate_limits":{limits}}}}}"#
+            )
+        };
+        let none = r#"{"primary":null,"secondary":null}"#;
+        let limits = r#"{"primary":{"used_percent":34.4,"window_minutes":300,"resets_at":1763400000},"secondary":{"used_percent":12.0,"window_minutes":10080,"resets_in_seconds":60}}"#;
+        let u = feed_all(
+            Kind::Codex,
+            &[
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+                &tc(1000, 600, 50, 1000, none),
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.5-mini"}}"#,
+                &tc(3000, 2000, 120, 62000, limits),
+            ],
+        );
+        let at = |m: &str| u.by_model[m];
+        assert_eq!((at("gpt-5.5").input, at("gpt-5.5").cache_read, at("gpt-5.5").output), (395, 600, 50));
+        assert_eq!(
+            (at("gpt-5.5-mini").input, at("gpt-5.5-mini").cache_read, at("gpt-5.5-mini").output),
+            (600, 1400, 70),
+            "only what the second total added"
+        );
+        assert_eq!(
+            (u.tokens.input, u.tokens.cache_read, u.tokens.cache_write),
+            (995, 2000, 5),
+            "the totals: input less both of its cache parts"
+        );
+        assert_eq!((u.context, u.window, u.context_base), (62000, Some(112000), CODEX_BASE));
+        let l = u.limits.expect("said");
+        assert_eq!(l.primary.unwrap().resets_at, Some(1763400000));
+        let reset = chrono::DateTime::parse_from_rfc3339("2026-11-17T10:00:00.000Z").unwrap().timestamp() + 60;
+        assert_eq!((l.secondary.unwrap().window_minutes, l.secondary.unwrap().resets_at), (Some(10080), Some(reset)));
+        assert_eq!(l.text(), "34%/12%");
+        // The share as Codex shows it: (62000 - 12000) / (112000 - 12000).
+        let s = Stats { usage: u.clone(), ..Stats::default() };
+        assert_eq!(s.limit_text(), "34%/12%");
+        assert_eq!(s.json("%1", "a:0.0")["limits"]["primary"]["window_minutes"], 300);
+        // Totals that start again (a new session in the same file): all new.
+        let again = feed_all(Kind::Codex, &[&tc(3000, 2000, 120, 1, none), &tc(500, 100, 10, 1, none)]);
+        assert_eq!(again.by_model[""].input, 995 + 395, "995, then all of the new 395");
+        assert!(again.limits.is_none(), "none said: none");
+        // The share: Codex's (past 12000), Claude's (all of it); never past 100.
+        assert_eq!(context_share(62000, 112000, CODEX_BASE), Some(50));
+        assert_eq!(context_share(8000, 112000, CODEX_BASE), Some(0), "less than any session starts with");
+        assert_eq!(context_share(40000, 100000, 0), Some(40));
+        assert_eq!(context_share(500000, 100000, 0), Some(100));
+        assert_eq!(context_share(1, 12000, CODEX_BASE), None, "a window no bigger than the base");
+    }
+
+    /// Numbers a transcript gives are the agent's to write: absurd ones
+    /// make absurd figures, never a panic (which would start the watcher
+    /// over and blank every agent).
+    #[test]
+    fn absurd_numbers_saturate() {
+        let max = u64::MAX;
+        let big = format!(
+            r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{max},"cached_input_tokens":{max},"cache_write_input_tokens":{max},"output_tokens":{max}}},"last_token_usage":{{"input_tokens":{max},"output_tokens":{max}}},"model_context_window":{max}}},"rate_limits":{{"primary":{{"used_percent":1e308,"resets_in_seconds":{}}}}}}}}}"#,
+            i64::MAX
+        );
+        let u = feed_all(Kind::Codex, &[&big, &big]);
+        assert_eq!(u.tokens.total(), max);
+        assert_eq!(u.context, max);
+        assert!(u.limits.unwrap().primary.unwrap().resets_at.is_some());
+        let mut many = Tokens { input: max, ..Tokens::default() };
+        many.add(&Tokens { input: 1, output: max, ..Tokens::default() });
+        assert_eq!((many.input, many.total()), (max, max));
+        let claude = format!(
+            r#"{{"type":"assistant","message":{{"id":"m","model":"x","content":[],"usage":{{"input_tokens":{max},"cache_read_input_tokens":{max},"output_tokens":1}}}}}}"#
+        );
+        assert_eq!(feed_all(Kind::Claude, &[&claude]).context, max);
+        let iterations = format!(
+            r#"{{"type":"assistant","message":{{"id":"m2","model":"x","content":[],"usage":{{"iterations":[{{"output_tokens":{max}}},{{"output_tokens":{max}}}]}}}}}}"#
+        );
+        assert_eq!(feed_all(Kind::Claude, &[&iterations]).tokens.output, max);
     }
 
     #[test]
