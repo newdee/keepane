@@ -9076,6 +9076,9 @@ async fn passthrough_gives_a_pane_the_prefix_until_f12() {
     c.prefix('c').await;
     c.key(VK_F5, '\0', 0).await;
     c.enter().await;
+    // The shell done with that line first: text typed while it runs is
+    // echoed around what it prints, and the marker would not be in one piece.
+    h.wait_capture("pt:0.1", "the prompt after them", |t| t.matches("keepane>").count() >= 2).await;
     c.type_str(&remark("zqx")).await;
     c.enter().await;
     h.wait_capture("pt:0.1", "the marker after them", |t| t.contains("zqx")).await;

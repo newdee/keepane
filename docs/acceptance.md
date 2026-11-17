@@ -6316,3 +6316,18 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 静态一致性（文档对代码）+ 全量 | README（en/zh）写"看程序名，或看 `node` 跑的是什么"，仍准确；`kinds` 的注释改为按名字；`kind_of` 保留原来"命令行读不到就下次再问"的规则。fmt、clippy 干净。Windows 695 / 11 / 171，Linux 679 / 169。 | 干净 1/3 |
 | 2 | 机制通路存活（2 个变异体）+ 全量 | A：缓存不看名字（`seen == name` 改成恒真）：单元测试 `a_process_is_looked_at_again_under_a_new_name` 失败，Linux e2e 15 秒后仍 `[]`；B：跟踪中的 agent 只看 pid 还在：Linux e2e 报 "still an agent after its exec"。都被杀。Windows 695 / 11 / 171，Linux 679 / 169。 | 干净 2/3 |
 | 3 | 可复现性 | Linux 全量连跑 2 次：两次都是 679 / 169（第 203 条那个负载下的失败没有再出现）；Windows 695 / 11 / 171。 | 干净（3/3），验收通过 |
+
+## 205. passthrough 测试在 CI 上一次失败：标记在 shell 还在执行时就打了
+
+来源：CI run 44114091914（提交 5a684c8，ubuntu）`passthrough_gives_a_pane_the_prefix_until_f12` 失败。日志原文：`keepane>^Bc^[[15~` / `: z/bin/sh: 1: c: not found` / `keepane>qx`。
+
+- 原因：测试按完 C-b c、F5、回车后立刻打 `: zqx`。CI 负载下 sh 执行那行乱码命令慢，tty 先回显了 `: z`，sh 的报错和新提示符插进来，`qx` 才回显；按键全到、顺序也对，只是屏幕上 `zqx` 不连在一起，`contains("zqx")` 等不到。产品没问题。
+- 定性：个性、边界遗漏。全仓搜"回车后马上打字、再等连续的标记"：其余都是 copy mode 的按键（不经 shell，不会和 shell 输出交错），或等的是命令自己的输出（读完整行才执行）；`remark(` 只有两处用法，另一处前面没有在跑的命令。只修这一处：打标记前等 pane 里出现第二个提示符。
+- 不引入新 bug 的评估：只改测试。回车前 pane 里只有 1 个 `keepane>`（Windows、Linux 各打印一次核对过），所以这个等待不是一开始就满足的；cmd 和 sh 执行完任何一行都会打出新提示符。
+- 复现：单独跑 30 次（Linux）没有复现；修复后 Linux 30 次、Windows 5 次全过。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 1 | 静态一致性 + 全量 | 新等待的注释说明为什么等；只改测试，fmt、clippy 干净。Windows 695 / 11 / 171，Linux 679 / 169。 | 干净 1/3 |
+| 2 | 机制通路存活 + 全量 | 这个等待不是一开始就满足的：回车前 pane 里只有 1 个 `keepane>`（Windows、Linux 各打印一次核对）。Linux 加 64 个占满 CPU 的进程各跑 20 次：修复前 20/20 过、修复后 20/20 过，即 CPU 负载复现不出 CI 那次的竞争（那次要的是 shell 查找、执行命令慢），修复前的失败只有 CI 日志原文为证。Windows 695 / 11 / 171，Linux 679 / 169。 | 干净 2/3 |
+| 3 | 代码正确性（失败路径）+ 可复现性 | passthrough 坏了时（C-b c 被 keepane 拿走），新等待先超时并打印 pane，原来的断言仍在后面：测试照样失败、原因更清楚；测试检查的内容不变。Windows 全量连跑 2 次：两次都是 695 / 11 / 171；Linux 679 / 169。 | 干净（3/3），验收通过 |
