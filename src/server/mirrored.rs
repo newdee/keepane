@@ -537,6 +537,15 @@ fn there_targets(cmd: &mut Cmd) -> Option<Vec<(&mut Option<Target>, Level)>> {
     })
 }
 
+/// A question about something of another machine, the machine said after
+/// it: a long name cut at the screen's edge never hides what is asked.
+pub(super) fn asked_on(question: &str, machine: Option<&str>) -> String {
+    match machine {
+        Some(m) => format!("{question}  on {m}"),
+        None => question.to_string(),
+    }
+}
+
 impl Server {
     /// The machine a session is of, as a person reads it: `DFINE
     /// (100.64.0.3:7681)`, its address alone until it said its name; none

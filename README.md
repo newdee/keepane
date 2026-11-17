@@ -1688,8 +1688,8 @@ that machine's name. Its panes keep their names there (`#{pane_name}`,
 
 A split, a kill, a resize, a zoom or a rename of it (by its keys, the
 mouse on a border, or a command) is done there, by that machine, and
-shows here when done. A kill by a key asks first and says where: `on
-DFINE (100.64.0.3:7681): kill-pane 1? (y/n)`. A session killed from
+shows here when done. A kill by a key asks first and says where:
+`kill-pane 1? (y/n)  on DFINE (100.64.0.3:7681)`. A session killed from
 another machine keeps its save there, so that machine's next start
 brings it back; one killed there by hand stays away, as always. A split
 or a new window puts the eye here on the new pane, and leaves that

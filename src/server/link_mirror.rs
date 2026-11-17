@@ -1264,6 +1264,12 @@ mod tests {
         assert_eq!(there(Cmd::KillWindow { target: target.clone(), all_but: false }).as_deref(), Some("10.0.0.2:7681"));
         assert_eq!(there(Cmd::KillPane { target: target.clone(), all_but: false }).as_deref(), Some("10.0.0.2:7681"));
         assert_eq!(there(Cmd::RenameSession { target, name: "x".into() }), None, "not a kill: not asked");
+        // Said after the question: a name too long for the line (a macOS
+        // runner's is over 60 columns) is cut, the question never.
+        let long = format!("{} (10.0.0.2:7681)", "sat12-bq155-608590f5-b79a-4c93-a7e7-4b9a4862ec22-865F5B681961.local");
+        let asked = crate::server::mirrored::asked_on("kill-pane 1? (y/n)", Some(&long));
+        assert!(asked.chars().take(30).collect::<String>().starts_with("kill-pane 1? (y/n)  on "), "{asked}");
+        assert_eq!(crate::server::mirrored::asked_on("kill-pane 1? (y/n)", None), "kill-pane 1? (y/n)");
         // Disconnected here: the chart says so, and lists nothing under it.
         assert!(matches!(
             s.exec(Cmd::LinkConnect { addr: "10.0.0.2:7681".into(), off: true }, None),

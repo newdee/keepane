@@ -6178,12 +6178,10 @@ impl Server {
                 let Some(cid) = cid else { return Outcome::Error("confirm-before: no client".into()) };
                 let label =
                     prompt.map(|p| self.expand_format(&p, cid)).unwrap_or_else(|| format!("Confirm '{cmd}'? (y/n)"));
-                // A kill done on another machine says so first: what it
-                // closes is there, not here.
-                let label = match self.kill_is_on(&cmd, Some(cid)) {
-                    Some(machine) => format!("on {machine}: {label}"),
-                    None => label,
-                };
+                // A kill done on another machine says so: what it closes is
+                // there, not here. After the question, so that a long name
+                // cut at the screen's edge never hides what is asked.
+                let label = mirrored::asked_on(&label, self.kill_is_on(&cmd, Some(cid)).as_deref());
                 if let Some(c) = self.clients.get_mut(&cid) {
                     c.prompt = Some(Prompt {
                         kind: PromptKind::Confirm(cmd),
@@ -8901,7 +8899,6 @@ impl Server {
         if restart || (names.is_empty() && there.is_none()) {
             return self.picker_run(cid, targets, restart, forget);
         }
-        let on = there.map(|m| format!("on {m}: ")).unwrap_or_default();
         let what = if names.is_empty() {
             let count = |f: fn(&ChooserItem) -> bool, word| {
                 let n = targets.iter().filter(|t| f(t)).count();
@@ -8914,16 +8911,19 @@ impl Server {
             .into_iter()
             .flatten()
             .collect();
-            format!("{on}kill {}? (y/n) ", parts.join(" and "))
+            format!("kill {}? (y/n)", parts.join(" and "))
         } else if forget {
             format!(
-                "{on}kill and forget {} {} (resume will not bring it back)? (y/n) ",
+                "kill and forget {} {} (resume will not bring it back)? (y/n)",
                 if names.len() == 1 { "session" } else { "sessions" },
                 names.join(", ")
             )
         } else {
-            format!("{on}kill {} {}? (y/n) ", if names.len() == 1 { "session" } else { "sessions" }, names.join(", "))
+            format!("kill {} {}? (y/n)", if names.len() == 1 { "session" } else { "sessions" }, names.join(", "))
         };
+        // The machine after the question: a long name is what the screen's
+        // edge cuts, not what is asked.
+        let what = format!("{} ", mirrored::asked_on(&what, there.as_deref()));
         if let Some(c) = self.clients.get_mut(&cid) {
             c.prompt = Some(Prompt {
                 kind: PromptKind::ConfirmPicker { targets, forget },
