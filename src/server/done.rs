@@ -459,6 +459,14 @@ impl Server {
                 None => return Outcome::Error("pane-wait: not run inside a keepane pane".into()),
             },
         };
+        self.pane_wait_on(pid, text);
+        Outcome::Ok
+    }
+
+    /// Pane `pid`'s program waits for the person, for `text` (its hook
+    /// said, or its screen shows: `screenrules`): kept for the Trace and
+    /// the clock, and told as `done-events` `wait`.
+    pub(super) fn pane_wait_on(&mut self, pid: PaneId, text: &str) {
         let text = if text.trim().is_empty() {
             "waits for you".to_string()
         } else {
@@ -468,8 +476,12 @@ impl Server {
         if let Some(p) = self.find_pane_mut(pid) {
             p.actor.waiting = Some((text.clone(), chrono::Utc::now().timestamp_millis()));
         }
+        // Its screen showed this wait already (`screenrules`), and that was
+        // told: the hook's words kept, not told again.
+        if self.screen_watch.get(&pid).is_some_and(|w| w.waiting) {
+            return;
+        }
         self.pane_done(pid, Kind::Wait, text, Ended::default());
-        Outcome::Ok
     }
 
     /// `list-done`: the ones after number `after`, a line each, or JSON

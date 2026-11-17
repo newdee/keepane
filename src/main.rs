@@ -242,6 +242,12 @@ fn main() {
     if args[0] == "pane-wait" && std::env::var_os("KEEPANE_PANE").is_some() {
         keepane::setup::pane_wait_args(&mut args);
     }
+    // The hook an agent runs at its session's start and each turn's end:
+    // what its JSON says of the session (which transcript, which model)
+    // goes along (docs/design/agent-accuracy.md).
+    if args[0] == "pane-ready" && std::env::var_os("KEEPANE_PANE").is_some() {
+        keepane::setup::pane_ready_args(&mut args);
+    }
     // `keepane feishu [status|allow|remove]`: the server's feishu-* commands.
     if args[0] == "feishu" {
         args = keepane::feishu::command_args(&args[1..]);

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use super::actor::{self, End, Message, MsgId, Sender, WorkMode};
 use super::observe::Stage;
 use super::{ClientId, Outcome, PaneId, Server, SessionId};
-use crate::command::{Cmd, MoveTo, Target};
+use crate::command::{Cmd, HookSaid, MoveTo, Target};
 
 /// A client blocked in `-w` until something happens to a message or inbox.
 pub(super) struct MsgWait {
@@ -235,7 +235,7 @@ impl Server {
             },
             Cmd::DropMessage { id, undo } => self.drop_message(cid, id, undo),
             Cmd::MoveMessage { id, to } => self.move_message(cid, id, to),
-            Cmd::PaneReady { quiet, target } => self.pane_ready(cid, quiet, target.as_ref()),
+            Cmd::PaneReady { quiet, target, said } => self.pane_ready(cid, quiet, target.as_ref(), said),
             Cmd::PaneStatus { text } => self.pane_status(cid, text),
             Cmd::SetWorkMode { target, mode } => self.set_work_mode(cid, target.as_ref(), &mode),
             Cmd::RenamePane { target, name } => self.rename_pane(cid, target.as_ref(), name),
@@ -601,7 +601,7 @@ impl Server {
         self.pane_done(pid, super::done::Kind::Task, text, super::done::Ended { ok, git, ..Default::default() });
     }
 
-    fn pane_ready(&mut self, cid: Option<ClientId>, quiet: bool, target: Option<&Target>) -> Outcome {
+    fn pane_ready(&mut self, cid: Option<ClientId>, quiet: bool, target: Option<&Target>, said: HookSaid) -> Outcome {
         if let Some(t) = target {
             // Unsticking a pane that stays busy.
             let pid = match self.resolve(Some(t), cid) {
@@ -623,6 +623,11 @@ impl Server {
                 Outcome::Error("pane-ready: not run inside a keepane pane".into())
             };
         };
+        // What its hook said of its session: which transcript is this
+        // pane's agent's, and its model (`agents::Bind`). Whatever its mode.
+        if said != HookSaid::default() {
+            self.agents_bind(me, said);
+        }
         // A turn that ended: the agent was heard from before (its first word
         // is its session starting) and was not already free.
         let turn = self.find_pane(me).is_some_and(|p| !p.actor.unheard() && !p.actor.idle());

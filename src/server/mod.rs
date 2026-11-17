@@ -37,6 +37,7 @@ pub mod pane;
 mod prices;
 mod public_ip;
 pub mod render;
+mod screenrules;
 mod share_host;
 mod shellhist;
 mod sshhosts;
@@ -1302,6 +1303,8 @@ pub struct Server {
     observe: observe::Store,
     /// The group chat: channels, members, what was said (`chat-*`).
     chat: chat::Chat,
+    /// What the screen rules keep of each Codex or Cursor pane (`screenrules`).
+    screen_watch: HashMap<PaneId, screenrules::Watch>,
     /// Clients waiting in a `-w` for a message or an inbox.
     msg_waits: Vec<mail::MsgWait>,
     /// Clients in `wait-output`, waiting for a pane to print something.
@@ -1781,6 +1784,7 @@ impl Server {
             next_msg: 0,
             observe: observe::Store::default(),
             chat: chat::Chat::default(),
+            screen_watch: HashMap::new(),
             msg_waits: Vec::new(),
             out_waits: Vec::new(),
             msg_dropped: Vec::new(),
@@ -2867,6 +2871,7 @@ impl Server {
                 self.history_tick();
                 self.mail_tick();
                 self.chat_tick();
+                self.screen_tick();
                 self.output_waits_tick();
                 self.newer_tick();
                 self.public_ip_tick();

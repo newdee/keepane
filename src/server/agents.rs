@@ -690,7 +690,76 @@ struct Track {
     cpu_at: Option<(u64, Instant)>,
     cpu: f64,
     mem: u64,
+    /// The transcripts its hook named (`Bind`): once there is one, these
+    /// (and their helpers') are its own, and no guess is made for it.
+    bound: Vec<PathBuf>,
+    /// The model its hook named, until a transcript says one.
+    model: Option<String>,
 }
+
+/// What an agent's hook said of its session (`pane-ready` with the hook's
+/// standard input; docs/design/agent-accuracy.md): the file it writes and
+/// its model, for pane `pane`, at `at` (seconds since 1970). Only an agent
+/// started by then takes it: one started later is another agent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bind {
+    pub pane: PaneId,
+    pub at: u64,
+    pub transcript: Option<PathBuf>,
+    /// The session's id: its transcript found by it when no path is given
+    /// (`transcript_of_session`).
+    pub session: Option<String>,
+    pub model: Option<String>,
+}
+
+/// The transcript of session `id` of `kind`'s agent working in `cwd`, where
+/// the agent keeps it: Claude Code's `<projects>/<folder>/<id>.jsonl`,
+/// Codex's `sessions/YYYY/MM/DD/rollout-…-<id>.jsonl`. An id of anything but
+/// letters, digits, `-` and `_` names nothing (it would be part of a path).
+pub fn transcript_of_session(
+    kind: Kind,
+    cwd: &str,
+    id: &str,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<PathBuf> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+    let set = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    match kind {
+        Kind::Claude => {
+            let dir = set("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude"));
+            Some(dir.join("projects").join(claude_folder(cwd)).join(format!("{id}.jsonl"))).filter(|p| p.is_file())
+        }
+        Kind::Codex => {
+            let end = format!("-{id}.jsonl");
+            let dirs = |d: &Path| -> Vec<PathBuf> {
+                std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()
+            };
+            let sessions = set("CODEX_HOME").unwrap_or_else(|| home.join(".codex")).join("sessions");
+            // Newest day first: a session is looked for soon after it starts.
+            let mut days: Vec<PathBuf> = dirs(&sessions).iter().flat_map(|y| dirs(y)).flat_map(|m| dirs(&m)).collect();
+            days.sort();
+            days.iter().rev().find_map(|d| {
+                std::fs::read_dir(d)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&end)))
+            })
+        }
+        _ => None,
+    }
+}
+
+/// How long a binding waits for its pane's agent to be found (a session's
+/// first hook can come before the first look sees the process).
+const BIND_WAIT: u64 = 30;
+/// A binding counts for an agent started up to this long after it arrived
+/// (the hook's clock and the process's start are read apart).
+const BIND_SLACK: u64 = 2;
 
 /// Looks at the panes' agents, keeping what it read between looks.
 #[derive(Default)]
@@ -699,16 +768,19 @@ pub struct Watcher {
     /// What each process seen is (a node running something else is asked
     /// its command line once, not every look).
     kinds: HashMap<u32, Option<Kind>>,
+    /// Bindings whose pane's agent is not found yet (`BIND_WAIT`).
+    pending: Vec<Bind>,
 }
 
 impl Watcher {
     /// Each pane's agent now, if it runs one. `prices` prices the tokens of
     /// an agent that does not say its cost; without it, such an agent's
     /// cost is not known (pi's own figure, and nothing used yet, still are).
-    pub fn look(&mut self, panes: &[PaneInfo], prices: Option<&Prices>) -> HashMap<PaneId, Stats> {
+    pub fn look(&mut self, panes: &[PaneInfo], prices: Option<&Prices>, binds: Vec<Bind>) -> HashMap<PaneId, Stats> {
         let home = dirs::home_dir().unwrap_or_default();
         let env = |k: &str| std::env::var(k).ok();
         self.find(panes);
+        self.bind(binds, secs(SystemTime::now()), &home, &env);
         self.sample();
         let owner = self.owners(&home, &env);
         let mut out = HashMap::new();
@@ -735,6 +807,13 @@ impl Watcher {
             let mut usage = Usage::default();
             for tail in &t.tails {
                 usage.add(&tail.usage, !tail.helper);
+            }
+            // The hook's model until a transcript says one (Codex writes it
+            // after the first question; Cursor's are not read).
+            if usage.model.is_empty()
+                && let Some(m) = &t.model
+            {
+                usage.model = m.clone();
             }
             let price = prices.and_then(|p| p.of(&usage.model));
             let window = usage.window.or_else(|| price.and_then(|p| p.window));
@@ -807,7 +886,18 @@ impl Watcher {
             let Some((agent, kind)) = found else { continue };
             let Some((_, _, started)) = crate::sysinfo::usage_of(agent) else { continue };
             let cwd = crate::proccwd::process_cwd(agent).unwrap_or_else(|| p.path.clone());
-            let track = Track { kind, agent, started, cwd, tails: Vec::new(), cpu_at: None, cpu: 0.0, mem: 0 };
+            let track = Track {
+                kind,
+                agent,
+                started,
+                cwd,
+                tails: Vec::new(),
+                cpu_at: None,
+                cpu: 0.0,
+                mem: 0,
+                bound: Vec::new(),
+                model: None,
+            };
             self.tracks.insert(p.id, track);
         }
         self.kinds.retain(|pid, _| present.contains(pid));
@@ -835,20 +925,70 @@ impl Watcher {
         }
     }
 
-    /// Each transcript to one agent: of those of its kind working in its
-    /// directory, the one started last before the transcript began (one
-    /// begun before any of them started was resumed: the first one's).
+    /// Bindings from the hooks, each to its pane's agent when that agent was
+    /// started by the time it came; kept a while for an agent not found yet,
+    /// dropped when the pane's agent is a later one.
+    fn bind(&mut self, binds: Vec<Bind>, now: u64, home: &Path, env: &dyn Fn(&str) -> Option<String>) {
+        let waiting = std::mem::take(&mut self.pending);
+        for b in waiting.into_iter().chain(binds) {
+            match self.tracks.get_mut(&b.pane) {
+                Some(t) if t.started <= b.at + BIND_SLACK => {
+                    let by_id =
+                        || b.session.as_deref().and_then(|id| transcript_of_session(t.kind, &t.cwd, id, home, env));
+                    if let Some(p) = b.transcript.clone().or_else(by_id).filter(|p| !t.bound.contains(p)) {
+                        t.bound.push(p);
+                    }
+                    log::info!(
+                        "agents: %{} {} (pid {}) bound: {} transcript(s), model {:?}",
+                        b.pane,
+                        t.kind.word(),
+                        t.agent,
+                        t.bound.len(),
+                        b.model
+                    );
+                    if b.model.is_some() {
+                        t.model = b.model;
+                    }
+                }
+                // Another agent since: not its.
+                Some(t) => log::info!(
+                    "agents: %{} binding at {} dropped: its {} (pid {}) started at {}, later",
+                    b.pane,
+                    b.at,
+                    t.kind.word(),
+                    t.agent,
+                    t.started
+                ),
+                None if now.saturating_sub(b.at) < BIND_WAIT => self.pending.push(b),
+                None => log::info!("agents: %{} binding at {} dropped: no agent found in {BIND_WAIT}s", b.pane, b.at),
+            }
+        }
+    }
+
+    /// Each transcript to one agent. One its hook named is that agent's
+    /// alone, and an agent with one has only those. The rest by guess: of
+    /// those of its kind working in its directory, the one started last
+    /// before the transcript began (one begun before any of them started
+    /// was resumed: the first one's).
     fn owners(&self, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> HashMap<PathBuf, PaneId> {
-        let mut groups: BTreeMap<(u8, String), Vec<PaneId>> = BTreeMap::new();
+        let mut owner = HashMap::new();
         for (id, t) in &self.tracks {
+            for f in t.bound.iter().filter(|f| f.is_file()) {
+                owner.insert(f.clone(), *id);
+            }
+        }
+        let mut groups: BTreeMap<(u8, String), Vec<PaneId>> = BTreeMap::new();
+        for (id, t) in self.tracks.iter().filter(|(_, t)| t.bound.is_empty()) {
             groups.entry((t.kind as u8, dir_key(&t.cwd))).or_default().push(*id);
         }
-        let mut owner = HashMap::new();
         for ids in groups.values_mut() {
             ids.sort_by_key(|id| (self.tracks[id].started, *id));
             let first = &self.tracks[&ids[0]];
             let since = UNIX_EPOCH + Duration::from_secs(first.started.saturating_sub(5));
             for file in transcripts(first.kind, &first.cwd, since, home, env) {
+                if owner.contains_key(&file) {
+                    continue;
+                }
                 let began =
                     std::fs::metadata(&file).and_then(|m| m.created().or_else(|_| m.modified())).map_or(0, secs);
                 let pick = ids.iter().rev().find(|id| self.tracks[*id].started <= began + 5).unwrap_or(&ids[0]);
@@ -863,6 +1003,8 @@ impl Watcher {
 struct Ask {
     panes: Vec<PaneInfo>,
     prices: Option<Arc<Prices>>,
+    /// The hooks' bindings since the last look.
+    binds: Vec<Bind>,
 }
 
 #[derive(Default)]
@@ -872,9 +1014,27 @@ pub(super) struct Agents {
     to_watcher: Option<std::sync::mpsc::Sender<Ask>>,
     asking: bool,
     last: Option<Instant>,
+    /// Bindings for the next look (`agents_bind`).
+    binds: Vec<Bind>,
 }
 
 impl Server {
+    /// What pane `me`'s agent's hook said (`pane-ready`): taken by the next
+    /// look. A transcript is taken as a path (relative to nothing: a hook
+    /// gives it whole), a model as said; empty words are none.
+    pub(super) fn agents_bind(&mut self, me: PaneId, said: crate::command::HookSaid) {
+        let word = |w: Option<String>| w.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let transcript = word(said.transcript).map(PathBuf::from).filter(|p| p.is_absolute());
+        let (session, model) = (word(said.session), word(said.model));
+        if transcript.is_none() && session.is_none() && model.is_none() {
+            return;
+        }
+        let at = secs(SystemTime::now());
+        self.agents.binds.push(Bind { pane: me, at, transcript, session, model });
+        // Seen at the next look, not a whole interval later.
+        self.agents.last = None;
+    }
+
     /// Every tick: ask the watcher to look again when it is time.
     pub(super) fn agents_tick(&mut self) {
         if self.agents.asking || self.agents.last.is_some_and(|l| l.elapsed() < EVERY) {
@@ -902,7 +1062,8 @@ impl Server {
                     while let Ok(ask) = rx.recv() {
                         // A look that panics (a bug) answers nothing and
                         // starts over, rather than leave the server waiting.
-                        let look = std::panic::AssertUnwindSafe(|| w.look(&ask.panes, ask.prices.as_deref()));
+                        let look =
+                            std::panic::AssertUnwindSafe(|| w.look(&ask.panes, ask.prices.as_deref(), ask.binds));
                         let stats = match std::panic::catch_unwind(look) {
                             Ok(stats) => stats,
                             Err(_) => {
@@ -928,7 +1089,8 @@ impl Server {
             }
         };
         self.agents.last = Some(Instant::now());
-        self.agents.asking = tx.send(Ask { panes, prices }).is_ok();
+        let binds = std::mem::take(&mut self.agents.binds);
+        self.agents.asking = tx.send(Ask { panes, prices, binds }).is_ok();
         if !self.agents.asking {
             // Its thread is gone: a new one next time.
             self.agents.to_watcher = None;
@@ -1025,7 +1187,10 @@ impl Server {
     pub(super) fn waits_for_you(&self, pid: PaneId) -> Option<&(String, i64)> {
         let a = self.agents.stats.get(&pid)?;
         let latest = a.trace.iter().map(|s| s.end.unwrap_or(s.start).max(s.start)).max().unwrap_or(0);
-        self.pane_ref(pid).and_then(|p| p.actor.waiting.as_ref()).filter(|(_, at)| *at >= latest)
+        // One its screen shows lasts while the screen shows it (its Trace
+        // can move on meanwhile: Codex writes the command it asks about).
+        let on_screen = self.screen_watch.get(&pid).is_some_and(|w| w.waiting);
+        self.pane_ref(pid).and_then(|p| p.actor.waiting.as_ref()).filter(|(_, at)| on_screen || *at >= latest)
     }
 
     pub(super) fn agents_seen(&mut self, stats: HashMap<PaneId, Stats>) {
@@ -1427,13 +1592,126 @@ mod tests {
             cpu_at: None,
             cpu: 0.0,
             mem: 0,
+            bound: Vec::new(),
+            model: None,
         };
         let mut w = Watcher::default();
         w.tracks.insert(1, track(now - 100));
         w.tracks.insert(2, track(now - 50));
         let owner = w.owners(&home, &|_| None);
         assert_eq!(owner.get(&dir.join("new.jsonl")), Some(&2), "{owner:?}");
+
+        // The first one's hook named that file: it is the first one's, the
+        // second gets no guess at it. A file the hook named outside the
+        // folder (a resumed session's, kept elsewhere) is its too.
+        let elsewhere = home.join("old").join("resumed.jsonl");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, "").unwrap();
+        w.bind(
+            vec![
+                Bind {
+                    pane: 1,
+                    at: now,
+                    transcript: Some(dir.join("new.jsonl")),
+                    session: None,
+                    model: Some("claude-x".into()),
+                },
+                Bind { pane: 1, at: now, transcript: Some(elsewhere.clone()), session: None, model: None },
+            ],
+            now,
+            &home,
+            &|_| None,
+        );
+        let owner = w.owners(&home, &|_| None);
+        assert_eq!((owner.get(&dir.join("new.jsonl")), owner.get(&elsewhere)), (Some(&1), Some(&1)), "{owner:?}");
+        assert_eq!(owner.len(), 2, "{owner:?}");
+        assert_eq!(w.tracks[&1].model.as_deref(), Some("claude-x"), "a later bind without a model keeps it");
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// A hook that says the session's id but not its file: the file found
+    /// where the agent keeps it; an id that would be a path names nothing.
+    #[test]
+    fn a_session_id_finds_its_transcript() {
+        let home = std::env::temp_dir().join(format!("keepane-agents-sid-{}", std::process::id()));
+        let cwd = if cfg!(windows) { r"C:\work\sid" } else { "/work/sid" };
+        let claude = home.join(".claude").join("projects").join(claude_folder(cwd));
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("abc-1.jsonl"), "").unwrap();
+        let day = home.join(".codex").join("sessions").join("2025").join("12").join("30");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join("rollout-2025-12-30T10-00-00-0193ab.jsonl"), "").unwrap();
+        let none = |_: &str| None;
+        assert_eq!(transcript_of_session(Kind::Claude, cwd, "abc-1", &home, &none), Some(claude.join("abc-1.jsonl")));
+        assert_eq!(
+            transcript_of_session(Kind::Codex, cwd, "0193ab", &home, &none),
+            Some(day.join("rollout-2025-12-30T10-00-00-0193ab.jsonl"))
+        );
+        assert_eq!(transcript_of_session(Kind::Claude, cwd, "nope", &home, &none), None);
+        assert_eq!(transcript_of_session(Kind::Claude, cwd, "../abc-1", &home, &none), None, "a path, not an id");
+        assert_eq!(transcript_of_session(Kind::Cursor, cwd, "abc-1", &home, &none), None);
+        // A hook's binding with the id alone: that file is the agent's.
+        let mut w = Watcher::default();
+        w.tracks.insert(
+            7,
+            Track {
+                kind: Kind::Claude,
+                agent: 0,
+                started: 10,
+                cwd: cwd.to_string(),
+                tails: Vec::new(),
+                cpu_at: None,
+                cpu: 0.0,
+                mem: 0,
+                bound: Vec::new(),
+                model: None,
+            },
+        );
+        let only_id = Bind { pane: 7, at: 20, transcript: None, session: Some("abc-1".into()), model: None };
+        w.bind(vec![only_id], 20, &home, &none);
+        assert_eq!(w.tracks[&7].bound, [claude.join("abc-1.jsonl")]);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// A binding goes to the pane's agent only if that agent had started
+    /// when it came (a later agent is another); one for a pane whose agent
+    /// is not found yet waits `BIND_WAIT`, then goes.
+    #[test]
+    fn a_binding_is_for_the_agent_that_was_there() {
+        let now = 1_000_000;
+        let track = |started: u64| Track {
+            kind: Kind::Codex,
+            agent: 0,
+            started,
+            cwd: String::new(),
+            tails: Vec::new(),
+            cpu_at: None,
+            cpu: 0.0,
+            mem: 0,
+            bound: Vec::new(),
+            model: None,
+        };
+        let bind = |pane, at| Bind {
+            pane,
+            at,
+            transcript: Some(PathBuf::from(format!("/t/{pane}-{at}.jsonl"))),
+            session: None,
+            model: None,
+        };
+        let mut w = Watcher::default();
+        w.tracks.insert(1, track(now - 10));
+        w.tracks.insert(2, track(now + 60));
+        w.bind(vec![bind(1, now), bind(2, now), bind(3, now)], now, Path::new(""), &|_| None);
+        assert_eq!(w.tracks[&1].bound.len(), 1, "started before it: its");
+        assert!(w.tracks[&2].bound.is_empty(), "started after it: another agent's");
+        assert_eq!(w.pending, [bind(3, now)], "pane 3's agent not found yet: kept");
+        w.tracks.insert(3, track(now - 1));
+        w.bind(Vec::new(), now + 5, Path::new(""), &|_| None);
+        assert_eq!((w.tracks[&3].bound.len(), w.pending.len()), (1, 0), "found: taken");
+        w.bind(vec![bind(4, now)], now + BIND_WAIT, Path::new(""), &|_| None);
+        assert!(w.pending.is_empty(), "waited too long: dropped");
+        w.bind(vec![bind(1, now)], now, Path::new(""), &|_| None);
+        assert_eq!(w.tracks[&1].bound.len(), 1, "the same file once");
     }
 
     #[test]
@@ -1537,7 +1815,7 @@ mod tests {
     fn a_pane_without_an_agent_has_none() {
         let mut w = Watcher::default();
         let me = PaneInfo { id: 1, pid: std::process::id(), path: String::new() };
-        assert!(w.look(&[me], None).is_empty());
-        assert!(w.look(&[], None).is_empty(), "no panes, no agents");
+        assert!(w.look(&[me], None, Vec::new()).is_empty());
+        assert!(w.look(&[], None, Vec::new()).is_empty(), "no panes, no agents");
     }
 }

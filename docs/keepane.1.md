@@ -147,7 +147,11 @@ window named after it; `s` connects in a split, `y` copies the command,
 the agent is free, the one that says when it waits for you (Claude Code,
 Codex, Gemini CLI: `pane-wait`), and keepane's MCP server). Claude
 Code's, Codex's and pi's transcripts say it too, about 3 seconds late at
-the most, with no hook. A message to an
+the most, with no hook. Run by a hook, `pane-ready` reads the hook's JSON
+on standard input and passes on its session, transcript and model
+(`--session`, `--transcript`, `--model`): that transcript is the pane's
+agent's, no guess made. Codex's and Cursor's screens say when they wait for
+you, and Cursor's when it works ("ctrl+c to stop"). A message to an
 `ai` pane is pasted, and its Enter comes on its own once the paste has
 settled. What a pane is up to is `#{pane_state}`: idle, busy, typing (keys
 with no Enter), no-agent (an `ai` pane back at its shell), unknown (a shell

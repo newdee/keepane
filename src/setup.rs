@@ -203,11 +203,72 @@ pub fn waiting_for(input: &str) -> String {
     }
 }
 
+/// What a hook gave on standard input: read for at most `wait` and 64 KB.
+/// A console's input is never read (a person at it types the words
+/// themselves, and would be waited on).
+fn hook_input(wait: std::time::Duration) -> Option<String> {
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = std::io::stdin().lock().take(64 * 1024).read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    let bytes = rx.recv_timeout(wait).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `pane-ready` run by a hook in a pane (no `-t`, nothing said on the
+/// command line): the session, transcript and model its JSON gives on
+/// standard input become `--session`, `--transcript` and `--model`
+/// (docs/design/agent-accuracy.md). Read for a second at most: the hook
+/// runs at the end of every turn, and an agent waits for it.
+pub fn pane_ready_args(args: &mut Vec<String>) {
+    if args.iter().skip(1).any(|a| a != "-q") {
+        return;
+    }
+    if let Some(input) = hook_input(std::time::Duration::from_secs(1)) {
+        args.extend(hook_said(&input));
+    }
+}
+
+/// The flags for what a hook's JSON says of its agent's session: its id
+/// (`session_id`; Cursor's `conversation_id`), its transcript
+/// (`transcript_path`) and its model (`model`: a name, or an object with
+/// an `id`). Words with a control character, or longer than a path can be,
+/// are left out.
+pub fn hook_said(input: &str) -> Vec<String> {
+    let Ok(Value::Object(v)) = serde_json::from_str::<Value>(input.trim()) else { return Vec::new() };
+    let fit = |s: &str| {
+        let s = s.trim();
+        (!s.is_empty() && s.len() <= 4096 && !s.chars().any(char::is_control)).then(|| s.to_string())
+    };
+    let first = |keys: &[&str]| keys.iter().find_map(|k| v.get(*k).and_then(Value::as_str).and_then(fit));
+    let model = match v.get("model") {
+        Some(Value::String(s)) => fit(s),
+        Some(Value::Object(m)) => m.get("id").and_then(Value::as_str).and_then(fit),
+        _ => None,
+    };
+    let mut out = Vec::new();
+    for (flag, val) in [
+        ("--session", first(&["session_id", "conversation_id"])),
+        ("--transcript", first(&["transcript_path"])),
+        ("--model", model),
+    ] {
+        if let Some(val) = val {
+            out.extend([flag.to_string(), val]);
+        }
+    }
+    out
+}
+
 /// `pane-wait` run with nothing to say (a hook): what is on standard input,
 /// read for at most two seconds and 64 KB, becomes its words. A console's
 /// input is never read: a person typing it gives the words themselves.
 pub fn pane_wait_args(args: &mut Vec<String>) {
-    use std::io::{IsTerminal, Read};
     let mut words = args.iter().skip(1);
     let mut said = false;
     while let Some(w) = words.next() {
@@ -223,17 +284,8 @@ pub fn pane_wait_args(args: &mut Vec<String>) {
             return;
         }
     }
-    if std::io::stdin().is_terminal() {
-        return;
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = std::io::stdin().lock().take(64 * 1024).read_to_end(&mut bytes);
-        let _ = tx.send(bytes);
-    });
-    let Ok(bytes) = rx.recv_timeout(std::time::Duration::from_secs(2)) else { return };
-    let text = waiting_for(&String::from_utf8_lossy(&bytes));
+    let Some(input) = hook_input(std::time::Duration::from_secs(2)) else { return };
+    let text = waiting_for(&input);
     if !text.is_empty() {
         args.extend(["--".to_string(), text]);
     }
@@ -898,6 +950,25 @@ mod tests {
     }
 
     /// What each agent's hook gives on standard input, as `pane-wait`'s line.
+    #[test]
+    fn hook_said_reads_each_agents_session() {
+        // Claude Code's SessionStart, Codex's (model a name), Cursor's
+        // (conversation_id), a model given as an object.
+        let claude = r#"{"session_id":"s1","transcript_path":"/h/.claude/projects/p/s1.jsonl","hook_event_name":"SessionStart","source":"startup","model":"claude-opus-5-5"}"#;
+        assert_eq!(
+            hook_said(claude),
+            ["--session", "s1", "--transcript", "/h/.claude/projects/p/s1.jsonl", "--model", "claude-opus-5-5"]
+        );
+        let cursor = r#"{"conversation_id":"c9","generation_id":"g","model":"gpt-5","hook_event_name":"sessionStart"}"#;
+        assert_eq!(hook_said(cursor), ["--session", "c9", "--model", "gpt-5"]);
+        let object = r#"{"session_id":"s","model":{"id":"opus","display_name":"Opus"}}"#;
+        assert_eq!(hook_said(object), ["--session", "s", "--model", "opus"]);
+        // Nothing to take: not JSON, empty words, a control character.
+        assert!(hook_said("not json").is_empty());
+        assert!(hook_said(r#"{"session_id":"  ","model":"a\nb"}"#).is_empty());
+        assert!(hook_said("").is_empty());
+    }
+
     #[test]
     fn waiting_for_reads_each_agents_hook() {
         let claude = r#"{"session_id":"a","hook_event_name":"Notification","message":"Claude needs your permission to use Bash","title":"Permission needed","notification_type":"permission_prompt"}"#;

@@ -1188,7 +1188,28 @@ each file backed up first and only keepane's entries added:
 | opencode | `opencode` | a plugin, `~/.config/opencode/plugins/keepane.js`, on start and `session.idle` | none | `mcp` in `opencode.json` |
 
 Each runs `keepane pane-ready -q`, which is quiet outside keepane and
-ignored in panes not in `ai` mode. The waiting hook runs `keepane
+ignored in panes not in `ai` mode. It reads what the hook gives it on
+standard input (a second at most; nothing when run by hand): the session,
+its transcript and its model. That transcript is then the pane's agent's,
+read wherever it is (a Codex session resumed from weeks ago), and no other
+file in its directory is taken for it (another program's session there);
+the model shows from the first moment, before the transcript says one.
+Without a hook, keepane guesses as before: the agent of that kind started
+last in that directory.
+
+Codex and Cursor write no word of a question they ask you, so keepane reads
+their screens for it, with herdr's rules: Codex's title saying "Action
+Required", or "press enter to confirm or esc to cancel", "enter to submit
+answer" or "allow command?" in its last lines; Cursor's "waiting for
+approval" or "run this command?". It is a wait as the waiting hook's (the
+Trace, the clock, `done-events`), over when the screen stops showing it.
+Cursor's "ctrl+c to stop" in its last lines is Cursor at work, and the pane
+is free again two seconds after it goes, with no hook, unless keys or a
+message went in after it was last seen (a turn its stop hook has ended,
+and the next one not drawn yet). The design:
+[docs/design/agent-accuracy.md](docs/design/agent-accuracy.md).
+
+The waiting hook runs `keepane
 pane-wait -q` when the agent asks you something: a permission, or a
 question (Claude Code tells it once the question has waited about six
 seconds). It is told as `done-events` `wait` (below). Set up before

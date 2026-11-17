@@ -11563,6 +11563,11 @@ fn ready_to_run(exe: &std::path::Path, args: &[&str]) {
     panic!("{}: still busy after 5 seconds", exe.display());
 }
 
+/// Held by every test that sets `CODEX_HOME`, start to end: it is the
+/// process's, so a server started meanwhile by another such test would
+/// take the wrong one.
+static CODEX_HOME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// keepane copied to `to`, ready to run.
 fn copy_keepane(to: &std::path::Path) {
     std::fs::copy(env!("CARGO_BIN_EXE_keepane"), to).unwrap();
@@ -11580,6 +11585,7 @@ fn copy_keepane(to: &std::path::Path) {
 /// has no agent.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agents_transcript_says_when_it_is_free() {
+    let _codex_home = CODEX_HOME_LOCK.lock().await;
     let root = std::env::temp_dir().join(format!("keepane-turns-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let (home, work, bin) = (root.join("codex-home"), root.join("work"), root.join("bin"));
@@ -13095,6 +13101,300 @@ async fn each_shell_pane_keeps_its_own_command_history() {
     }
 }
 
+/// A wait Codex's screen shows lasts while the screen shows it, though its
+/// transcript moves on meanwhile (a wait its hook said would end then);
+/// over once the screen stops showing it. The stand-in is a program named
+/// `codex` that shows what it is sent; its transcript is the one its hook
+/// names.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_codexs_screen_shows_outlasts_its_transcript() {
+    let root = std::env::temp_dir().join(format!("keepane-codex-screen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    #[cfg(windows)]
+    let (argv, say): (Vec<String>, fn(&str) -> String) = {
+        let exe = bin.join("codex.exe");
+        std::fs::copy(r"C:\Windows\System32\cmd.exe", &exe).unwrap();
+        (vec![exe.to_string_lossy().into_owned(), "/q".into(), "/k".into(), "prompt $G".into()], |s| {
+            format!("echo {s}")
+        })
+    };
+    #[cfg(target_os = "linux")]
+    let (argv, say): (Vec<String>, fn(&str) -> String) = {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = bin.join("codex");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\n[ \"$1\" = settle ] && exit 0\nwhile IFS= read -r l; do printf '%s\\n' \"$l\"; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ready_to_run(&exe, &["settle"]);
+        (vec![exe.to_string_lossy().into_owned()], |s| s.to_string())
+    };
+    #[cfg(target_os = "macos")]
+    let (argv, say): (Vec<String>, fn(&str) -> String) = {
+        let exe = bin.join("codex");
+        std::fs::copy("/bin/cat", &exe).unwrap();
+        ready_to_run(&exe, &["/dev/null"]);
+        (vec![exe.to_string_lossy().into_owned()], |s| s.to_string())
+    };
+    let h = Harness::start("codex-screen").await;
+    let (code, _, err) = h.cli(&args(&["new-session", "-d", "-s", "cx"], &argv)).await;
+    assert_eq!(code, 0, "{err}");
+    let pane = pane_id(&h, "cx:0.0").await;
+    h.cli(&["set-work-mode", "-t", "cx", "ai"]).await;
+    let transcript = root.join("rollout-x.jsonl");
+    std::fs::write(&transcript, "").unwrap();
+    h.wait_for_cli("codex found", &["list-agents", "-J"], |_, out| out.contains("\"agent\":\"codex\"")).await;
+    let hook = serde_json::json!({"session_id": "x", "transcript_path": transcript.to_string_lossy()});
+    assert_eq!(run_hook(&h.socket, Some(pane), &["pane-ready", "-q"], &hook.to_string()).0, 0);
+    let send = async |text: &str| {
+        h.cli(&["send-keys", "-t", "cx", "-l", &say(text)]).await;
+        h.cli(&["send-keys", "-t", "cx", "Enter"]).await;
+    };
+    let trace = async || -> serde_json::Value {
+        let (_, out, _) = h.cli(&["trace-pane", "-J", "-t", "cx"]).await;
+        serde_json::from_str::<serde_json::Value>(&out).unwrap_or_default()
+    };
+    // Its hook says it waits (Codex's PermissionRequest), then its screen
+    // shows the question: one wait, told once.
+    let waits = async || h.cli(&["list-done"]).await.1.lines().filter(|l| l.contains(" wait ")).count();
+    assert_eq!(h.cli(&["pane-wait", "-t", "cx", "approve shell: cargo test"]).await.0, 0);
+    send("Allow command? cargo test").await;
+    h.wait_capture("cx", "the question", |t| t.contains("Allow command? cargo test")).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(waits().await, 1, "told once: {}", h.cli(&["list-done"]).await.1);
+    assert!(trace().await["waiting"]["text"].as_str().is_some_and(|t| t.contains("approve shell")), "the hook's words");
+    // Its transcript moves on (a step after the wait began).
+    let later =
+        (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let line = serde_json::json!({"timestamp": later, "type": "event_msg", "payload": {"type": "task_started"}});
+    std::fs::write(&transcript, format!("{line}\n")).unwrap();
+    h.wait_for_cli("the step read", &["trace-pane", "-J", "-t", "cx"], |_, out| {
+        serde_json::from_str::<serde_json::Value>(out)
+            .is_ok_and(|v| v["spans"].as_array().is_some_and(|s| !s.is_empty()))
+    })
+    .await;
+    assert!(!trace().await["waiting"].is_null(), "still shown: {}", trace().await);
+    // The hook again while the screen shows it: not told again.
+    assert_eq!(h.cli(&["pane-wait", "-t", "cx", "approve shell: cargo test"]).await.0, 0);
+    assert_eq!(waits().await, 1, "told once: {}", h.cli(&["list-done"]).await.1);
+    for i in 0..14 {
+        send(&format!("line {i}")).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !trace().await["waiting"].is_null() {
+        assert!(Instant::now() < deadline, "still waiting: {}", trace().await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+/// What Cursor's screen says (docs/design/agent-accuracy.md, step 2): a
+/// question in its last lines is a wait for the person (in the Trace, and
+/// told as `done-events` `wait`), over when the screen stops showing it;
+/// "ctrl+c to stop" is Cursor at work, and the turn is over a moment after
+/// it goes by itself. A turn ended since by its stop hook is not ended
+/// again: the message that went in next stays delivered. The stand-in, a
+/// program named `cursor-agent`, shows the lines it is sent; sent `go`, it
+/// shows "ctrl+c to stop" for three seconds, then clears its screen.
+#[tokio::test(flavor = "multi_thread")]
+async fn cursors_screen_says_when_it_waits_and_works() {
+    let root = std::env::temp_dir().join(format!("keepane-screen-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    #[cfg(windows)]
+    let argv = {
+        let exe = bin.join("cursor-agent.exe");
+        std::fs::copy(r"C:\Windows\System32\cmd.exe", &exe).unwrap();
+        let script = bin.join("agent.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\n:loop\r\nset l=\r\nset /p l=\r\nif \"%l%\"==\"go\" (\r\n  echo ctrl+c to stop\r\n  ping -n 4 127.0.0.1 >nul\r\n  cls\r\n  echo done\r\n) else (\r\n  echo(%l%\r\n)\r\ngoto loop\r\n",
+        )
+        .unwrap();
+        vec![exe.to_string_lossy().into_owned(), "/q".into(), "/c".into(), script.to_string_lossy().into_owned()]
+    };
+    #[cfg(unix)]
+    const LOOP: &str = "while IFS= read -r l; do if [ \"$l\" = go ]; then echo 'ctrl+c to stop'; sleep 3; printf '\\033[2J\\033[H'; echo done; else printf '%s\\n' \"$l\"; fi; done";
+    #[cfg(target_os = "linux")]
+    let argv = {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = bin.join("cursor-agent");
+        std::fs::write(&exe, format!("#!/bin/sh\n[ \"$1\" = settle ] && exit 0\n{LOOP}\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ready_to_run(&exe, &["settle"]);
+        vec![exe.to_string_lossy().into_owned()]
+    };
+    #[cfg(target_os = "macos")]
+    let argv = {
+        let exe = bin.join("cursor-agent");
+        std::fs::copy("/bin/bash", &exe).unwrap();
+        ready_to_run(&exe, &["-c", "true"]);
+        vec![exe.to_string_lossy().into_owned(), "-c".into(), LOOP.into()]
+    };
+    let h = Harness::start("screen").await;
+    let (code, _, err) = h.cli(&args(&["new-session", "-d", "-s", "cu"], &argv)).await;
+    assert_eq!(code, 0, "{err}");
+    let pane = pane_id(&h, "cu:0.0").await;
+    h.cli(&["set-work-mode", "-t", "cu", "ai"]).await;
+    h.wait_for_cli("cursor found", &["list-agents", "-J"], |_, out| out.contains("\"agent\":\"cursor\"")).await;
+    let send = async |text: &str| {
+        h.cli(&["send-keys", "-t", "cu", "-l", text]).await;
+        h.cli(&["send-keys", "-t", "cu", "Enter"]).await;
+    };
+    let waiting = async || -> serde_json::Value {
+        let (_, out, _) = h.cli(&["trace-pane", "-J", "-t", "cu"]).await;
+        serde_json::from_str::<serde_json::Value>(&out).unwrap_or_default()["waiting"].clone()
+    };
+    // It asks: a wait, told once.
+    send("Run this command?").await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !waiting().await["text"].as_str().is_some_and(|t| t.contains("Run this command?")) {
+        assert!(Instant::now() < deadline, "the wait: {}", waiting().await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (_, done, _) = h.cli(&["list-done"]).await;
+    assert_eq!(done.lines().filter(|l| l.contains("wait") && l.contains("Run this command?")).count(), 1, "{done}");
+    // Answered: off its last lines, the wait is over.
+    for i in 0..14 {
+        send(&format!("line {i}")).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !waiting().await.is_null() {
+        assert!(Instant::now() < deadline, "still waiting: {}", waiting().await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // At work: "ctrl+c to stop" for three seconds, then gone by itself; the
+    // turn over two looks later.
+    let state = async || h.cli(&["display-message", "-p", "-t", "cu", "#{pane_state}"]).await.1.trim().to_string();
+    send("go").await;
+    h.wait_capture("cu", "at work", |t| t.lines().any(|l| l.trim() == "ctrl+c to stop")).await;
+    assert_eq!(state().await, "busy");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while state().await != "idle" {
+        assert!(Instant::now() < deadline, "free again: {}", state().await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // The turn over as its line goes, and its stop hook says so at once;
+    // the next message goes in before Cursor draws anything for it. The
+    // screen's misses come after: they do not end that message.
+    send("go").await;
+    h.wait_capture("cu", "at work again", |t| t.lines().any(|l| l.trim() == "ctrl+c to stop")).await;
+    h.wait_capture("cu", "its line gone", |t| !t.lines().any(|l| l.trim() == "ctrl+c to stop")).await;
+    assert_eq!(run_hook(&h.socket, Some(pane), &["pane-ready", "-q"], "{}").0, 0);
+    let (_, sent, _) = h.cli(&["send-message", "-t", "cu", "next task"]).await;
+    let id = msg_id(&sent);
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let (_, trace, _) = h.cli(&["trace-message", &id]).await;
+    assert!(trace.starts_with(&format!("#{id} delivered")), "the next message is not ended: {trace}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+/// The session an agent's hook names (`pane-ready` with the hook's JSON on
+/// standard input, as a `SessionStart` hook runs it) is that pane's agent's:
+/// its transcript is read even where the guess would not look (outside the
+/// day folders), a newer one in its directory is not taken for it, and the
+/// hook's model shows until the transcript says one. Codex here.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_hook_names_its_agents_transcript() {
+    let _codex_home = CODEX_HOME_LOCK.lock().await;
+    let root = std::env::temp_dir().join(format!("keepane-bind-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (bin, work, home) = (root.join("bin"), root.join("work"), root.join("codex"));
+    for d in [&bin, &work, &home] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    #[cfg(windows)]
+    let argv = {
+        let exe = bin.join("codex.exe");
+        std::fs::copy(r"C:\Windows\System32\PING.EXE", &exe).unwrap();
+        vec![exe.to_string_lossy().into_owned(), "-n".into(), "600".into(), "127.0.0.1".into()]
+    };
+    #[cfg(target_os = "linux")]
+    let argv = {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = bin.join("codex");
+        std::fs::write(&exe, "#!/bin/sh\n[ \"$1\" = settle ] && exit 0\nsleep 600\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ready_to_run(&exe, &["settle"]);
+        vec![exe.to_string_lossy().into_owned()]
+    };
+    #[cfg(target_os = "macos")]
+    let argv = {
+        let exe = bin.join("codex");
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        ready_to_run(&exe, &["0"]);
+        vec![exe.to_string_lossy().into_owned(), "600".into()]
+    };
+    unsafe {
+        std::env::set_var("CODEX_HOME", &home);
+    }
+    let h = Harness::start("bind").await;
+    let w = work.to_string_lossy().into_owned();
+    let (code, _, err) = h.cli(&args(&["new-session", "-d", "-s", "cx", "-c", &w], &argv)).await;
+    assert_eq!(code, 0, "{err}");
+    let pane = pane_id(&h, "cx:0.0").await;
+    #[cfg(unix)]
+    let w = work.canonicalize().unwrap().to_string_lossy().into_owned();
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let meta = |id: &str| line(serde_json::json!({"type": "session_meta", "payload": {"id": id, "cwd": w}}));
+    let tokens = |total: u64| {
+        line(serde_json::json!({"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"input_tokens": total, "output_tokens": 0, "total_tokens": total},
+            "last_token_usage": {"input_tokens": total, "output_tokens": 0, "total_tokens": total}}}}))
+    };
+    // A session another program left in today's folder, same directory:
+    // the guess would take it.
+    let day = chrono::Local::now();
+    let today = home
+        .join("sessions")
+        .join(day.format("%Y").to_string())
+        .join(day.format("%m").to_string())
+        .join(day.format("%d").to_string());
+    std::fs::create_dir_all(&today).unwrap();
+    std::fs::write(today.join("rollout-other.jsonl"), meta("other") + &tokens(999)).unwrap();
+    // The pane's own, resumed from long ago: not in today's folder.
+    let old = home.join("sessions").join("2020").join("01").join("01");
+    std::fs::create_dir_all(&old).unwrap();
+    let mine = old.join("rollout-mine.jsonl");
+    std::fs::write(&mine, meta("mine") + &tokens(1234)).unwrap();
+    let hook = serde_json::json!({"session_id": "mine", "transcript_path": mine.to_string_lossy(),
+        "model": "gpt-5.5", "hook_event_name": "SessionStart", "cwd": w});
+    let (code, err) = run_hook(&h.socket, Some(pane), &["pane-ready", "-q"], &hook.to_string());
+    assert_eq!(code, 0, "{err}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let a = loop {
+        let (_, out, _) = h.cli(&["list-agents", "-J"]).await;
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_default();
+        if v[0]["tokens"]["total"] == 1234 {
+            break v[0].clone();
+        }
+        assert!(Instant::now() < deadline, "its own transcript: {out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(
+        (a["agent"].as_str(), a["model"].as_str(), a["transcripts"].as_u64()),
+        (Some("codex"), Some("gpt-5.5"), Some(1))
+    );
+    // By hand (a console, or nothing on standard input): nothing bound, no
+    // waiting either.
+    let started = Instant::now();
+    let (code, _) = run_hook(&h.socket, Some(pane), &["pane-ready", "-q"], "");
+    assert!(code == 0 && started.elapsed() < Duration::from_secs(5));
+    // Not for another pane (-t is unsticking it), nor a word too many.
+    let (code, _, err) = h.cli(&["pane-ready", "-t", "cx", "--model", "x"]).await;
+    assert!(code != 0 && err.contains("no -t"), "{err}");
+    h.cli(&["kill-server"]).await;
+    unsafe {
+        std::env::remove_var("CODEX_HOME");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
 /// `list-agents` and the `agent_*` formats: a pane running an agent (here a
 /// stand-in program named `claude`) is read from the transcript it writes,
 /// as the transcript grows; its tokens priced by the list given; `agent-cost

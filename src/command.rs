@@ -149,9 +149,19 @@ pub struct MenuItem {
     pub cmd: Option<Box<Cmd>>,
 }
 
+/// What an agent's hook said of its session on standard input, as
+/// `pane-ready` passes it on (docs/design/agent-accuracy.md): which session
+/// it is, the file it writes, its model. Each as the hook gave it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HookSaid {
+    pub session: Option<String>,
+    pub transcript: Option<String>,
+    pub model: Option<String>,
+}
+
 /// What a `chat-*` command is asked (docs/design/chat.md). A channel is
 /// named by its name (`#` optional) or its id (whole, or 8 or more of its
-/// first characters).
+/// last characters: its first are the time it was made).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatCmd {
     /// `chat-new NAME [--topic TEXT] [--tag T]...`: a channel; its id back.
@@ -384,10 +394,13 @@ pub enum Cmd {
         id: u64,
         to: MoveTo,
     },
-    /// `pane-ready [-q] [-t pane]`: an agent is free for its next message.
+    /// `pane-ready [-q] [-t pane] [--session ID] [--transcript PATH]
+    /// [--model NAME]`: an agent is free for its next message. Run by its
+    /// hook, it passes on what the hook said of the agent's session.
     PaneReady {
         quiet: bool,
         target: Option<Target>,
+        said: HookSaid,
     },
     /// `pane-wait [-q] [-t pane] [text]`: the program in the pane (an
     /// agent, through its hook) waits for the person: a permission, a
@@ -1393,12 +1406,20 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::MoveMessage { id, to } => write!(f, "move-message {id} {}", to.as_str()),
-            Cmd::PaneReady { quiet, target } => {
+            Cmd::PaneReady { quiet, target, said } => {
                 f.write_str("pane-ready")?;
                 if *quiet {
                     f.write_str(" -q")?;
                 }
-                fmt_target(f, target)
+                fmt_target(f, target)?;
+                for (flag, v) in
+                    [("--session", &said.session), ("--transcript", &said.transcript), ("--model", &said.model)]
+                {
+                    if let Some(v) = v {
+                        write!(f, " {flag} {}", quote(v))?;
+                    }
+                }
+                Ok(())
             }
             Cmd::PaneWait { quiet, target, text } => {
                 f.write_str("pane-wait")?;
@@ -3045,7 +3066,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("trace-message", &["-w", "-J"]),
     ("drop-message", &["-u"]),
     ("move-message", &[]),
-    ("pane-ready", &["-q", "-t"]),
+    ("pane-ready", &["-q", "-t", "--session", "--transcript", "--model"]),
     ("pane-wait", &["-q", "-t"]),
     ("pane-status", &[]),
     ("set-work-mode", &["-t"]),
@@ -3757,16 +3778,22 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::MoveMessage { id, to }
         }
         "pane-ready" => {
-            let (mut quiet, mut target) = (false, None);
+            let (mut quiet, mut target, mut said) = (false, None, HookSaid::default());
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-q" => quiet = true,
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "--session" => said.session = Some(a.value("--session")?.to_string()),
+                    "--transcript" => said.transcript = Some(a.value("--transcript")?.to_string()),
+                    "--model" => said.model = Some(a.value("--model")?.to_string()),
                     f => return Err(bad_flag(n, f)),
                 }
             }
             a.none_left(n)?;
-            Cmd::PaneReady { quiet, target }
+            if target.is_some() && said != HookSaid::default() {
+                return Err(format!("{n}: --session, --transcript and --model are the pane's own agent's (no -t)"));
+            }
+            Cmd::PaneReady { quiet, target, said }
         }
         "pane-wait" => {
             let (mut quiet, mut target) = (false, None);
@@ -6063,6 +6090,8 @@ mod tests {
             "capture-pane -p -S -100 -t w:1",
             "web-tails 4",
             "pane-wait -q",
+            "pane-ready -q --session 0193-ab --transcript \"C:\\Users\\me\\.codex\\sessions\\a b.jsonl\" --model gpt-5.5",
+            "pane-ready -t %3",
             "feishu-status",
             "feishu-allow ou_ab12",
             "feishu-allow ou_ab12 --shell --no-screen",
