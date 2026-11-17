@@ -13454,6 +13454,101 @@ async fn the_hook_names_its_agents_transcript() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+/// A process that becomes an agent later (on Unix a program can `exec`
+/// another under the same pid: a wrapper, or a shell between `fork` and
+/// `exec`) is found once it is one, though it was seen before as not one.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_process_that_execs_an_agent_is_found() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("keepane-exec-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let codex = root.join("codex");
+    #[cfg(target_os = "linux")]
+    std::fs::write(&codex, "#!/bin/sh\n[ \"$1\" = settle ] && exit 0\nsleep 600\n").unwrap();
+    #[cfg(target_os = "macos")]
+    std::fs::copy("/bin/sleep", &codex).unwrap();
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    #[cfg(target_os = "linux")]
+    ready_to_run(&codex, &["settle"]);
+    #[cfg(target_os = "macos")]
+    ready_to_run(&codex, &["0"]);
+    // Not an agent for three seconds (the agents are looked for each
+    // second), then the same process is the agent.
+    let wrapper = root.join("wrapper");
+    std::fs::write(
+        &wrapper,
+        format!("#!/bin/sh\n[ \"$1\" = settle ] && exit 0\nsleep 3\nexec '{}' 600\n", codex.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    ready_to_run(&wrapper, &["settle"]);
+    let h = Harness::start("execagent").await;
+    let w = wrapper.to_string_lossy().into_owned();
+    let (code, _, err) = h.cli(&["new-session", "-d", "-s", "x", &w]).await;
+    assert_eq!(code, 0, "{err}");
+    let (_, pid, _) = h.cli(&["display-message", "-p", "-t", "x", "#{pane_pid}"]).await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, out, _) = h.cli(&["list-agents", "-J"]).await;
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_default();
+        if v[0]["agent"] == "codex" {
+            assert_eq!(v[0]["pid"].as_u64().map(|p| p.to_string()), Some(pid.trim().to_string()), "the same process");
+            break;
+        }
+        assert!(Instant::now() < deadline, "not found after its exec: {out}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // The other way: an agent that becomes another program is no longer
+    // one. (Linux: its stand-in is a script, which can `exec`.)
+    #[cfg(target_os = "linux")]
+    {
+        let go = root.join("go");
+        let leaving = root.join("leaving").join("codex");
+        std::fs::create_dir_all(leaving.parent().unwrap()).unwrap();
+        let script = format!(
+            "#!/bin/sh\n[ \"$1\" = settle ] && exit 0\nwhile [ ! -e '{}' ]; do sleep 0.1; done\nexec sleep 600\n",
+            go.display()
+        );
+        std::fs::write(&leaving, script).unwrap();
+        std::fs::set_permissions(&leaving, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ready_to_run(&leaving, &["settle"]);
+        let l = leaving.to_string_lossy().into_owned();
+        // Made before the first goes: a server with no sessions ends.
+        let (code, _, err) = h.cli(&["new-session", "-d", "-s", "y", &l]).await;
+        assert_eq!(code, 0, "{err}");
+        h.cli(&["kill-session", "-t", "x"]).await;
+        let (_, y, _) = h.cli(&["display-message", "-p", "-t", "y", "#{pane_pid}"]).await;
+        let y: u64 = y.trim().parse().unwrap();
+        let agents = || async {
+            let (_, out, _) = h.cli(&["list-agents", "-J"]).await;
+            (serde_json::from_str::<serde_json::Value>(&out).unwrap_or_default(), out)
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (v, out) = agents().await;
+            // This pane's process, found as the agent before it changes.
+            if v.as_array().is_some_and(|a| a.iter().any(|x| x["pid"] == y && x["agent"] == "codex")) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the agent not found: {out}");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        std::fs::write(&go, "").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (v, out) = agents().await;
+            if v.as_array().is_some_and(|a| !a.iter().any(|x| x["pid"] == y)) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "still an agent after its exec: {out}");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&root);
+}
 /// `list-agents` and the `agent_*` formats: a pane running an agent (here a
 /// stand-in program named `claude`) is read from the transcript it writes,
 /// as the transcript grows; its tokens priced by the list given; `agent-cost

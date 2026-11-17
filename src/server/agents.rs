@@ -893,13 +893,35 @@ const BIND_WAIT: u64 = 30;
 /// (the hook's clock and the process's start are read apart).
 const BIND_SLACK: u64 = 2;
 
+/// What the process `pid`, now named `name`, is: as found before under that
+/// name, else looked at (and kept, once its command line could be read: one
+/// just started is asked again next look).
+fn kind_of(kinds: &mut HashMap<u32, (String, Option<Kind>)>, pid: u32, name: &str) -> Option<Kind> {
+    if let Some((seen, k)) = kinds.get(&pid)
+        && seen == name
+    {
+        return *k;
+    }
+    let mut read = true;
+    let k = Kind::of(name, || {
+        let line = crate::proccwd::process_command_line(pid);
+        read = line.is_some();
+        line
+    });
+    if read {
+        kinds.insert(pid, (name.to_string(), k));
+    }
+    k
+}
 /// Looks at the panes' agents, keeping what it read between looks.
 #[derive(Default)]
 pub struct Watcher {
     tracks: HashMap<PaneId, Track>,
-    /// What each process seen is (a node running something else is asked
-    /// its command line once, not every look).
-    kinds: HashMap<u32, Option<Kind>>,
+    /// What each process seen is, by the name it had then (a node running
+    /// something else is asked its command line once, not every look). On
+    /// Unix a process can `exec` another program under the same id: a new
+    /// name is looked at again.
+    kinds: HashMap<u32, (String, Option<Kind>)>,
     /// Bindings whose pane's agent is not found yet (`BIND_WAIT`).
     pending: Vec<Bind>,
 }
@@ -990,31 +1012,15 @@ impl Watcher {
         for p in panes {
             let tree = crate::sysinfo::tree_of(p.pid);
             present.extend(tree.iter().map(|(pid, _)| *pid));
-            if self.tracks.get(&p.id).is_some_and(|t| tree.iter().any(|(pid, _)| *pid == t.agent)) {
+            let kinds = &mut self.kinds;
+            // Still that agent: the same process, not since become another.
+            if self.tracks.get(&p.id).is_some_and(|t| {
+                tree.iter().any(|(pid, name)| *pid == t.agent && kind_of(kinds, *pid, name) == Some(t.kind))
+            }) {
                 continue;
             }
             self.tracks.remove(&p.id);
-            let kinds = &mut self.kinds;
-            let found = tree.iter().find_map(|(pid, name)| {
-                let kind = match kinds.get(pid) {
-                    Some(k) => *k,
-                    None => {
-                        // Kept only when known: a command line not read yet
-                        // (a process just started) is asked again next look.
-                        let mut read = true;
-                        let k = Kind::of(name, || {
-                            let line = crate::proccwd::process_command_line(*pid);
-                            read = line.is_some();
-                            line
-                        });
-                        if read {
-                            kinds.insert(*pid, k);
-                        }
-                        k
-                    }
-                };
-                kind.map(|k| (*pid, k))
-            });
+            let found = tree.iter().find_map(|(pid, name)| kind_of(kinds, *pid, name).map(|k| (*pid, k)));
             let Some((agent, kind)) = found else { continue };
             let Some((_, _, started)) = crate::sysinfo::usage_of(agent) else { continue };
             let cwd = crate::proccwd::process_cwd(agent).unwrap_or_else(|| p.path.clone());
@@ -1983,6 +1989,16 @@ mod tests {
         assert_eq!(pi_folder("/home/me/src"), "--home-me-src--");
         assert_eq!(dir_key(r"C:\src\"), dir_key(r"C:\src"));
         assert_eq!(dir_key("/a/b/"), dir_key("/a/b"));
+    }
+
+    #[test]
+    fn a_process_is_looked_at_again_under_a_new_name() {
+        let mut kinds = HashMap::new();
+        assert_eq!(kind_of(&mut kinds, 7, "wrapper"), None);
+        assert_eq!(kind_of(&mut kinds, 7, "codex"), Some(Kind::Codex), "it ran exec");
+        assert_eq!(kind_of(&mut kinds, 7, "codex"), Some(Kind::Codex));
+        assert_eq!(kind_of(&mut kinds, 7, "sleep"), None, "and again");
+        assert_eq!(kinds.len(), 1, "one entry a process");
     }
 
     #[test]

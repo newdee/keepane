@@ -6301,3 +6301,18 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 遗留：Linux 全量下 `the_hook_names_its_agents_transcript` 失败过 2 次（第 1、3 轮），第 3 轮看到 `list-agents` 为 `[]`（watcher 20 秒里没认出 pane 里的 agent）；之后 Linux 全量 7 次都过。测试已加失败时打印进程树，再出现时能定位。
 
 0.77.0 发布：CI 44124824550（7bfe946）四个 job 通过；tag v0.77.0；Release 44126111155（macOS aarch64 缺 runner 被取消一次，重跑后通过）；manifests e6c81e3；winget PR #482499；Homebrew formula 44130593129 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 204. Unix 上 exec 成 agent 的进程认不出（0.78 候选版的修复）
+
+来源：第 203 条遗留的 Linux 不稳定失败（`the_hook_names_its_agents_transcript`，`list-agents` 为 `[]`）。
+
+- 原因：watcher 按 pid 缓存"这个进程是不是 agent"，名字不是 node/bun 这类时连 `None` 也缓存。Unix 上同一个 pid 可以 `exec` 成另一个程序：watcher 在 `fork` 之后、`exec` 之前（全量测试负载下这段变长），或在一个过一会儿才 `exec` 的包装命令（`mise exec`、`direnv exec`、`#!/usr/bin/env node` 的 env 阶段）上看到它，就记成"不是"，只要 pid 还在就再也认不出。
+- 复现：新 e2e `a_process_that_execs_an_agent_is_found`，包装脚本睡 3 秒再 `exec` 成 codex 替身；修复前 Linux 上 15 秒后仍是 `[]`，每次都失败。
+- 定性：共性（同一个假设"pid 一直是同一个程序"在 `agents.rs` 两处：`kinds` 缓存；`tracks` 只看 pid 还在，agent `exec` 成别的程序后仍算 agent）。`sshhosts::seen` 不受影响（名字不是 `ssh` 的不进缓存，名字检查在缓存前）；sysinfo 的 `programs` 1 秒过期，不受影响。结构缺陷：收敛成一个判断 `kind_of`，按（pid，名字）缓存，名字变了重新看；跟踪中的 agent 也用它确认仍是那种 agent。
+- 不引入新 bug 的评估：pid 与名字不变时与原来一样命中缓存；pid 复用仍由 `retain` 清理；Windows 不能 `exec`，名字不变，行为不变。原有的 agent 测试（Claude、Codex、pi、Cursor 替身）在全量里覆盖"原行为不变"。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 1 | 静态一致性（文档对代码）+ 全量 | README（en/zh）写"看程序名，或看 `node` 跑的是什么"，仍准确；`kinds` 的注释改为按名字；`kind_of` 保留原来"命令行读不到就下次再问"的规则。fmt、clippy 干净。Windows 695 / 11 / 171，Linux 679 / 169。 | 干净 1/3 |
+| 2 | 机制通路存活（2 个变异体）+ 全量 | A：缓存不看名字（`seen == name` 改成恒真）：单元测试 `a_process_is_looked_at_again_under_a_new_name` 失败，Linux e2e 15 秒后仍 `[]`；B：跟踪中的 agent 只看 pid 还在：Linux e2e 报 "still an agent after its exec"。都被杀。Windows 695 / 11 / 171，Linux 679 / 169。 | 干净 2/3 |
+| 3 | 可复现性 | Linux 全量连跑 2 次：两次都是 679 / 169（第 203 条那个负载下的失败没有再出现）；Windows 695 / 11 / 171。 | 干净（3/3），验收通过 |
