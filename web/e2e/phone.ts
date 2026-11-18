@@ -156,6 +156,9 @@ export async function colourScheme(
 export interface Fingers {
   /** A tap on the middle of what the locator finds (or a point). */
   tap(at: Locator | Point): Promise<void>;
+  /** Two taps on it `gap` ms apart, not kept to a finger's pace: 0 is one tap
+   *  the screen reports twice (a finger bouncing). */
+  twice(at: Locator | Point, gap: number): Promise<void>;
   /** A finger held `ms` on it, then lifted. */
   longPress(at: Locator | Point, ms?: number): Promise<void>;
   /** One finger from `from` to `to` in `steps` moves. */
@@ -197,6 +200,17 @@ export async function phone(browser: Browser, size = { width: 390, height: 844 }
     async tap(p) {
       const c = await at(p);
       await hold(lastTap + 300 - Date.now());
+      await touch("touchStart", [c]);
+      await touch("touchEnd", []);
+      lastTap = Date.now();
+    },
+    async twice(p, gap) {
+      const c = await at(p);
+      await hold(lastTap + 300 - Date.now());
+      await touch("touchStart", [c]);
+      await touch("touchEnd", []);
+      // The gap between the two taps is what is tested, not a wait.
+      if (gap) await hold(gap);
       await touch("touchStart", [c]);
       await touch("touchEnd", []);
       lastTap = Date.now();

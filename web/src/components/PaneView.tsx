@@ -38,7 +38,7 @@ import {
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getJson, post, q, type Pane, type Renamed, type Theme } from "../api";
 import { ansiToHtml, blank } from "../ansi";
-import { bounced, headOf, stampDetail, stampText, under, where } from "../format";
+import { bounced, headOf, keyBounced, stampDetail, stampText, under, where } from "../format";
 import { useScreen, useStatusLine, useStored, useVisible } from "../hooks";
 import { t } from "../i18n";
 import { copyText, outputOf, plain } from "../copy";
@@ -976,8 +976,8 @@ function Composer({
       if (enterRuns) send("&key=Enter");
     } else setText((now) => now || s);
   };
-  const onKey = (k: string) => {
-    if (bounced("key " + k)) return;
+  const onKey = (k: string, pointer: string) => {
+    if (keyBounced("key " + k, pointer)) return;
     const mod = MODS[k];
     if (mod) {
       const next = held.includes(mod) ? held.replace(mod, "") : [...held + mod].sort((a, b) => "CMS".indexOf(a) - "CMS".indexOf(b)).join("");
@@ -1014,7 +1014,7 @@ function Composer({
       variant={MODS[k] && held.includes(MODS[k]) ? "primary" : "tertiary"}
       aria-pressed={MODS[k] ? held.includes(MODS[k]) : undefined}
       className="h-8 min-w-9 shrink-0 px-2 font-term text-[13px] pointer-coarse:h-10 pointer-coarse:min-w-11"
-      onPress={() => onKey(k)}
+      onPress={(e) => onKey(k, e.pointerType)}
     >
       {label}
     </Button>

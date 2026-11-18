@@ -98,6 +98,19 @@ export function bounced(what: string) {
   return now - last < 250;
 }
 
+/** A key button's press. A mouse click, a key or a screen reader is always
+ *  meant: an agent's "Esc twice" is two clicks well within 250 ms. A finger
+ *  touching again within 80 ms of the tap taken is that tap bouncing; the
+ *  window runs from the tap taken, so quick taps are not swallowed in a row. */
+const lastKeyTap = new Map<string, number>();
+export function keyBounced(what: string, pointer: string) {
+  if (pointer !== "touch" && pointer !== "pen") return false;
+  const now = Date.now();
+  if (now - (lastKeyTap.get(what) ?? -Infinity) < 80) return true;
+  lastKeyTap.set(what, now);
+  return false;
+}
+
 /** A value kept on this device (localStorage), read once. */
 export function stored<T>(name: string, fallback: T): T {
   try {
