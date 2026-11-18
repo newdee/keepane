@@ -939,6 +939,23 @@ async fn the_status_line_is_there_for_a_script_and_the_page() {
         part.as_array().unwrap().iter().map(|s| s["text"].as_str().unwrap().to_string()).collect::<String>()
     };
     assert!(segs(&v["left"]).contains("[st]") && segs(&v["windows"][1]["segments"]).contains("1:second"), "{json}");
+    // A pane named (the page showing it, its own view): its window is the
+    // current one, drawn so (`*`), the session's current window unchanged.
+    let (code, json, err) = h.cli(&["status-line", "-J", "-t", second.trim()]).await;
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        (v["windows"][0]["current"].as_bool(), v["windows"][1]["current"].as_bool()),
+        (Some(false), Some(true)),
+        "{json}"
+    );
+    assert!(segs(&v["windows"][1]["segments"]).contains("1:second*"), "{json}");
+    assert!(!segs(&v["windows"][0]["segments"]).contains('*'), "{json}");
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "st", "#{window_index}"]).await.1.trim(), "0");
+    let (_, text, _) = h.cli(&["status-line", "-t", "st"]).await;
+    assert!(text.contains("0:first*") && !text.contains("1:second*"), "the session's own line unchanged: {text}");
+    let (code, _, err) = h.cli(&["status-line", "-J", "-t", "%999"]).await;
+    assert!(code != 0 && !err.is_empty(), "no such pane: an error");
     h.cli(&["set", "-g", "status", "off"]).await;
     let (_, json, _) = h.cli(&["status-line", "-J", "-t", "st"]).await;
     assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["on"], false);

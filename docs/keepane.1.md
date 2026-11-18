@@ -129,7 +129,8 @@ steps of a kind in a row as one row (`+N`, `×N` at once; not a failed or
 background one), each turn's steps summed, the latest step in sight, `e`
 opening every turn),
 `status-line` (a session's status line as drawn; `-J` its parts, their colours
-and each window's pane, which the phone page draws under the screen),
+and each window's pane, which the phone page draws under the screen; `-t` a
+pane: drawn where that pane is shown, its window the current one),
 `choose-ssh` (prefix `@`: the machines `ssh` reached, connected ones first,
 then by last use; Enter goes to the pane on one, else connects in a new
 window named after it; `s` connects in a split, `y` copies the command,

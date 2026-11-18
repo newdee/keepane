@@ -1092,13 +1092,20 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
         (true, "/api/status") => {
             // A session's status line as the terminal draws it (`status-line
             // -J`): its parts, their colours, each window's label and pane.
-            // Only a session's name: no window or pane after it.
-            let Some(session) =
-                req.param("session").filter(|s| !s.is_empty() && s.len() <= 200 && !s.contains([':', '.']))
-            else {
-                return Response::text(400, "session: a session's name");
+            // `pane` (%N): drawn where the page shows that pane, its window
+            // the current one; else `session`, only a session's name.
+            let target = if let Some(pane) = req.param("pane") {
+                if !is_pane_id(pane) {
+                    return Response::text(400, "pane: a pane id like %3");
+                }
+                pane.to_string()
+            } else {
+                match req.param("session").filter(|s| !s.is_empty() && s.len() <= 200 && !s.contains([':', '.'])) {
+                    Some(s) => s.to_string(),
+                    None => return Response::text(400, "session: a session's name"),
+                }
             };
-            match q(vec!["status-line".into(), "-J".into(), "-t".into(), session.into()]).await {
+            match q(vec!["status-line".into(), "-J".into(), "-t".into(), target]).await {
                 Ok((0, out, _)) => Response::json(out.trim().to_string()),
                 Ok((_, _, err)) => Response::text(404, err.trim()),
                 Err(e) => Response::text(500, &format!("{e:#}")),

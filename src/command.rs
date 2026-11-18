@@ -304,8 +304,9 @@ pub enum Cmd {
         json: bool,
         snapshot: bool,
     },
-    /// `status-line [-J] [-t session]`: the session's status line as drawn,
-    /// for a script or the phone page; `-J`: its parts and their colours.
+    /// `status-line [-J] [-t session|pane]`: the session's status line as
+    /// drawn, for a script or the phone page; `-J`: its parts and their
+    /// colours. A pane: drawn where it is shown, its window the current one.
     StatusLine {
         target: Option<Target>,
         json: bool,

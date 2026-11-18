@@ -1322,8 +1322,10 @@ history"). Under the screen is the session's status line, as the terminal
 draws it, in its colours, when all of it fits there; where it does not (a
 phone held upright), its button in the pane's bar (by the box in full
 screen) opens it from the side, nothing cut: the windows a row each, then
-each part of its ends as it is drawn. Tapping a window opens it. Status
-line, in the view menu, hides it on this device; `set -g status off`
+each part of its ends as it is drawn. Tapping a window opens it. The
+window marked current is the one the page shows (the page keeps its own
+view; the terminal's current window stays as it was). Status line, in the
+view menu, hides it on this device; `set -g status off`
 hides it everywhere. A tap on a session or window folds it (the device
 remembers); its right click or long press renames it or folds every window
 of a session at once. The two buttons at the top of the list show it as a

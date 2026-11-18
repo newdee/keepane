@@ -351,11 +351,27 @@ test("the status line: under the screen where all of it fits, else from the side
   await browser.setViewport({ width: 1280, height: 860 });
   await expect(bar).toBeVisible();
   await expect(open).toHaveCount(0);
-  // A window's label opens that window's pane.
-  const first = show("work:0.1", "#{pane_id}");
+  // The window shown here is the one marked, though the terminal's current
+  // window is still 0 (the page keeps its own view).
+  expect(show("work", "#{window_index}")).toBe("0");
+  const current = browser.locator("#status-line [aria-current]");
+  await expect(current).toHaveAttribute("data-window", "1");
+  // A window's label opens that window's pane, and the mark goes with it.
   await browser.locator('#status-line [data-window="0"]').click();
   await expect.poll(() => browser.evaluate(() => JSON.stringify(history.state && history.state.pane))).not.toBe(JSON.stringify(logs));
-  void first;
+  await expect(current).toHaveAttribute("data-window", "0");
+  await expect(current).toHaveCount(1);
+  // The address asked: a pane not like %N refused, one not there not found,
+  // a session's name still the terminal's own line.
+  const asked = (q: string) =>
+    browser.evaluate(async (q) => {
+      const r = await fetch(`/api/status?${q}`, { headers: { "X-Keepane-Key": localStorage.getItem("keepane-key") || "" } });
+      return [r.status, r.ok ? (await r.json()).windows.findIndex((w: { current: boolean }) => w.current) : -1];
+    }, q);
+  expect(await asked("pane=abc")).toEqual([400, -1]);
+  expect(await asked("pane=%25999999")).toEqual([404, -1]);
+  expect(await asked(`pane=${encodeURIComponent(logs)}`)).toEqual([200, 1]);
+  expect(await asked("session=work")).toEqual([200, 0]);
   // The View menu turns it off (bar and button), and on again.
   await browser.locator("#view").click();
   await entry(screen, "状态栏").tap();

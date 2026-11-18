@@ -70,18 +70,20 @@ export function usePanes(enabled: boolean, tail = 0) {
   return { panes, error, reload };
 }
 
-/** A session's status line, asked again every 2 s while the page is in
- *  view and `enabled`; null until it comes, or when it cannot. */
-export function useStatusLine(session: string | null, enabled: boolean) {
+/** The status line of the session of `pane`, as drawn where the page shows
+ *  that pane (its window the current one: the page keeps its own view, the
+ *  terminal's current window may be another), asked again every 2 s while
+ *  the page is in view and `enabled`; null until it comes, or when it cannot. */
+export function useStatusLine(pane: string | null, enabled: boolean) {
   const visible = useVisible();
   const [line, setLine] = useState<StatusLine | null>(null);
   useEffect(() => {
-    if (!visible || !enabled || !session) return;
+    if (!visible || !enabled || !pane) return;
     let stop = false;
     let timer: number | undefined;
     const loop = async () => {
       try {
-        const l = await getJson<StatusLine>(`/api/status?session=${encodeURIComponent(session)}`);
+        const l = await getJson<StatusLine>(`/api/status?pane=${encodeURIComponent(pane)}`);
         if (!stop) setLine(l);
       } catch {
         if (!stop) setLine(null);
@@ -93,7 +95,7 @@ export function useStatusLine(session: string | null, enabled: boolean) {
       stop = true;
       clearTimeout(timer);
     };
-  }, [visible, enabled, session]);
+  }, [visible, enabled, pane]);
   return line;
 }
 

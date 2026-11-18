@@ -113,7 +113,7 @@ export function PaneView(props: Props) {
   const [detail, setDetail] = useStored<boolean | number>("keepane-detail", false);
   // The session's status line under the screen (on unless turned off here).
   const [statusOn, setStatusOn] = useStored<boolean | number>("keepane-status-line", true);
-  const statusLine = useStatusLine(p ? p.session : null, !!statusOn);
+  const statusLine = useStatusLine(p ? p.id : null, !!statusOn);
   // The line at the bottom when all of it fits there; else from the side,
   // opened by its button (a phone held upright).
   const shownStatus = statusOn && statusLine && statusLine.on ? statusLine : null;

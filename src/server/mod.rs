@@ -6862,10 +6862,21 @@ impl Server {
             }
             Cmd::ListAgents { json } => self.list_agents(json),
             Cmd::TracePane { target, json } => self.trace_pane(target.as_ref(), cid, json),
-            Cmd::StatusLine { target, json } => match self.resolve_session(target.as_ref(), cid) {
-                Ok(sid) => self.status_line_out(sid, json),
-                Err(e) => Outcome::Error(e),
-            },
+            // A pane named: the line as drawn where that pane is shown (the
+            // phone page, which keeps its own view), its window the current one.
+            Cmd::StatusLine { target, json } => {
+                let view = match target.as_ref().filter(|t| t.names_pane()) {
+                    Some(_) => match self.resolve(target.as_ref(), cid) {
+                        Ok((sid, widx, pid)) => Some((sid, widx, pid)),
+                        Err(e) => return Outcome::Error(e),
+                    },
+                    None => None,
+                };
+                match view.map(|(sid, ..)| Ok(sid)).unwrap_or_else(|| self.resolve_session(target.as_ref(), cid)) {
+                    Ok(sid) => self.status_line_out(sid, json, view.map(|(_, w, p)| (w, p))),
+                    Err(e) => Outcome::Error(e),
+                }
+            }
             Cmd::CopyOutput { target, print } => {
                 let (_, _, pid) = match self.resolve(target.as_ref(), cid) {
                     Ok(r) => r,
@@ -10163,17 +10174,28 @@ impl Server {
     /// The status line of session `spos` as drawn for client `cid` (None:
     /// for no client, the phone page): `status-left`, each window's label
     /// (and whether it is the current one), `status-right`, expanded.
-    fn status_parts(&mut self, spos: usize, cid: Option<ClientId>) -> StatusParts {
+    /// `view`: a window and pane shown instead of the session's current
+    /// ones (the phone page keeps its own view): that window is the current
+    /// one, that pane what the line's ends speak of.
+    fn status_parts(&mut self, spos: usize, cid: Option<ClientId>, view: Option<(usize, PaneId)>) -> StatusParts {
         let sid = self.sessions[spos].id;
         let base = render::Style::colors(self.opts.status_fg, self.opts.status_bg);
         let now = chrono::Local::now();
         // One context per window, built while nothing is borrowed
         // mutably; the status line's title is clipped so a long path
         // in it cannot push the window list off the line.
-        let (cur, n) = (self.sessions[spos].cur, self.sessions[spos].windows.len());
+        let s = &self.sessions[spos];
+        let n = s.windows.len();
+        let cur = view.map_or(s.cur, |(w, _)| w);
         let ctxs: Vec<crate::format::Context> = (0..n)
             .map(|i| {
-                let mut c = self.context(sid, i, None, cid);
+                let pid = view.filter(|(w, _)| *w == i).map(|(_, p)| p);
+                let mut c = self.context(sid, i, pid, cid);
+                if view.is_some() {
+                    let s = &self.sessions[spos];
+                    c.window_active = i == cur;
+                    c.flags = s.windows[i].flags(i == cur, Some(s.windows[i].id) == s.last);
+                }
                 c.pane_title = truncate(&c.pane_title, 30);
                 c
             })
@@ -10200,11 +10222,11 @@ impl Server {
     /// parts: each segment's text and style, each window's label with its
     /// number, whether it is current and its active pane (the phone page
     /// opens that pane when the label is tapped).
-    fn status_line_out(&mut self, sid: SessionId, json: bool) -> Outcome {
+    fn status_line_out(&mut self, sid: SessionId, json: bool, view: Option<(usize, PaneId)>) -> Outcome {
         let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else {
             return Outcome::Error("no such session".into());
         };
-        let (left, windows, right) = self.status_parts(spos, None);
+        let (left, windows, right) = self.status_parts(spos, None, view);
         let text = |segs: &[crate::format::Segment]| segs.iter().map(|s| s.text.as_str()).collect::<String>();
         if !json {
             let list: Vec<String> = windows.iter().map(|(l, _)| text(l)).collect();
@@ -10310,7 +10332,7 @@ impl Server {
         // row at the end instead (as tmux does).
         let notice = (!opts_status).then(|| (prompt.clone(), message.clone()));
         let status_line = if opts_status {
-            let (left, windows, right) = self.status_parts(spos, Some(cid));
+            let (left, windows, right) = self.status_parts(spos, Some(cid), None);
             let alerts = self.sessions[spos]
                 .windows
                 .iter()
