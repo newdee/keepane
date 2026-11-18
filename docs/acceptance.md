@@ -6361,3 +6361,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 4 | 可复现性 | `esc.e2e.ts` 连跑 5 次 5/5（触屏抖动那步靠两次触摸紧挨着，不靠等待）；`feat.e2e.ts` 连跑 3 次 3/3。Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | 干净（3/3），验收通过 |
 
 0.79.0（1.0 的候选版，只有修复）：第 206、207 条。
+
+0.79.0 发布：CI 44240835422（4bd5bde）四个 job 通过；tag v0.79.0；Release 44241634491 四个平台通过（macOS 这次没缺 runner）；manifests 41db608；winget PR #483043；Homebrew formula 44242611198 通过，三个 tar.gz 的 sha256 与 release 一致。
