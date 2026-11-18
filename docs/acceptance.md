@@ -6335,3 +6335,29 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 0.78.0（1.0 的候选版，只有修复）：第 204、205 条。
 
 0.78.0 发布：CI 44139942219（42d6eee）四个 job 通过；tag v0.78.0；Release 44140972611（macOS aarch64 缺 runner 被取消一次，重跑后通过）；manifests fbcb3c6；winget PR #482557。Homebrew formula 44145986311：macOS 测试两次因缺 runner 被取消（0 步），publish 跳过，formula 仍是 0.77.0；不再重跑，下一个版本的 formula 跟最新 release 走。
+
+## 206. 网页上用鼠标点 Esc（和别的按键）第二下没反应
+
+来源：用户报告"我是在电脑 web 端按的，按 esc 那个按钮没反应"。
+
+- 原因：按键行每个键都用 `bounced`：同一个键 250 毫秒内的第二下当成手指抖动丢掉，丢掉的那下还重新计时。电脑上用鼠标点，Claude Code 的"连按两次 Esc"两下间隔不到 250 毫秒，第二下被丢。
+- 复现：新 e2e `web/tests/esc.e2e.ts`（桌面 Chromium，鼠标）：第 1 下的 ESC 在点击开始后约 92 毫秒就到了，测试紧接着点第 2 下（相隔约 93 毫秒），修复前第 2 下没有送到（`expected 1 to be 2`）。服务端路径单独测过：`/api/send` 连发 30 个 Escape，30 个都到。
+- 定性：按键行的共性问题（↑ ↓ Tab ^C 等每个键都走 `onKey`，同一个问题）；其余用 `bounced` 的地方（打开 pane、收件箱、折叠、状态栏、切换、历史、发送、消息）是打开或切换一类操作，两下与一下结果相同，或本来就要防重复发送，不改。结构缺陷：防抖不分输入方式，鼠标点击不会抖。按键改用 `keyBounced`：鼠标、键盘、读屏软件不防抖；触屏和触控笔保留 80 毫秒，从被接受的那下算起，被丢的那下不再重新计时。
+- 不引入新 bug 的评估：触屏单击、间隔大于 80 毫秒的触屏连点照旧；修饰键（Ctrl、Alt、Shift）开关同样走 `onKey`，触屏抖动仍被挡住，不会一按两翻；`bounced` 本身和它的其他调用方不变。
+
+## 207. 网页上点状态栏切换 pane 后，高亮不跟着切换
+
+来源：用户报告"web 页面点击下方状态栏切换 pane 后，高亮没有随之切换"。
+
+- 原因：网页取状态栏用 `status-line -J -t <session>`，服务端按 session 的当前窗口（终端里的当前窗口）画"当前"的样式和 `aria-current`。网页从 0.69 起有自己的视图，打开别的 pane 不改终端的当前窗口，所以高亮一直停在终端的窗口上。
+- 定性：共性（同一份数据给底部状态栏和侧边状态面板，两处一起错）。结构缺陷：画状态栏只认 session 的当前窗口，没有"看的人在看哪个窗口"。修法：`status-line -t` 可以给 pane，此时那个 pane 的窗口就是当前窗口（样式、`*` 标记、`window_active`，两端的 `#{pane_*}` 说的也是这个 pane）；`/api/status?pane=%N`，网页传正在看的 pane。终端客户端画的状态栏、`-t session` 的输出都不变。
+- 不引入新 bug 的评估：`view` 为 None 时 `status_parts` 与原来逐行相同（终端每帧都走这条路）；`-t` 给 session 或窗口时仍走 `resolve_session`，不变；`/api/status?session=` 仍然可用；不存在的 pane 报错。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 1 | 静态一致性（文档对代码）+ 机制通路存活 + 全量 | 变异 3 个都被杀：触屏窗口改成 0（触屏测试 `a bouncing tap: not a second Escape` 失败）；旧的 250 毫秒防抖（鼠标测试第 2 下失败，即修复前）；服务端忽略 `view`（Rust `the_status_line_is_there_for_a_script_and_the_page` 失败，网页 `feat.e2e.ts` 状态栏测试失败）。fmt、clippy、`npm run check` 干净。Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。审查发现 README（en/zh）写状态栏"和终端里画的一样"，没说当前窗口跟页面走。 | **有问题**：README 两份各补一句（不计数） |
+| 2 | 代码正确性（错误路径）+ 边界与退化输入 + 全量 | 网页状态栏测试加接口边界：`pane=abc` 400，`pane=%999999` 404，看 logs 窗口的 pane 时当前窗口是 1，旧的 `session=work` 仍给终端的当前窗口 0；4 条都对。`keyBounced` 从被接受的那下计时，`?? -Infinity` 让第一下总被接受。fmt、clippy 两平台 0。Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | 干净 1/3 |
+| 3 | 逻辑正确与不变量 | 临时 server（`-L`、隔离目录）3 个窗口、其中一个分成 2 个 pane：4 个 pane 逐个 `status-line -J -t %N`，每次恰好 1 个窗口 `current`、恰好 1 个标签带 `*`，都是那个 pane 的窗口：4/4，0 个不对；前后 `status-line -t st` 逐字相同（`0:a*`）；`-t st:2`（给窗口）当前仍是 0，与修改前一样。按键行所有键（含"更多按键"）都经 `keyBtn` 进 `onKey`，只有这一个入口。Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | 干净 2/3 |
+| 4 | 可复现性 | `esc.e2e.ts` 连跑 5 次 5/5（触屏抖动那步靠两次触摸紧挨着，不靠等待）；`feat.e2e.ts` 连跑 3 次 3/3。Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | 干净（3/3），验收通过 |
+
+0.79.0（1.0 的候选版，只有修复）：第 206、207 条。
