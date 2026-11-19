@@ -3,14 +3,23 @@
 [![CI](https://github.com/newdee/keepane/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/keepane/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/newdee/keepane)](https://github.com/newdee/keepane/releases)
 
-[中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)** · [FAQ](docs/FAQ.md)
+[中文说明](README.zh-CN.md) · **[Feature tour →](https://dfine.tech/keepane/)** · [FAQ](docs/FAQ.md) · [Principles](docs/design/principles.md)
 
-**Persistent terminal panes, each with its own inbox.**
+**A terminal workspace for AI agents.**
 
-keepane is a terminal multiplexer. The programs in its panes
-keep running after the terminal connection closes, and panes can pass
-messages to each other through inboxes, on one computer or across two you
-have paired. The usual tmux keys, commands and config file keep working.
+keepane is a terminal multiplexer built as a workspace for AI agents and
+the people who run them. It gives them three things:
+
+- **Workspace**: persistent panes and sessions. Programs keep running
+  after the terminal closes, and the layout comes back after a reboot.
+- **Communication**: every pane has an inbox. Panes, scripts and agents
+  pass tasks to each other, on one computer or across two you have paired.
+- **Observability**: what each agent is doing and has done: its state,
+  model, cost and context, and a trace of each step.
+
+keepane manages the workspace and how work moves through it. It does not
+decide how an agent thinks or works, so it fits any vendor, model or agent
+harness. The usual tmux keys, commands and config file keep working.
 
 <p align="center">
   <picture>

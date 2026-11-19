@@ -6394,3 +6394,12 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 - 核对：HTML 的 70 个 `data-i18n` 与 `ZH` 的键一一对应（双向差集都为空）；`site.js` 语法检查通过；本机起静态服务，用 browse 截图核对 3 种：中文深色 1280 宽、中文深色 390 宽（`scrollWidth` 375 ≤ 390，没有横向滚动）、英文浅色 1280 宽。截图里发现并改掉 2 处：安装的 4 张卡片在 3 列里落单一张（改成 2 列）；手机上中文标题在"工/作"中间断行（两半各自不断行）。
 
 0.80.0（1.0 的新候选版：断开连接改成单向，修了 clone/push/send-agents 绕过断开检查、复制流上的键按当时的权限判断；网页换文案）：第 208、209 条。
+
+0.80.0 发布：CI 44487315777（694783d）四个 job 通过；tag v0.80.0；Release 44488315591 四个平台通过；manifests 5ace059；winget PR #483956；Homebrew formula 44489615187 通过，三个 tar.gz 的 sha256 与 release 一致（第一次核对时取 release 资产的请求 EOF，重取后一致）。
+
+## 210. 定位：面向 AI Agent 的终端工作空间
+
+来源：用户提出定位建议（工作空间、通信、可观测三根支柱；"keepane 管理工作空间和任务流转，不替 Agent 决定怎么思考、怎么执行"），讨论后说"改吧"。
+
+- 做法：README（en/zh）开头改成这个定位和三根支柱，加"设计原则"链接；网页 hero 的 eyebrow 改成 "Terminal workspace for AI agents / 面向 AI Agent 的终端工作空间"；`Cargo.toml` 的 description 跟着改；新增 `docs/design/principles.md`：原则、4 个不做的反例、信任边界、各家 Agent 支持程度（细节层目前只有 Claude Code、Codex、pi）、tmux 兼容的地位。1.0 的发布说明和特性视频按三根支柱写（到时做）。
+- 核对：原则页里每条说法对照代码：`link allow`（含 `--none`）、`link share`、`link connect` 在 pane 里被拒（`link_state.rs`、`link_share.rs`），`link unshare`、`link disconnect` 不拒；写初稿时把"收回谁都可以"写错了（`--none` 也要在 pane 外），已改。只改文字和包描述，fmt、clippy 干净，`site.js` 语法检查通过。

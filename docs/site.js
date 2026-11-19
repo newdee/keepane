@@ -6,7 +6,7 @@ const ZH = {
   "nav.tour": "功能",
   "nav.faq": "常见问题",
   "nav.download": "下载",
-  "hero.eyebrow": "开源",
+  "hero.eyebrow": "面向 AI Agent 的终端工作空间",
   "hero.title": "<span class=\"nw\">离开终端，</span><span class=\"nw\">工作还在继续。</span>",
   "hero.lede":
     "<p>keepane 是一个终端复用工具。它让终端中的程序持续运行，让不同 Pane 之间可以传递任务，也让 AI Agent 能够在同一个工作空间里协作。</p>" +

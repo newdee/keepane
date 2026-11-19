@@ -3,11 +3,17 @@
 [![CI](https://github.com/newdee/keepane/actions/workflows/ci.yml/badge.svg)](https://github.com/newdee/keepane/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/newdee/keepane)](https://github.com/newdee/keepane/releases)
 
-[English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)** · [常见问题](docs/FAQ.zh-CN.md)
+[English](README.md) · **[功能一览 →](https://dfine.tech/keepane/)** · [常见问题](docs/FAQ.zh-CN.md) · [设计原则](docs/design/principles.md)
 
-**持久化的终端 pane，各有自己的收件箱。**
+**面向 AI Agent 的终端工作空间。**
 
-keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息，同一台电脑上可以，配过对的两台电脑之间也可以。常用的 tmux 按键、命令和配置文件可以继续使用。
+keepane 是一个终端多路复用器，给 AI Agent 和使用它们的人当工作空间。它提供三样东西：
+
+- **工作空间**：持久化的 pane 和 session。关闭终端后程序继续运行，电脑重启后布局能恢复。
+- **通信**：每个 pane 都有收件箱。pane、脚本和 Agent 之间互相传递任务，同一台电脑上可以，配过对的两台电脑之间也可以。
+- **可观测**：每个 Agent 正在做什么、做过什么：状态、模型、费用、context，以及每一步的执行追踪。
+
+keepane 管理工作空间和任务流转，不替 Agent 决定怎么思考、怎么执行，所以不绑定哪一家厂商、哪一个模型或哪一种 Agent Harness。常用的 tmux 按键、命令和配置文件可以继续使用。
 
 <p align="center">
   <picture>
