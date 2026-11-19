@@ -357,6 +357,24 @@ pub struct Frame<'a> {
     pub frames: bool,
 }
 
+/// Where a view `len` cells long starts on one axis of a screen `len + max`
+/// long, from `at`, so that the cursor at `cursor` shows: moved no more
+/// than needed when the cursor is before it; when the cursor is past it,
+/// the screen's end is shown if the cursor shows there too (with `to_end`),
+/// so what a program draws under its cursor (an agent's status lines below
+/// its input box, an editor's status line) is not the part cut off;
+/// otherwise moved just far enough. Never past `max`.
+pub fn follow_cursor(at: u16, cursor: u16, len: u16, max: u16, to_end: bool) -> u16 {
+    let at = if cursor < at {
+        cursor
+    } else if len > 0 && cursor >= at.saturating_add(len) {
+        if to_end && cursor >= max { max } else { cursor - len + 1 }
+    } else {
+        at
+    };
+    at.min(max)
+}
+
 /// A pane's frame (`pane-frames`): the cells around `r`, its corners
 /// rounded, in `fg`; what falls outside `win` is left out.
 fn draw_pane_frame(g: &mut Grid, win: Rect, r: Rect, fg: Color) {
@@ -3022,6 +3040,65 @@ mod tests {
         h.invert(1, 0);
         let out = String::from_utf8(diff(Some(&g), &h, None)).unwrap();
         assert!(out.starts_with("\x1b[?25l\x1b[1;1H"), "{out:?}");
+    }
+
+    #[test]
+    fn a_view_follows_its_cursor_and_down_to_the_end_shows_what_is_under_it() {
+        // A view of 48 rows over 69 (max 21), as a terminal of 49 rows sees
+        // another machine's 69-row window.
+        for to_end in [false, true] {
+            assert_eq!(follow_cursor(5, 20, 48, 21, to_end), 5, "in view: stays");
+            assert_eq!(follow_cursor(10, 3, 48, 21, to_end), 3, "before it: up to the cursor, no further");
+            assert_eq!(follow_cursor(30, 40, 48, 21, to_end), 21, "a view past max is held to it");
+            assert_eq!(follow_cursor(0, 68, 48, 21, to_end), 21, "the last row: the end either way");
+            assert_eq!(follow_cursor(0, 99, 48, 21, to_end), 21, "a cursor off the screen: never past max");
+            assert_eq!(follow_cursor(0, 9, 0, 21, to_end), 0, "no room: stays, as before");
+        }
+        // Past it: just far enough leaves the 10 rows under Claude's input
+        // (its status lines) cut; to the end shows them, the cursor too.
+        assert_eq!(follow_cursor(0, 58, 48, 21, false), 11);
+        assert_eq!(follow_cursor(0, 58, 48, 21, true), 21);
+        // A screen much taller than the view: the end would lose the
+        // cursor, so just far enough.
+        assert_eq!(follow_cursor(0, 60, 48, 100, true), 13);
+        assert_eq!(follow_cursor(0, 100, 48, 100, true), 100, "the cursor shows at the end: there");
+        // Every small case: never past max; a cursor on the screen always
+        // shows; across (and up) it is the old rule, moved just enough;
+        // down, the end whenever the cursor shows there.
+        for len in 1..12u16 {
+            for max in 0..12u16 {
+                for at in 0..=max {
+                    for cursor in 0..len + max {
+                        let old = if cursor < at {
+                            cursor
+                        } else if cursor >= at + len {
+                            cursor + 1 - len
+                        } else {
+                            at
+                        }
+                        .min(max);
+                        let (across, down) =
+                            (follow_cursor(at, cursor, len, max, false), follow_cursor(at, cursor, len, max, true));
+                        assert_eq!(across, old, "len {len} max {max} at {at} cursor {cursor}");
+                        for v in [across, down] {
+                            assert!(
+                                v <= max && cursor >= v && cursor < v + len,
+                                "len {len} max {max} at {at} cursor {cursor}: {v}"
+                            );
+                        }
+                        let past = cursor >= at + len;
+                        assert_eq!(
+                            down,
+                            if past && cursor >= max { max } else { old },
+                            "len {len} max {max} at {at} cursor {cursor}"
+                        );
+                    }
+                }
+            }
+        }
+        // The far end of u16 neither overflows nor goes past max.
+        assert_eq!(follow_cursor(0, u16::MAX, 48, 100, false), 100);
+        assert_eq!(follow_cursor(u16::MAX, u16::MAX, u16::MAX, u16::MAX, true), u16::MAX);
     }
 
     #[test]

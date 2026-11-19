@@ -57,7 +57,7 @@ Status: **yes** = works, **part** = works with a documented limit,
 | next-window / previous-window | yes | `-t`, `-a` (next window with an alert) |
 | paste-buffer | yes | `-b`, `-p`, `-t`; no `-s` separator |
 | pipe-pane | yes | `-o`, `-t`, `-O` (the pane's output to the command, the default), `-I` (the command's output typed into the pane), both together |
-| refresh-client | part | redraws; `-U`/`-D`/`-L`/`-R [n]` pan this client's view of a window bigger than it (the view follows the cursor again at the next key); no `-C` size |
+| refresh-client | part | redraws; `-U`/`-D`/`-L`/`-R [n]` pan this client's view of a window bigger than it (the view follows the cursor again at the next key; unlike tmux, going down it goes to the window's bottom when the cursor shows there, so status lines under the cursor stay in view); no `-C` size |
 | rename-session / rename-window | yes | |
 | resize-pane | yes | `-L/-R/-U/-D`, `-x`, `-y`, `-Z`, `-t` |
 | resize-window | yes | `-x`, `-y`, `-U`/`-D`/`-L`/`-R n`, `-A` (largest client), `-a` (smallest); sizes the whole session (its windows are one size), which `window-size manual` then keeps |

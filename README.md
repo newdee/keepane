@@ -592,7 +592,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `%` / `"` | split left-right / top-bottom |
 | `h` `j` `k` `l` or arrows / `o` / `;` | move between panes (vim keys) / next pane / last pane |
 | `H` `J` `K` `L`, `Alt`+arrows / `Ctrl`+arrows | resize the current pane by 5 / by 1 |
-| `Shift`+arrows | when the window is bigger than this terminal (`window-size` took another client's), pan this client's view by 5 rows / 10 columns; the view follows the cursor again at the next key |
+| `Shift`+arrows | when the window is bigger than this terminal (`window-size` took another client's), pan this client's view by 5 rows / 10 columns; the view follows the cursor again at the next key (down to the window's bottom when the cursor shows there, so the lines under it, such as an agent's status lines below its input box, are not the part cut off) |
 | (moving, resizing, `n` / `p` and `{` / `}` repeat: after the prefix, keep pressing the key for half a second, `repeat-time`) | |
 | `S` | toggle `synchronize-panes` (type into every pane of the window; `S` flag on the status line) |
 | `C-s` / `C-r` | save every session, each into its own file / restore saved sessions (see Resume) |
@@ -1841,7 +1841,8 @@ number) and the machine's: `raqs@macbook`; `C-b v` says it runs
 `watch raqs@macbook` (`#{pane_watch}`). The
 watch is an ordinary program in an ordinary pane, so zoom, splits, copy
 mode and `C-b v` treat it as any pane, and `resume` brings it back. It
-shows the pane at that pane's size, cut to fit and following its cursor.
+shows the pane at that pane's size, cut to fit and following its cursor
+(down to the pane's bottom when the cursor shows there).
 What is typed goes to that pane only when that machine gave this one
 `--full`: typing into a shell runs any command, so one pane is as much as
 all of them. A pane that is only shared is watched read-only, and `q`

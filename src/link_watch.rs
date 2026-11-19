@@ -102,9 +102,11 @@ fn read_attached(text: &str) -> Option<(u32, String)> {
 
 /// Where the shown part of a remote screen starts on one axis: from the
 /// start, unless the cursor would be past the view, then far enough in to
-/// show it (a wider screen than the view follows its cursor).
-fn offset(cursor: u16, remote: u16, view: u16) -> u16 {
-    if remote <= view || cursor < view { 0 } else { (cursor + 1 - view).min(remote - view) }
+/// show it (a wider screen than the view follows its cursor); down a
+/// taller screen, to its bottom when the cursor shows there, so what is
+/// drawn under the cursor (an agent's status lines) is not cut off.
+fn offset(cursor: u16, remote: u16, view: u16, to_end: bool) -> u16 {
+    if remote <= view { 0 } else { crate::server::render::follow_cursor(0, cursor, view, remote - view, to_end) }
 }
 
 /// The whole frame for a terminal of `cols` x `rows`: the remote screen
@@ -117,7 +119,7 @@ fn frame(remote: Option<&Remote>, cols: u16, rows: u16, message: &str, note: Opt
         Some(r) => {
             let s = r.parser.screen();
             let (rrows, rcols) = s.size();
-            let (ox, oy) = (offset(r.cursor.0, rcols, cols), offset(r.cursor.1, rrows, rows));
+            let (ox, oy) = (offset(r.cursor.0, rcols, cols, false), offset(r.cursor.1, rrows, rows, true));
             if r.cursor_shown && !r.dead {
                 let (x, y) = (r.cursor.0.wrapping_sub(ox), r.cursor.1.wrapping_sub(oy));
                 if x < cols && y < rows {
@@ -493,10 +495,19 @@ mod tests {
 
     #[test]
     fn a_wider_or_taller_screen_follows_its_cursor() {
-        assert_eq!(offset(5, 80, 100), 0, "it fits");
-        assert_eq!(offset(10, 120, 80), 0, "the cursor is in view");
-        assert_eq!(offset(100, 120, 80), 21, "moved in just far enough");
-        assert_eq!(offset(119, 120, 80), 40, "never past the end");
+        for to_end in [false, true] {
+            assert_eq!(offset(5, 80, 100, to_end), 0, "it fits");
+            assert_eq!(offset(10, 120, 80, to_end), 0, "the cursor is in view");
+            assert_eq!(offset(119, 120, 80, to_end), 40, "never past the end");
+            assert_eq!(offset(30, 120, 80, to_end), 0, "a cursor near the start: from the start");
+        }
+        // Across: moved in just far enough, as before.
+        assert_eq!(offset(100, 120, 80, false), 21, "moved in just far enough");
+        // Down a taller screen: to its bottom, which shows the cursor too
+        // and what is under it (an agent's status lines below its input).
+        assert_eq!(offset(100, 120, 80, true), 40, "down to the bottom");
+        assert_eq!(offset(58, 69, 48, true), 21, "Claude's input at 58 of 69, 48 rows here: all 10 rows under it show");
+        assert_eq!(offset(58, 69, 48, false), 11, "just far enough would cut the 10 rows under it");
     }
 
     #[test]

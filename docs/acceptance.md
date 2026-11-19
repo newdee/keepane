@@ -6403,3 +6403,22 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 
 - 做法：README（en/zh）开头改成这个定位和三根支柱，加"设计原则"链接；网页 hero 的 eyebrow 改成 "Terminal workspace for AI agents / 面向 AI Agent 的终端工作空间"；`Cargo.toml` 的 description 跟着改；新增 `docs/design/principles.md`：原则、4 个不做的反例、信任边界、各家 Agent 支持程度（细节层目前只有 Claude Code、Codex、pi）、tmux 兼容的地位。1.0 的发布说明和特性视频按三根支柱写（到时做）。
 - 核对：原则页里每条说法对照代码：`link allow`（含 `--none`）、`link share`、`link connect` 在 pane 里被拒（`link_state.rs`、`link_share.rs`），`link unshare`、`link disconnect` 不拒；写初稿时把"收回谁都可以"写错了（`--none` 也要在 pane 外），已改。只改文字和包描述，fmt、clippy 干净，`site.js` 语法检查通过。
+
+## 211. 窗口比终端大时，往下跟随光标到窗口底部（Agent 输入框下面的状态栏不被截掉）
+
+来源：用户问"远程连接的为啥有的 pane 看不到底下的 claude-hud 状态栏"，补充"屏幕最底下变成了输入框和 keepane 的状态栏"；确认是在 Mac 上看 Windows 的 session，说"改吧"。
+
+- 原因：副本按对方大小画（Windows 267x69），Mac 终端约 186x49，只显示一块。这一块跟着光标走（tmux 规则），往下只移到"光标在最后一行"（`vy = cy + 1 - area.h`）。Claude 的光标在输入框里，claude-hud 有 7–15 行在光标下面，正好被切掉。对话短时输入框在上半部，光标没出视图，所以"有的能看到"。
+- 定性：共性。全仓搜同类写法有 2 处：服务器的视图跟随（`mod.rs`，副本和 `window-size` 给的大窗口都走这里）、`link watch` 查看器的 `offset`。结构缺陷：跟随只保证光标可见，没管光标下面的内容；两处各写一份。
+- 修：新增唯一的 `render::follow_cursor(at, cursor, len, max, to_end)`，两处都用它。光标往下超出视图时，如果对齐窗口底部光标仍可见（`cursor >= max`），对齐底部；否则照旧移到刚好可见。往上、左右（`to_end = false`）不变。
+- 评估：往上、左右、光标在视图内、手动平移（`view_pinned`）、客户端比窗口大（`max = 0`）都不变；变化只在光标往下出视图时。代价：shell 第一次往下填满大窗口时，视图一次跳到底部，光标下面是空行。README en/zh、tmux-parity 写明与 tmux 不同。
+- 测试：单元测试 `a_view_follows_its_cursor_and_down_to_the_end_shows_what_is_under_it`（含原行为不变的用例）、`a_wider_or_taller_screen_follows_its_cursor` 改为两种方向；e2e `a_small_client_has_its_own_view_of_a_big_window` 加一步：清屏、打 12 行，小客户端敲一个键后提示符不在视图最后一行。变异：服务器那里 `to_end` 改成 `false`，e2e 失败。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 代码正确性（溢出、边界）+ 全量 | fmt、clippy 干净；Windows 696 / 11 / 171，Linux 680 / 169，全过。review 发现：`cursor + 1 - len` 在 `cursor = u16::MAX` 时溢出（旧代码同样写法，之前就有）。改成 `cursor - len + 1`（这条分支里 `cursor >= len`），单元测试加两例（旧写法 debug 下 panic）。 | **有问题**：已修（不计数） |
+| 2 | 静态一致性（文档对代码）+ 全量 + web e2e | `rg` 所有"跟随光标"的说法：README en/zh（`Shift`+方向键、`window-size`、`link watch` 三处）、tmux-parity 与代码一致；man 页没写平移，不涉及。fmt、clippy 干净；Windows 696 / 11 / 170（+1 失败），Linux 680 / 169，web e2e 41/41。发现：`under_the_clock_something_moves_with_the_machine` 在 Linux 测试和 web e2e 同时跑时失败（`moving >= 5`，0.8 秒内帧数不够），单跑 5/5 通过；这个测试的客户端与 session 同大，不经过视图裁剪，与本条改动无关。定性：个别，判据过紧（同一测试的其他 3 处已是 `>= 3`，时钟关后上限 2）。改成 `>= 3`。另：本轮进行中给 `follow_cursor` 的单元测试加了穷举（len 1–11、max 0–11、所有 at 与 cursor：不越过 max、光标总可见、横向等于旧规则、往下光标可见时到底）。 | **有问题**：已修（不计数） |
+| 3 | 逻辑正确与不变量（穷举）+ 全量 + web e2e（依次跑，不同时） | `follow_cursor` 穷举 11440 种情况（len 1–11、max 0–11、所有 at、所有在屏幕上的 cursor）：结果不越过 max、光标总在视图里、横向与旧规则逐个相同、往下光标可见时等于 max，全部成立。Windows 696 / 11 / 171，Linux 680 / 169，web e2e 41/41。发现：`cargo fmt --check` 不过，第 2 轮中途加的穷举测试没格式化（违反"先 fmt 再测"）。`cargo fmt` 后只动这段测试的换行。 | **有问题**：已修（不计数） |
+| 4 | 机制通路存活（真二进制，带旧版对照）+ 全量 | 临时 server 两个（`-L`，各自 sessions/link/history/log/events 目录，清掉 KEEPANE*/CLAUDE* 环境变量）：内层 session 80x50（`window-size manual`），pane 里的脚本像 Claude 一样在输入行下面画 8 行 HUD、光标回到输入行（第 39 行）；外层 80x31 的 pane 里 attach 它，`capture-pane` 看客户端画面。新版 4 次都显示 `INPUT>` 和 HUD1–HUD8；0.79 对照：底部是 `line43 \| line44 \| INPUT> \| 状态栏`，HUD 全被切掉，正是用户看到的。代码与第 3 轮相同（只多了 fmt）；fmt、clippy 干净；Windows 696 / 11 / 171，Linux 680 / 169，web e2e 41/41。 | 干净 1/3 |
+| 5 | 可复现性 + 全量 | 视口 e2e：Windows 连跑 10 次 10/10，Linux 5 次 5/5；Linux 上同样做变异（服务器 `to_end` 改 `false`），e2e 失败（15.5 s 等不到），恢复副本后 `grep` 确认。时钟 e2e 在 Linux 测试同时跑时 Windows 连跑 5 次 5/5（第 2 轮的判据修改）。Windows 全量连跑 2 次，两次都是 696 / 11 / 171；Linux 680 / 169；web e2e 41/41。代码与第 4 轮相同。 | 干净 2/3 |
+| 6 | 边界与退化输入（真二进制）+ 全量 | 第 4 轮的脚本换外层大小：80x3（客户端可见 1 行）只显示光标所在的 `INPUT>`（HUD 放不下，光标仍可见）；120x20（更宽、更矮）、40x31（更窄）都显示 HUD1–HUD8；80x60（客户端比 session 大，`max = 0`）整屏显示；80x2 被 `new-session` 拒绝（最少 3 行，原有规则）。都没有 panic，内层 server 每次都回答 `display-message`。代码与第 4 轮相同；fmt、clippy 干净；Windows 696 / 11 / 171，Linux 680 / 169，web e2e 41/41。 | 干净（3/3），验收通过 |

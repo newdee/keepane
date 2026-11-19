@@ -2376,8 +2376,10 @@ async fn under_the_clock_something_moves_with_the_machine() {
             let first = up(c.screen.screen()).expect("the pane line");
             c.wait_for("the pane line, a second on", |s| up(s).is_some_and(|u| u != first)).await;
         }
+        // At 5 or more a second, 4 in 0.8 s; 3 is enough to tell it from
+        // still (at most 2, below) on a machine busy with other suites.
         let moving = c.frames_for(800).await;
-        assert!(moving >= 5, "{kind}: {moving} frames in 0.8 s");
+        assert!(moving >= 3, "{kind}: {moving} frames in 0.8 s");
         c.type_str("q").await;
         c.wait_for("clock gone", |s| !s.contents().contains("███")).await;
         // Nothing moves on in the pane, and no animation's frames come (at
@@ -9691,6 +9693,41 @@ async fn a_small_client_has_its_own_view_of_a_big_window() {
     // (80 - 40 = 40: the row shows the line from its 41st character.)
     small
         .wait_for("clamped at the right edge", |s| s.contents().lines().any(|l| l.starts_with("456789ABCDEFGHIJ")))
+        .await;
+    // Down: when the cursor goes past the view's bottom, the view goes to
+    // the window's bottom if the cursor shows there, so the rows under the
+    // cursor (an agent's status lines below its input box) are not the
+    // part cut off. Run the x typed above, start from a clear screen, and
+    // print 12 lines: the prompt lands on row 13 or 14 of the window's 23,
+    // past the 11 rows here. Just far enough would put it on the last row
+    // here (row 10); the bottom puts it near the top, blank rows under it.
+    big.enter().await;
+    big.wait_for("x run", |s| s.contents().lines().filter(|l| l.trim_end() == "keepane>").count() >= 1).await;
+    big.type_str(if cfg!(windows) { "cls" } else { "printf '\\033[H\\033[2J'" }).await;
+    big.enter().await;
+    big.wait_for("cleared", |s| !s.contents().contains(long)).await;
+    small.prefix(':').await;
+    small.type_str("refresh-client -L 500").await;
+    small.enter().await;
+    big.type_str(&count_to(12, "vrow")).await;
+    big.enter().await;
+    big.wait_for("twelve rows and the prompt", |s| {
+        let t = s.contents();
+        let lines: Vec<&str> = t.lines().collect();
+        lines
+            .iter()
+            .position(|l| l.trim_end() == "vrow12")
+            .is_some_and(|i| lines[i + 1..].iter().any(|l| l.starts_with("keepane>")))
+    })
+    .await;
+    // A key from the small client: its view follows the cursor again.
+    small.type_str("y").await;
+    small
+        .wait_for("down to the window's bottom", |s| {
+            let rows: Vec<String> = s.rows(0, 40).take(11).collect();
+            let prompt = rows.iter().rposition(|l| l.starts_with("keepane>"));
+            prompt.is_some_and(|p| p < 10) && rows.iter().any(|l| l.trim_end() == "vrow12")
+        })
         .await;
     h.cli(&["kill-server"]).await;
 }

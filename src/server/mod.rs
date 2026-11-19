@@ -10646,18 +10646,10 @@ impl Server {
             let follow = !c.view_pinned && (c.view_follow || long_enough);
             c.view_follow = false;
             if follow && let Some((cx, cy)) = seen {
-                if cx < vx {
-                    vx = cx;
-                } else if area.w > 0 && cx >= vx + area.w {
-                    vx = cx + 1 - area.w;
-                }
-                if cy < vy {
-                    vy = cy;
-                } else if area.h > 0 && cy >= vy + area.h {
-                    vy = cy + 1 - area.h;
-                }
-                vx = vx.min(max_x);
-                vy = vy.min(max_y);
+                // Down to the window's bottom when the cursor shows there:
+                // what is under it (an agent's status lines) is not cut.
+                vx = render::follow_cursor(vx, cx, area.w, max_x, false);
+                vy = render::follow_cursor(vy, cy, area.h, max_y, true);
                 c.cursor_out = None;
             }
             c.view_x = vx;
