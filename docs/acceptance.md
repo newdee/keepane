@@ -6424,3 +6424,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 6 | 边界与退化输入（真二进制）+ 全量 | 第 4 轮的脚本换外层大小：80x3（客户端可见 1 行）只显示光标所在的 `INPUT>`（HUD 放不下，光标仍可见）；120x20（更宽、更矮）、40x31（更窄）都显示 HUD1–HUD8；80x60（客户端比 session 大，`max = 0`）整屏显示；80x2 被 `new-session` 拒绝（最少 3 行，原有规则）。都没有 panic，内层 server 每次都回答 `display-message`。代码与第 4 轮相同；fmt、clippy 干净；Windows 696 / 11 / 171，Linux 680 / 169，web e2e 41/41。 | 干净（3/3），验收通过 |
 
 0.80.1（修复：窗口比终端大时往下跟随光标到窗口底部，在别的机器上看 Claude 时输入框下面的 claude-hud 不再被截掉）：第 211 条。
+
+0.80.1 发布：CI 44522937552（d9b8d24）四个 job 通过；tag v0.80.1；Release 四个平台通过；manifests c91d096；winget PR #484090；Homebrew formula 44525571272 通过，三个 tar.gz 的 sha256 与 release 一致。
