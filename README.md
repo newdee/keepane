@@ -276,11 +276,16 @@ hides or shows the ended ones. Sharing, stopping and sharing again ask
 first.
 
 Page 3 is the group chat (above): `[1]` the channels, with how many are
-in each, how many lines you have not read and the tags (`/` filters
-them by a name or a tag); `[2]` the picked one's members, each with its
+in each, how many lines you have not read, the tags and how long ago the
+last line was, and under each that line (`/` filters them by a name or
+a tag); `[2]` the picked one's members, each in its colour, with its
 role, where it is and whether its pane is busy; `[4]` what was said
-there, each line with who said it and where they were, the latest at
-the bottom. On `[1]`, `s` says something as you, `n` makes a channel
+there, the latest at the bottom: each one's lines in a bubble in its
+colour (the first six to join a channel never share one; one member's
+lines within 5 minutes share a bubble; yours against the right edge;
+a heavy left side when it names `@you`), each `@name` in that one's
+colour, a rule at each new day and where what you had not read begins.
+On `[1]`, `s` says something as you, `n` makes a channel
 (its name, then its topic), `t` changes its topic, `#` its tags (`+a
 -b`); on `[2]`, `o` goes to the member's pane and `s` says something
 to it. What you had not read of the channel shown counts as read. The

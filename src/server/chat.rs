@@ -26,6 +26,8 @@ const CHANNELS_MOST: usize = 64;
 const TOPIC_MOST: usize = 200;
 const ROLE_MOST: usize = 40;
 const TAGS_MOST: usize = 16;
+/// The characters of a channel's last line `chat-list -J` gives (`latest`).
+const LATEST: usize = 200;
 /// The channel there always is.
 pub const GENERAL: &str = "general";
 
@@ -253,10 +255,27 @@ impl Channel {
                 None => return 0,
             },
         };
-        self.recent.iter().filter(|l| l.seq > read && l.kind == "say").count() as u64
+        // What one said oneself is not unread: the person's lines for the
+        // person, a pane's for that pane.
+        let you = format!("you@{}", crate::sysinfo::hostname());
+        let own = |l: &Line| match (reader, &l.from) {
+            (Reader::You, Some(w)) => w.ident.is_none() && w.handle == you,
+            (Reader::Pane(p), Some(w)) => w.ident.as_ref().is_some_and(|i| i.pane == p && i.addr.is_empty()),
+            _ => false,
+        };
+        self.recent.iter().filter(|l| l.seq > read && l.kind == "say" && !own(l)).count() as u64
     }
 
     fn json(&self, unread: u64) -> serde_json::Value {
+        // The last thing said, for a list that shows it under the name: who,
+        // when, and the start of what (`LATEST` characters at most).
+        let latest = self.recent.iter().rev().find(|l| l.kind == "say").map(|l| {
+            serde_json::json!({
+                "at": l.at,
+                "handle": l.from.as_ref().map_or("", |w| w.handle.as_str()),
+                "text": l.text.chars().take(LATEST).collect::<String>(),
+            })
+        });
         serde_json::json!({
             "id": self.id,
             "name": self.name,
@@ -266,6 +285,7 @@ impl Channel {
             "last": self.last,
             "unread": unread,
             "created": self.created,
+            "latest": latest,
         })
     }
 }
@@ -1127,6 +1147,39 @@ mod tests {
         assert_eq!(text(a.exec_chat(topic, None)), "ok");
         let t = std::fs::read_to_string(dir.join("channels.json")).unwrap();
         assert!(t.contains("\"anything\""), "a change: written at once: {t}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `chat-list -J` gives each channel's last line said (what happened to
+    /// it since is not one), cut to `LATEST` characters; none said: null.
+    #[test]
+    fn the_list_gives_each_channel_s_last_line() {
+        let dir = std::env::temp_dir().join(format!("keepane-chat-latest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = server(&dir);
+        a.exec_chat(ChatCmd::New { name: "review".into(), topic: String::new(), tags: vec![] }, None);
+        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into() };
+        a.exec_chat(say("one"), None);
+        a.exec_chat(say("two"), None);
+        a.exec_chat(ChatCmd::Topic { channel: "review".into(), topic: "t".into() }, None);
+        let channel = |a: &mut Server, name: &str| -> serde_json::Value {
+            let v: serde_json::Value =
+                serde_json::from_str(&text(a.exec_chat(ChatCmd::List { tags: vec![], json: true }, None))).unwrap();
+            v.as_array().unwrap().iter().find(|c| c["name"] == name).unwrap().clone()
+        };
+        let review = channel(&mut a, "review");
+        let you = format!("you@{}", crate::sysinfo::hostname());
+        assert_eq!(
+            (review["latest"]["text"].as_str(), review["latest"]["handle"].as_str()),
+            (Some("two"), Some(you.as_str())),
+            "{review}"
+        );
+        assert!(review["latest"]["at"].as_str().is_some_and(|t| t.len() > 16), "{review}");
+        assert_eq!(review["unread"], 0, "what the person said is not unread for the person: {review}");
+        assert!(channel(&mut a, "general")["latest"].is_null(), "nothing said there");
+        a.exec_chat(say(&"长".repeat(LATEST + 50)), None);
+        let cut = channel(&mut a, "review")["latest"]["text"].as_str().unwrap().chars().count();
+        assert_eq!(cut, LATEST);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

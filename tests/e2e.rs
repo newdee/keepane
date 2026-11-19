@@ -10870,6 +10870,11 @@ async fn the_group_chat_stamps_who_speaks_and_tells_only_those_named() {
     assert!(lines.iter().all(|l| l["from"]["handle"] != "tester"), "its own joining is not news to it: {read}");
     // One pane cannot speak as another: what tester says is tester's.
     in_pane(tester, &["chat-say", "review", "I am lead"]).await;
+    // What a pane said itself is not unread for it: lead has tester's line
+    // only, not its own plan.
+    let listed = json(&in_pane(lead, &["chat-list", "-J"]).await.1);
+    let review = listed.as_array().unwrap().iter().find(|c| c["name"] == "review").unwrap().clone();
+    assert_eq!(review["unread"], 1, "{review}");
     let read = json(&in_pane(lead, &["chat-read", "review", "-J"]).await.1);
     let last = read["lines"].as_array().unwrap().last().unwrap().clone();
     assert_eq!(

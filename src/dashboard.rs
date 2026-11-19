@@ -1068,6 +1068,8 @@ impl Board {
         };
         self.focus_on(to);
         self.scroll = 0;
+        // Back on page 3 later, the divider marks what is unread then.
+        self.chat.divider = None;
     }
 
     /// Page 2's [1]: j/k pick, `x` stop (`X` all), `e` extend, `r` share
@@ -1851,9 +1853,10 @@ impl Board {
             }
             Panel::Channels => {
                 let n = self.chat.shown().len();
-                let start = window_start(self.chat.pick, n, rect.inner_h());
-                if start + row < n {
-                    self.chat.pick = start + row;
+                let per = chat::channel_rows(rect.inner_h());
+                let start = window_start(self.chat.pick, n, (rect.inner_h() / per).max(1));
+                if start + row / per < n {
+                    self.chat.pick = start + row / per;
                 }
             }
             Panel::Members => {
@@ -1904,8 +1907,9 @@ impl Board {
             (w, (self.focus == Panel::Main).then_some(Rect { x: mx, y: 0, w, h: body }))
         } else {
             // Half, up to 64: the pane list needs the room more than the
-            // screen beside it, in a popup above all.
-            let lw = (w / 2).clamp(30, 64).min(w - 20);
+            // screen beside it, in a popup above all. Page 3's channels and
+            // members are short lines: three tenths, the chat the rest.
+            let lw = if self.page == 3 { (w * 3 / 10).clamp(32, 44) } else { (w / 2).clamp(30, 64) }.min(w - 20);
             (lw, Some(Rect { x: mx + lw, y: 0, w: w - lw, h: body }))
         };
         if narrow && self.focus == Panel::Main {
@@ -2851,8 +2855,18 @@ fn row_line(line: &str, picked: bool, focused: bool, width: usize) -> String {
 /// as spaces, its lines kept. Every such text goes through it where it
 /// comes in; `clip` keeps escape sequences, for the board's own styles and
 /// the pane's screen.
+///
+/// The zero-width format characters go (a joiner, a non-joiner, a word
+/// joiner, a byte order mark...): keepane counts them no columns, as
+/// Unicode does, but Windows' console (ConPTY, which the board's output
+/// goes through) counts a joiner one, so every row after one stood a column
+/// off. A family emoji reads as its people side by side.
 fn inert(s: &str) -> String {
-    strip(s).chars().map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect()
+    strip(s)
+        .chars()
+        .filter(|c| !matches!(c, '\u{200B}'..='\u{200F}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}'))
+        .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
+        .collect()
 }
 
 fn strip(s: &str) -> String {
@@ -2963,15 +2977,16 @@ fn help_lines() -> Vec<String> {
         "[4] The share picked: its link, time, who opened it, its story, the code to scan",
         "",
         "Page 3: the group chat (keepane chat); [0] and System as on page 1",
-        "[1] Channels: name, members, what you have not read, tags",
+        "[1] Channels: name, members, what you have not read, tags, the last line and when",
         "  j / k      pick one (shown right)  Enter   scroll its lines",
         "  s          say something (as you)  n       a new channel: its name, then its topic",
         "  t          its topic               #       its tags: +a adds, -b takes off",
-        "[2] Members: handle, role, where it is, busy (yellow) or idle (green)",
+        "[2] Members: handle in its colour, role, where it is, busy (yellow) or idle (green)",
         "  j / k      pick one                o       go to its pane",
         "  s          say something to it (@ it)",
-        "[4] The channel picked: who said what, where they were, the latest at the bottom;",
-        "  shown here, what you had not read of it counts as read",
+        "[4] The channel picked, the latest at the bottom: each one's lines in a bubble in",
+        "  its colour (yours on the right; a heavy left side: it names @you), a rule at each",
+        "  day and where what you had not read begins; shown here, it counts as read",
         "",
         "System (under [0], from 150 columns): CPU, each core, memory, swap, disk, network,",
         "  temperature, power, battery, processes: this machine, every second",
@@ -4619,7 +4634,8 @@ mod tests {
         assert!(text.contains("[2] Members · 2") && text.contains("lead") && text.contains("planner"), "{text}");
         assert!(text.contains("[4] #review · the release"), "{text}");
         assert!(text.contains("line 40") && text.contains("tester joined"), "the latest at the bottom: {text}");
-        assert!(text.contains("M s:0.0 %3 claude opus"), "the stamp shown: {text}");
+        assert!(text.contains("s:0.0 %3"), "who and where, in [2]: {text}");
+        assert!(!text.contains("M s:0.0 %3 claude opus"), "not again on each line: {text}");
         assert!(!text.contains("line 1\n") && !text.contains("line 2 "), "the oldest off the top");
         // [4]: k goes up (back in time), G down to the latest.
         b.key(Key::ch('4'));
@@ -4670,6 +4686,10 @@ mod tests {
         // [2]: o goes to the member's pane; s starts with @ it.
         b.key(Key::ch('2'));
         assert_eq!(b.focus, Panel::Members);
+        // [1] not focused: one `>` marks the picked channel, on its name,
+        // not on the line under it.
+        let text = strip(&screen(&b).join("\n"));
+        assert!(text.contains(">#review") && !text.contains(">  "), "{text}");
         b.key(Key::ch('j'));
         assert_eq!(b.key(Key::ch('o')), Action::Go(owned(&["focus-pane", "%4"])));
         b.key(Key::ch('s'));
@@ -4692,9 +4712,14 @@ mod tests {
         b.key(Key::ch('/'));
         b.key(Key::plain(KeyCode::Escape));
         assert_eq!(b.chat.shown().len(), 2);
-        // A click on a row picks it.
+        // A click on a row picks it: two rows a channel, its name and under
+        // it the last line said.
         let r = b.layout().channels.unwrap();
-        b.mouse(&MouseRecord { x: (r.x + 3) as i16, y: (r.y + 1) as i16, buttons: 1, ctrl: 0, flags: 0 });
+        assert_eq!(chat::channel_rows(r.inner_h()), 2);
+        for (row, want) in [(3, "review"), (2, "review"), (1, "general"), (0, "general")] {
+            b.mouse(&MouseRecord { x: (r.x + 3) as i16, y: (r.y + 1 + row) as i16, buttons: 1, ctrl: 0, flags: 0 });
+            assert_eq!(b.chat.picked().map(|c| c.name.as_str()), Some(want), "row {row}");
+        }
         assert_eq!((b.focus, b.chat.picked().map(|c| c.name.as_str())), (Panel::Channels, Some("general")));
         assert_eq!(b.chat_seen(), None, "nothing unread there");
         // Narrow, [4] not on the screen while [1] has the focus: nothing read.
@@ -4703,6 +4728,24 @@ mod tests {
         assert_eq!(b.chat_seen(), None, "[4] hidden: nothing read");
         b.key(Key::ch('4'));
         assert!(b.chat_seen().is_some(), "[4] shown: read");
+        b.resize(160, 30);
+        b.key(Key::ch('1'));
+        // Every row of page 3 is exactly as wide as the board, at any size
+        // and with any panel focused: no bubble or channel line breaks out.
+        b.chat.set_lines(&format!(
+            r#"{{"lines":[{},{{"seq":42,"at":"2026-11-18T09:00:00.000+08:00","kind":"say","from":{{"handle":"you@M"}},
+                "text":"群聊里说的话一个字也不能丢 @lead\n- a list item that wraps on and on"}}]}}"#,
+            said.join(",")
+        ));
+        for focus in ['1', '2', '4'] {
+            b.key(Key::ch(focus));
+            for (cols, rows) in [(12u16, 7u16), (20, 8), (40, 12), (69, 20), (70, 20), (100, 30), (151, 40), (260, 60)]
+            {
+                b.resize(cols, rows);
+                let s = screen(&b);
+                assert!(s.iter().all(|l| width_of(l) == usize::from(cols)), "{cols}x{rows} [{focus}]: {s:#?}");
+            }
+        }
         b.resize(160, 30);
         b.key(Key::ch('1'));
         // > from page 3: page 1, the panes.
