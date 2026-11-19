@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>keepane · persistent terminal panes, each with an inbox</title>
+    <title>keepane · leave the terminal, the work keeps going</title>
     <meta
       name="description"
-      content="Persistent terminal panes, each with its own inbox. keepane is a terminal multiplexer. The programs in its panes keep running after the terminal connection closes, and panes can pass messages to each other through inboxes, on one computer or across two you have paired. The usual tmux keys, commands and config file keep working."
+      content="Leave the terminal. The work keeps going. keepane is a terminal multiplexer: it keeps the programs in your terminal running, lets panes pass work to each other, and lets AI agents work together in one workspace. The tmux keys, commands and config file keep working."
     />
     <meta property="og:title" content="keepane" />
-    <meta property="og:description" content="Persistent terminal panes, each with its own inbox: a terminal multiplexer whose programs keep running after the terminal closes." />
+    <meta property="og:description" content="Leave the terminal. The work keeps going: a terminal multiplexer where panes pass work to each other and AI agents work together." />
     <meta property="og:image" content="img/panes.png" />
     <meta name="theme-color" content="#121212" />
     <!-- Light or dark before the first paint: the visitor's pick, else the
@@ -62,18 +62,17 @@
     <main id="top">
       <section class="hero">
         <span class="eyebrow" data-i18n="hero.eyebrow">Open source</span>
-        <h1 data-i18n="hero.title">Persistent terminal panes, each with its own inbox.</h1>
-        <p class="lede" data-i18n="hero.lede">
-          keepane is a terminal multiplexer. The programs in its panes keep running after the terminal
-          connection closes, and panes can pass messages to each other through inboxes, on one computer or across two you have paired. The usual tmux keys, commands
-          and config file keep working, <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> included, and PowerShell, cmd and WSL
-          run inside panes with every keystroke intact.
-        </p>
+        <h1 data-i18n="hero.title">Leave the terminal. The work keeps going.</h1>
+        <div class="lede" data-i18n="hero.lede">
+          <p>keepane is a terminal multiplexer. It keeps the programs in your terminal running, lets panes pass work to each other, and lets AI agents work together in one workspace.</p>
+          <p>Close the terminal window and the programs keep running. One pane can send a command to another, or hand a task to an agent that is already running. From another computer or your phone, you can check progress and pick the work up again.</p>
+          <p>The tmux keys, commands and config file you know keep working. It runs on Windows, Linux and macOS.</p>
+        </div>
         <div class="cta">
           <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download</a>
-          <a class="btn ghost" href="https://github.com/newdee/keepane" data-i18n="hero.source">View source</a>
+          <a class="btn ghost" href="https://github.com/newdee/keepane" data-i18n="hero.source">GitHub</a>
         </div>
-        <p class="meta" data-i18n="hero.meta">MIT · Windows, Linux, macOS · one small binary · formerly wmux</p>
+        <p class="meta" data-i18n="hero.meta">Rust · MIT License · one file to install</p>
 
         <figure class="stage">
           <!-- The one picture fetched at once: the browser takes the light
@@ -83,7 +82,7 @@
             <img src="img/keepane-tour.gif" width="900" alt="A tour in four parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. keepane web prints a QR code; on a phone the list shows every pane, and a command typed there runs in build on the computer." />
           </picture>
           <figcaption data-i18n="hero.caption">
-            The tour: panes that message each other in three work modes, MCP for agents, the dashboard, and the panes on your phone.
+            Panes that message each other, an agent working through MCP, the dashboard, and the panes on a phone.
           </figcaption>
         </figure>
       </section>
@@ -100,325 +99,231 @@
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">01</span>
-          <h2 data-i18n="cm.title">Send work between panes</h2>
-          <p data-i18n="cm.sub">
-            Give a pane a name and a work mode, and send it messages: a shell runs them at its prompt, an agent gets them
-            when it is free. <kbd>C-b v</kbd> shows every pane and its inbox.
-          </p>
+          <h2 data-i18n="cm.title">Panes pass work to each other</h2>
+          <div class="sub" data-i18n="cm.sub">
+            <p>Most terminal multiplexers organise windows and panes.</p>
+            <p>keepane also lets panes talk to each other.</p>
+            <p>Give a pane a name, and you can send it messages and tasks.</p>
+          </div>
         </header>
+<pre class="code"><code data-i18n="cm.code"><span class="c"># name pane 3 "builder"; it runs what it is sent at its prompt</span>
+keepane rename-pane -t %3 builder
+keepane set-work-mode -t %builder shell
+
+<span class="c"># send it a task</span>
+keepane send-message -t %builder "cargo test"
+
+<span class="c"># what became of it (#12 is the number send-message printed)</span>
+keepane trace-message 12 -w 600</code></pre>
+        <div class="prose">
+          <p data-i18n="cm.modes">Each pane has a work mode:</p>
+        </div>
+        <ul class="points">
+          <li data-i18n="cm.m1"><b>normal</b> (the default): messages wait in the inbox; the program in the pane reads them with <code>read-message</code>.</li>
+          <li data-i18n="cm.m2"><b>shell</b>: the shell runs each message as a command, once it is back at its prompt.</li>
+          <li data-i18n="cm.m3"><b>ai</b>: messages wait in the inbox, and go to the agent when its current turn ends.</li>
+        </ul>
+        <div class="prose" data-i18n="cm.after">
+          <p>Every message records where it came from, its state and its result. Several messages can form one task chain, with how long each step waited and how long it ran.</p>
+          <p>No copying terminal output by hand, and no keeping an eye on another window.</p>
+        </div>
         <figure class="stage">
           <img src="img/keepane-messages.gif" width="880" loading="lazy" alt="A command sent to the pane named builder runs there with its envelope as a comment; its record says done and keeps the output; the dashboard shows the panes, an agent's inbox and the tasks in panels, puts a message first and shows its record laid out beside the list" />
-          <figcaption data-i18n="cm.caption">
-            A command sent to the pane named builder runs there, its source in a comment; its record says done and keeps
-            what it printed. Then the dashboard, in panels: the panes, an agent's inbox, the tasks, and a message put first, its record laid out beside the list.
-          </figcaption>
         </figure>
         <div class="pair">
           <figure class="shot"><img src="img/messages.png" alt="Left, the command running with its envelope as a comment; right, trace-message showing it delivered, done and its output" loading="lazy" /></figure>
           <figure class="shot"><img src="img/dashboard.png" alt="The dashboard: panes, an agent's inbox and the tasks on the left, a message read in full, field by field, on the right" loading="lazy" /></figure>
         </div>
-        <figure class="stage">
-          <img src="img/keepane-agents.gif" width="880" loading="lazy" alt="Three agents at work in three panes, each border showing its model, cost so far and how full its context is; the dashboard listing them with cost and context and the total in its title; keepane list-agents printing the same" />
-          <figcaption data-i18n="cm.caption2">
-            Three agents at work: each pane's border says its model, what it has cost and how full its context is;
-            the dashboard lists them with the total; <code>keepane list-agents</code> prints the same. (The agents are stand-ins that write real transcripts.)
-          </figcaption>
-        </figure>
-        <div class="pair">
-          <figure class="shot"><img src="img/trace.png" alt="The dashboard's Trace tab: an agent's turn as a waterfall, each model call and tool a bar where it ran, coloured by kind, the failed test run red" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/agents.png" alt="The dashboard listing the three agents, each with its cost and how full its context is, the total in the title" loading="lazy" /></figure>
-        </div>
-        <ul class="points">
-          <li data-i18n="cm.p1">Every message says where it came from in one line of JSON. A chain of messages is one task, with how long each step waited and took; one that goes round more than eight times is refused.</li>
-          <li data-i18n="cm.p2">Agents such as Claude Code use it through MCP: send and reply, wait for an answer within their turn, make panes of their own to work in. <code>keepane setup</code> sets up the hook and the registration for Claude Code, Codex, Gemini CLI, Cursor CLI, opencode or pi, so the agent is handed its next message when a turn ends; a message for an agent that never says it is free tells you which setup it lacks.</li>
-          <li data-i18n="cm.p3">A pane's work mode is changed in that pane, so nothing running in one pane turns another into a shell that runs what it is sent. What happens is kept in an event log for 30 days.</li>
-          <li data-i18n="cm.p4">Each agent a pane runs (Claude Code, Codex, pi) shows its model, what it has cost, how full its context is, its tokens, CPU and memory: in the dashboard, on its card on the phone, in <code>keepane list-agents</code> and in <code>#{agent_cost}</code>-style variables. keepane reads the transcripts the agents write; cost is priced by LiteLLM's public list (API list prices), or <code>agent-cost off</code>.</li>
-          <li data-i18n="cm.p5">What each agent does, step by step: the dashboard's Trace tab (<kbd>T</kbd>) draws its turns as a waterfall, each call of the model and each tool a bar where it ran, coloured by kind (the model, reading, editing, running a command, another agent, the web, a browser, a skill, a hook…), a failed one red with why (you said no, a hook stopped it); on top, what it waits on you for and what still runs in the background; <code>keepane trace-pane</code> gives the same as a tree or JSON.</li>
-        </ul>
       </section>
 
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">02</span>
-          <h2 data-i18n="cl.title">Panes on another computer</h2>
-          <p data-i18n="cl.sub">
-            Two computers on one network, or both on Tailscale, pair once, the way <code>ssh-copy-id</code> works.
-            From then on a pane on one sends messages and commands to a pane on the other, and the answer comes back
-            to the pane that asked.
-          </p>
+          <h2 data-i18n="ca.title">AI agents working together in one workspace</h2>
+          <div class="sub" data-i18n="ca.sub">
+            <p>keepane works with Claude Code, Codex, Gemini CLI, Cursor CLI, opencode, pi and other agents through MCP.</p>
+            <p>An agent is no longer a command-line program on its own: it can reach other panes, send messages, wait for replies, and make panes of its own to work in.</p>
+          </div>
         </header>
-<pre class="code"><code><span class="c"># on the laptop: pair with the desktop, whose keepane web printed this address</span>
-keepane link add http://192.168.1.20:7681/#k=...
-<span class="c"># a message for the agent pane there</span>
-keepane send-message --to 192.168.1.20:7681/%agent "review the diff"
-<span class="c"># what that machine runs, and a look at its pane (if it allows it)</span>
-keepane link info 192.168.1.20:7681
-keepane link capture 192.168.1.20:7681/%agent
-<span class="c"># that pane, live here (also: C-b w, Enter on it); typed into with --full there</span>
-keepane link watch 192.168.1.20:7681/%agent
-<span class="c"># its session, as if you sat there (also: C-b w, Enter on it); every key goes there, F12 back</span>
-keepane link attach 192.168.1.20:7681 work</code></pre>
+        <div class="prose">
+          <p data-i18n="ca.eg">For example:</p>
+        </div>
         <ul class="points">
-          <li data-i18n="cl.p1">A pane is addressed as <code>host:port/%name</code> or <code>host:port/$1:@3.%7</code>. The answer to a message goes back by pane id, so it still arrives after the pane that asked has been moved.</li>
-          <li data-i18n="cl.p2">Each machine has its own key pair. Pairing uses the other side's phone code once; after that every request and every answer is signed, with the time and a one-off number, so an old one cannot be sent again. A machine is known by its key, not its address.</li>
-          <li data-i18n="cl.p3">Pairing gives nothing yet: each machine shares the sessions, windows or panes it chooses (<code>keepane link share</code>, or <code>s</code> in <code>C-b w</code>), and the other sees and messages only those; a pane in <code>shell</code> mode, which runs messages as commands, takes none. <code>keepane link allow --full</code> gives all of the machine, over Tailscale only (<code>--none</code> takes everything back): typing into panes and attaching to sessions (<code>keepane link attach</code>, or Enter on a session in <code>C-b w</code>) take it. Both only from outside keepane: an agent in a pane cannot let another machine in.</li>
-          <li data-i18n="cl.p4">Agents get it through MCP too: <code>list_links</code>, <code>link_info</code>, <code>read_screen</code>, and <code>send_message</code> to an address on another machine.</li>
+          <li data-i18n="ca.e1">One agent analyses the code.</li>
+          <li data-i18n="ca.e2">Another agent writes the feature.</li>
+          <li data-i18n="ca.e3">A third agent runs the tests.</li>
+          <li data-i18n="ca.e4">When a test fails, its output goes to the agent that fixes it.</li>
         </ul>
+        <div class="prose">
+          <p data-i18n="ca.split">keepane carries the messages and records the state of each task. Each agent decides how to do its own task.</p>
+        </div>
+        <h3 class="sub-title" data-i18n="ca.see">See what an agent is doing</h3>
+        <div class="prose">
+          <p data-i18n="ca.see.p">Not only its terminal output. keepane reads each agent's transcript and shows:</p>
+        </div>
+        <ul class="points">
+          <li data-i18n="ca.s1">The model it uses</li>
+          <li data-i18n="ca.s2">The tokens it has used</li>
+          <li data-i18n="ca.s3">How full its context is</li>
+          <li data-i18n="ca.s4">What it has cost so far</li>
+          <li data-i18n="ca.s5">Its CPU and memory</li>
+        </ul>
+        <figure class="stage">
+          <img src="img/keepane-agents.gif" width="880" loading="lazy" alt="Three agents at work in three panes, each border showing its model, cost so far and how full its context is; the dashboard listing them with cost and context and the total in its title; keepane list-agents printing the same" />
+        </figure>
+        <h3 class="sub-title" data-i18n="ca.trace">Follow what an agent did</h3>
+        <div class="prose" data-i18n="ca.trace.p">
+          <p>Trace lays out an agent's run as a timeline.</p>
+          <p>Model calls, file reads, code edits, commands, browser actions and other tool calls appear in the order they ran, each with how long it took and its result.</p>
+          <p>When a step fails, you can see why.</p>
+          <p>You learn not only whether the agent finished the task, but how it did it.</p>
+        </div>
+        <div class="pair">
+          <figure class="shot"><img src="img/trace.png" alt="The dashboard's Trace tab: an agent's turn as a waterfall, each model call and tool a bar where it ran, coloured by kind, the failed test run red" loading="lazy" /></figure>
+          <figure class="shot"><img src="img/agents.png" alt="The dashboard listing the three agents, each with its cost and how full its context is, the total in the title" loading="lazy" /></figure>
+        </div>
       </section>
 
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">03</span>
-          <h2 data-i18n="c3.title">Close the terminal, the programs keep running</h2>
-          <p data-i18n="c3.sub">
-            <kbd>C-b d</kbd> detaches and the programs keep running in the background. <code>keepane attach</code>
-            picks the session up again, from any terminal window.
-          </p>
+          <h2 data-i18n="c3.title">Close the terminal, keep the work</h2>
+          <div class="sub" data-i18n="c3.sub">
+            <p>A long task should not stop because a terminal window closed.</p>
+          </div>
         </header>
+<pre class="code"><code data-i18n="c3.code"><span class="c"># detach from this terminal</span>
+<span class="c"># Ctrl-b d</span>
+
+<span class="c"># attach again</span>
+keepane attach</code></pre>
+        <div class="prose" data-i18n="c3.p">
+          <p>keepane saves the layout of sessions, windows and panes, with each pane's program, working directory and terminal output.</p>
+          <p>Even after the computer restarts, the next time keepane starts it can bring back the workspace it saved.</p>
+          <p>By default it keeps the recent terminal output; it can keep the whole scrollback instead.</p>
+          <p>Closed a pane or a window by mistake? Within the keep time you can bring it back.</p>
+          <p>Builds, tests, deploys and long agent runs no longer depend on a terminal window staying open.</p>
+        </div>
         <figure class="stage">
           <img src="img/keepane-resume.gif" width="880" loading="lazy" alt="A session of three panes is saved, the server stops as a reboot stops it, and a plain keepane started again brings back the panes, their names and folders and what they showed" />
-          <figcaption data-i18n="c3.caption">
-            Three panes at work, saved with <kbd>C-b C-s</kbd>; the server gone as a reboot takes it; <code>keepane</code>
-            started again brings back the panes, their names and folders, and what they showed.
-          </figcaption>
         </figure>
         <div class="pair">
           <figure class="shot"><img src="img/detach.png" alt="Back at a plain shell after detaching" loading="lazy" /></figure>
           <figure class="shot"><img src="img/attach.png" alt="The same layout after attaching again" loading="lazy" /></figure>
         </div>
-        <ul class="points">
-          <li data-i18n="c3.p1">Sessions survive a reboot too. Each one is saved to its own file whenever its layout changes, and the next server to start brings back the windows, the pane layout, and each pane's command and directory.</li>
-          <li data-i18n="c3.p2">The file also keeps what each pane printed: <code>save-history</code> stores the last 500 lines by default, or the whole scrollback with <code>all</code>, colours included. A resumed pane shows its old output instead of an empty prompt.</li>
-          <li data-i18n="c3.p3"><code>keepane list-saved</code> shows what is saved; a session you killed stays down until <code>keepane resume work</code> brings it back.</li>
-        </ul>
       </section>
 
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">04</span>
-          <h2 data-i18n="ch.title">What ran, when, and how long</h2>
-          <p data-i18n="ch.sub">
-            <kbd>C-b C-t</kbd> writes each command's start time, duration and result at the end of its line.
-            What panes print is kept a day at a time, and <kbd>C-b /</kbd> opens any day.
-          </p>
+          <h2 data-i18n="cl.title">Pass work between two computers</h2>
+          <div class="sub" data-i18n="cl.sub">
+            <p>Sometimes the work happens on more than one computer.</p>
+            <p>The desktop runs the agents and the laptop checks the results, say, or two development machines share the tasks.</p>
+          </div>
         </header>
-        <figure class="stage">
-          <img src="img/keepane-history.gif" width="880" loading="lazy" alt="Command times appear at the end of each command's line, the history picker lists pane positions and days, a day opens in a pager, C-b Y lists the commands run, / searches every day, and a pane closed by mistake comes back with C-b u" />
-          <figcaption data-i18n="ch.caption">
-            Three commands with their times, one of them failing; the history picker and a day in the pager;
-            <kbd>C-b Y</kbd> and the commands run; <kbd>/</kbd> through every day; a pane closed by mistake, back with <kbd>C-b u</kbd>.
-          </figcaption>
-        </figure>
-        <div class="pair">
-          <figure class="shot"><img src="img/timestamps.png" alt="Three commands, each with its start time, duration and a tick or a cross at the right end of its line" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/viewer.png" alt="A day of history in the pager popup, each command after a grey line with its time" loading="lazy" /></figure>
-        </div>
-        <div class="pair">
-          <figure class="shot"><img src="img/commands.png" alt="The C-b Y list: the commands the panes ran, newest first, each with a tick or a cross, when it ended, how long it took and its pane" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/history-search.png" alt="The history picker after / and a word: the matching lines of every day, each with its date, weekday and pane" loading="lazy" /></figure>
+        <div class="prose">
+          <p data-i18n="cl.pair">keepane pairs two computers. After pairing you can:</p>
         </div>
         <ul class="points">
-          <li data-i18n="ch.p1">The time goes in the blank end of the line. The pane keeps its width and nothing is added to what the program printed. On the phone, When each command ran, in the view menu, puts the times in a column of their own.</li>
-          <li data-i18n="ch.p2">What scrolls off a pane is written to a file for that pane and day, kept for 30 days, with a line of times before each command. In the pager, <kbd>[</kbd> and <kbd>]</kbd> jump from command to command and <kbd>/</kbd> searches.</li>
-          <li data-i18n="ch.p3">Closed the wrong pane or window? It is kept for 10 seconds with its program still running, and <kbd>C-b u</kbd> puts it back where it was.</li>
-          <li data-i18n="ch.p4"><kbd>C-b y</kbd> copies what the last command printed, and nothing else: a failing test's output, ready for an issue or an agent.</li>
-          <li data-i18n="ch.p5"><kbd>C-b Y</kbd> lists the commands every pane ran, newest first. <kbd>Enter</kbd> goes to one in copy mode, <kbd>y</kbd> copies what it printed, <kbd>r</kbd> runs it again.</li>
-          <li data-i18n="ch.p6">In the <kbd>C-b /</kbd> picker, <kbd>/</kbd> searches every day of every pane; a line found opens in the pager at that line. <code>find-text -H</code> does the same from a script.</li>
-          <li data-i18n="ch.p7"><kbd>C-b @</kbd> lists the machines you reach with <code>ssh</code>: the ones a pane is on now first, then by last use, with your <code>~/.ssh/config</code> and <code>known_hosts</code>. <kbd>Enter</kbd> goes to the pane on one or connects in a new window, <kbd>s</kbd> in a split. No password or key is read or kept.</li>
+          <li data-i18n="cl.l1">See the panes the other computer shares.</li>
+          <li data-i18n="cl.l2">Send messages and commands to its panes.</li>
+          <li data-i18n="cl.l3">Read what its panes show.</li>
+          <li data-i18n="cl.l4">Attach to its sessions, once it allows that.</li>
         </ul>
-        <figure class="stage">
-          <img src="img/ssh.png" width="880" loading="lazy" alt="The C-b @ box: a machine connected to now with a green dot and its pane, the others by when they were last used, how often, and where each was found" />
-          <figcaption data-i18n="ch.caption3">
-            <kbd>C-b @</kbd>: the machine a pane is on now, green; the others by last use, how often, and where they were found.
-          </figcaption>
-        </figure>
-        <figure class="stage">
-          <img src="img/keepane-fix.gif" width="880" loading="lazy" alt="A test fails; C-b y copies what it printed; send-message hands it to the agent pane beside it, which fixes the code and says it is free; the test then passes" />
-          <figcaption data-i18n="ch.caption2">
-            A test fails; <kbd>C-b y</kbd> takes what it printed; one message hands it to the agent beside it, which fixes it; the test passes.
-          </figcaption>
-        </figure>
+        <div class="prose" data-i18n="cl.after">
+          <p>Agents can do the same through MCP.</p>
+          <p>Each machine has its own key. After pairing, each machine still decides which sessions, windows and panes it shares.</p>
+          <p>It works on one local network, or through a private network such as Tailscale.</p>
+        </div>
       </section>
 
-      <section class="chapter">
+      <section class="chapter phone">
         <header class="chapter-head">
           <span class="num">05</span>
-          <h2 data-i18n="c35.title">The job that finished while you were elsewhere</h2>
-          <p data-i18n="c35.sub">
-            <code>monitor-activity</code> marks a window you are not looking at with <b>#</b> when it prints,
-            <b>!</b> on a bell, and <b>~</b> when it has been silent too long. <kbd>C-b M-n</kbd> jumps to the
-            next marked window.
-          </p>
+          <h2 data-i18n="cw.title">See and use your terminal from your phone</h2>
+          <div class="sub" data-i18n="cw.sub">
+            <p>A long task does not need you at the computer the whole time.</p>
+            <p>Run:</p>
+          </div>
         </header>
-        <figure class="stage">
-          <img src="img/keepane-alerts.gif" width="880" loading="lazy" alt="A background job finishes in another window, the status line marks it, C-b M-n jumps there, a failing command leaves its pane in place, and a popup shows the window list" />
-          <figcaption data-i18n="c35.caption">
-            A deploy finishes in window 1 while window 0 carries on; the flag appears in the status line and in
-            <code>list-windows</code>; a command that fails leaves its pane and its exit code behind.
-          </figcaption>
+<pre class="code"><code>keepane web</code></pre>
+        <div class="prose" data-i18n="cw.p">
+          <p>Scan the QR code it prints, and your phone's browser shows the panes on your computer.</p>
+          <p>No app to install.</p>
+          <p>You can watch the live output, switch panes, type commands, send messages to agents, and see when tasks finish.</p>
+          <p>When a command ends, or an agent finishes its turn or waits for your permission, a notification tells you.</p>
+          <p>It posts to ntfy, Feishu, WeCom, DingTalk, Slack, Discord and others.</p>
+          <p>The phone shows and types; the commands still run on the computer.</p>
+          <p>The web page is off until you start it. To reach it from outside your network, go through a private network such as Tailscale.</p>
+        </div>
+        <figure class="shot phone-shot">
+          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, with a row of keys and a box to type in" />
         </figure>
-        <ul class="points">
-          <li data-i18n="c35.p1">With <code>remain-on-exit</code>, a pane stays open after its program exits and shows <code>[cmd exited with 3]</code>, so a crash at 3am is still there in the morning. <code>respawn-pane</code> starts the program again in the same place.</li>
-          <li data-i18n="c35.p2"><code>pipe-pane "$input | Add-Content build.log"</code> sends everything a pane prints to a command, and tells you if that command falls behind.</li>
-          <li data-i18n="c35.p3">Scripts can wait on each other: <code>keepane wait-for ready</code> blocks until another client runs <code>keepane wait-for -S ready</code>, and <code>-L</code> and <code>-U</code> work as a lock.</li>
-          <li data-i18n="c35.p4">A script can wait on a pane too: <code>keepane wait-output -t dev -w 2m 'Local:'</code> returns the line once the dev server prints it, so the tests start when it listens, with no polling.</li>
-        </ul>
       </section>
 
       <section class="chapter">
         <header class="chapter-head">
           <span class="num">06</span>
-          <h2 data-i18n="c1.title">Panes, the way you already know</h2>
-          <p data-i18n="c1.sub">
-            <kbd>C-b %</kbd> splits left and right, <kbd>C-b "</kbd> top and bottom. Move with the vim keys or
-            the arrows, and keep pressing: movement and resizing repeat without the prefix.
-          </p>
+          <h2 data-i18n="c1.title">The tmux habits you already have</h2>
+          <div class="sub" data-i18n="c1.sub">
+            <p>keepane does not ask you to learn a new way of using the terminal.</p>
+            <p>The common tmux commands, keys and config file stay compatible as far as possible.</p>
+          </div>
         </header>
+<pre class="code"><code data-i18n="c1.code"><span class="c"># split left and right</span>
+Ctrl-b %
+
+<span class="c"># split top and bottom</span>
+Ctrl-b "
+
+<span class="c"># move between panes</span>
+Ctrl-b h/j/k/l
+
+<span class="c"># zoom the current pane</span>
+Ctrl-b z
+
+<span class="c"># sessions, windows and panes</span>
+Ctrl-b w
+
+<span class="c"># detach</span>
+Ctrl-b d</code></pre>
+        <div class="prose">
+          <p data-i18n="c1.import">Import the <code>.tmux.conf</code> you have:</p>
+        </div>
+<pre class="code"><code>keepane import-config ~/.tmux.conf</code></pre>
+        <div class="prose" data-i18n="c1.p">
+          <p>What keepane understands becomes keepane config; what it does not support yet stays in the file, with the reason.</p>
+          <p>On Windows it uses ConPTY and the Win32 console API, so PowerShell, cmd and WSL run directly.</p>
+          <p>PSReadLine, input methods and full-screen terminal programs work as usual.</p>
+        </div>
         <div class="pair">
           <figure class="shot"><img src="img/panes.png" alt="Three panes: a shell on the left, keepane list-panes top right, a build loop bottom right" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/sync.png" alt="The same three panes after one echo typed with synchronize-panes on: the line ran in every pane, S on the status line" loading="lazy" /></figure>
-        </div>
-        <ul class="points">
-          <li data-i18n="c1.p1">Every pane is a ConPTY, so PSReadLine chords, IME input and full-screen programs behave as they do outside keepane.</li>
-          <li data-i18n="c1.p2">The mouse works: click a pane to focus it, drag a border to resize it, drag across text to copy it to the system clipboard.</li>
-          <li data-i18n="c1.p3"><kbd>C-b S</kbd> or <code>:set sync</code> (Tab completes the name) sends every key to every pane in the window. <code>split-window -N 3</code> adds three panes at once and tiles them.</li>
-        </ul>
-      </section>
-
-      <section class="chapter">
-        <header class="chapter-head">
-          <span class="num">07</span>
-          <h2 data-i18n="c2.title">Full screen, a list, or a menu</h2>
-          <p data-i18n="c2.sub">
-            <kbd>C-b z</kbd> blows the current pane up to the whole window and back. <kbd>C-b w</kbd> opens a chart of
-            every session, window and pane: <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> to move, <kbd>a</kbd>
-            to open all of it, <kbd>v</kbd> for a tree or a plain list, digits to jump, <kbd>Enter</kbd> to go. <kbd>C-b &gt;</kbd> puts the pane commands in a
-            menu, so nothing has to be remembered.
-          </p>
-        </header>
-        <div class="pair">
-          <figure class="shot"><img src="img/zoom.png" alt="A zoomed pane filling the window, Z on the status line" loading="lazy" /></figure>
           <figure class="shot"><img src="img/chart.png" alt="The C-b w chart: keepane on top, then the sessions, the windows of the current one and its panes, each in an open box, the selected pane highlighted" loading="lazy" /></figure>
         </div>
-        <div class="pair">
-          <figure class="shot"><img src="img/keys.png" alt="The panel after C-b and a pause: what each key does, by group: panes, windows, sessions, tools" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/menu.png" alt="The pane menu: split, swap, break out, zoom, respawn, kill, each with a letter" loading="lazy" /></figure>
-        </div>
-        <div class="pair">
-          <figure class="shot"><img src="img/popup.png" alt="A popup box over the window running a command, with the pane behind it still visible" loading="lazy" /></figure>
-          <figure class="shot"><img src="img/environment.png" alt="The C-b e view: the variables set-environment gives every pane, then the ones keepane sets, each with what it is for" loading="lazy" /></figure>
-        </div>
-        <ul class="points">
-          <li data-i18n="c2.p1"><kbd>C-b Space</kbd> cycles through five layouts: even columns, even rows, a main pane beside or above the rest, and a tiled grid. <kbd>C-b E</kbd> evens out the panes next to the current one.</li>
-          <li data-i18n="c2.p6">Unsure of a key? Press <kbd>C-b</kbd> and wait: after half a second a panel says what the keys do, by group, read from your own bindings. The key then works as ever.</li>
-          <li data-i18n="c2.p2"><kbd>C-b q</kbd> draws a number on every pane; press the number to jump there.</li>
-          <li data-i18n="c2.p5">Zooming grows the pane itself, each of its corners heading for the window's, and unzooming shrinks it back; when the focus moves to another pane or window, a frame flies there. Programs are resized once, so nothing waits for it; <code>set -g animation off</code> turns it off. A zoomed window stays zoomed as you move between its panes, until <kbd>C-b z</kbd>.</li>
-          <li data-i18n="c2.p3">In copy mode, <kbd>/</kbd> searches forward and <kbd>?</kbd> backward, <kbd>n</kbd> and <kbd>N</kbd> repeat the search, and the match is scrolled to the middle of the screen.</li>
-          <li data-i18n="c2.p4"><code>display-popup</code> runs a program in a box over the window and closes the box when the program exits. It is handy for a quick <code>git log</code> without touching the layout.</li>
-          <li data-i18n="c2.p7"><code>setenv -g NAME value</code> gives a variable to every pane: new ones at their start, a shell already open at its next prompt. A program already running keeps what it had. <kbd>C-b e</kbd> shows them.</li>
-        </ul>
-      </section>
-
-      <section class="chapter phone">
-        <header class="chapter-head">
-          <span class="num">08</span>
-          <h2 data-i18n="cw.title">Your panes, on your phone</h2>
-          <p data-i18n="cw.sub">
-            Start <code>keepane web</code> before you walk away from a long build. It prints a QR code; scan it on
-            the same Wi-Fi and the phone's browser lists every pane, shows any of them as it appears on screen,
-            and lets you type into it. Nothing to install on the phone.
-          </p>
-        </header>
-        <figure class="shot phone-shot">
-          <img src="img/phone.png" data-src-zh="img/phone-zh.png" width="620" loading="lazy" alt="keepane web on a phone: the list of panes with the program each runs, and one pane showing a coloured git log with each command's time in a column on the left, with a row of keys and a box to type in" />
-        </figure>
-        <ul class="points">
-          <li data-i18n="cw.p1">keepane sends the screen again whenever it changes, colours included, and you can scroll up through what already went by. The list carries each window's alert marks (<b>#</b> printed, <b>!</b> bell, <b>~</b> silent), so a finished job shows up without opening it. What you type in the box goes to the pane as you type it, and Enter is the Enter (or, in the view menu, the box waits for Enter).</li>
-          <li data-i18n="cw.p2">A row above the text box has the keys a phone keyboard lacks: Ctrl, Alt, Shift (held for the next key: Shift then → is Shift+Right), Esc, Tab, the arrows, with Ctrl+C and Enter kept in view at its end, and Shift+Tab, y, n, 1, 2, 3 and a few more under the ⋯ beside the box. The ⋯ menu in the pane's bar, or a right click (a long press on a phone) on a pane in the list, splits the pane, opens a window, renames, shows the inbox or closes the pane. On a shell or ai pane, the envelope beside the box sends it as a message into the pane's inbox instead.</li>
-          <li data-i18n="cw.p5">Each pane shows under its name: a dot for free or busy, how many messages wait in its inbox, and the last thing it printed. Fit to this screen, in the view menu, sizes a pane to the phone for a full-screen program, and gives it back when you leave. The same menu finds text in the output, copies the screen's text and sizes the text (a pinch does too); tap a command's time to copy what it printed.</li>
-          <li data-i18n="cw.p6">When a pane is done (a long command ended, an agent finished its turn or waits for your permission) the page says so: a banner to tap, a sound, a buzz. For a locked phone, keepane posts to ntfy, Feishu, WeCom, DingTalk, Slack or Discord (<code>done-webhook</code>), or runs a hook of yours. With a Feishu app of your own you answer in the chat: a reply to an agent that waits for you goes in at once.</li>
-          <li data-i18n="cw.p7">The same page works in a computer's browser, with the list on the left and the pane on the right. The page has its own light and dark look, turned by a glass switch whose specks of light gather into a sun or a moon, and speaks Chinese or English (the system's, or picked), and from it you can switch the terminal's theme too (Paper Dark, Paper, Tokyo Night or Tokyo Day), which changes it on the computer as well. The top right shows the delay to the computer, and full screen leaves only the pane's screen and the input box.</li>
-          <li data-i18n="cw.p3">Commands run on the computer. The phone can read panes, type into them and use that menu, nothing more; <code>--read-only</code> leaves out the typing.</li>
-          <li data-i18n="cw.p4">It is off until you start it; the keepane server then serves it in the background until <code>keepane web stop</code>, and <code>keepane web status</code> shows who is connected. The QR code carries a new 128-bit key each start. It is plain HTTP, which is fine on a home network; from outside, go through Tailscale or a similar private network.</li>
-        </ul>
-      </section>
-
-      <section class="chapter">
-        <header class="chapter-head">
-          <span class="num">09</span>
-          <h2 data-i18n="c4.title">Your .tmux.conf, imported once</h2>
-          <p data-i18n="c4.sub">
-            The same command names on the command line, in the <kbd>:</kbd> prompt and in the config file.
-            keepane import-config brings what it can use from your tmux config into its own, once, the rest commented out with why.
-          </p>
-        </header>
-        <pre class="code"><code>set -g prefix C-a
-set -g default-shell wsl          <span class="c"># pwsh (default), powershell, wsl, cmd, or a path</span>
-set -g mouse on
-set -g repeat-time 500            <span class="c"># how long a `bind -r` key keeps working</span>
-
-set -g monitor-activity on        <span class="c"># mark a background window that prints</span>
-set -g remain-on-exit on          <span class="c"># keep a pane whose program died</span>
-
-bind -r h select-pane -L          <span class="c"># -r: press h h h after one prefix</span>
-bind | split-window -h
-bind -n M-Right next-window       <span class="c"># -n: no prefix at all</span>
-set -g status-right "#{pane_current_path} %H:%M"</code></pre>
-        <ul class="points">
-          <li data-i18n="c4.p0">A command name can be cut to any unambiguous prefix (<code>keepane att</code>, <code>keepane splitw -h</code>), and so can an option name: <code>set sync</code> means <code>set synchronize-panes</code>, <code>set mon-act on</code> means <code>set monitor-activity on</code>, and an on/off option given no value flips.</li>
-          <li data-i18n="c4.p1"><code>keepane send-keys</code> (tmux's <code>-X</code> copy-mode commands included), <code>keepane capture-pane -p -e</code> and <code>keepane split-window</code> drive a session from a script. Run inside a pane, they need no socket name.</li>
-          <li data-i18n="c4.p2">A plugin is a directory with a <code>&lt;name&gt;.keepane</code> file of commands plus scripts in any language, loaded with <code>set -g @plugin name</code>. Hooks fire on new windows, splits, pane exits and attaches.</li>
-        </ul>
-      </section>
-
-      <section class="chapter">
-        <header class="chapter-head">
-          <span class="num">10</span>
-          <h2 data-i18n="c6.title">Git branch, CPU and memory on the status line</h2>
-          <p data-i18n="c6.sub">
-            The default status line shows your git branch, the pane's directory, CPU and memory use, and the
-            battery if there is one. keepane reads these itself once a second without starting any helper process.
-            You can replace the line with your own or turn it off.
-          </p>
-        </header>
-        <pre class="code statusline"><code><span class="s"> work </span>  <span class="cur">0:editor*</span>  1:build  2:logs       normal  <span class="ink">master</span>  ~\Documents\dfine\keepane  CPU 9%  MEM 65%  <span class="clock">11:45</span></code></pre>
-        <ul class="points">
-          <li data-i18n="c6.p1"><code>#{git_branch}</code>, <code>#{cpu_percentage}</code>, <code>#{ram_percentage}</code>, <code>#{battery_percentage}</code>, <code>#{pane_current_path_short}</code> and <code>#{pane_pid_command}</code> (the program running in the pane right now) can go anywhere in <code>status-right</code>. <code>set -g status off</code> hides the line.</li>
-          <li data-i18n="c6.p2">When two terminals attach at different sizes, <code>window-size</code> decides which one sizes the session. The smaller terminal sees part of the window and pans with <kbd>Shift</kbd> + arrows.</li>
-          <li data-i18n="c6.p3">A right click pastes. At the <kbd>:</kbd> prompt, <kbd>Tab</kbd> completes commands, flags, targets and option names, and <code>keepane completion powershell</code> (or <code>bash</code>, <code>zsh</code>, <code>fish</code>) gives your shell the same completions.</li>
-          <li data-i18n="c6.p4"><code>keepane update</code> installs a new release, and <code>keepane restart-server</code> moves every running session to it with history and directories. Attached terminals reconnect on their own.</li>
-        </ul>
       </section>
 
       <section class="chapter install">
         <header class="chapter-head">
-          <span class="num">11</span>
+          <span class="num">07</span>
           <h2 data-i18n="c5.title">Install</h2>
+          <div class="sub">
+            <p data-i18n="c5.sub">keepane is written in Rust, with builds for Windows, Linux and macOS.</p>
+          </div>
         </header>
         <div class="cards">
           <div class="card">
-            <h3 data-i18n="c5.unix">Linux and macOS</h3>
-            <p data-i18n="c5.unix.sub">A .tar.gz for each (static on Linux; Apple silicon and Intel). Unpack it and put keepane on your PATH.</p>
-            <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get it</a>
-          </div>
-          <div class="card">
-            <h3 data-i18n="c5.brew">Homebrew</h3>
-            <p data-i18n="c5.brew.sub">macOS and Linux, from the release's own builds; brew upgrade keepane takes a new version.</p>
+            <h3>macOS / Linux</h3>
             <pre class="code mini"><code>brew install newdee/tap/keepane</code></pre>
           </div>
           <div class="card">
-            <h3 data-i18n="c5.msi">Windows installer</h3>
-            <p data-i18n="c5.msi.sub">The .msi puts keepane in Program Files, on the system PATH, and in "Apps &amp; features".</p>
-            <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get it</a>
+            <h3>Windows</h3>
+            <p data-i18n="c5.win">The MSI installer, from the releases page, or winget:</p>
+            <pre class="code mini"><code>winget install newdee.keepane</code></pre>
+            <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get the MSI</a>
           </div>
           <div class="card">
-            <h3 data-i18n="c5.zip">Windows portable</h3>
-            <p data-i18n="c5.zip.sub">The .zip is the same single exe. Unzip it anywhere and run it.</p>
-            <a class="btn small" href="https://github.com/newdee/keepane/releases/latest" data-i18n="c5.get">Get it</a>
-          </div>
-          <div class="card">
-            <h3 data-i18n="c5.scoop">Scoop</h3>
-            <p data-i18n="c5.scoop.sub">The manifest in the repository installs the zip and follows releases.</p>
+            <h3>Scoop</h3>
             <pre class="code mini"><code>scoop install https://raw.githubusercontent.com/newdee/keepane/master/packaging/scoop/keepane.json</code></pre>
           </div>
           <div class="card">
@@ -427,19 +332,26 @@ set -g status-right "#{pane_current_path} %H:%M"</code></pre>
   https://github.com/newdee/keepane --locked</code></pre>
           </div>
         </div>
+        <div class="prose">
+          <p data-i18n="c5.more">More ways to install, and how to use it: <a href="https://github.com/newdee/keepane">github.com/newdee/keepane</a></p>
+        </div>
       </section>
 
       <section class="closing">
-        <h2 data-i18n="close.title">Try it on your next long build.</h2>
+        <h2 data-i18n="close.title">One workspace, not just a few terminal windows</h2>
+        <div class="lede" data-i18n="close.p">
+          <p>keepane starts from the panes and sessions you know from tmux, and adds messages between them, agents working together, tracing and remote access.</p>
+          <p>Keep using the terminal as you always have, or let several agents split the work across panes and connect what they do.</p>
+        </div>
         <div class="cta">
           <a class="btn primary" href="https://github.com/newdee/keepane/releases/latest" data-i18n="hero.download">Download</a>
-          <a class="btn ghost" href="https://github.com/newdee/keepane#readme" data-i18n="close.docs">Read the docs</a>
+          <a class="btn ghost" href="https://github.com/newdee/keepane" data-i18n="hero.source">GitHub</a>
         </div>
       </section>
     </main>
 
     <footer>
-      <span data-i18n="footer.built">Built in Rust on ConPTY and the Win32 console API.</span>
+      <span data-i18n="footer.built">MIT License · Built with Rust</span>
       <a href="https://github.com/newdee/keepane">github.com/newdee/keepane</a>
     </footer>
 

@@ -532,7 +532,7 @@ figcaption {
   display: grid;
   /* minmax(0, …): a long command in a card scrolls inside it instead of
      widening its column (and the page) to its full length */
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-top: 28px;
 }
@@ -627,4 +627,38 @@ footer a:hover {
   .top .btn.small {
     display: none;
   }
+}
+
+/* Paragraphs of copy: the hero's and the closing's lede, a chapter's
+   heading text, and text between a chapter's code and pictures. */
+.lede p {
+  margin: 0 0 12px;
+}
+.lede p:last-child {
+  margin-bottom: 0;
+}
+.closing .lede {
+  margin: 18px auto 0;
+}
+.chapter-head .sub p + p {
+  margin-top: 8px;
+}
+.prose {
+  max-width: 760px;
+  margin: 24px 0 0;
+}
+.prose p {
+  margin: 0 0 10px;
+  color: var(--dim);
+}
+.prose + .points {
+  margin-top: 4px;
+}
+.sub-title {
+  margin: 44px 0 0;
+  font-size: 21px;
+  letter-spacing: -0.01em;
+}
+.card .code.mini + .btn {
+  margin-top: 12px;
 }

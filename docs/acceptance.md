@@ -6363,3 +6363,32 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 0.79.0（1.0 的候选版，只有修复）：第 206、207 条。
 
 0.79.0 发布：CI 44240835422（4bd5bde）四个 job 通过；tag v0.79.0；Release 44241634491 四个平台通过（macOS 这次没缺 runner）；manifests 41db608；winget PR #483043；Homebrew formula 44242611198 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 208. 断开连接改成单向；挡住对方靠收回授权（`R`）
+
+来源：用户问"为什么 c-b w 远程 connect 要两边都 connect，本机在对方没有 connect 之前，无法连上"；讨论后用户定"连接和断开连接是单向的……取消配对或者取消授权之后，另一个电脑就无法再连接了"，"之前的方案按推荐来改吧"。设计：docs/design/link.md 第 21 条。
+
+- 原因：第 20 条的 `link disconnect` 两个方向都断：本机不问对方，同时 `link_in` 对断开的机器一律回 403、`may_stream` 拒绝它的复制流。两边都按过 `x` 时，本机 `c` 只清掉本机的标记，对方仍回 403。
+- 定性：结构缺陷，不是边界遗漏。一个开关同时管"本机问不问它"和"它能不能进本机"两件事，而第二件已经有授权（`link share` / `allow`）在管。全仓搜 `off` / `link_off`：出方向 5 处（`link_out`、`mirror_peers`、`link_tree` 两处、`chooser` 的框）保留；入方向 2 处（`link_in` 的 403、`may_stream`）去掉；`link list` 的 "disconnected here" 从 IT HAS HERE 挪到 THIS HAS THERE。`chat.md` 写的"断开的机器不能发言"一并改成看权限。
+- 新增：`C-b w` 机器框和 `C-b v` 的 `L` 里按 `R`，先问，再 `link allow <机器> --none`；按键行和列表写出它在本机有什么（`has full` / `has N shared` / `has nothing`）；`link-list -J` 加 `shared`。dashboard 的 `c` 不再先问（不放谁进来）。
+- 不引入新 bug 的评估：没有断开的机器，所有路径与原来逐行相同（去掉的两处只对 `off` 生效）；`--none` 是已有命令，`R` 只是入口；没有授权的机器能碰到什么，逐条核对 `link_in` 的 15 条路径（第 21 条第 5 点），能碰 pane 的都过 `may_reach` / `need_full`。升级影响：原来靠断开挡人的，升级后要改用 `R`，README 写明。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结果 |
+|---|---|---|---|
+| 1 | 静态一致性（文档对代码）+ 机制通路存活 + 全量 | 变异 2 个都被杀：`link_in` 放回 403（e2e 在 `b link-info`"still answered there"失败）；按键行不写授权（e2e 等 `has 1 shared` 超时）。fmt、clippy 干净。Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。审查发现 `C-b w` 里对什么都没有的机器按 `R` 仍然先问，dashboard 却说 "has nothing here already"，两个入口不一致。 | **有问题**：`C-b w` 同样直接说，e2e 补一步（不计数） |
+| 2 | 边界与退化输入（旧 server、空表）+ 全量 | 审查发现：dashboard 接旧 server（0.79 的 `link-list -J` 没有 `shared`）时把分享数当 0，写 "has nothing"，`R` 说 "has nothing here already" 不让收回，而对方其实可能有分享。改成 `shared: Option`：不知道就不写 "has"，`R` 照常先问；单元测试加这一种。修后 fmt、clippy 干净；Windows 695 / 11 / 171，Linux 679 / 169（WSL 副本核对过有新代码），web e2e 41/41。 | **有问题**：已修（不计数） |
+| 3 | 逻辑正确与不变量（"断开的机器本机一律不问"在所有出方向入口成立）+ 全量 | 列出所有出站连接点：server 里只有 `link::call`（3 个调用方：`link_out`、`link_git`、`link_agents`）和复制流的 `connect_once`。发现 `clone` / `push`（`link_git`）和 `send-agents`（`link_agents`）直接调 `link::call`，不经 `link_signed` 的断开检查：本机断开对方后仍会给它发提交和项目（0.75 起就有）。定性：共性（2 处），结构缺陷（检查只在一个入口）。修：检查收成 `may_ask`，3 个入口都调；e2e 加 `send-agents`（点名、按记录）和 `clone` 对断开的机器被拒，连回后照常。变异：去掉两处 `may_ask`，e2e 失败（被发出去了）。修后 Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | **有问题**：已修（不计数） |
+| 4 | 代码正确性（错误路径、并发）+ 全量 | e2e 补两项检查：从 pane 里 `link-connect` 被拒、`link-disconnect` 可以；A 断开 B 后 B 对 A 的复制流照常（`show-mirror` 仍有 A），`R` 之后 A 的 `link-list -J` 变 `"streams":false`。发现：`stream_input`（键）和 `stream_command`（分屏、关闭等）只看"有没有 feed"，权限只在 `stream_push` 里判；`stream_push` 每批事件之后都跑（`mod.rs:1507`），所以收回后的下一批就断，但同一批里排在 `link allow --none` 后面的输入仍会被打进去（窗口很窄，0.72 起就有）。我一度以为要等到本机下一次变化才断，是看错了：B 断流后保留最后一份副本，`has-session` 仍是 0；为此加进 `save_peers` 的 `stream_push` 是多余的，已删（变异去掉它 e2e 照样过，证实多余）。修：两个入口都经 `fed_addr`，当场用 `may_stream` 判。另外 `a_third_machines_sessions_are_never_given_on` 原来喂的 "c" 没配对，`fed_addr` 之后拦它的就不是"第三台机器的 pane"那条检查了，测试改成先配对 "c"（`full`），再加：收回 `full` 后 `fed_addr` 立即为 None，`off` 不影响，解除配对为 None。变异：`fed_addr` 不判权限，单元测试失败（"taken back: judged now"）。修后 Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | **有问题**：已修（不计数） |
+| 5 | 机制通路存活（真二进制）+ 全量 | 临时 server 两个（`-L`、各自的 sessions/link/history/log/events 目录，清掉 KEEPANE*/CLAUDE* 环境变量），127.0.0.1 上配对、互给 `--full`，13 项检查 13 项过：A 断开 B 后 B 的 `link-info` 照常、A 问 B 被拒；**用户的原场景**：两边都断开，A `connect` 后立即能问 B（B 仍不问 A）；A `allow --none` 后 B 看不到 A 的 pane、不能在 A 上开 pane；`link-list -J` 为 connected/full=false/shared=0。发现：`may_ask` 的提示还写"talks with it again"，`link disconnect` 的回答已改成"asks it again"，同一件事两种说法。改成一致，全仓再搜没有旧说法。修后 Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | **有问题**：已修（不计数） |
+| 6 | 可复现性 + 再读一遍整个改动 + 全量 | 再读 diff 时发现：机器框的按键行把原来的 `v tree` 去掉了。补回后 e2e 连跑 5 次 5/5 失败，打印屏幕才看清：按键行前面还有 `[6/9] hjkl move  `（17 列），整行超过 80 列被截断，之前那版的 `a all` 其实也被截掉了最后一个字母，第 1 轮的检查只看了两个子串，没发现。改成机器框上只写授权和 4 个机器键（`has 99 shared` 时 17 + 15 + 43 = 75 列；后面的 `q quit` 可能被截）；`a`、`v` 照常可用，光标在别的行时提示里有。e2e 改成核对整段 `has full  c connect  x disconnect  R revoke  D forget  q quit`。之后这个 e2e 连跑 5 次 5/5，`send-agents` 的 e2e 连跑 5 次 5/5。修后 Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | **有问题**：已修（不计数） |
+| 7 | 静态一致性（最终代码对所有文档）+ 全量 | `rg -i disconnect docs`（除验收记录）逐处核对：tmux-parity、chat.md、keepane.1.md（按键行、`link list -J` 的 connected/full/shared）、link.md 第 20、21 条，与代码一致；README en/zh 的按键行文字（`has full` / `has 2 shared` / `has nothing`）、"`R` 和 `D` 先问"、"0.79 及以前"与代码一致；`--help` 的 disconnect 一行打印核对；dashboard 帮助页 3 行与按键一致。docs/index.html 的测试数 877 = 695 + 11 + 171，没变。fmt、clippy 干净；Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | 干净 1/3 |
+| 8 | 机制通路存活（真二进制）+ 边界（升级时的旧配对表）+ 全量 | 临时 server 脚本在第 5 轮 13 项上加 6 项：0.79 写的配对表（B 那行带 `off`）由新 server 读进来：`connected:false`、`full:true`；B 的 `link-info` 照常、B 的 `link-panes` 看得到 A 的 `wa2`；A 问 B 被拒；文字版 `link list` 的 THIS HAS THERE 写 "disconnected here"、IT HAS HERE 写 "all of it"。连跑 3 次，每次 19/19（前两版脚本的失败是脚本自己：配对表在 `link\<socket>\authorized`；重启后 web 按记住的 `-p 0` 换了端口，先 `web stop` 再用原端口起）。`streams` 一项 3 次里 1 次为 true（B 对 A 的复制流重新连上，单向下正确）、`seen` 有无随时间变，其余逐项相同。代码与第 7 轮相同；Windows 695 / 11 / 171，Linux 679 / 169，web e2e 41/41。 | 干净 2/3 |
+| 9 | 可复现性 | 改过的 2 个 e2e 在 Windows 各连跑 10 次：`another_machines_…` 10/10、`a_project_goes_…` 10/10；在 Linux 各连跑 5 次：10/10。Windows 全量连跑 2 次，两次都是 695 / 11 / 171；Linux 679 / 169；web e2e 41/41。代码与第 7、8 轮相同。 | 干净（3/3），验收通过 |
+
+## 209. 网页（docs/index.html）文案换成用户给的稿子
+
+来源：用户说"网页的文案 ai 味还是很重，用这个吧"，给了中文全文（7 节加结尾）。
+
+- 做法：页面按稿子改成 7 节（Pane 之间传递任务、Agent 协作、关闭终端、两台电脑、手机、tmux 习惯、安装）和结尾；中文用稿子原文（`site.js` 的 `ZH`），英文按稿子直译，不另加内容。原有的图按节保留（消息、agents、trace、resume、detach/attach、手机、panes、chart）；稿子里没有的 5 节（命令时间与历史、后台提醒、全屏与菜单、配置文件示例、状态栏）去掉。测试数那一栏（877）保留。
+- 稿子里与代码不符、已改的 4 处（回复里告诉用户）：`new-window -n builder` 起的是窗口名，`--to %builder` 找不到，改成 `rename-pane` + `set-work-mode`；`trace-message` 要带消息编号；工作模式没有 "Queue"，改成 normal / shell / ai；通知不在"长时间没有响应"时发，改成命令结束、Agent 完成或等待授权时。另在 Windows 安装里补了 winget（winget-pkgs 里已有）。
+- 核对：HTML 的 70 个 `data-i18n` 与 `ZH` 的键一一对应（双向差集都为空）；`site.js` 语法检查通过；本机起静态服务，用 browse 截图核对 3 种：中文深色 1280 宽、中文深色 390 宽（`scrollWidth` 375 ≤ 390，没有横向滚动）、英文浅色 1280 宽。截图里发现并改掉 2 处：安装的 4 张卡片在 3 列里落单一张（改成 2 列）；手机上中文标题在"工/作"中间断行（两半各自不断行）。

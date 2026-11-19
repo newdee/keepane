@@ -7,176 +7,144 @@ const ZH = {
   "nav.faq": "常见问题",
   "nav.download": "下载",
   "hero.eyebrow": "开源",
-  "hero.title": "<span class=\"nw\">持久化的终端 pane，</span><span class=\"nw\">各有自己的收件箱。</span>",
+  "hero.title": "<span class=\"nw\">离开终端，</span><span class=\"nw\">工作还在继续。</span>",
   "hero.lede":
-    "keepane 是一个终端多路复用器。关闭终端连接后，pane 里的程序继续运行；pane 之间还能通过收件箱传递消息，同一台电脑上可以，配过对的两台电脑之间也可以。常用的 tmux 按键、命令和配置文件可以继续使用，h j k l 也在；PowerShell、cmd、WSL 都在 pane 里运行，按键原样传进去。",
+    "<p>keepane 是一个终端复用工具。它让终端中的程序持续运行，让不同 Pane 之间可以传递任务，也让 AI Agent 能够在同一个工作空间里协作。</p>" +
+    "<p>关闭终端窗口，程序不会因此退出。一个 Pane 可以向另一个 Pane 发送命令，也可以把任务交给正在运行的 Agent。你可以从另一台电脑或手机上查看进度，继续之前的工作。</p>" +
+    "<p>保留熟悉的 tmux 快捷键、命令和配置文件。Windows、Linux、macOS 均可使用。</p>",
   "hero.download": "下载",
-  "hero.source": "看源码",
-  "hero.meta": "MIT 许可 · Windows、Linux、macOS · 单个可执行文件 · 原名 wmux",
-  "hero.caption": "功能导览：pane 之间互发消息、三种工作模式，给 agent 用的 MCP，dashboard，以及在手机上看和操作 pane。",
+  "hero.source": "GitHub",
+  "hero.meta": "Rust · MIT License · 单文件安装",
+  "hero.caption": "Pane 之间互发消息、Agent 通过 MCP 工作、dashboard，以及在手机上查看 Pane。",
   "stat.exe": "个文件就够",
   "stat.deps": "依赖 Cygwin / WSL",
   "stat.tests": "项自动化测试",
   "stat.license": "许可证",
 
-  "c1.title": "分屏还是那套手感",
-  "c1.sub":
-    "<kbd>C-b %</kbd> 左右分，<kbd>C-b \"</kbd> 上下分。用 vim 键位或方向键移动，而且可以连着按：移动和调大小在半秒内不用再按前缀。",
-  "c1.p1":
-    "每个 pane 都是一个 ConPTY，所以 PSReadLine 的组合键、中文输入法和全屏程序，表现和不用 keepane 时一样。",
-  "c1.p2": "鼠标可以用：点一下切换 pane，拖边框调大小，拖选文字直接复制到系统剪贴板。",
-  "cw.title": "在手机上看 pane、往 pane 里输入",
-  "cw.sub":
-    "跑长编译之前先开 <code>keepane web</code>，然后人就可以走开。它会打出一个二维码，手机连同一个 Wi-Fi 扫一下，浏览器里就列出所有 pane，点进去能看屏幕、能输入。手机上什么都不用装。",
-  "cw.p1":
-    "屏幕一有变化，keepane 就把新内容推过来，颜色保留，也能往上翻看已经滚过去的输出。列表上带着每个窗口的提醒标记（<b>#</b> 有输出，<b>!</b> 响铃，<b>~</b> 没动静），任务跑完了不用点进去也看得到。在输入框里打的字边打边发到 pane，回车就是回车（也可以在视图菜单里改成等回车再发）。",
-  "cw.p2":
-    "输入框上方有一排手机键盘上没有的键：Ctrl、Alt、Shift（按住给下一个键用，先 Shift 再 → 就是 Shift+→）、Esc、Tab、方向键，Ctrl+C 和回车固定在这一排最右边；Shift+Tab、y、n、1、2、3 等收在输入框旁边的 ⋯ 里。pane 顶栏的 ⋯ 菜单，或者在列表里右键（手机上长按）一个 pane，可以分屏、开新窗口、重命名、看收件箱或关掉 pane。在 shell 或 ai 模式的 pane 里，输入框旁的信封按钮把内容作为消息送进它的收件箱排队。",
-  "cw.p5":
-    "每个 pane 的名字下面：一个表示空闲或忙的小圆点、收件箱里排着几条消息、它最后输出的一行。视图菜单里的“适配这块屏幕”把 pane 调成手机屏幕的大小，方便看全屏程序，离开时自动恢复。同一个菜单还能在输出里查找、复制屏幕文字、调整字号（也可以双指缩放）；点一条命令的时间可以复制它的输出。",
-  "cw.p6":
-    "pane 完成时（长命令跑完、agent 这一轮结束或等你批准）页面会提醒你：顶部横幅（点一下跳过去）、响一声、震动。手机锁屏也要收到的话，keepane 可以推到 ntfy、飞书、企业微信、钉钉、Slack、Discord（<code>done-webhook</code>），或者运行你自己的 hook。用你自己的飞书应用时，还能直接在聊天里回复：回复在等你的 agent，回复立刻送进 pane。",
-  "cw.p7":
-    "电脑的浏览器也能打开同一个页面：左边是列表，右边是 pane。页面有自己的日间和夜间样式（右上角的毛玻璃开关，光斑会聚成太阳或月亮），中英文跟随系统也能手动切换；也可以在页面上切换终端主题（Paper Dark、Paper、Tokyo Night 或 Tokyo Day），电脑上的终端会跟着变。右上角显示到电脑的延迟；全屏时只留下屏幕和输入框。",
-  "cw.p3": "命令在电脑上执行。手机只能看 pane、往里输入、用那个菜单，别的做不了；加 <code>--read-only</code> 就只能看。",
-  "cw.p4":
-    "不启动就不开；启动后由 keepane 的 server 在后台提供服务，直到 <code>keepane web stop</code>，<code>keepane web status</code> 可以看谁连着。二维码里的 128 位密钥每次启动都重新生成。用的是普通 HTTP，在家里的网络没问题；在外面用，中间接一层 Tailscale 之类的私有网络。",
-  "c1.p3":
-    "<kbd>C-b S</kbd> 或 <code>:set sync</code>（Tab 能补全选项名）会把每个按键同时发给窗口里的所有 pane。<code>split-window -N 3</code> 一次加三个 pane 并平铺。",
-
-  "c2.title": "铺满屏幕、从列表里挑，或者弹个菜单",
-  "c2.sub":
-    "<kbd>C-b z</kbd> 把当前 pane 放大到整个窗口，再按一次还原。<kbd>C-b w</kbd> 弹出所有 session、窗口和 pane 的结构图：<kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> 移动，<kbd>a</kbd> 一次展开全部，<kbd>v</kbd> 切到树或纯文字列表，数字直接跳，<kbd>Enter</kbd> 进去。<kbd>C-b &gt;</kbd> 把 pane 相关的命令放进一个菜单，不用记快捷键。",
-
-  "c2.p1":
-    "<kbd>C-b Space</kbd> 在五种布局之间切换：等宽列、等高行、主 pane 在左或在上，还有平铺。<kbd>C-b E</kbd> 把当前 pane 旁边那一排调成一样大。",
-  "c2.p6":
-    "记不清某个键？按下 <kbd>C-b</kbd> 后停一下：半秒后弹出提示面板，按组列出每个键做什么，读的是你自己的按键绑定。接着按的键照常生效。",
-  "c2.p2": "<kbd>C-b q</kbd> 在每个 pane 上显示一个数字，按那个数字就跳过去。",
-  "c2.p5":
-    "放大时 pane 本身逐渐长大，四个顶点朝窗口的四个顶点靠拢，还原时缩回去；焦点换到别的 pane 或窗口时，会有一个框飞过去。程序只调整一次大小，不用等它；<code>set -g animation off</code> 可以关掉。放大的窗口里切 pane 会一直保持放大，直到按 <kbd>C-b z</kbd>。",
-  "c2.p3":
-    "copy mode 里 <kbd>/</kbd> 往前搜、<kbd>?</kbd> 往回搜，<kbd>n</kbd> <kbd>N</kbd> 重复上一次搜索，匹配的那一行会滚到屏幕中间。",
-  "c2.p4":
-    "<code>display-popup</code> 在窗口上开一个框运行程序，程序退出后框就关掉。临时看一眼 <code>git log</code> 时很方便，不用动布局。",
-  "c2.p7":
-    "<code>setenv -g 名字 值</code> 给每个 pane 设一个变量：新 pane 启动时就有，已经开着的 shell 在下一次提示符时拿到。已经在跑的程序不受影响。<kbd>C-b e</kbd> 查看。",
-
-  "c3.title": "关掉终端，程序照常运行",
-  "c3.sub": "<kbd>C-b d</kbd> 脱离，里面的程序照常跑。换个终端窗口敲 <code>keepane attach</code> 就接回来了。",
-  "c3.caption":
-    "三个 pane 在干活，用 <kbd>C-b C-s</kbd> 保存；server 像重启时那样没了；再运行一次 <code>keepane</code>，各个 pane、它们的名字和目录、原来显示的内容都回来了。",
-  "c3.p1":
-    "重启电脑之后也能恢复。每个 session 的布局一有变化就存到它自己的文件里，下次 server 启动时会恢复窗口、分屏布局，以及每个 pane 的命令和目录。",
-  "c3.p2":
-    "文件里还存着每个 pane 输出过的内容：<code>save-history</code> 默认保留最后 500 行，设成 <code>all</code> 就保留全部回滚内容，颜色也在。恢复出来的 pane 显示的是原来的输出，而不是一个空提示符。",
-  "c3.p3": "<code>keepane list-saved</code> 列出保存的 session；手动 kill 掉的不会自己回来，<code>keepane resume work</code> 能把它找回。",
-
-  "c35.title": "你没看着的时候，那个任务跑完了",
-  "c35.sub":
-    "没在看的窗口有动静时会被标出来：<code>monitor-activity</code> 在有输出时标 <b>#</b>，响铃时标 <b>!</b>，太久没有输出时标 <b>~</b>。<kbd>C-b M-n</kbd> 跳到下一个带标记的窗口。",
-  "c35.caption":
-    "窗口 1 在跑部署，窗口 0 照常干活；跑完之后状态栏和 <code>list-windows</code> 同时出现标记；失败的命令把 pane 和退出码留在原地。",
-  "c35.p1":
-    "开了 <code>remain-on-exit</code> 之后，程序退出了 pane 也不会关，上面写着 <code>[cmd exited with 3]</code>。凌晨三点崩掉的任务，早上还能看到。<code>respawn-pane</code> 在原位置重新启动它。",
-  "c35.p2":
-    "<code>pipe-pane \"$input | Add-Content build.log\"</code> 把 pane 输出的所有内容交给一个命令；那个命令处理不过来时，keepane 会提示你。",
-  "c35.p3":
-    "脚本之间可以互相等待：<code>keepane wait-for ready</code> 会一直等，直到另一个客户端执行 <code>keepane wait-for -S ready</code>；<code>-L</code> 和 <code>-U</code> 可以当锁用。",
-  "c35.p4":
-    "脚本也可以等某个 pane：<code>keepane wait-output -t dev -w 2m 'Local:'</code> 等开发服务器打出这一行就返回它，测试在服务器开始监听时启动，不用轮询。",
-
-  "ch.title": "跑了什么、什么时候、花了多久",
-  "ch.sub":
-    "<kbd>C-b C-t</kbd> 把每条命令的开始时间、耗时和结果写在它那一行的末尾。pane 输出过的东西按天保存，<kbd>C-b /</kbd> 打开任意一天。",
-  "ch.caption":
-    "三条命令和它们的时间，其中一条失败；历史面板和查看器里的一天；<kbd>C-b Y</kbd> 列出跑过的命令；<kbd>/</kbd> 搜索所有天；手滑关掉的 pane，<kbd>C-b u</kbd> 找回来。",
-  "ch.p1":
-    "时间画在行尾的空白里。pane 宽度不变，程序输出的内容一个字不改。手机上在视图菜单里打开“每条命令的时间”，时间单独占一栏。",
-  "ch.p2":
-    "从 pane 顶上滚出去的内容写进这个 pane 当天的文件，留 30 天，每条命令前面有一行它的时间。查看器里 <kbd>[</kbd> <kbd>]</kbd> 在命令之间跳，<kbd>/</kbd> 搜索。",
-  "ch.p3": "关错了 pane 或窗口？它会保留 10 秒，程序还在跑，按 <kbd>C-b u</kbd> 放回原处。",
-  "ch.p4": "<kbd>C-b y</kbd> 只复制上一条命令的输出：测试失败的那段，直接贴进 issue 或交给 agent。",
-  "ch.p5":
-    "<kbd>C-b Y</kbd> 列出所有 pane 跑过的命令，最新的在前。<kbd>Enter</kbd> 进入复制模式并跳到那条命令，<kbd>y</kbd> 复制它的输出，<kbd>r</kbd> 再跑一次。",
-  "ch.p6":
-    "在 <kbd>C-b /</kbd> 面板里按 <kbd>/</kbd>，搜索所有 pane 所有天的历史；选中一行，查看器就停在那一行打开。脚本里用 <code>find-text -H</code>。",
-  "ch.p7":
-    "<kbd>C-b @</kbd> 列出 <code>ssh</code> 去过的机器：正有 pane 连着的排最前，其余按上次使用排，你的 <code>~/.ssh/config</code> 和 <code>known_hosts</code> 也在里面。<kbd>Enter</kbd> 跳到连着它的 pane 或在新窗口连接，<kbd>s</kbd> 分屏连接。不读也不存任何密码或密钥。",
-  "ch.caption3":
-    "<kbd>C-b @</kbd>：正连着的机器是绿色；其余按上次使用、次数排，并标出来源。",
-  "ch.caption2":
-    "测试失败；<kbd>C-b y</kbd> 取下它的输出；一条消息交给旁边的 agent，agent 改好了；测试通过。",
-
-  "cl.title": "另一台电脑上的 pane",
-  "cl.sub":
-    "同一个局域网、或者都连着 Tailscale 的两台电脑，像 <code>ssh-copy-id</code> 那样配对一次。之后一台上的 pane 就能给另一台上的 pane 发消息、派命令，回信会回到发消息的那个 pane。",
-  "cl.p1":
-    "pane 的地址写成 <code>主机:端口/%名字</code> 或 <code>主机:端口/$1:@3.%7</code>。回信按 pane 编号送回，发消息的 pane 被挪了位置也照样收得到。",
-  "cl.p2":
-    "每台机器有自己的密钥对。配对时用一次对方手机页的二维码密钥；之后每个请求和每个答复都带签名、时间和一次性的随机数，旧请求重放不了。认机器认的是密钥，不是地址。",
-  "cl.p3":
-    "配对本身不给任何东西：每台电脑自己选择共享哪些 session、窗口或 pane（<code>keepane link share</code>，或在 <code>C-b w</code> 里按 <code>s</code>），对方只能看到这些、只能给这些发消息（<code>shell</code> 模式的 pane 会把消息当命令执行，所以除外）。<code>keepane link allow --full</code> 把整台电脑交给对方，只对 Tailscale 生效（<code>--none</code> 全部收回）：在 pane 里打字、进入 session（<code>keepane link attach</code>，或在 <code>C-b w</code> 里对着 session 按 Enter）都要它。两者都只能在 keepane 外面做：pane 里的 agent 不能把别的机器放进来。",
-  "cl.p4":
-    "agent 也能通过 MCP 用：<code>list_links</code>、<code>link_info</code>、<code>read_screen</code>，以及用 <code>send_message</code> 发到另一台机器上的地址。",
-
-  "cm.title": "在 pane 之间派活",
+  "cm.title": "Pane 之间可以传递任务",
   "cm.sub":
-    "给 pane 起个名字、设个工作模式，就能给它发消息：shell 在提示符下执行，agent 在空闲时收到。<kbd>C-b v</kbd> 看所有 pane 和它们的收件箱。",
-  "cm.caption":
-    "发给名叫 builder 的 pane 的命令在那里执行，来源写在一段注释里；它的记录显示已完成，并保存了输出。然后是分面板的 dashboard：pane、一个 agent 的收件箱、任务，把一条消息置顶，右边排好版显示它的记录。",
-  "cm.caption2":
-    "三个 agent 在干活：每块的边框写着模型、已花费用、上下文占比；dashboard 把它们列在一起并给出总数；<code>keepane list-agents</code> 打印同样的内容。（agent 是写真实格式会话记录的替身。）",
-  "cm.p1":
-    "每条消息都用一行 JSON 写明来源。一串消息是一个任务，每一步等了多久、做了多久都有记录；来回超过八手的会被拒收。",
-  "cm.p2":
-    "Claude Code 这样的 agent 通过 MCP 使用它：发消息和回信、在一轮之内等回信、自己开 pane 干活。<code>keepane setup</code> 为 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode、pi 配好 hook 和注册，agent 每轮结束时就会收到下一条消息；如果某个 agent 从没报告过空闲，发给它的消息会告诉你缺的是哪一项配置。",
-  "cm.p3":
-    "pane 的工作模式只能在那个 pane 里切换，所以任何 pane 里运行的程序都不能把别的 pane 变成收到什么就执行什么的 shell。发生过的一切记在事件日志里，保留 30 天。",
-  "cm.p4":
-    "pane 里跑的每个 agent（Claude Code、Codex、pi）都显示模型、花了多少、上下文占了多少、token、CPU 和内存：dashboard 里有，手机上它的卡片上有，<code>keepane list-agents</code> 和 <code>#{agent_cost}</code> 这类变量也有。keepane 读的是 agent 自己写的会话记录；花费按 LiteLLM 的公开价目表（API 标价）计算，也可以 <code>agent-cost off</code> 关掉。",
-  "cm.p5":
-    "每个 agent 一步步在做什么：dashboard 的 Trace 标签页（<kbd>T</kbd>）把它的每一轮画成瀑布图，每次调用模型、每个工具一条横条，画在它运行的时间上，按类型着色（模型、读取、改文件、运行命令、子 agent、联网、浏览器、skill、hook……），失败的标红并写明原因（你拒绝了、被 hook 拦下）；最上面是它在等你做什么、还有哪些任务在后台跑；<code>keepane trace-pane</code> 输出同样的内容，树状文本或 JSON。",
+    "<p>传统终端复用工具主要解决的是窗口和 Pane 的组织问题。</p>" +
+    "<p>keepane 进一步让 Pane 之间能够通信。</p>" +
+    "<p>给每个 Pane 一个名字，就可以向它发送消息或任务。</p>",
+  "cm.code": `<span class="c"># 给 3 号 Pane 起名 builder，让它在提示符下执行收到的命令</span>
+keepane rename-pane -t %3 builder
+keepane set-work-mode -t %builder shell
 
-  "c4.title": "你的 .tmux.conf，导入一次就能用",
-  "c4.sub":
-    "命令行、: 命令提示符、配置文件里是同一套命令名。keepane import-config 把 tmux 配置里能用的导入 keepane 自己的配置，只导一次，用不了的注释掉并写明原因。",
-  "c4.p0":
-    "命令名可以只写不会混淆的前缀（<code>keepane att</code>、<code>keepane splitw -h</code>），选项名也一样：<code>set sync</code> 就是 <code>set synchronize-panes</code>，<code>set mon-act on</code> 就是 <code>set monitor-activity on</code>。开关类选项不给值就是切换。",
-  "c4.p1":
-    "<code>keepane send-keys</code>（包括 tmux 的 <code>-X</code> copy mode 命令）、<code>keepane capture-pane -p -e</code> 和 <code>keepane split-window</code> 可以在脚本里操作 session。在 pane 里运行时不用写 socket 名。",
-  "c4.p2":
-    "插件就是一个目录：放一个写着命令的 <code>&lt;名字&gt;.keepane</code> 文件，再加上任意语言的脚本，用 <code>set -g @plugin 名字</code> 加载。新开窗口、分屏、pane 退出和客户端接入时都会触发钩子。",
+<span class="c"># 向这个 Pane 发送任务</span>
+keepane send-message -t %builder "cargo test"
 
-  "c6.title": "状态栏上有 git 分支、CPU 和内存",
-  "c6.sub":
-    "默认的状态栏显示当前 git 分支、pane 所在目录、CPU 和内存占用，有电池的话还有电量。这些都是 keepane 自己每秒读一次，不启动额外进程。整行可以换成自己的写法，也可以关掉。",
-  "c6.p1":
-    "<code>#{git_branch}</code>、<code>#{cpu_percentage}</code>、<code>#{ram_percentage}</code>、<code>#{battery_percentage}</code>、<code>#{pane_current_path_short}</code> 和 <code>#{pane_pid_command}</code>（pane 里此刻运行的程序）可以放在 <code>status-right</code> 的任意位置；<code>set -g status off</code> 隐藏整行。",
-  "c6.p2":
-    "两个终端以不同尺寸接入时，由 <code>window-size</code> 决定按哪个终端的尺寸来。较小的终端只看到窗口的一部分，用 <kbd>Shift</kbd> + 方向键平移。",
-  "c6.p3":
-    "右键粘贴。<kbd>:</kbd> 命令行里 <kbd>Tab</kbd> 可以补全命令、flag、目标和选项名，<code>keepane completion powershell</code>（或 <code>bash</code>、<code>zsh</code>、<code>fish</code>）让你的 shell 也能这样补全。",
-  "c6.p4":
-    "<code>keepane update</code> 安装新版本，<code>keepane restart-server</code> 把正在运行的 session 连同历史和目录一起迁过去，已经接入的终端会自动重新连接。",
+<span class="c"># 查看执行结果（#12 是 send-message 返回的编号）</span>
+keepane trace-message 12 -w 600`,
+  "cm.modes": "Pane 有不同的工作模式：",
+  "cm.m1": "<b>normal</b>（默认）：消息留在 Inbox，由 Pane 里的程序用 <code>read-message</code> 读取。",
+  "cm.m2": "<b>shell</b>：收到的消息直接在 Shell 中执行（等 Shell 回到提示符）。",
+  "cm.m3": "<b>ai</b>：消息进入 Inbox，等 Agent 当前任务结束后再处理。",
+  "cm.after":
+    "<p>每条消息都会记录来源、状态和执行结果。多个消息还可以串成一条任务链，查看每一步的等待时间和执行耗时。</p>" +
+    "<p>不需要复制粘贴终端输出，也不必一直盯着另一个窗口。</p>",
+
+  "ca.title": "让 AI Agent 在同一个工作空间里协作",
+  "ca.sub":
+    "<p>keepane 可以通过 MCP 与 Claude Code、Codex、Gemini CLI、Cursor CLI、opencode、pi 等工具配合使用。</p>" +
+    "<p>Agent 不再只是一个独立运行的命令行程序，而是可以访问其他 Pane、发送消息、等待回复，并创建自己的工作 Pane。</p>",
+  "ca.eg": "例如：",
+  "ca.e1": "一个 Agent 负责分析代码。",
+  "ca.e2": "另一个 Agent 负责实现功能。",
+  "ca.e3": "第三个 Agent 负责运行测试。",
+  "ca.e4": "测试失败后，将输出发送给负责修复的 Agent。",
+  "ca.split": "keepane 负责消息传递和任务状态记录，Agent 自己决定如何完成任务。",
+  "ca.see": "查看 Agent 正在做什么",
+  "ca.see.p": "不必只看终端输出。keepane 可以读取 Agent 的运行记录，显示：",
+  "ca.s1": "当前使用的模型",
+  "ca.s2": "Token 使用量",
+  "ca.s3": "Context 使用率",
+  "ca.s4": "累计费用",
+  "ca.s5": "CPU 和内存占用",
+  "ca.trace": "追踪 Agent 的执行过程",
+  "ca.trace.p":
+    "<p>Trace 可以把一次 Agent 执行过程展开成时间线。</p>" +
+    "<p>模型调用、文件读取、代码修改、命令执行、浏览器操作和其他工具调用，都可以看到对应的执行顺序、耗时和结果。</p>" +
+    "<p>如果某一步失败，还可以查看失败原因。</p>" +
+    "<p>不只是知道 Agent 最后有没有完成任务，也能知道它是怎么完成的。</p>",
+
+  "c3.title": "关闭终端，工作不会丢失",
+  "c3.sub": "<p>一个长时间运行的任务，不应该因为终端窗口关闭而中断。</p>",
+  "c3.code": `<span class="c"># 断开当前终端</span>
+<span class="c"># Ctrl-b d</span>
+
+<span class="c"># 重新连接</span>
+keepane attach`,
+  "c3.p":
+    "<p>keepane 会保存 Session、Window 和 Pane 的布局，以及每个 Pane 对应的程序、工作目录和终端输出。</p>" +
+    "<p>即使电脑重启，下一次启动 keepane，也可以恢复之前保存的工作空间。</p>" +
+    "<p>默认保存最近的终端输出，也可以配置保存完整滚动历史。</p>" +
+    "<p>误关 Pane 或 Window？在保留期限内还可以恢复。</p>" +
+    "<p>对于编译、测试、部署和长时间运行的 Agent 任务，不必再担心终端窗口意外关闭。</p>",
+
+  "cl.title": "两台电脑之间传递任务",
+  "cl.sub":
+    "<p>有时候工作不只发生在一台电脑上。</p>" +
+    "<p>例如桌面电脑负责运行 Agent，笔记本负责查看结果；或者在两台开发机器之间分配任务。</p>",
+  "cl.pair": "keepane 支持两台电脑配对。配对后，可以：",
+  "cl.l1": "查看另一台电脑上共享的 Pane。",
+  "cl.l2": "向远程 Pane 发送消息和命令。",
+  "cl.l3": "获取远程终端输出。",
+  "cl.l4": "在授权后直接连接远程 Session。",
+  "cl.after":
+    "<p>Agent 也可以通过 MCP 使用这些能力。</p>" +
+    "<p>每台机器使用自己的密钥身份。配对之后，每台机器仍然可以决定具体共享哪些 Session、Window 和 Pane。</p>" +
+    "<p>支持同一局域网，也可以通过 Tailscale 等私有网络连接。</p>",
+
+  "cw.title": "手机上也能查看和操作终端",
+  "cw.sub": "<p>长时间运行的任务，不一定需要一直坐在电脑前。</p><p>运行：</p>",
+  "cw.p":
+    "<p>扫描终端中显示的二维码，就可以在手机浏览器里查看电脑上的 Pane。</p>" +
+    "<p>不需要安装手机 App。</p>" +
+    "<p>可以查看实时终端输出、切换 Pane、输入命令、发送 Agent 消息，也可以查看任务完成状态。</p>" +
+    "<p>当命令结束、Agent 完成任务或等待授权时，还可以通过通知了解情况。</p>" +
+    "<p>支持 ntfy、飞书、企业微信、钉钉、Slack、Discord 等通知渠道。</p>" +
+    "<p>手机负责查看和输入，实际命令仍然在电脑上执行。</p>" +
+    "<p>Web 服务默认需要主动启动。如果需要从外网访问，建议通过 Tailscale 等私有网络连接。</p>",
+
+  "c1.title": "熟悉的 tmux 操作习惯",
+  "c1.sub":
+    "<p>keepane 不要求你重新学习一套终端操作方式。</p>" +
+    "<p>常用 tmux 命令、快捷键和配置文件都尽可能保持兼容。</p>",
+  "c1.code": `<span class="c"># 左右分屏</span>
+Ctrl-b %
+
+<span class="c"># 上下分屏</span>
+Ctrl-b "
+
+<span class="c"># 切换 Pane</span>
+Ctrl-b h/j/k/l
+
+<span class="c"># 最大化当前 Pane</span>
+Ctrl-b z
+
+<span class="c"># 查看 Session / Window / Pane</span>
+Ctrl-b w
+
+<span class="c"># 断开 Session</span>
+Ctrl-b d`,
+  "c1.import": "支持导入已有的 <code>.tmux.conf</code>：",
+  "c1.p":
+    "<p>能够识别的配置会转换为 keepane 配置，暂不支持的部分会保留并说明原因。</p>" +
+    "<p>Windows 下使用 ConPTY 和 Win32 Console API，PowerShell、cmd 和 WSL 都可以直接运行。</p>" +
+    "<p>PSReadLine、输入法以及全屏终端程序也能正常使用。</p>",
 
   "c5.title": "安装",
-  "c5.unix": "Linux 和 macOS",
-  "c5.unix.sub": "每个系统一个 .tar.gz（Linux 版静态编译；Mac 分 Apple 芯片和 Intel），解压后把 keepane 放进 PATH。",
-  "c5.msi": "Windows 安装包",
-  "c5.msi.sub": "下载 .msi 双击，装到 Program Files，自动进系统 PATH，卸载在“应用和功能”里。",
-  "c5.brew": "Homebrew",
-  "c5.brew.sub": "macOS 和 Linux，装的是发布页上编译好的包；以后用 brew upgrade keepane 升级。",
-  "c5.scoop": "Scoop",
-  "c5.scoop.sub": "仓库里的清单直接装 zip，以后跟着新版本更新。",
-  "c5.zip": "Windows 免安装",
-  "c5.zip.sub": ".zip 里就是同一个 exe，解压到哪都能跑。",
-  "c5.cargo": "从源码装",
-  "c5.get": "去下载",
+  "c5.sub": "keepane 使用 Rust 开发，提供 Windows、Linux 和 macOS 版本。",
+  "c5.win": "可以使用 MSI 安装包（在发布页下载），也可以通过 winget 安装：",
+  "c5.get": "下载 MSI",
+  "c5.cargo": "从源码安装",
+  "c5.more": "更多安装方式和使用说明：<a href=\"https://github.com/newdee/keepane\">github.com/newdee/keepane</a>",
 
-  "close.title": "下次跑长任务的时候试试。",
-  "close.docs": "看文档",
-  "footer.built": "用 Rust 写的，基于 ConPTY 和 Win32 控制台 API。",
+  "close.title": "一个工作空间，而不只是几个终端窗口",
+  "close.p":
+    "<p>keepane 从 tmux 熟悉的 Pane 和 Session 出发，增加了消息传递、Agent 协作、执行追踪和远程访问能力。</p>" +
+    "<p>你可以继续像以前一样使用终端，也可以让多个 Agent 在不同 Pane 中分工，把它们的工作连接起来。</p>",
+  "footer.built": "MIT License · Built with Rust",
 };
 
 const nodes = Array.from(document.querySelectorAll("[data-i18n]"));
