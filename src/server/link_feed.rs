@@ -291,13 +291,23 @@ impl Server {
         self.feeds = feeds;
     }
 
+    /// The address of the machine paired by `key` while it is fed and may
+    /// still be (`may_stream`, judged now: what it has here can have been
+    /// taken back since its last batch); None otherwise.
+    pub(super) fn fed_addr(&self, key: &str) -> Option<String> {
+        let sub = self.feeds.iter().find(|s| s.key == key && !s.tx.is_closed())?;
+        let peer = self.link.as_ref().and_then(|l| l.peer_by_key(key));
+        may_stream(peer, sub.ip, &sub.addr).ok()?;
+        Some(sub.addr.clone())
+    }
+
     /// Keys typed into a machine's copy of pane `pane` (`link_proto::Input`):
     /// into the pane, as if typed here, while that machine is fed (it has
     /// all of this one: `stream_push` ends the feed of one that no longer
     /// has). A pane of a third machine copied here is not this one's to
     /// give: no further.
     pub(super) fn stream_input(&mut self, key: &str, pane: u32, bytes: &[u8]) {
-        if !self.feeds.iter().any(|s| s.key == key && !s.tx.is_closed()) {
+        if self.fed_addr(key).is_none() {
             return;
         }
         let Some(p) = self.find_pane_mut(pane).filter(|p| p.remote.is_none()) else { return };
@@ -312,7 +322,7 @@ impl Server {
     /// places only (`mirrored::command_from_machine`); then, after the changes it
     /// made, its reply on that machine's feed. Kept in the event log.
     pub(super) fn stream_command(&mut self, key: &str, id: u64, line: &str) {
-        let Some(addr) = self.feeds.iter().find(|s| s.key == key && !s.tx.is_closed()).map(|s| s.addr.clone()) else {
+        let Some(addr) = self.fed_addr(key) else {
             return;
         };
         let (ok, text, pane) = match self.command_from_machine(line) {
@@ -367,13 +377,12 @@ impl Server {
 /// `addr`) may have a stream now: all of this machine, as the request
 /// comes (over Tailscale or from this machine, or `--lan`). Judged when it
 /// connects and again with each batch of changes (taken back: it ends).
+/// Disconnected here (`off`) is not asked: that is whether this machine
+/// asks it, not what it was given (decision 21).
 pub(super) fn may_stream(peer: Option<&link::Peer>, ip: IpAddr, addr: &str) -> Result<(), String> {
     match peer {
         None => Err(format!(
             "{ip} is not paired with this machine: `keepane link add` its web address here, or `keepane link trust`"
-        )),
-        Some(p) if p.off => Err(format!(
-            "this machine is disconnected from {addr} (`keepane link connect {addr}` here talks with it again)"
         )),
         Some(p) if !p.full => Err(format!(
             "{addr} does not have all of this machine, which a copy of its sessions takes: `keepane link allow {addr} --full` here (outside keepane)"
@@ -430,9 +439,11 @@ mod tests {
         assert!(may_stream(Some(&peer(true, false)), here, "x").is_ok(), "from this machine");
         assert!(may_stream(Some(&peer(true, false)), lan, "x").unwrap_err().contains("--full --lan"));
         assert!(may_stream(Some(&peer(true, true)), lan, "x").is_ok(), "--lan: any network");
-        // Disconnected here: no stream, whatever it was given.
-        let off = link::Peer { off: true, ..peer(true, true) };
-        assert!(may_stream(Some(&off), here, "x").unwrap_err().contains("disconnected"));
+        // Disconnected here is this machine not asking it: it still has
+        // what it was given (decision 21), and no more.
+        let off = |full| link::Peer { off: true, ..peer(full, true) };
+        assert!(may_stream(Some(&off(true)), here, "x").is_ok());
+        assert!(may_stream(Some(&off(false)), here, "x").unwrap_err().contains("--full"));
     }
 
     #[test]

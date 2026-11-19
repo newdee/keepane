@@ -116,8 +116,8 @@ impl Server {
     ) -> Result<(), String> {
         // Disconnected here: nothing is asked of it, but that it forget
         // this machine (`link remove`).
-        if self.link_off(to) && !matches!(op, LinkOp::Remove { .. }) {
-            return Err(format!("{addr} is disconnected here: `keepane link connect {addr}` talks with it again"));
+        if !matches!(op, LinkOp::Remove { .. }) {
+            self.may_ask(to, addr)?;
         }
         let (port, _) = self.own_web()?;
         let nonce = link::nonce().map_err(|e| format!("link: {e:#}"))?;

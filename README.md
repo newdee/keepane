@@ -247,9 +247,10 @@ changes its work mode, `R` marks it ready (unsticks it), `o` goes there
 message (`u` brings it back), `K`/`J` move it, `t` puts it first, Enter
 moves into it to scroll. Closing a pane, deleting a message and switching
 a pane to `shell` (where what it gets is run) ask first. `L` lists the
-paired machines on the bottom line: `j`/`k` pick one, then `c` connects
-it, `x` disconnects it and `D` forgets its pairing (`keepane link`,
-below; connecting and forgetting ask first).
+paired machines on the bottom line, each with what it has here (`has
+full`, `has 2 shared`, `has nothing`): `j`/`k` pick one, then `c`
+connects it, `x` disconnects it, `R` takes back what it has here and `D`
+forgets its pairing (`keepane link`, below; `R` and `D` ask first).
 
 `>` turns to the next page, `<` the one before (the bottom line says
 `page 2/3`, and keeps it when too narrow for every key). On page 2,
@@ -611,7 +612,7 @@ In a session, press the prefix `Ctrl+b`, then a key from this table:
 | `d` | detach |
 | `?` | list key bindings. This and other output of more lines than the window (`:show-messages`, `:show-prompt-history`) opens at its end, as tmux's view mode does, and scrolls: ↑ ↓ or `j` `k`, PgUp PgDn, `g` `G`, the wheel; `/` `?` search it (the hit in inverse), `n` `N` go on; any other key closes it |
 | (wait) | after the prefix, a key not pressed within half a second brings up a panel of what the keys do, by group (panes, windows, sessions, tools, and keys you bound yourself); the key then works as ever (`prefix-hint`, `prefix-hint-delay`) |
-| `s` / `w` | pick a session / a window, `w` down to every pane. By default a chart: `keepane` centred on top, the sessions on the row under it, then the windows of the session you are on, then that window's panes, each row spread across (a row wider than the screen scrolls, `‹` `›` at its ends), each an open box in its kind's colour (a session blue, a window purple, a pane green, the selected one yellow; its name in the text's colour, the rest faint) with what it is in its top border (`host`, `session`, `window`, `pane`); `h` `l` or ← → move along a row and the rows under it follow, `k` or ↑ goes to the parent, `j` or ↓ to the current window or the active pane. `a` opens every node at once, each parent over its own; when that does not fit the boxes get narrower, then become one line each, then just their numbers, and what is still too wide scrolls to the selection (`a` again: only the branch). Paired with other machines (`keepane link`, below), a row of machines comes under `keepane`, this one first, each other machine's block its name (once it said it) over its address. A session is under the machine it is of and nowhere else: this machine's block has this machine's sessions only. Under a machine that gave this one `--full` are its sessions, windows and panes, and Enter on one goes into it; under one that only shares (`link share`, below) is what it shares (asked of it every 5 seconds while the chart is open; `offline` when it does not answer), and Enter on one of its panes opens a window watching it live (`keepane link watch`, below). On a machine's block, `c` connects it, `x` disconnects it (still paired; it reads `disconnected`) and `D` forgets the pairing (asked first). `x` and `D` on a session, window or pane of another machine ask first and say which machine it is killed on. `s` shares a session, window or pane of this machine with the paired machine (a menu asks which when there are several), or takes it back; shared ones read `shared`. `v` turns it into a tree of blocks, one a line (↑ ↓ the parent and the first child, ← → along the same level, `-` / `+` fold and unfold a session or a window), then the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold), then the chart again. In the tree and the list `j` `k` go line by line; in all three `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `D` (or Delete) kills them and also forgets a session's save, so that `resume` does not bring it back. On a session both ask first (y/n). `set -g choose-tree-style tree` (or `list`) opens it that way |
+| `s` / `w` | pick a session / a window, `w` down to every pane. By default a chart: `keepane` centred on top, the sessions on the row under it, then the windows of the session you are on, then that window's panes, each row spread across (a row wider than the screen scrolls, `‹` `›` at its ends), each an open box in its kind's colour (a session blue, a window purple, a pane green, the selected one yellow; its name in the text's colour, the rest faint) with what it is in its top border (`host`, `session`, `window`, `pane`); `h` `l` or ← → move along a row and the rows under it follow, `k` or ↑ goes to the parent, `j` or ↓ to the current window or the active pane. `a` opens every node at once, each parent over its own; when that does not fit the boxes get narrower, then become one line each, then just their numbers, and what is still too wide scrolls to the selection (`a` again: only the branch). Paired with other machines (`keepane link`, below), a row of machines comes under `keepane`, this one first, each other machine's block its name (once it said it) over its address. A session is under the machine it is of and nowhere else: this machine's block has this machine's sessions only. Under a machine that gave this one `--full` are its sessions, windows and panes, and Enter on one goes into it; under one that only shares (`link share`, below) is what it shares (asked of it every 5 seconds while the chart is open; `offline` when it does not answer), and Enter on one of its panes opens a window watching it live (`keepane link watch`, below). On a machine's block, the key line says what it has here (`has full`, `has 2 shared`, `has nothing`); `c` connects it, `x` disconnects it (this machine stops asking it; it reads `disconnected`), `R` takes back what it has here and `D` forgets the pairing (both asked first). `x` and `D` on a session, window or pane of another machine ask first and say which machine it is killed on. `s` shares a session, window or pane of this machine with the paired machine (a menu asks which when there are several), or takes it back; shared ones read `shared`. `v` turns it into a tree of blocks, one a line (↑ ↓ the parent and the first child, ← → along the same level, `-` / `+` fold and unfold a session or a window), then the plain list (`j` `k` or arrows move, `-`/`+` or Left/Right fold), then the chart again. In the tree and the list `j` `k` go line by line; in all three `g` `G` top/bottom, digits jump (every line you can pick is numbered; past 9 type both digits, `1` `2` is line 12), `Enter` goes there, `q` cancels; `f` filters by a substring as you type, `Enter` keeps it and `Esc` puts the old one back; `t` tags the line, `T` clears the tags, `x` kills the tagged lines, or the current one; `D` (or Delete) kills them and also forgets a session's save, so that `resume` does not bring it back. On a session both ask first (y/n). `set -g choose-tree-style tree` (or `list`) opens it that way |
 | `(` / `)` | switch the client to the previous / next session |
 | `D` | pick a client from a list and detach it |
 | `>` / `<` | pane menu / window menu (the letter in brackets runs the entry, `Enter` runs the highlighted one) |
@@ -1747,7 +1748,7 @@ words are not read: a machine paired before 0.56 and not given anything
 since has nothing until `link allow --full` or `link share`.
 
 ```powershell
-keepane link disconnect 100.64.0.3:7681        # stop talking with it, both ways; still paired (link connect: again)
+keepane link disconnect 100.64.0.3:7681        # stop asking it (this side only; it still has what it was given); link connect: again
 keepane link remove 100.64.0.3:7681            # unpair, on both; what was shared goes too (link add pairs again)
 keepane link trust 100.64.0.3:7681 <key>       # by hand, with the key `keepane link id` prints there (--full too)
 keepane link rekey                             # a new key: every pairing has to be made again
@@ -1801,14 +1802,27 @@ machine needs keepane 0.63 or later. Its sessions are not saved here,
 and a third machine does not see them through this one. (Up to 0.71
 they were listed among this machine's own sessions, as copies.)
 
-A paired machine can be set aside without unpairing it. `keepane link
-disconnect 100.64.0.3:7681` stops this machine talking with it, both
-ways: its sessions go from here, nothing is asked of it or sent to it,
-and what it asks is refused, so it can do nothing here either. It stays
-paired, with what it was given, across restarts; `keepane link connect`
-(from outside a pane) talks with it again. In the chart of `C-b w`, on a
-machine's block, `c` connects, `x` disconnects and `D` forgets the
-pairing (asked first); in `C-b v`, `L` lists the machines for the same.
+Each machine decides two things, and only for itself:
+
+- **Connecting** is whether this machine asks the other one. `keepane
+  link disconnect 100.64.0.3:7681` stops it: the other machine's sessions
+  go from here, and nothing is asked of it or sent to it. It stays so
+  across restarts; `keepane link connect` (from outside a pane) asks it
+  again. This is this machine's side only: the other machine still
+  connects here whenever it likes, and has what it was given here.
+- **What it has here** is what this machine gives the other one:
+  `link share` / `link unshare`, `link allow --full`. `keepane link allow
+  100.64.0.3:7681 --none` takes all of it back: the other machine stays
+  paired, but sees and reaches nothing here. `keepane link remove`
+  unpairs, on both machines.
+
+So to stop looking at a machine, disconnect it; to keep it out, take back
+what it has, or unpair. (Up to 0.79 a disconnect also refused what the
+other machine asked, so both had to connect again.) In the chart of
+`C-b w`, on a machine's block, the key line says what it has here (`has
+full`, `has 2 shared`, `has nothing`); `c` connects, `x` disconnects, `R`
+takes back what it has here and `D` forgets the pairing (`R` and `D` ask
+first); in `C-b v`, `L` lists the machines for the same.
 
 A pane of another machine opens live here: Enter on it in the chart of
 `C-b w` opens a window watching it (Enter again goes to that window while

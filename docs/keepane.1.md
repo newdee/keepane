@@ -416,22 +416,26 @@ save-session of one are refused. Looking at it never resizes it there.
 They are not saved here, and a third machine does not see them through
 this one. `show-mirror` (`[host:port] [-t pane] [-J]`) lists the machines
 followed, one's sessions, or a pane's screen as kept here. In the chart
-of `C-b w`, on a machine's block, `c` connects it, `x` disconnects it
-and `D` forgets its pairing (asked first); the dashboard's `L` lists the
-machines for the same.
+of `C-b w`, on a machine's block, the key line says what it has here
+(`has full`, `has 2 shared`, `has nothing`); `c` connects it, `x`
+disconnects it, `R` takes back what it has here (`link allow --none`) and
+`D` forgets its pairing (`R` and `D` asked first); the dashboard's `L`
+lists the machines for the same.
 `trace-message` of a message sent there asks
 that machine what became of it (queued, delivered, done or failed, a shell
 command's output; `-w` waits there). `keepane link remove <host:port>`
 (`link-remove`) unpairs, on both machines, and what was shared goes with
 it; `keepane link rekey` (`link-rekey`) makes a new key, after which every
 pairing has to be made again. `keepane link disconnect <host:port>`
-(`link-disconnect`) stops this machine talking with a paired one, both
-ways: it is asked nothing (its sessions go from here, no message is sent
-to it) and answered nothing (its requests get 403), but stays paired with
-what it was given, across restarts too; `keepane link connect <host:port>`
-(`link-connect`, from outside a pane) talks with it again. `link list`
-says which machines are disconnected; `link list -J` gives the paired
-machines as JSON at once, none of them asked.
+(`link-disconnect`) stops this machine asking a paired one: its sessions
+go from here and nothing is asked of it or sent to it, across restarts
+too; `keepane link connect <host:port>` (`link-connect`, from outside a
+pane) asks it again. It is this machine's side only: the other machine
+still connects here and has what it was given (`link allow --none` takes
+that back, `link remove` unpairs). `link list` says which machines are
+disconnected; `link list -J` gives the paired machines as JSON at once,
+none of them asked, each with `connected`, `full` and `shared` (how many
+things are shared with it).
 
 A paired machine has one of two levels here, and nothing until one is
 given. `keepane link share <host:port> <target>...` (`link-share`) shares

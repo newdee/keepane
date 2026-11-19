@@ -163,15 +163,10 @@ impl Server {
             return self.link_answer(&nonce, 401, why);
         }
         l.seen.insert(from.clone(), chrono::Local::now());
-        // Disconnected here: it is answered nothing, but that this machine
-        // is forgotten there (`link remove` there).
-        if peer.off && req.path != "/link/remove" {
-            return self.link_answer(
-                &nonce,
-                403,
-                "this machine is disconnected from yours (`keepane link connect` there talks with it again)".into(),
-            );
-        }
+        // Disconnected here (`off`) is this machine's side only: it asks
+        // that machine nothing, but answers it by what it was given, as
+        // ever; keeping it out is `link allow --none` or `link remove`
+        // (decision 21).
         // The key says who it is; the address is where it is now.
         if peer.addr != addr {
             if let Some(p) = l.peers.iter_mut().find(|p| p.key == from) {

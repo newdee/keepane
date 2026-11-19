@@ -494,8 +494,9 @@ pub struct Peer {
     /// read by anyone on it (`full_network`).
     pub lan: bool,
     /// Disconnected here (`link disconnect`): this machine asks it nothing
-    /// and answers it nothing until `link connect`; the pairing and what it
-    /// is given are kept (decision 20).
+    /// (no copy of its sessions, no list, no message) until `link connect`.
+    /// One way: it is still answered by what it was given, the pairing and
+    /// that kept (decision 21; `link allow --none` keeps it out).
     pub off: bool,
 }
 
@@ -503,7 +504,8 @@ const TABLE_HEAD: &str = "# keepane link: the machines paired with this server (
                           # One a line: public key, address, then `full` when it has all of this\n\
                           # machine, and `lan` when it has that from any network, not only Tailscale.\n\
                           # Without `full` it sees what is shared with it (`keepane link share`).\n\
-                          # `off`: disconnected here (`keepane link disconnect`), still paired.\n";
+                          # `off`: this machine does not ask it (`keepane link disconnect`); it is\n\
+                          # still paired and answered by what it is given.\n";
 
 /// The table's lines back; comments, blank and malformed lines skipped,
 /// and words it does not know (keepane 0.55's five permissions were read
@@ -937,7 +939,7 @@ mod tests {
         let peers = vec![
             Peer { key: k1.clone(), addr: "100.64.0.3:7681".into(), full: true, lan: false, off: false },
             // Disconnected here (`link disconnect`): kept in the table, with
-            // what it has, and nothing of it without `full`.
+            // what it has, with `full` or without.
             Peer { key: k2.clone(), addr: "[fd7a::1]:7681".into(), full: false, lan: false, off: true },
             Peer { key: k3.clone(), addr: "10.0.0.3:7681".into(), full: true, lan: true, off: true },
         ];

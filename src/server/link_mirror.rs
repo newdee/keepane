@@ -1161,9 +1161,25 @@ mod tests {
             }
         }
         assert!(s.link_shares.is_empty());
-        // Typed in by a machine this one feeds: a copied pane is not this
+        // Typed in by a machine this one feeds (paired, with all of this
+        // one, so that this is what stops it): a copied pane is not this
         // machine's to type into.
+        let dir = std::env::temp_dir().join(format!("keepane-third-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        s.link = Some(crate::server::link_state::LinkHost {
+            dir: dir.clone(),
+            id: crate::link::Identity::make(&dir.join("key")).unwrap(),
+            peers: vec![peer.clone()],
+            nonces: Default::default(),
+            seen: Default::default(),
+            origin: Default::default(),
+            refused: Default::default(),
+            sent: Default::default(),
+            made: Default::default(),
+            incoming: Default::default(),
+        });
         let _fed = s.feed_for_test("c");
+        assert!(s.fed_addr("c").is_some(), "fed, and may be");
         s.stream_input("c", local, b"rm -rf /\r");
         assert!(typed.try_recv().is_err());
         // What its model answers (a cursor report, the terminal's name) is
@@ -1187,6 +1203,19 @@ mod tests {
         assert_eq!(w.rects, before);
         w.panes[0].resize(100, 40);
         assert_eq!((w.panes[0].cols, w.panes[0].rows), (20, 5));
+        // What it has here taken back (`link allow --none`), its feed not
+        // yet ended (that is after the batch): already not fed for what it
+        // types or asks; nor once unpaired.
+        s.link.as_mut().unwrap().peers[0].full = false;
+        assert!(s.fed_addr("c").is_none(), "taken back: judged now");
+        s.link.as_mut().unwrap().peers[0].full = true;
+        assert!(s.fed_addr("c").is_some());
+        // Disconnected here is this machine's side only (decision 21).
+        s.link.as_mut().unwrap().peers[0].off = true;
+        assert!(s.fed_addr("c").is_some(), "one way");
+        s.link.as_mut().unwrap().peers.clear();
+        assert!(s.fed_addr("c").is_none(), "unpaired");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A session is of one machine and is listed under that machine alone

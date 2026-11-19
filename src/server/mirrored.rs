@@ -564,6 +564,12 @@ pub(super) fn forget_asked(said: &str) -> String {
     format!("forget this machine? pairing again takes `link add` (y/n)  {said} ")
 }
 
+/// The question before what a machine has here is taken back (`R` on its
+/// block in the chart): `link allow --none`, still paired.
+pub(super) fn revoke_asked(said: &str) -> String {
+    format!("take back all it has here? still paired (y/n)  {said} ")
+}
+
 impl Server {
     /// The machine a session is of, as a person reads it: `DFINE
     /// (100.64.0.3:7681)`, its address alone until it said its name; none

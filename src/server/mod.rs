@@ -8700,15 +8700,16 @@ impl Server {
             // The task board and the tree act on the tagged lines, else the
             // one under the cursor, and stay open (the list is live, so the
             // rows change in place). A session asks first.
-            // Another machine under the cursor: `c` talks with it again,
-            // `x` stops (still paired), `D` forgets the pairing (asked
-            // first; decision 20).
-            (KeyCode::Char('c' | 'x' | 'D') | KeyCode::DC, false, false)
+            // Another machine under the cursor: `c` asks it again, `x`
+            // stops asking it (this machine's side only), `R` takes back
+            // what it has here, `D` forgets the pairing (both asked first;
+            // decisions 20, 21).
+            (KeyCode::Char('c' | 'x' | 'R' | 'D') | KeyCode::DC, false, false)
                 if matches!(ch.items.get(ch.sel), Some(ChooserItem::Host(Some(_)))) =>
             {
                 let Some(ChooserItem::Host(Some(m))) = ch.items.get(ch.sel).copied() else { return };
                 let key = match k.code {
-                    KeyCode::Char(c @ ('c' | 'x')) => c,
+                    KeyCode::Char(c @ ('c' | 'x' | 'R')) => c,
                     _ => 'D',
                 };
                 self.picker_machine(cid, m, key);
@@ -8861,17 +8862,28 @@ impl Server {
     }
 
     /// A key on another machine's block in the chart: `c` connect, `x`
-    /// disconnect (at once: it is taken back with `c`), `D` its pairing
-    /// forgotten, asked first, since pairing again takes its web address.
+    /// disconnect (at once: it is taken back with `c`), `R` what it has
+    /// here taken back and `D` its pairing forgotten, both asked first,
+    /// since giving again or pairing again takes more than a key.
     fn picker_machine(&mut self, cid: ClientId, m: u16, key: char) {
         let Some(addr) = self.chart_hosts().get(m as usize).cloned() else { return };
-        if key == 'D' {
+        // Nothing to take back: said, as the dashboard says it.
+        if key == 'R' && self.granted_here(&addr).as_deref() == Some("nothing") {
+            let said = self.machine_at(&addr);
+            return self.message(cid, &format!("{said} has nothing here already"));
+        }
+        if key == 'D' || key == 'R' {
             // The question first, the machine after it (`asked_on`).
             let said = self.machine_at(&addr);
+            let (cmd, label) = if key == 'D' {
+                (Cmd::LinkRemove { addr }, mirrored::forget_asked(&said))
+            } else {
+                (Cmd::LinkAllow { addr, full: false, lan: false }, mirrored::revoke_asked(&said))
+            };
             if let Some(c) = self.clients.get_mut(&cid) {
                 c.prompt = Some(Prompt {
-                    kind: PromptKind::Confirm(Box::new(Cmd::LinkRemove { addr })),
-                    label: mirrored::forget_asked(&said),
+                    kind: PromptKind::Confirm(Box::new(cmd)),
+                    label,
                     input: String::new(),
                     cursor: 0,
                     hint: None,
@@ -10664,6 +10676,13 @@ impl Server {
             });
             grid = own;
         }
+        // Another machine under the chart's cursor: what it has here.
+        let machine_has = match self.clients[&cid].chooser.as_ref().and_then(|ch| ch.items.get(ch.sel)) {
+            Some(ChooserItem::Host(Some(m))) => {
+                self.chart_hosts().get(usize::from(*m)).and_then(|a| self.granted_here(a))
+            }
+            _ => None,
+        };
         let c = self.clients.get_mut(&cid).unwrap();
         c.window_hits = window_hits;
         if let Some(ch) = c.chooser.as_mut() {
@@ -10689,10 +10708,15 @@ impl Server {
             // 80 columns.
             let paired = self.link.as_ref().is_some_and(|l| !l.peers.is_empty());
             let on_machine = matches!(ch.items.get(ch.sel), Some(ChooserItem::Host(Some(_))));
+            // On another machine: what it has here, then what the keys do
+            // to it, within 80 columns after the `[n/m] hjkl move` before
+            // it (`has 99 shared` too; the `q quit` after them may be cut).
+            // `a` and `v` still work, said on every other line.
+            let machine_keys =
+                format!("has {}  c connect  x disconnect  R revoke  D forget", machine_has.as_deref().unwrap_or("?"));
             let actions = match ch.kind {
                 ChooserKind::Jobs => "Enter go  x kill  r restart  t tag  f filter",
-                // On another machine: what the keys do to it.
-                ChooserKind::Tree { .. } if on_machine => "c connect  x disconnect  D forget  a all  v tree",
+                ChooserKind::Tree { .. } if on_machine => machine_keys.as_str(),
                 ChooserKind::Tree { style: TreeStyle::Chart, .. } if ch.all && paired => {
                     "x kill  D delete  s share  f filter  a branch  v tree"
                 }

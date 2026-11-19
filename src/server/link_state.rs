@@ -176,11 +176,12 @@ impl Server {
     }
 
     /// `link-disconnect` (`off`) and `link-connect`: a paired machine this
-    /// one stops talking with, both ways (nothing asked of it, nothing
-    /// answered it), and talks with again; still paired, with what it was
-    /// given, and kept so across a restart (docs/design/link.md, decision
-    /// 20). Connecting lets it in again, so only a person outside every
-    /// pane does that; anyone may disconnect.
+    /// one stops asking (no copy of its sessions, no list, no message),
+    /// and asks again; kept so across a restart. One way: it is answered by
+    /// what it was given all along, and keeping it out is `link allow
+    /// --none` or `link remove` (docs/design/link.md, decision 21). Whom
+    /// this machine talks with is a person's choice, so connecting is done
+    /// outside every pane; anyone may disconnect.
     fn link_connect(&mut self, cid: Option<ClientId>, addr: &str, off: bool) -> Outcome {
         if !off && self.caller_pane(cid).is_some() {
             return Outcome::Error(not_from_a_pane("link-connect"));
@@ -204,8 +205,7 @@ impl Server {
         }
         if off {
             // Let go of at once: its sessions here and what it last said
-            // it shares; what it has of this machine (its stream) ends with
-            // the next change (`may_stream`).
+            // it shares. What it has of this machine stays (one way).
             self.mirror_remove(&key, "is disconnected here");
             self.remote_views.remove(addr);
         }
@@ -216,10 +216,26 @@ impl Server {
             &format!(",\"addr\":{},\"key\":{},\"by\":{}", js(addr), js(&key), js(&by)),
         );
         Outcome::Text(if off {
-            format!("disconnected from {addr}: still paired; `keepane link connect {addr}` talks with it again")
+            format!(
+                "disconnected from {addr}: this machine asks it nothing; still paired, and it still has what it \
+                 was given here (`keepane link allow {addr} --none` takes that back); `keepane link connect {addr}` \
+                 asks it again"
+            )
         } else {
             format!("connected to {addr}")
         })
+    }
+
+    /// Whether this machine may ask the machine paired by `key` (at
+    /// `addr`): not when it is disconnected here. Every request that
+    /// starts here goes through this (`link_signed`, the commits and
+    /// projects sent by `push` and `send-agents`); the copy of its sessions
+    /// is not started for it (`mirror_peers`).
+    pub(super) fn may_ask(&self, key: &str, addr: &str) -> Result<(), String> {
+        if self.link_off(key) {
+            return Err(format!("{addr} is disconnected here: `keepane link connect {addr}` asks it again"));
+        }
+        Ok(())
     }
 
     /// Whether the machine paired by `key` is disconnected here.

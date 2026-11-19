@@ -67,9 +67,11 @@ pub const ACTIONS: &[&str] = &[
     "chat-new",
     "chat-topic",
     "chat-tag",
-    // `L`: a paired machine talked with again, no longer, or forgotten.
+    // `L`: a paired machine asked again, no longer, given nothing here
+    // (`link-allow --none`), or forgotten.
     "link-connect",
     "link-disconnect",
+    "link-allow",
     "link-remove",
 ];
 
@@ -82,9 +84,10 @@ pub fn needs_yes(argv: &[String]) -> bool {
         Some("set-work-mode") => argv.last().is_some_and(|m| m == "shell"),
         // A link handed out (a new one, or one more), or one ended.
         Some("share") => !matches!(argv.get(1).map(String::as_str), Some("-l" | "extend")),
-        // A machine let in again, or its pairing forgotten (to disconnect
-        // is taken back with a key).
-        Some("link-connect" | "link-remove") => true,
+        // What a machine has here taken back, or its pairing forgotten:
+        // both take more than a key to undo (connecting and disconnecting
+        // are this machine's side only, each undone by the other key).
+        Some("link-allow" | "link-remove") => true,
         _ => false,
     }
 }
@@ -552,7 +555,7 @@ enum Dialog {
     /// How long a share goes on for from now (`e` on page 2).
     Extend { id: u32, pick: usize },
     /// The paired machines (`L`): one picked with j/k, then `c` connect,
-    /// `x` disconnect, `D` forget.
+    /// `x` disconnect, `R` revoke what it has here, `D` forget.
     Machines { pick: usize },
 }
 
@@ -564,6 +567,10 @@ pub struct MachineRow {
     pub connected: bool,
     /// How many of its sessions are here.
     pub sessions: usize,
+    /// What it has here: all of this machine, or this many things shared
+    /// (None: an older server's table, which does not say).
+    pub full: bool,
+    pub shared: Option<usize>,
 }
 
 /// The most columns of a machine's name in a line of text: the name is the
@@ -1015,6 +1022,8 @@ impl Board {
                         name: m["name"].as_str().unwrap_or_default().to_string(),
                         connected: m["connected"].as_bool().unwrap_or(true),
                         sessions: m["sessions"].as_u64().unwrap_or(0) as usize,
+                        full: m["full"].as_bool().unwrap_or(false),
+                        shared: m["shared"].as_u64().map(|n| n as usize),
                     })
                     .filter(|m| !m.addr.is_empty())
                     .collect()
@@ -1693,15 +1702,20 @@ impl Board {
                         self.note = Some(format!("{} is connected already", m.said()));
                         Action::Redraw
                     }
-                    KeyCode::Char('c') => self.act(
-                        format!("talk with {} again? It has again what it was given here.", m.said()),
-                        owned(&["link-connect", &m.addr]),
-                    ),
+                    KeyCode::Char('c') => Action::Run(owned(&["link-connect", &m.addr])),
                     KeyCode::Char('x') if !m.connected => {
                         self.note = Some(format!("{} is disconnected already", m.said()));
                         Action::Redraw
                     }
                     KeyCode::Char('x') => Action::Run(owned(&["link-disconnect", &m.addr])),
+                    KeyCode::Char('R') if !m.full && m.shared == Some(0) => {
+                        self.note = Some(format!("{} has nothing here already", m.said()));
+                        Action::Redraw
+                    }
+                    KeyCode::Char('R') => self.act(
+                        format!("take back all {} has here? Still paired.", m.said()),
+                        owned(&["link-allow", &m.addr, "--none"]),
+                    ),
                     KeyCode::Char('D') | KeyCode::DC => self.act(
                         format!("forget {}? Pairing again takes `keepane link add`.", m.said()),
                         owned(&["link-remove", &m.addr]),
@@ -2413,13 +2427,23 @@ impl Board {
                             "connected".to_string()
                         };
                         let name = if m.name.is_empty() { m.addr.clone() } else { name_said(&m.name) };
-                        let text = format!(" {name} · {state} ");
+                        // What it has here, whether connected or not (an
+                        // older server does not say how much is shared).
+                        let has = match (m.full, m.shared) {
+                            (true, _) => " · has full".to_string(),
+                            (false, Some(0)) => " · has nothing".to_string(),
+                            (false, Some(n)) => format!(" · has {n} shared"),
+                            (false, None) => String::new(),
+                        };
+                        let text = format!(" {name} · {state}{has} ");
                         if i == *pick { format!("\x1b[7m{text}\x1b[0m") } else { text }
                     })
                     .collect::<String>();
                 // The keys first: the machines, however many, are what the
                 // screen's edge cuts.
-                return format!("\x1b[1mmachines\x1b[0m  j/k · c connect · x disconnect · D forget · Esc: {all}");
+                return format!(
+                    "\x1b[1mmachines\x1b[0m  j/k · c connect · x disconnect · R revoke · D forget · Esc: {all}"
+                );
             }
             _ => {}
         }
@@ -2895,7 +2919,8 @@ fn help_lines() -> Vec<String> {
         "  [ / ]                             change the tab on the right",
         "  T                                 the trace of the pane's agent",
         "  L                                 the paired machines: j / k one, then c connect,",
-        "                                    x disconnect (still paired), D forget (asks)",
+        "                                    x disconnect (this side only), R revoke what it",
+        "                                    has here (asks), D forget (asks)",
         "  PgUp / PgDn, C-b / C-f            page the right panel (C-u / C-d half a page;",
         "                                    in the prefix-v popup, C-b C-b sends C-b)",
         "  g / G, Home / End                 the first / last row of a list; top / bottom on the right",
@@ -5198,8 +5223,9 @@ mod tests {
         assert_eq!(b.tab, Tab::Trace);
     }
 
-    /// `L`: the paired machines on the bottom line, one picked; `x` stops
-    /// talking with it at once, `c` and `D` (talk again, forget) ask first.
+    /// `L`: the paired machines on the bottom line, one picked, with what
+    /// each has here; `x` and `c` (this machine's side only) at once, `R`
+    /// and `D` (take back what it has here, forget) ask first.
     #[test]
     fn l_lists_the_paired_machines_to_connect_disconnect_or_forget() {
         let mut b = board();
@@ -5208,20 +5234,30 @@ mod tests {
         assert!(b.wants_machines(), "read while they are listed");
         assert!(strip(&b.foot()).contains("none paired"), "{}", strip(&b.foot()));
         b.set_machines(
-            r#"[{"addr":"10.0.0.2:7681","name":"mac","connected":true,"sessions":2},
-                {"addr":"10.0.0.3:7681","name":null,"connected":false,"sessions":0},
+            r#"[{"addr":"10.0.0.2:7681","name":"mac","connected":true,"sessions":2,"full":true,"shared":0},
+                {"addr":"10.0.0.3:7681","name":null,"connected":false,"sessions":0,"full":false,"shared":2},
                 {"name":"no address"}]"#,
         );
         assert_eq!(b.machines.len(), 2, "one with no address is none");
         let foot = strip(&b.foot());
-        assert!(foot.contains("mac · 2 sessions") && foot.contains("10.0.0.3:7681 · disconnected"), "{foot}");
+        assert!(
+            foot.contains("mac · 2 sessions · has full")
+                && foot.contains("10.0.0.3:7681 · disconnected · has 2 shared"),
+            "{foot}"
+        );
+        // Revoked after a yes: `link-allow --none`, still paired.
+        b.key(Key::ch('R'));
+        assert!(strip(&b.foot()).contains("take back all mac (10.0.0.2:7681) has here?"), "{}", strip(&b.foot()));
+        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["link-allow", "10.0.0.2:7681", "--none"])));
+        b.key(Key::ch('L'));
         // The first is picked: connected already; disconnected at once.
         assert_eq!(b.key(Key::ch('c')), Action::Redraw);
         assert_eq!(b.note.as_deref(), Some("mac (10.0.0.2:7681) is connected already"));
         b.key(Key::ch('L'));
         assert_eq!(b.key(Key::ch('x')), Action::Run(owned(&["link-disconnect", "10.0.0.2:7681"])));
         assert!(!b.wants_machines(), "done: the list closes");
-        // The second, disconnected: talked with again after a yes.
+        // The second, disconnected: asked again at once (it lets nothing
+        // in: what it has here is the same either way).
         b.key(Key::ch('L'));
         b.key(Key::ch('j'));
         b.key(Key::ch('j'));
@@ -5229,9 +5265,15 @@ mod tests {
         assert_eq!(b.note.as_deref(), Some("10.0.0.3:7681 is disconnected already"));
         b.key(Key::ch('L'));
         b.key(Key::ch('j'));
-        assert_eq!(b.key(Key::ch('c')), Action::Redraw);
-        assert!(strip(&b.foot()).contains("talk with 10.0.0.3:7681 again?"), "{}", strip(&b.foot()));
-        assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["link-connect", "10.0.0.3:7681"])));
+        assert_eq!(b.key(Key::ch('c')), Action::Run(owned(&["link-connect", "10.0.0.3:7681"])));
+        // One that has nothing here: nothing to take back, said so.
+        b.set_machines(r#"[{"addr":"10.0.0.4:7681","connected":true,"sessions":0,"full":false,"shared":0}]"#);
+        b.key(Key::ch('L'));
+        assert_eq!(b.key(Key::ch('R')), Action::Redraw);
+        assert_eq!(b.note.as_deref(), Some("10.0.0.4:7681 has nothing here already"));
+        b.set_machines(
+            r#"[{"addr":"10.0.0.2:7681","name":"mac","connected":true,"sessions":2,"full":true,"shared":0}]"#,
+        );
         // Forgotten only after a yes; any other key leaves it.
         b.key(Key::ch('L'));
         assert_eq!(b.key(Key::ch('D')), Action::Redraw);
@@ -5243,17 +5285,25 @@ mod tests {
         assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["link-remove", "10.0.0.2:7681"])));
         // What it asks and what it runs are in the lists the board keeps to.
         assert!(QUERIES.contains(&"link-list"));
-        for a in ["link-connect", "link-disconnect", "link-remove"] {
+        for a in ["link-connect", "link-disconnect", "link-allow", "link-remove"] {
             assert!(ACTIONS.contains(&a), "{a}");
         }
-        assert!(needs_yes(&owned(&["link-connect", "a:1"])) && needs_yes(&owned(&["link-remove", "a:1"])));
-        assert!(!needs_yes(&owned(&["link-disconnect", "a:1"])));
+        assert!(needs_yes(&owned(&["link-allow", "a:1", "--none"])) && needs_yes(&owned(&["link-remove", "a:1"])));
+        assert!(!needs_yes(&owned(&["link-disconnect", "a:1"])) && !needs_yes(&owned(&["link-connect", "a:1"])));
         // A machine's name is its own to say and can be long (a macOS
         // runner's is over 60 columns): cut to 24, so that the keys, the
         // question's end and a heading's address stay in sight.
         let long = "sat12-bq155-608590f5-b79a-4c93-a7e7-4b9a4862ec22-865F5B681961.local";
         assert_eq!(name_said(long), "sat12-bq155-608590f5-b7…");
         assert_eq!((width_of(&name_said(long)), name_said("mac")), (NAME_MOST, "mac".to_string()));
+        // An older server's table says no `shared`: nothing claimed about
+        // what it has, and `R` still asks rather than saying "nothing".
+        b.set_machines(r#"[{"addr":"10.0.0.5:7681","connected":true,"sessions":0,"full":false}]"#);
+        b.key(Key::ch('L'));
+        assert!(!strip(&b.foot()).contains("has "), "{}", strip(&b.foot()));
+        assert_eq!(b.key(Key::ch('R')), Action::Redraw);
+        assert!(strip(&b.foot()).contains("take back all 10.0.0.5:7681 has here?"), "{}", strip(&b.foot()));
+        b.key(Key::ch('n'));
         b.set_machines(&format!(r#"[{{"addr":"10.0.0.2:7681","name":"{long}","connected":true,"sessions":1}}]"#));
         b.key(Key::ch('L'));
         let foot = strip(&b.foot());

@@ -86,7 +86,7 @@ Group chat (docs/design/chat.md; from a pane, as that pane; outside every pane, 
   chat new NAME [--topic TEXT] [--tag T]...   chat list [--tag T]... [-J]   chat who CHAN [-J]
   chat join CHAN [--as HANDLE] [--role ROLE]   chat leave CHAN   chat say CHAN TEXT   (@handle tells that member)
   chat read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J]   chat topic CHAN TEXT   chat tag CHAN +T -T   chat rename CHAN NEW   chat delete CHAN
-  link disconnect host:port   (stop talking with it, both ways; still paired)   link connect host:port   link remove host:port   (unpair: `link add` again to come back)
+  link disconnect host:port   (stop asking it; it still has what it was given, --none takes that)   link connect host:port   link remove host:port   (unpair: `link add` again to come back)
   link id   link trust host:port key [--full [--lan]]   link rekey
 Panes from a Feishu (Lark) app of your own (set -g feishu-app-id / feishu-app-secret; docs/design/feishu.md):
   feishu   (connection and who is let in)   feishu allow ou_... [--shell|--no-shell] [--screen|--no-screen]   feishu remove ou_...

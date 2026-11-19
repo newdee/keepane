@@ -185,6 +185,20 @@ impl Server {
         spots.into_iter().filter_map(|s| self.spot_label(s)).collect()
     }
 
+    /// What the machine at `addr` has here, in a word or two: `full`, `3
+    /// shared` or `nothing` (the chart's key line says it).
+    pub(super) fn granted_here(&self, addr: &str) -> Option<String> {
+        let p = self.link.as_ref()?.peer_by_addr(addr)?;
+        Some(if p.full {
+            "full".into()
+        } else {
+            match self.shared_labels(&p.key).len() {
+                0 => "nothing".into(),
+                n => format!("{n} shared"),
+            }
+        })
+    }
+
     /// Everything shared with that machine taken back; how many marks went.
     pub(super) fn unshare_everything(&mut self, key: &str) -> usize {
         let mut n = 0;
@@ -465,14 +479,15 @@ impl Server {
             };
             // Copying this machine's sessions over a link stream right now.
             let here = if fed.contains(&p.key) { format!("{here}; copies it now") } else { here };
-            // Disconnected here (`link disconnect`): it has none of that now.
-            let here = if p.off { format!("{here}; disconnected here") } else { here };
+            // Disconnected here (`link disconnect`) is said in THIS HAS
+            // THERE: this machine does not ask; what it has here stays.
             let seen = self
                 .link
                 .as_ref()
                 .and_then(|l| l.seen.get(&p.key))
                 .map_or("never".into(), |t| t.format("%H:%M:%S").to_string());
-            rows.push(vec![p.addr.clone(), link::fingerprint(&p.key), here, "?".into(), seen]);
+            let there = if p.off { "? (disconnected here: not asked)" } else { "?" };
+            rows.push(vec![p.addr.clone(), link::fingerprint(&p.key), here, there.into(), seen]);
         }
         // Without a client to answer later, or without `keepane web` here
         // (the other machine answers to it), the table as it is.
@@ -527,6 +542,8 @@ impl Server {
                     "connected": !p.off,
                     "full": p.full,
                     "lan": p.lan,
+                    // What is shared with it here (sessions, windows, panes).
+                    "shared": self.shared_labels(&p.key).len(),
                     "sessions": sessions,
                     "streams": fed.contains(&p.key),
                     "seen": seen,

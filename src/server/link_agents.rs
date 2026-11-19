@@ -324,6 +324,7 @@ impl Server {
                 }
             }
         };
+        self.may_ask(&key, &addr)?;
         let (port, _) = self.own_web()?;
         let transfer = link::nonce().map_err(|e| format!("link: {e:#}"))?;
         let home = dirs::home_dir().unwrap_or_default();

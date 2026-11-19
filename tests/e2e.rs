@@ -7278,6 +7278,16 @@ async fn a_project_goes_to_another_machine_by_send_agents() {
     let (code, out, err) = a.cli_at(&here, &["send-agents"]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("nothing new") && out.contains("2 already here"), "{out}");
+    // Disconnected here: nothing is sent to it, by name or by what was
+    // kept (decision 21); `clone` and `push` neither; connected, sent again.
+    assert_eq!(a.cli(&["link-disconnect", &addr_b]).await.0, 0);
+    for argv in [vec!["send-agents", addr_b.as_str()], vec!["send-agents"], vec!["clone", addr_b.as_str()]] {
+        let (code, _, err) = a.cli_at(&here, &argv).await;
+        assert!(code != 0 && err.contains("is disconnected here"), "{argv:?}: {err}");
+    }
+    assert_eq!(a.cli(&["link-connect", &addr_b]).await.0, 0);
+    let (code, out, err) = a.cli_at(&here, &["send-agents"]).await;
+    assert!(code == 0 && out.contains("nothing new"), "{out}{err}");
     let (_, listed, _) = a.cli_at(&here, &["send-agents", "-l"]).await;
     assert!(listed.contains(&addr_b) && listed.contains(&copy.to_string_lossy().to_string()), "{listed}");
     let (_, listed, _) = b.cli(&["send-agents", "-l"]).await;
@@ -8376,40 +8386,68 @@ async fn another_machines_sessions_are_under_it_and_it_is_disconnected_and_conne
     let m = machines(&a).await;
     assert_eq!((m[0]["addr"].as_str(), m[0]["connected"].as_bool()), (Some(addr_b.as_str()), Some(true)), "{m}");
 
-    // Disconnected here: its sessions go from here, nothing is asked of
-    // it, nothing it asks is answered; still paired, and said so.
+    // What this machine gives that one: its session wa, and all of it, so
+    // that it keeps a copy of this machine's sessions there.
+    assert_eq!(a.cli(&["link-share", &addr_b, "wa"]).await.0, 0);
+    let shared_wa = |code: i32, out: &str| code == 0 && out.lines().any(|l| l.split('\t').nth(6) == Some("wa"));
+    b.wait_for_cli("wa reached from there", &["link-panes", &addr_a], shared_wa).await;
+    assert_eq!(a.cli(&["link-allow", &addr_b, "--full"]).await.0, 0);
+    b.cli(&["link-mirror", &addr_a]).await;
+    let wa_there = ["has-session", "-t", &format!("{addr_a}/wa")].map(String::from);
+    let wa_there: Vec<&str> = wa_there.iter().map(String::as_str).collect();
+    b.wait_for_cli("its copy of this machine", &wa_there, |code, _| code == 0).await;
+
+    // Disconnected here: its sessions go from here and nothing is asked of
+    // it; still paired, and said so. One way (decision 21): it still has
+    // what it was given here, and is answered.
     let (code, out, err) = a.cli(&["link-disconnect", &addr_b]).await;
-    assert!(code == 0 && out.contains("still paired"), "{out}{err}");
+    assert!(code == 0 && out.contains("still paired") && out.contains("--none"), "{out}{err}");
     assert_ne!(a.cli(&["has-session", "-t", &there("wb")]).await.0, 0, "its sessions are gone from here");
     assert_eq!(a.cli(&["show-mirror"]).await.1.trim(), "");
     let m = machines(&a).await;
     assert_eq!((m[0]["connected"].as_bool(), m[0]["sessions"].as_u64()), (Some(false), Some(0)), "{m}");
+    assert_eq!((m[0]["full"].as_bool(), m[0]["shared"].as_u64()), (Some(true), Some(1)), "what it has here stays: {m}");
     let (_, list, _) = a.cli(&["link-list"]).await;
-    assert!(list.contains("disconnected here"), "{list}");
+    assert!(list.contains("disconnected here") && list.contains("all of it"), "{list}");
     let (code, _, err) = a.cli(&["link-info", &addr_b]).await;
     assert!(code != 0 && err.contains("is disconnected here"), "nothing asked: {err}");
     let (code, _, err) = a.cli(&["send-message", "--to", &format!("{addr_b}/%1"), "hello"]).await;
     assert!(code != 0 && err.contains("is disconnected here"), "no message sent: {err}");
-    let (code, _, err) = b.cli(&["link-info", &addr_a]).await;
-    assert!(code != 0 && err.contains("disconnected from yours"), "nothing answered: {err}");
+    let (code, info, err) = b.cli(&["link-info", &addr_a]).await;
+    assert!(code == 0 && info.contains("panes"), "still answered there: {info}{err}");
+    let (code, panes, err) = b.cli(&["link-panes", &addr_a]).await;
+    assert!(shared_wa(code, &panes), "what it was given, still reached: {panes}{err}");
     let (code, out, _) = a.cli(&["link-disconnect", &addr_b]).await;
     assert!(code == 0 && out.contains("already"), "{out}");
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(a.cli(&["show-mirror"]).await.1.trim(), "", "not taken up again by itself");
+    // Its copy of this machine goes on: its stream is still answered.
+    let (code, _, err) = b.cli(&wa_there).await;
+    assert_eq!(code, 0, "its copy of this machine stays: {err}");
+    let (_, followed, _) = b.cli(&["show-mirror"]).await;
+    assert!(followed.contains(&addr_a) && !followed.contains("disconnected"), "{followed}");
+    // Connecting is a person's choice: not from a pane; disconnecting is
+    // anyone's.
+    let own = pane_id(&a, "wa:0.0").await;
+    let (code, _, err) = a.cli_in(Some(own), &["link-connect", &addr_b]).await;
+    assert!(code != 0 && err.contains("not run from inside a pane"), "{err}");
+    let (code, out, _) = a.cli_in(Some(own), &["link-disconnect", &addr_b]).await;
+    assert!(code == 0 && out.contains("already"), "{out}");
     // The picker says so, on that machine's block in the chart.
     a.cli(&["set", "-g", "choose-tree-style", "chart"]).await;
     c.prefix('w').await;
     c.wait_for("disconnected, in the chart", |s| s.contents().contains("disconnected")).await;
     c.type_str("q").await;
 
-    // Connected again: its sessions are here again, and it is answered.
+    // Connected again: its sessions are here again, and it is asked.
     let (code, out, err) = a.cli(&["link-connect", &addr_b]).await;
     assert!(code == 0 && out.contains("connected to"), "{out}{err}");
     a.wait_for_cli("its sessions here again", &["has-session", "-t", &there("wb")], |code, _| code == 0).await;
-    assert_eq!(b.cli(&["link-info", &addr_a]).await.0, 0, "answered again");
+    assert_eq!(a.cli(&["link-info", &addr_b]).await.0, 0, "asked again");
     // The same by keys, on that machine's block in the chart (up from this
-    // machine's session to this machine, along to the other): `x`
-    // disconnects, `c` connects, `D` asks before it forgets.
+    // machine's session to this machine, along to the other): the key line
+    // says what it has here; `x` disconnects, `c` connects, `R` asks before
+    // it takes back what it has here, `D` asks before it forgets.
     let connected = |want: bool| move |_: i32, out: &str| out.contains(&format!("\"connected\":{want}"));
     c.prefix('w').await;
     c.wait_for("the chart", |s| s.contents().contains("this machine")).await;
@@ -8418,12 +8456,34 @@ async fn another_machines_sessions_are_under_it_and_it_is_disconnected_and_conne
     for key in ["k", "k", "k", "l"] {
         c.type_str(key).await;
     }
-    c.wait_for("on the other machine: its keys", |s| s.contents().contains("x disconnect")).await;
+    c.wait_for("on the other machine: its keys", |s| {
+        // The whole key line, uncut by the 80 columns.
+        s.contents().contains("has full  c connect  x disconnect  R revoke  D forget  q quit")
+    })
+    .await;
     c.type_str("x").await;
     a.wait_for_cli("disconnected by the key", &["link-list", "-J"], connected(false)).await;
     c.wait_for("said in its block", |s| s.contents().contains("disconnected")).await;
     c.type_str("c").await;
     a.wait_for_cli("connected by the key", &["link-list", "-J"], connected(true)).await;
+    // Taken back after a yes: still paired, and wa is no longer there for it.
+    c.type_str("R").await;
+    c.wait_for("taking back asks", |s| s.contents().contains("take back") && s.contents().contains("(y/n)")).await;
+    c.type_str("y").await;
+    a.wait_for_cli("nothing for it", &["link-list", "-J"], |_, out| {
+        out.contains("\"shared\":0") && out.contains("\"full\":false")
+    })
+    .await;
+    c.wait_for("said on the key line", |s| s.contents().contains("has nothing")).await;
+    // Its stream of this machine ends at once (not at this machine's next
+    // change): nothing it types there comes here any more.
+    a.wait_for_cli("its stream ends", &["link-list", "-J"], |_, out| out.contains("\"streams\":false")).await;
+    // Nothing left to take back: said, not asked.
+    c.type_str("R").await;
+    c.wait_for("nothing to take back", |s| s.contents().contains("has nothing here already")).await;
+    let (code, panes, err) = b.cli(&["link-panes", &addr_a]).await;
+    assert!(code == 0 && panes.trim().is_empty(), "wa is no longer there for it: {panes}{err}");
+    a.wait_for_cli("still paired", &["link-list", "-J"], connected(true)).await;
     c.type_str("D").await;
     c.wait_for("forgetting asks", |s| s.contents().contains("forget") && s.contents().contains("(y/n)")).await;
     c.type_str("n").await;
