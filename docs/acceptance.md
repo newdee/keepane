@@ -6476,3 +6476,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 9 | 资源（离线成员很多时的空闲 CPU）+ 全量 + web e2e（依次跑） | release 构建的临时 server，30 个频道 × 60 个离线成员（每个都有一个不存在的 pane 名，每次 tick 都找一遍）、10 个窗口，空闲 20 秒：109 ms（一个核的 0.55%）；同样条件不放成员：156 ms（0.78%）。差在噪声里，看不出开销。（脚本第一次 `$Members` 与 `$members` 在 PowerShell 里是同一个变量，没生成成员，改名后重跑。）代码与第 7 轮相同；fmt、clippy 干净；Windows 706 / 11 / 173，Linux 690 / 171，web e2e 41/41；`npm run check` 通过。 | 干净（3/3），验收通过 |
 
 0.82.0（群聊：成员保留和在线状态、@ 带上下文、`--hear all`、点名你、第 2 页、输入行和 @ 选人；面板跳转不再抢焦点）：第 213 条。
+
+0.82.0 发布：CI 44672017352（8729028）四个 job 通过；tag v0.82.0；Release 44672631476 四个平台通过；manifests c7b6df3；winget PR #484670；Homebrew formula 44673447366 通过，三个 tar.gz 的 sha256 与 release 一致。
