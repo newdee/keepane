@@ -6502,3 +6502,26 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 0.83.0（网页上的群聊：频道列表、消息、成员、输入和 @ 选人）：第 214 条。
 
 0.83.0 发布：CI 44682232427（2a099c1）四个 job 通过；tag v0.83.0；Release 44682877845 四个平台通过；manifests 86d9cad；winget PR #484716；Homebrew formula 44683819490 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 215. 群聊：离开的成员保留并标记"已离开"
+
+来源：用户 2026-11-20："已经加入群聊的，重启后什么里面还是没有成员？这个应该持久化吧，除非成员主动离开，不然就是 offline，离开了也要标记为离开"；随后"迁移的话不用改了吧，新的群聊是不是会有"、"旧版本可以不用管"。
+
+- 查明（只读）：用户的 server 是 0.83.0，但 `channels.json` 最后写于 11:02，没有 `members` 字段，是 0.81 写的。0.82 起才保存成员，0.82 之前加入的成员从没被存过，所以升级重启后没了。之后再加入的会保存。按用户的意思不做迁移（写了从历史行重建的迁移，用户说不用，已撤掉）。
+- 做法：`chat leave`（pane 自己）和 `chat leave 频道 称呼`（人移出）都不再删成员，标 `left`（存进 `channels.json`）：不算成员数（`chat-list` 的 members、`MEMBERS_MOST`），@ 它回 "not told: it left #频道"，同名 pane 回来不自动接回，`--hear all` 不送；用这个称呼 `chat join`，或同一个 pane（id、pane 名、机器相同）不给称呼重新加入，回来（"joined again"），读位置照旧；人再移出已离开的回"left already"；离开超过 `chat-days` 天清掉。`chat-who` 文本 left、`-J` 加 `left`。看板 `[2]` `× 称呼 … left`、不计入标题人数、不进 `@` 列表；网页成员面板放最后写"已离开"、不计入人数、不进 `@` 列表。
+- 顺带：看板 `[2]` 的 `o` 只对在线成员有效。离线或离开的成员最后所在的 pane 号可能已经是别人的，原来会跳到别人的 pane（0.82 起就有）。定性：个别，边界遗漏。
+- 评估：在线、离线成员行为不变；`chat-leave` 的返回不变；原 e2e "人移出后 `chat who` 里没有它" 改为"标 left、不计数、不推送"。
+- 测试：单元新增 `one_that_left_is_kept_marked_left`（标记、不计数、点名不推送、再移出拒绝、重启后仍 left、who 文本和 JSON）；群聊 e2e 改一处、加一段（pane 自己离开、不给称呼重新加入回到原称呼、"joined again"、online）；看板测试加一个已离开的成员（`× leo … left`、标题人数不变、`@le` 列表里没有它）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路存活（变异）+ 全量 + web e2e（依次跑） | fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42。变异 6 个：离开不标记、已离开计入人数（单测失败）、同一 pane 重新加入不接回原称呼（e2e 失败）、已离开进 `@` 列表（看板测试失败）；**同名 pane 把已离开的接回、`o` 对离线成员照跳，两个仍通过**：没有测试覆盖。补：e2e 里人移出 builder 后（同名 pane 就在），`chat-who -J` 断言 left 且 online 为 false（只看文本时，接回后 left 仍在、文本仍写 left，分不出，所以看 JSON）；看板测试在 `[2]` 对离线的 tester 按 `o` 得到提示、对在线的 lead 才跳。两个变异再跑都失败。 | **有问题**：已修（不计数） |
+| 2 | 静态一致性（文档对代码）+ 全量 + web e2e（依次跑） | 核对 README en/zh、`chat.md` 第 8 节、man、看板 `?` 帮助对代码：离开或移出标 left、不计数（`chat-list` 的 members 和 `MEMBERS_MOST` 都只数未离开的）、点名回 "it left"、同名 pane 不接回（`chat_presence` 的条件）、同一 pane 或同称呼重新加入接回、"left already"、`chat-days` 一起清离线和离开的（`stale` 只看 pane 为空和时间）、who 文本 left 与 JSON `left`、看板 `×`、网页放最后，都一致；没有声明了没人读的字段（`left` 存、读、显示都有）。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42。 | 干净 1/3 |
+| 3 | 真二进制端到端（真的重启）| 临时 server（`-L chatleft`）：名为 stayer 的 pane 以 stay 加入，名为 goer 的以 go 加入后自己 `chat leave`；`save-session -a` 后立刻 `kill-server`，重启：**`chat who` 写 no one is in #general，成员全丢**。查明：成员的变化只标 dirty、等下一次 tick（约 1 秒）才写 `channels.json`，tick 之前 server 被关就丢；0.82 那次重启测试加入后等了 3 秒，没碰到。定性：共性（凡等 tick 写的都可能丢），结构上写入时机与重要性不配。改：加入、离开、上线、离线当时就写（低频）；读位置、行号仍等 tick（高频，行在天文件里）；server 退出前写掉等着的（`chat_flush`）。e2e 加：加入后立刻读 `channels.json` 里有 lead、tester；变异（加入改回只标 dirty）该测试失败。复查：重启后 stay 由同名 pane 接回 online、go 仍 left、`chat list` 1 member、`@go` 回 "it left"。 | **有问题**：已修（不计数） |
+| 4 | 代码正确性：写入时机与错误路径 + 全量 + web e2e（依次跑） | 列出写 `channels.json` 的 12 处：启动、退出前（`chat_flush`）、上线离线（只在有变化时）、新建、加入、离开、人读（`chat_take`）、tick（有 dirty 时）、topic、tags、改名、删除；成员相关的 3 处都当时写，高频的读位置仍等 tick；`write_whole` 先写旁边的文件再改名，写一半崩溃留旧的或新的。`kill-server`：先杀会话再置 quit，主循环 break 前 `chat_flush`，`chat_presence` 不在这之间跑，所以成员不会被记成全体离线（重启后本来就都从离线开始）。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42。 | 干净 1/3（第 3 轮有发现，重新计） |
+| 5 | 可复现性 + 全量 + web e2e（依次跑） | 群聊 e2e Windows 5/5、Linux 3/3；真重启脚本 3/3（每次重启后 stay online、go left）。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 41/42：`alt.e2e.ts` 的 3 个之一失败（全屏程序，本条没有动它的代码）。随后单跑 alt 3/3，再跑全量两次 42/42、42/42；第一次失败的 trace 被后面的重跑覆盖，原因未查到。定性：与本条无关的时序抖动嫌疑，未复现。记为遗留：之后几轮再出现就保留 trace（已加：失败时把 `.e2e/results` 拷到 `target/term-probe`）查原因。 | **有问题**：未修（原因未明，不计数） |
+| 6 | 边界与退化输入（真二进制，过期清理、人数上限）+ 全量 + web e2e（依次跑） | 临时 server 起之前写好 `channels.json`：`old` 频道 4 人（40 天前离开、40 天前离线、昨天离开、昨天离线），`full` 频道 64 个未离开加 1 个已离开；`chat-days 30`。第一次 tick 后 `old` 只剩昨天的两个（left、offline），`chat list` 写 old 1 member、full 64 members（已离开的不计）；第 65 个加入被拒（64 is the most）；已离开的 gone 回来也被拒（回来要占一个名额，按设计）。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42（失败时保存 trace，本轮未失败）。 | 干净 1/3（第 5 轮有问题，重新计） |
+| 7 | 网页上的显示（真浏览器）+ 全量 + web e2e（依次跑） | 临时 server（`-L chatweb`）人把 tester 从 release 移出（`chat who` 写 left）；1280×820 打开 release：成员按钮写 1（不算 tester），成员面板 planner 在前、tester 在最后、变灰、写"已离开"，输入 `@` 的列表只有 @planner。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42（第 5 轮的 alt 失败未再出现）。 | 干净 2/3 |
+| 8 | 资源（当时写索引的代价）+ 全量 + web e2e（依次跑） | release 构建临时 server，最大的索引：64 个频道各 60 个成员（`channels.json` 1944 KB）；连续移出 30 个成员（每次当时写整份索引）平均 63 ms、最长 88 ms，同条件不写的 `chat who` 平均 49 ms、最长 63 ms：每次成员变化多约 14 ms，成员变化少，可接受；移出后 c1 写 30 members。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42；`npm run check` 通过。 | 干净（3/3），验收通过 |
+
+0.84.0（群聊：离开的成员保留并标记已离开；成员变化当时写盘，重启不丢；看板 `o` 只跳在线成员）：第 215 条。遗留：第 5 轮 `alt.e2e.ts` 失败一次，之后全量 5 次、单跑 3 次都未再出现，原因未明。

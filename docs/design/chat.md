@@ -58,6 +58,7 @@
 
 - 每个频道一个目录、一天一个文件：`<数据目录>\chat\<socket>\<频道id>\YYYY-MM-DD.jsonl`，一行一条（含系统消息），只追加，经事件日志同一个写线程写入（每天的文件最多 20 MiB，同事件日志）。外部工具可以直接读。按天分文件，是为了过期清理只删整个文件（复用事件日志的按天清理），不重写正在追加的文件。
 - 索引 `<数据目录>\chat\<socket>\channels.json`：每个频道的 id、名字、topic、tags、创建时间和创建者、最后一条的序号、你本人读到的位置。改动后整份重写（先写旁边的文件再改名，崩溃时不会只剩半个）；读不懂的索引改名为 `channels.json.bad` 留着，并提示一句，不被新写的覆盖（同 `shares.json`）。
+- 成员的加入、离开、上线、离线当时就写 `channels.json`（0.84.0；之前等下一次 tick，tick 之前 `kill-server` 会丢）；读位置和行号仍等 tick；server 退出前把等着的写掉。
 - 0.82.0 起成员和它们的读位置也保存：重启后是离线，同名 pane 回来或用称呼重新加入时接着读（见第 8 节）。之前：成员不保存，agent 重新加入。你本人的读位置保存，重启后接着读。
 - 保留 `chat-days` 天（默认 30，0 全留）：每天一次删掉过期的天文件。
 - 内存里每个频道留最近 1000 条，启动时从最近的天文件读回；查询只读内存，所以 `chat read -n` 最多 1000。
@@ -111,7 +112,7 @@ MCP 工具：`chat_list`、`chat_new`、`chat_join`、`chat_say`、`chat_read`�
 - **收听方式**：`chat join --hear all|mentions`，默认 `mentions`（第 1 条决定不变）。`all` 的成员每句都会收到：第一句来后等 2 秒（`HEAR_SETTLE`），把这期间的几句合成一条 "[chat #频道] N new lines:"；它收件箱里还有这个频道的消息没处理时先不送，避免堆积。自己说的不在里面。跳数照常（经 `enqueue`）。MCP `chat_join` 加 `hear`。
 - **成员保留**：成员写进 `channels.json`（称呼、角色、最后的身份、加入时间、读到哪里、收听方式、上次上线或离线的时间）。重启后是离线；pane 关掉也是离线（频道里写 "went offline (its pane is gone)"），不再是离开。
 - **重新在线**：离线成员最后的身份里有 pane 名时，出现同名的 pane（恢复会话会恢复 pane 名）就自动接上（"is back (pane 名)"）；或者任何 pane 用它的称呼 `chat join`（"is back"），接着从原来读到的地方读，角色和收听方式不给就沿用。在线成员的称呼仍然不能被别的 pane 用。
-- **移出**：pane 里 `chat leave 频道` 离开自己；所有 pane 之外 `chat leave 频道 称呼` 把成员移出（在线或离线）。离线超过 `chat-days` 天的，每天清理时自动移出。
+- **离开和移出**：pane 里 `chat leave 频道` 离开自己；所有 pane 之外 `chat leave 频道 称呼` 把成员移出（在线或离线）。两种都不删成员，标成"已离开"（用户 2026-11-20："除非成员主动离开，不然就是 offline，离开了也要标记为离开"）：不算成员数（`chat-list` 的 members、`MEMBERS_MOST`），@ 它回 "not told: it left #频道"，同名 pane 回来不自动接回；用这个称呼 `chat join`，或者同一个 pane（id、pane 名、机器都相同）不给称呼重新加入，就回来（"joined again"），接着原来的读位置。`chat-who` 文本写 left，`-J` 加 `left`。离线或离开超过 `chat-days` 天的，每天清理时自动清掉。看板 `[2]` 写 `× 称呼 … left`，`o` 只对在线成员有效（离线或离开的成员最后所在的 pane 号可能已是别人的）；网页成员面板把已离开的放最后，写"已离开"。0.82 之前加入、没被保存的成员不迁移（用户：旧版本不用管）。
 - **@ 离线成员**：不推送，发言者收到 "X not told: offline (it reads this when it is back)"。
 - **点名你**：成员说 `@you` 时，像 agent 做完一样通知你：`notify` 开着就发桌面通知（按钮跳到那个成员的 pane），`done-webhook` 设了就发（同样的格式和签名；JSON 格式是 `{"kind":"chat","channel","from","role","text","host"}`）。你自己说 `@you` 不算。
 - **顺带修的老问题**：成员发言时读到的位置直接跳到自己那句，把别人在这期间说的、它没读的话算成了已读。改为只有它已经读到最新时才前移。

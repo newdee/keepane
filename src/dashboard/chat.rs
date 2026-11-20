@@ -91,6 +91,8 @@ pub struct MemberRow {
     /// A pane is it now; offline: none is (its pane went, or the server
     /// started again and no pane of its name is back yet).
     pub online: bool,
+    /// It left the channel (kept, marked so; not counted).
+    pub left: bool,
 }
 
 /// A line of the channel, as `chat-read -J` gives it.
@@ -209,6 +211,7 @@ impl ChatPage {
                             busy: m["busy"].as_bool(),
                             // An older server says nothing: its members are online.
                             online: m["online"].as_bool().unwrap_or(true),
+                            left: m["left"].as_bool().unwrap_or(false),
                         }
                     })
                     .collect()
@@ -273,7 +276,7 @@ impl ChatPage {
     pub(super) fn naming_list(&self, text: &str) -> Vec<&MemberRow> {
         let Some(typed) = naming(text).map(str::to_lowercase) else { return Vec::new() };
         let mut list: Vec<&MemberRow> =
-            self.members.iter().filter(|m| m.handle.to_lowercase().starts_with(&typed)).collect();
+            self.members.iter().filter(|m| !m.left && m.handle.to_lowercase().starts_with(&typed)).collect();
         list.sort_by_key(|m| !m.online);
         list.truncate(NAMING_MOST);
         list
@@ -631,6 +634,11 @@ impl Board {
             KeyCode::End | KeyCode::Char('G') => self.chat.member_pick = n.saturating_sub(1),
             KeyCode::Char('o') => {
                 if let Some(m) = self.chat.members.get(self.chat.member_pick) {
+                    // Offline or left: the pane it was last may be another's now.
+                    if !m.online || m.left {
+                        self.note = Some(format!("{} is not online: no pane to go to", m.handle));
+                        return Action::Redraw;
+                    }
                     return Action::Go(owned(&["focus-pane", &format!("%{}", m.pane)]));
                 }
             }
@@ -726,11 +734,13 @@ impl Board {
 
     pub(super) fn members_box(&self, r: Rect) -> Vec<String> {
         let focused = self.focus == Panel::Members;
-        let online = self.chat.members.iter().filter(|m| m.online).count();
-        let title = if online == self.chat.members.len() {
-            format!("[2] Members · {}", self.chat.members.len())
+        // Those that left are listed, last, and not counted.
+        let staying = self.chat.members.iter().filter(|m| !m.left).count();
+        let online = self.chat.members.iter().filter(|m| m.online && !m.left).count();
+        let title = if online == staying {
+            format!("[2] Members · {staying}")
         } else {
-            format!("[2] Members · {online}/{} online", self.chat.members.len())
+            format!("[2] Members · {online}/{staying} online")
         };
         let lines: Vec<String> = if self.chat.members.is_empty() {
             vec![paint("2", "no one joined (chat join, from a pane)")]
@@ -744,6 +754,7 @@ impl Board {
                 .take(r.inner_h())
                 .map(|(i, m)| {
                     let state = match (m.online, m.busy) {
+                        _ if m.left => paint("90", "×"),
                         (false, _) => paint("90", "○"),
                         (true, Some(true)) => paint("33", "●"),
                         (true, Some(false)) => paint("32", "●"),
@@ -751,7 +762,9 @@ impl Board {
                     };
                     let role = if m.role.is_empty() { String::new() } else { format!(" {}", paint("2", &m.role)) };
                     // Offline: said, then where it was last.
-                    let at = if m.online {
+                    let at = if m.left {
+                        paint("90", "  left")
+                    } else if m.online {
                         paint("2", &format!("  {} %{} {}", m.place, m.pane, m.agent))
                     } else {
                         paint("90", &format!("  offline · was {} %{}", m.place, m.pane))

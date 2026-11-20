@@ -10897,6 +10897,11 @@ async fn the_group_chat_stamps_who_speaks_and_tells_only_those_named() {
     h.cli(&["rename-pane", "-t", &format!("%{sh}"), "builder"]).await;
     let (_, out, _) = in_pane(sh, &["chat-join", "general"]).await;
     assert!(out.contains("#general: builder,"), "{out}");
+    // A join is written at once, not at the next tick: a server killed
+    // right after it (an update, a restart) still has the member.
+    let index = keepane::histlog::chat_dir().join(keepane::histlog::safe_name(&h.socket)).join("channels.json");
+    let kept = std::fs::read_to_string(&index).unwrap_or_default();
+    assert!(kept.contains("\"handle\": \"lead\"") && kept.contains("\"handle\": \"tester\""), "{kept}");
     let who = json(&h.cli(&["chat-who", "review", "-J"]).await.1);
     let lead_row = who.as_array().unwrap().iter().find(|m| m["handle"] == "lead").unwrap().clone();
     assert_eq!(lead_row["ident"]["pane"], lead);
@@ -11000,10 +11005,24 @@ async fn the_group_chat_stamps_who_speaks_and_tells_only_those_named() {
     })
     .await;
     assert!(h.cli(&["chat-read", "general", "--all", "-n", "2"]).await.1.contains("is back (pane builder)"));
+    // Taken out, it stays left though a pane of its name is right there.
+    assert_eq!(h.cli(&["chat-leave", "general", "builder"]).await.0, 0);
+    let who = h.cli(&["chat-who", "general"]).await.1;
+    assert!(who.lines().any(|l| l.starts_with("builder ") && l.contains("left")), "{who}");
+    let who = json(&h.cli(&["chat-who", "general", "-J"]).await.1);
+    let b = who.as_array().unwrap().iter().find(|m| m["handle"] == "builder").unwrap().clone();
+    assert_eq!((b["left"].as_bool(), b["online"].as_bool()), (Some(true), Some(false)), "no pane is it: {b}");
     let (code, _, err) = in_pane(lead, &["chat-leave", "review", "sh"]).await;
     assert!(code != 0 && err.contains("leaves itself"), "a pane takes no one else out: {err}");
     assert_eq!(h.cli(&["chat-leave", "review", "sh"]).await.0, 0);
-    assert!(!h.cli(&["chat-who", "review"]).await.1.lines().any(|l| l.starts_with("sh ")));
+    // Kept, marked left: not counted, not told.
+    let who = h.cli(&["chat-who", "review"]).await.1;
+    assert!(who.lines().any(|l| l.starts_with("sh ") && l.contains("left")), "{who}");
+    let listed = json(&h.cli(&["chat-list", "-J"]).await.1);
+    let review = listed.as_array().unwrap().iter().find(|c| c["name"] == "review").unwrap().clone();
+    assert_eq!(review["members"], 2, "lead and tester: {review}");
+    let (_, out, _) = in_pane(lead, &["chat-say", "review", "@sh still there?"]).await;
+    assert!(out.contains("sh not told: it left #review"), "{out}");
     assert!(h.cli(&["chat-read", "review", "--all", "-n", "2"]).await.1.contains("taken out by you@"));
 
     // Two panes speak at once: each line its own number, one after the other.
@@ -11079,6 +11098,16 @@ async fn the_group_chat_stamps_who_speaks_and_tells_only_those_named() {
         h.cli(&["set-work-mode", "-t", &format!("%{p}"), "normal"]).await;
     }
     in_pane(tester, &["chat-join", "review", "--hear", "mentions"]).await;
+    // A pane that leaves is kept, marked left; joining again brings it
+    // back where it was.
+    assert_eq!(in_pane(tester, &["chat-leave", "review"]).await.0, 0);
+    let who = h.cli(&["chat-who", "review"]).await.1;
+    assert!(who.lines().any(|l| l.starts_with("tester ") && l.contains("left")), "{who}");
+    let (_, out, _) = in_pane(tester, &["chat-join", "review"]).await;
+    assert!(out.contains("#review: tester"), "{out}");
+    assert!(h.cli(&["chat-read", "review", "--all", "-n", "1"]).await.1.contains("joined again"));
+    let who = h.cli(&["chat-who", "review"]).await.1;
+    assert!(who.lines().any(|l| l.starts_with("tester ") && l.contains("online")), "{who}");
 
     // 20 lines a minute at most for a member.
     let mut refused = None;

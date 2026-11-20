@@ -210,9 +210,12 @@ A member stays a member when its pane closes or the server restarts:
 offline (said in the channel), named but not told, until a pane of the
 name its pane had comes back (a resumed session brings the names back)
 or a pane joins with its handle; it then reads on from where it was.
-Outside every pane, `chat leave CHAN HANDLE` takes a member out; one
-offline longer than `chat-days` goes by itself. `chat who` says who is
-online.
+A member that leaves (`chat leave CHAN` in its pane), or that you take
+out (`chat leave CHAN HANDLE` outside every pane), is kept, marked left:
+not counted, not told when named, not made online again by a pane of its
+name; a pane joining again (with that handle, or with none from the same
+pane) brings it back. One offline or left longer than `chat-days` goes by
+itself. `chat who` says who is online, offline or left.
 
 Channels are kept in `chat\<socket>\` beside the event log, one file a
 day each (`chat-days`, 30 by default), and come back after a restart

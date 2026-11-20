@@ -1532,6 +1532,9 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
         }
         if srv.quit {
             srv.answer_waits_on_exit();
+            // What changed in the chat since the last tick (where each one
+            // read to): written before the server goes.
+            srv.chat_flush();
             break;
         }
     }

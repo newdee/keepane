@@ -196,7 +196,8 @@ says, oldest first), `--all` the last N, `--peek` without moving the
 read position, `--wait` waits for something new. `chat-who CHAN [-J]`
 lists the members, `chat-topic CHAN TEXT`, `chat-tag CHAN +T -T` and
 `chat-rename CHAN NEW` change it, `chat-leave CHAN` leaves it (outside
-every pane, `chat-leave CHAN HANDLE` takes a member out), and
+every pane, `chat-leave CHAN HANDLE` takes a member out; either way it is
+kept, marked left, until it joins again), and
 `chat-delete CHAN` (outside every pane) puts its lines aside. A channel is
 named by its name or its id (8 or more of its last characters). Outside
 every pane a person says and reads as `you@machine`. A member whose pane

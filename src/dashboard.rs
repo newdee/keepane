@@ -3022,7 +3022,7 @@ fn help_lines() -> Vec<String> {
         "  j / k      pick one                o       go to its pane",
         "  s          say something to it (@ it)",
         "  offline (a faint ○): its pane went or the server started again; back when a pane of",
-        "  its name is, or one joins with its handle",
+        "  its name is, or one joins with its handle; left (×): it left or was taken out",
         "[4] The channel picked, the latest at the bottom: each one's lines in a bubble in",
         "  its colour (yours on the right; a heavy left side: it names @you), a rule at each",
         "  day and where what you had not read begins; shown here, it counts as read",
@@ -4816,11 +4816,23 @@ mod tests {
         b.chat.set_members(
             r#"[{"handle":"tester","ident":{"place":"s:0.1","pane":4},"busy":false,"online":false},
                 {"handle":"lead","role":"planner","ident":{"place":"s:0.0","pane":3},"busy":true,"online":true},
-                {"handle":"lena","ident":{"place":"s:0.2","pane":5},"busy":false,"online":true}]"#,
+                {"handle":"lena","ident":{"place":"s:0.2","pane":5},"busy":false,"online":true},
+                {"handle":"leo","ident":{"place":"s:0.3","pane":6},"busy":null,"online":false,"left":true}]"#,
         );
         let text = strip(&screen(&b).join("\n"));
         assert!(text.contains("› s says something · @ names a member"), "{text}");
+        // [2]: o goes only to an online member's pane (an offline one's last
+        // pane may be another's now).
+        b.key(Key::ch('2'));
+        assert_eq!(b.key(Key::ch('o')), Action::Redraw, "tester is offline");
+        assert!(b.note.as_deref().unwrap_or_default().contains("not online"), "{:?}", b.note);
+        b.key(Key::ch('j'));
+        assert_eq!(b.key(Key::ch('o')), Action::Go(owned(&["focus-pane", "%3"])), "lead is online");
         assert!(text.contains("[2] Members · 2/3 online") && text.contains("offline · was s:0.1 %4"), "{text}");
+        assert!(
+            text.lines().any(|l| l.contains("× leo") && l.contains("left")),
+            "one that left: kept, marked, not counted: {text}"
+        );
         b.key(Key::ch('4'));
         b.key(Key::ch('s'));
         for c in "hi @le".chars() {
@@ -4829,7 +4841,7 @@ mod tests {
         let text = strip(&screen(&b).join("\n"));
         assert!(text.contains("› hi @le"), "typed in the box: {text}");
         assert!(text.contains(" @lead planner") && text.contains(" @lena"), "the list: {text}");
-        assert!(!text.contains(" @tester"), "not what was typed: {text}");
+        assert!(!text.contains(" @tester") && !text.contains(" @leo"), "not what was typed, nor one that left: {text}");
         assert!(strip(&b.foot()).contains("Enter sends · ↑/↓ Tab pick") && !strip(&b.foot()).contains("hi @le"));
         // Down then Enter: the second one put in, nothing sent yet.
         b.key(Key::plain(KeyCode::Down));

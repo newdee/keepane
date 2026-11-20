@@ -30,6 +30,8 @@ type Member = {
   ident: Ident;
   busy: boolean | null;
   online?: boolean;
+  /** It left the channel: kept, marked so, not counted. */
+  left?: boolean;
   since?: string;
   hear?: string;
 };
@@ -385,7 +387,8 @@ function Conversation({
   }, [readOnly, visible, channel.id, channel.unread, lines]);
 
   const items = useMemo(() => itemsOf(lines || [], divider), [lines, divider]);
-  const online = members.filter((m) => m.online !== false).length;
+  const staying = members.filter((m) => !m.left);
+  const online = staying.filter((m) => m.online !== false).length;
 
   // The latest in view: at the bottom while the person is there.
   const scroller = useRef<HTMLDivElement>(null);
@@ -421,7 +424,7 @@ function Conversation({
           <Users className="size-4" />
           <span className="tabular-nums">
             {online}
-            {online !== members.length ? <span className="text-muted">/{members.length}</span> : null}
+            {online !== staying.length ? <span className="text-muted">/{staying.length}</span> : null}
           </span>
         </Button>
       </header>
@@ -547,7 +550,9 @@ function Bubbles({ group, members }: { group: Group; members: Member[] }) {
 }
 
 function MemberList({ members, wide, onClose }: { members: Member[]; wide: boolean; onClose: () => void }) {
-  const sorted = [...members].sort((a, b) => Number(b.online !== false) - Number(a.online !== false));
+  // Online first, then offline, then those that left.
+  const rank = (m: Member) => (m.left ? 2 : m.online === false ? 1 : 0);
+  const sorted = [...members].sort((a, b) => rank(a) - rank(b));
   return (
     <aside
       className={
@@ -567,7 +572,7 @@ function MemberList({ members, wide, onClose }: { members: Member[]; wide: boole
       ) : null}
       <ul className="flex flex-col gap-0.5 px-2 pb-3">
         {sorted.map((m) => {
-          const on = m.online !== false;
+          const on = m.online !== false && !m.left;
           const colour = colourOf(m.handle, members);
           return (
             <li key={m.handle} className={"flex items-center gap-3 rounded-xl px-2 py-2 " + (on ? "" : "opacity-55")}>
@@ -580,7 +585,7 @@ function MemberList({ members, wide, onClose }: { members: Member[]; wide: boole
                     "absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-background " +
                     (!on ? "bg-zinc-400" : m.busy ? "bg-amber-500" : "bg-emerald-500")
                   }
-                  title={!on ? t("offline", "离线") : m.busy ? t("busy", "忙") : t("idle", "空闲")}
+                  title={m.left ? t("left", "已离开") : !on ? t("offline", "离线") : m.busy ? t("busy", "忙") : t("idle", "空闲")}
                 />
               </span>
               <span className="min-w-0 flex-1">
@@ -589,9 +594,11 @@ function MemberList({ members, wide, onClose }: { members: Member[]; wide: boole
                   {m.role ? <span className="truncate text-xs text-muted">{m.role}</span> : null}
                 </span>
                 <span className="block truncate text-xs text-muted">
-                  {on
-                    ? [m.ident.place, m.ident.agent].filter(Boolean).join(" · ")
-                    : t(`offline · was ${m.ident.place || "?"}`, `离线 · 原在 ${m.ident.place || "?"}`)}
+                  {m.left
+                    ? t("left the channel", "已离开")
+                    : on
+                      ? [m.ident.place, m.ident.agent].filter(Boolean).join(" · ")
+                      : t(`offline · was ${m.ident.place || "?"}`, `离线 · 原在 ${m.ident.place || "?"}`)}
                   {m.hear === "all" ? t(" · hears all", " · 收听全部") : ""}
                 </span>
               </span>
@@ -614,7 +621,7 @@ function Composer({ channel, members, onSaid }: { channel: ChatChannel; members:
     if (typed === undefined) return [];
     const p = typed.toLowerCase();
     return members
-      .filter((m) => m.handle.toLowerCase().startsWith(p))
+      .filter((m) => !m.left && m.handle.toLowerCase().startsWith(p))
       .sort((a, b) => Number(b.online !== false) - Number(a.online !== false))
       .slice(0, 6);
   }, [typed, members]);

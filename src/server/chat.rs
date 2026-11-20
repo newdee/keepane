@@ -143,8 +143,12 @@ pub struct Member {
     /// The last line it read.
     pub read: u64,
     pub hear: Hear,
-    /// When it came online or went offline last.
+    /// When it came online, went offline or left last.
     pub since: String,
+    /// It left the channel (`chat leave`, or the person took it out): kept,
+    /// marked so, until it joins again or is older than `chat-days`; no
+    /// pane is it again by itself, and it is not counted or told.
+    pub left: bool,
     /// It hears all and lines came since it was last told: when they are
     /// to go to it (`HEAR_SETTLE` after the first).
     pub due: Option<Instant>,
@@ -172,6 +176,8 @@ struct SavedMember {
     hear: String,
     #[serde(default)]
     since: String,
+    #[serde(default)]
+    left: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -361,7 +367,8 @@ impl Channel {
             "name": self.name,
             "topic": self.topic,
             "tags": self.tags,
-            "members": self.members.len(),
+            // Those that left are kept, marked, not counted.
+            "members": self.members.iter().filter(|m| !m.left).count(),
             "last": self.last,
             "unread": unread,
             "created": self.created,
@@ -435,6 +442,7 @@ impl Server {
                     read: m.read.min(last),
                     hear: Hear::parse(&m.hear).unwrap_or_default(),
                     since: m.since,
+                    left: m.left,
                     due: None,
                     due_chain: None,
                 })
@@ -461,9 +469,18 @@ impl Server {
         }
     }
 
+    /// What waits for the tick written now: the server is going.
+    pub(super) fn chat_flush(&mut self) {
+        if self.chat.dirty {
+            self.chat_save();
+        }
+    }
+
     /// `channels.json`, written again whole: when a channel is made,
-    /// changed or deleted, or read by the person, and at the tick after
-    /// lines were added (for their numbers).
+    /// changed or deleted, read by the person, or a member joins, leaves,
+    /// comes online or goes offline (a restart right after must find it);
+    /// and at the tick after lines were added or a member read (their
+    /// numbers: many and often, and the day files keep the lines anyway).
     fn chat_save(&mut self) {
         self.chat.dirty = false;
         let Some(dir) = &self.chat.dir else { return };
@@ -484,6 +501,7 @@ impl Server {
                             read: m.read,
                             hear: m.hear.word().to_string(),
                             since: m.since.clone(),
+                            left: m.left,
                         })
                         .expect("it serializes")
                     })
@@ -570,6 +588,7 @@ impl Server {
     /// restart brings the names back) and is no other member of the
     /// channel. Each change said in the channel.
     fn chat_presence(&mut self) {
+        let mut changed = false;
         for at in 0..self.chat.channels.len() {
             let gone: Vec<usize> = (0..self.chat.channels[at].members.len())
                 .filter(|&i| self.chat.channels[at].members[i].pane.is_some_and(|p| self.place_of(p).is_none()))
@@ -581,10 +600,12 @@ impl Server {
                 m.due = None;
                 let who = Who { handle: m.handle.clone(), role: m.role.clone(), ident: Some(m.ident.clone()) };
                 self.chat_line(at, "away", Some(who), "went offline (its pane is gone)".into(), Vec::new());
+                changed = true;
             }
             for i in 0..self.chat.channels[at].members.len() {
                 let m = &self.chat.channels[at].members[i];
-                let Some(name) = m.ident.pane_name.clone().filter(|_| m.pane.is_none()) else { continue };
+                // One that left chose to: no pane is it again by itself.
+                let Some(name) = m.ident.pane_name.clone().filter(|_| m.pane.is_none() && !m.left) else { continue };
                 let Some(p) = self.pane_by_name(&name) else { continue };
                 if self.chat.channels[at].member(p).is_some() {
                     continue;
@@ -596,7 +617,12 @@ impl Server {
                 m.since = now();
                 let who = Who { handle: m.handle.clone(), role: m.role.clone(), ident: Some(ident) };
                 self.chat_line(at, "back", Some(who), format!("is back (pane {name})"), Vec::new());
+                changed = true;
             }
+        }
+        // Written at once, as a join or a leave is.
+        if changed {
+            self.chat_save();
         }
     }
 
@@ -684,7 +710,7 @@ impl Server {
                 vec![
                     format!("#{}", c.name),
                     short_id(&c.id).to_string(),
-                    crate::format::count(c.members.len(), "member"),
+                    crate::format::count(c.members.iter().filter(|m| !m.left).count(), "member"),
                     if unread > 0 { format!("{unread} unread") } else { String::new() },
                     if c.tags.is_empty() { String::new() } else { format!("[{}]", c.tags.join(",")) },
                     c.topic.clone(),
@@ -731,7 +757,20 @@ impl Server {
         let ident = self.chat_ident(p);
         let c = &self.chat.channels[at];
         let was = c.member(p).cloned();
-        let handle = handle.or_else(|| was.as_ref().map(|m| m.handle.clone())).unwrap_or_else(|| {
+        // This pane left under a handle (the same pane, by its id and its
+        // name, on this machine): joining again with none given is it again.
+        let left_here = c
+            .members
+            .iter()
+            .find(|m| {
+                m.left
+                    && m.ident.pane == p
+                    && m.ident.pane_name == ident.pane_name
+                    && m.ident.addr.is_empty()
+                    && m.ident.machine == ident.machine
+            })
+            .map(|m| m.handle.clone());
+        let handle = handle.or_else(|| was.as_ref().map(|m| m.handle.clone())).or(left_here).unwrap_or_else(|| {
             // A pane's name is a handle already (`actor::check_name`).
             ident.pane_name.clone().unwrap_or_else(|| match &ident.agent {
                 Some(a) => format!("{a}-{p}"),
@@ -741,11 +780,12 @@ impl Server {
         if c.members.iter().any(|m| m.handle == handle && m.pane.is_some() && m.pane != Some(p)) {
             return Outcome::Error(format!("chat-join: {handle} is taken in #{} (--as another)", c.name));
         }
-        // An offline member of that handle: this pane is it now, where it
-        // read to, its role and what it hears kept unless given.
+        // An offline member of that handle (or one that left): this pane is
+        // it now, where it read to, its role and what it hears kept unless
+        // given.
         let back = c.members.iter().find(|m| m.handle == handle && m.pane.is_none()).cloned();
         let earlier = was.clone().or_else(|| back.clone());
-        if earlier.is_none() && c.members.len() >= MEMBERS_MOST {
+        if earlier.as_ref().is_none_or(|m| m.left) && c.members.iter().filter(|m| !m.left).count() >= MEMBERS_MOST {
             return Outcome::Error(format!("chat-join: #{} has {MEMBERS_MOST} members, the most", c.name));
         }
         let role = role.or_else(|| earlier.as_ref().map(|m| m.role.clone())).unwrap_or_default();
@@ -764,11 +804,13 @@ impl Server {
             read,
             hear,
             since: now(),
+            left: false,
             due: None,
             due_chain: None,
         });
         let what = match (&was, &back) {
             (Some(_), _) => "is now",
+            (None, Some(m)) if m.left => "joined again",
             (None, Some(_)) => "is back",
             (None, None) => "joined",
         };
@@ -780,14 +822,16 @@ impl Server {
         {
             m.read = seq;
         }
-        self.chat.dirty = true;
+        // Written at once: a restart right after finds the member as it is.
+        self.chat_save();
         let role = if role.is_empty() { String::new() } else { format!(" ({role})") };
         let hears = if hear == Hear::All { ", hears all" } else { "" };
         Outcome::Text(format!("#{name}: {handle}{role}{hears}, {}", ident.said()))
     }
 
     /// A pane leaves; the person (outside every pane) takes a member out
-    /// by its handle, online or offline.
+    /// by its handle, online or offline. Either way it stays, marked left
+    /// (until it joins again, or is older than `chat-days`).
     fn chat_leave(&mut self, me: Option<PaneId>, word: &str, handle: Option<String>) -> Outcome {
         let at = match self.chat_find(word) {
             Ok(i) => i,
@@ -803,6 +847,7 @@ impl Server {
                 return Outcome::Error("chat-leave: a pane leaves itself; the person takes another out".into());
             }
             (None, Some(h)) => match c.members.iter().find(|m| m.handle == h).cloned() {
+                Some(m) if m.left => return Outcome::Error(format!("chat-leave: {h} left #{} already", c.name)),
                 Some(m) => (m, format!("taken out by {}", Self::chat_you().handle)),
                 None => return Outcome::Error(format!("chat-leave: no {h} in #{}", c.name)),
             },
@@ -812,11 +857,19 @@ impl Server {
                 );
             }
         };
-        self.chat.channels[at].members.retain(|x| x.handle != m.handle);
         let ident = m.pane.map_or_else(|| m.ident.clone(), |p| self.chat_ident(p));
+        if let Some(x) = self.chat.channels[at].members.iter_mut().find(|x| x.handle == m.handle) {
+            x.pane = None;
+            x.left = true;
+            x.since = now();
+            x.ident = ident.clone();
+            x.due = None;
+            x.due_chain = None;
+        }
         let who = Who { handle: m.handle, role: m.role, ident: Some(ident) };
         self.chat_line(at, "leave", Some(who), said, Vec::new());
-        self.chat.dirty = true;
+        // Written at once: a restart right after finds it left.
+        self.chat_save();
         Outcome::Ok
     }
 
@@ -871,6 +924,10 @@ impl Server {
         let mut not_told = Vec::new();
         for h in &named {
             let Some(m) = members.iter().find(|m| &m.handle == h) else { continue };
+            if m.left {
+                not_told.push(format!("{h} not told: it left #{name}"));
+                continue;
+            }
             let Some(to) = m.pane else {
                 not_told.push(format!("{h} not told: offline (it reads this when it is back)"));
                 continue;
@@ -1244,7 +1301,7 @@ impl Server {
                     serde_json::json!({
                         "handle": m.handle, "role": m.role, "ident": m.ident, "joined": m.joined,
                         "read": m.read, "busy": busy, "online": m.pane.is_some(), "since": m.since,
-                        "hear": m.hear.word(),
+                        "hear": m.hear.word(), "left": m.left,
                     })
                 })
                 .collect();
@@ -1259,7 +1316,11 @@ impl Server {
             .map(|m| {
                 let i = &m.ident;
                 // Offline: where it was last.
-                let state = if m.pane.is_some() { "online" } else { "offline" };
+                let state = match (m.left, m.pane.is_some()) {
+                    (true, _) => "left",
+                    (false, true) => "online",
+                    (false, false) => "offline",
+                };
                 vec![
                     m.handle.clone(),
                     m.role.clone(),
@@ -1531,6 +1592,7 @@ mod tests {
             read: 1,
             hear: Hear::All,
             since: now(),
+            left: false,
             due: None,
             due_chain: None,
         });
@@ -1547,6 +1609,56 @@ mod tests {
         assert!(who.contains("lead") && who.contains("offline") && who.contains("hears all"), "{who}");
         let json: serde_json::Value = serde_json::from_str(&text(b.chat_who("review", true))).unwrap();
         assert_eq!((json[0]["online"].as_bool(), json[0]["hear"].as_str()), (Some(false), Some("all")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A member taken out stays, marked left: not counted, not told when
+    /// named, still left after a restart; taken out again: refused.
+    #[test]
+    fn one_that_left_is_kept_marked_left() {
+        let dir = std::env::temp_dir().join(format!("keepane-chat-left-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = server(&dir);
+        a.exec_chat(ChatCmd::New { name: "review".into(), topic: String::new(), tags: vec![] }, None);
+        let at = a.chat_find("review").unwrap();
+        let ident = Ident { machine: "M".into(), place: "s:0.0".into(), pane: 7, ..Default::default() };
+        for h in ["lead", "tester"] {
+            a.chat.channels[at].members.push(Member {
+                pane: None,
+                handle: h.into(),
+                role: String::new(),
+                ident: ident.clone(),
+                joined: now(),
+                read: 0,
+                hear: Hear::Mentions,
+                since: now(),
+                left: false,
+                due: None,
+                due_chain: None,
+            });
+        }
+        let leave = |h: &str| ChatCmd::Leave { channel: "review".into(), handle: Some(h.into()) };
+        assert!(matches!(a.exec_chat(leave("tester"), None), Outcome::Ok));
+        let m = a.chat.channels[at].members.iter().find(|m| m.handle == "tester").unwrap();
+        assert!(m.left && m.pane.is_none(), "kept, marked left");
+        let list: serde_json::Value =
+            serde_json::from_str(&text(a.exec_chat(ChatCmd::List { tags: vec![], json: true }, None))).unwrap();
+        let review = list.as_array().unwrap().iter().find(|c| c["name"] == "review").unwrap().clone();
+        assert_eq!(review["members"], 1, "not counted: {review}");
+        let said = text(a.exec_chat(ChatCmd::Say { channel: "review".into(), text: "@tester @lead hi".into() }, None));
+        assert!(said.contains("tester not told: it left #review"), "{said}");
+        assert!(said.contains("lead not told: offline"), "{said}");
+        assert!(text(a.exec_chat(leave("tester"), None)).contains("left #review already"));
+        a.chat_save();
+        drop(a);
+        let b = server(&dir);
+        let at = b.chat_find("review").unwrap();
+        assert!(b.chat.channels[at].members.iter().any(|m| m.handle == "tester" && m.left), "still left");
+        let who = text(b.chat_who("review", false));
+        assert!(who.lines().any(|l| l.starts_with("tester") && l.contains("left")), "{who}");
+        let json: serde_json::Value = serde_json::from_str(&text(b.chat_who("review", true))).unwrap();
+        let t = json.as_array().unwrap().iter().find(|m| m["handle"] == "tester").unwrap().clone();
+        assert_eq!((t["left"].as_bool(), t["online"].as_bool()), (Some(true), Some(false)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
