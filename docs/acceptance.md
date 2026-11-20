@@ -6525,3 +6525,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 8 | 资源（当时写索引的代价）+ 全量 + web e2e（依次跑） | release 构建临时 server，最大的索引：64 个频道各 60 个成员（`channels.json` 1944 KB）；连续移出 30 个成员（每次当时写整份索引）平均 63 ms、最长 88 ms，同条件不写的 `chat who` 平均 49 ms、最长 63 ms：每次成员变化多约 14 ms，成员变化少，可接受；移出后 c1 写 30 members。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42；`npm run check` 通过。 | 干净（3/3），验收通过 |
 
 0.84.0（群聊：离开的成员保留并标记已离开；成员变化当时写盘，重启不丢；看板 `o` 只跳在线成员）：第 215 条。遗留：第 5 轮 `alt.e2e.ts` 失败一次，之后全量 5 次、单跑 3 次都未再出现，原因未明。
+
+0.84.0 发布：CI 44695778347（a25a435）四个 job 通过；tag v0.84.0；Release 44696697403 四个平台通过；manifests b98c38b；winget PR #484802；Homebrew formula 44697550310 通过，三个 tar.gz 的 sha256 与 release 一致。
