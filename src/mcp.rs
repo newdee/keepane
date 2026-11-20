@@ -22,8 +22,9 @@ check who really sent the message you are working on.\n\
 Answer the sender with reply. To wait for an answer inside your turn, use wait_message. \
 Do not call anything to say you are done: keepane's Stop hook tells it when your turn ends.\n\
 A work mode is changed in the pane itself: set_work_mode sets yours.\n\
-Group chat: chat_join a channel (chat_list lists them), chat_say there, chat_read to catch up. Only a member you \
-name with @handle is told at once; read the channel for the rest.\n\
+Group chat: chat_join a channel (chat_list lists them), chat_say there, chat_read to catch up. A member you \
+name with @handle is told at once, with what was said before since it last read; one that joined with hear=all \
+is told of every line. Name the person with @you.\n\
 Panes on other machines paired with this one (list_links) are addressed host:port/%name or \
 host:port/$1:@3.%7; list_panes with host lists them. A message from one reads from=host:port/...";
 
@@ -263,8 +264,9 @@ fn tools() -> Vec<Value> {
         tool(
             "chat_join",
             "Join a channel as your pane. keepane stamps who and where you are (machine, pane, agent, model); \
-             you choose a handle (default: your pane's name) and a role.",
-            json!({ "channel": s("Its name or id"), "handle": s("What you are called there"), "role": s("Your part there, e.g. reviewer") }),
+             you choose a handle (default: your pane's name) and a role. hear: mentions (default: you are told \
+             of the lines that name you, with what came before them) or all (told of every line, a few at a time).",
+            json!({ "channel": s("Its name or id"), "handle": s("What you are called there"), "role": s("Your part there, e.g. reviewer"), "hear": s("mentions or all") }),
             &["channel"],
         ),
         tool(
@@ -503,6 +505,9 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             }
             if let Some(r) = str_of("role") {
                 c.extend(["--role".into(), r]);
+            }
+            if let Some(h) = str_of("hear") {
+                c.extend(["--hear".into(), h]);
             }
             c
         }

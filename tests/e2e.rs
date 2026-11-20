@@ -10566,6 +10566,54 @@ async fn focus_pane_brings_every_attached_client_to_that_pane() {
     h.cli(&["kill-server"]).await;
 }
 
+/// From a popup (the dashboard's `o`), focus-pane moves the terminal the
+/// popup is on and no other: that terminal has the keyboard already.
+#[tokio::test(flavor = "multi_thread")]
+async fn focus_pane_from_a_popup_moves_only_its_terminal() {
+    let h = Harness::start("focuspop").await;
+    h.cli(&["new", "-d", "-s", "a"]).await;
+    h.cli(&["new", "-d", "-s", "b"]).await;
+    let (_, target, _) = h.cli(&["jobs", "-t", "b:0", "-F", "#{pane_id}"]).await;
+    let target = target.trim().to_string();
+    let mut one = h.connect().await;
+    one.attach(&["attach", "-t", "a"]).await;
+    let mut two = h.connect().await;
+    two.attach(&["attach", "-t", "a"]).await;
+    one.wait_for("one on a", |s| s.contents().contains("[a]")).await;
+    two.wait_for("two on a", |s| s.contents().contains("[a]")).await;
+    one.prefix(':').await;
+    one.type_str(&format!("display-popup -E {}", shell_line("pip"))).await;
+    one.enter().await;
+    one.wait_for("popup", |s| s.contents().contains("pip>")).await;
+    // By its whole path: keepane's folder is put in a pane's PATH on
+    // Windows only.
+    one.type_str(&format!("\"{}\" focus-pane {target}", env!("CARGO_BIN_EXE_keepane"))).await;
+    one.enter().await;
+    // The status line and what the popup prints come in either order.
+    one.wait_for("one switched to b, said in the popup", |s| {
+        s.contents().contains("[b]") && s.contents().contains("1 client(s) switched")
+    })
+    .await;
+    // Asked of the server (a terminal's screen is only as new as it was read).
+    let sessions = async || {
+        // `client-8: b [80x24]`: the session after the colon.
+        let (_, out, _) = h.cli(&["list-clients"]).await;
+        let mut s: Vec<String> = out
+            .lines()
+            .filter_map(|l| l.split_once(": ").and_then(|(_, r)| r.split(" [").next()).map(str::to_string))
+            .collect();
+        s.sort();
+        s
+    };
+    assert_eq!(sessions().await, ["a", "b"], "two stays on a");
+    // Outside any popup: every attached terminal, as before.
+    let (code, out, err) = h.cli(&["focus-pane", &target]).await;
+    assert!(code == 0 && out.contains("2 client(s) switched"), "{out}{err}");
+    assert_eq!(sessions().await, ["b", "b"]);
+    drop(two);
+    h.cli(&["kill-server"]).await;
+}
+
 /// bash with keepane's hook reports every cd (OSC 7); sh says nothing, and
 /// its process's own directory is read instead. Both land in the saved file.
 #[cfg(unix)]
@@ -10910,10 +10958,53 @@ async fn the_group_chat_stamps_who_speaks_and_tells_only_those_named() {
     let (_, out, _) = in_pane(tester, &["chat-read", "review", "--wait", "1"]).await;
     assert!(out.contains("nothing new"), "the wait ran out: {out}");
 
-    // A pane that goes leaves, and that is said.
+    // Named, one is told what was said before it since it last read too,
+    // and that counts as read.
+    in_pane(lead, &["chat-say", "review", "context one"]).await;
+    h.cli(&["chat-say", "review", "context two"]).await;
+    in_pane(lead, &["chat-say", "review", "@tester look at these"]).await;
+    let first = in_pane(tester, &["read-message"]).await.1;
+    assert!(first.contains("run the regression"), "the earlier one first: {first}");
+    let told = in_pane(tester, &["read-message"]).await.1;
+    assert!(
+        told.contains("@tester look at these")
+            && told.contains("Said before it, since you last read:")
+            && told.contains("lead: context one")
+            && told.contains(": context two"),
+        "{told}"
+    );
+    assert!(in_pane(tester, &["chat-read", "review"]).await.1.contains("nothing new"), "read by being told");
+
+    // A pane that goes is offline, still a member, and that is said; one
+    // named while offline is not told; the person takes it out.
     h.cli(&["kill-pane", "-t", &format!("%{sh}")]).await;
-    h.wait_for_cli("sh gone from the channel", &["chat-who", "review"], |_, out| !out.contains("sh ")).await;
-    assert!(h.cli(&["chat-read", "review", "--all", "-n", "3"]).await.1.contains("left (its pane is gone)"));
+    h.wait_for_cli("sh offline", &["chat-who", "review"], |_, out| {
+        out.lines().any(|l| l.starts_with("sh ") && l.contains("offline"))
+    })
+    .await;
+    assert!(h.cli(&["chat-read", "review", "--all", "-n", "3"]).await.1.contains("went offline (its pane is gone)"));
+    let who = json(&h.cli(&["chat-who", "review", "-J"]).await.1);
+    let sh_row = who.as_array().unwrap().iter().find(|m| m["handle"] == "sh").unwrap().clone();
+    assert_eq!((sh_row["online"].as_bool(), sh_row["busy"].as_bool()), (Some(false), None), "{sh_row}");
+    let (_, out, _) = in_pane(lead, &["chat-say", "review", "@sh are you there"]).await;
+    assert!(out.contains("sh not told: offline"), "{out}");
+    // A pane of the name it had (as a resumed session brings back) is it
+    // again: online, with no joining. sh joined #general as `builder`, its
+    // pane's name then.
+    h.cli(&["new-window", "-d", "-t", "s"]).await;
+    let (_, panes, _) = h.cli(&["list-panes", "-s", "-t", "s", "-F", "#{pane_id}"]).await;
+    let fresh = panes.lines().last().unwrap().trim().to_string();
+    h.cli(&["rename-pane", "-t", &fresh, "builder"]).await;
+    h.wait_for_cli("builder back", &["chat-who", "general"], |_, out| {
+        out.lines().any(|l| l.starts_with("builder ") && l.contains("online"))
+    })
+    .await;
+    assert!(h.cli(&["chat-read", "general", "--all", "-n", "2"]).await.1.contains("is back (pane builder)"));
+    let (code, _, err) = in_pane(lead, &["chat-leave", "review", "sh"]).await;
+    assert!(code != 0 && err.contains("leaves itself"), "a pane takes no one else out: {err}");
+    assert_eq!(h.cli(&["chat-leave", "review", "sh"]).await.0, 0);
+    assert!(!h.cli(&["chat-who", "review"]).await.1.lines().any(|l| l.starts_with("sh ")));
+    assert!(h.cli(&["chat-read", "review", "--all", "-n", "2"]).await.1.contains("taken out by you@"));
 
     // Two panes speak at once: each line its own number, one after the other.
     let seq_of = |out: &str| -> u64 { out.trim().rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(0) };
@@ -10944,6 +11035,50 @@ async fn the_group_chat_stamps_who_speaks_and_tells_only_those_named() {
     for p in [lead, tester] {
         h.cli(&["set-work-mode", "-t", &format!("%{p}"), "normal"]).await;
     }
+
+    // One that hears all is told of every line, a few at a time, in one
+    // message; its own lines are not in it.
+    while in_pane(tester, &["read-message"]).await.0 == 0 {}
+    let (_, out, _) = in_pane(tester, &["chat-join", "review", "--hear", "all"]).await;
+    assert!(out.contains("hears all"), "{out}");
+    in_pane(tester, &["chat-read", "review"]).await;
+    in_pane(lead, &["chat-say", "review", "for everyone one"]).await;
+    in_pane(tester, &["chat-say", "review", "mine"]).await;
+    h.cli(&["chat-say", "review", "for everyone two"]).await;
+    h.wait_for_cli("told of the lines", &["list-messages", "-t", &format!("%{tester}")], |_, out| {
+        out.contains("[chat #review] 2 new lines")
+    })
+    .await;
+    let heard = in_pane(tester, &["read-message"]).await.1;
+    assert!(
+        heard.contains("for everyone one") && heard.contains("for everyone two") && !heard.contains("mine"),
+        "{heard}"
+    );
+    assert_eq!(in_pane(tester, &["chat-join", "review", "--hear", "sometimes"]).await.0, 1);
+    // Told on the speaker's chain: past the hop limit, not told (two that
+    // hear all would answer each other for ever). The person gives tester
+    // a task (hop 0), tester hands it to lead (hop 1); what lead says while
+    // on it goes on at hop 2.
+    while in_pane(lead, &["read-message"]).await.0 == 0 {}
+    for p in [lead, tester] {
+        h.cli(&["set-work-mode", "-t", &format!("%{p}"), "ai"]).await;
+    }
+    h.cli(&["send-message", "--to", &format!("%{tester}"), "relay it"]).await;
+    in_pane(tester, &["pane-ready"]).await;
+    in_pane(tester, &["send-message", "--to", &format!("%{lead}"), "go on"]).await;
+    in_pane(lead, &["pane-ready"]).await;
+    let (_, on, _) = h.cli(&["list-messages", "-t", &format!("%{lead}")]).await;
+    assert!(on.contains("working on #"), "{on}");
+    h.cli(&["set", "-g", "message-hop-limit", "1"]).await;
+    in_pane(lead, &["chat-say", "review", "said in a chain"]).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let (_, queued, _) = h.cli(&["list-messages", "-t", &format!("%{tester}")]).await;
+    assert!(!queued.contains("[chat #review]"), "past the hop limit: {queued}");
+    h.cli(&["set", "-g", "message-hop-limit", "8"]).await;
+    for p in [lead, tester] {
+        h.cli(&["set-work-mode", "-t", &format!("%{p}"), "normal"]).await;
+    }
+    in_pane(tester, &["chat-join", "review", "--hear", "mentions"]).await;
 
     // 20 lines a minute at most for a member.
     let mut refused = None;
@@ -11452,6 +11587,33 @@ async fn take_request(listener: &tokio::net::TcpListener, answer: &str) -> Strin
     let reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len());
     s.write_all(reply.as_bytes()).await.unwrap();
     String::from_utf8_lossy(&buf[body_at..body_at + len]).into_owned()
+}
+
+/// A member that names the person in a channel (`@you`) reaches them as a
+/// pane done does: the webhook, in its shape, with the channel, who and
+/// what. The person naming `@you` calls no one.
+#[tokio::test(flavor = "multi_thread")]
+async fn naming_you_in_a_channel_reaches_the_webhook() {
+    let h = Harness::start("chatyou").await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hook_url = format!("http://127.0.0.1:{}/hook", listener.local_addr().unwrap().port());
+    for (k, v) in [("done-webhook", hook_url.as_str()), ("done-webhook-format", "json")] {
+        assert_eq!(h.cli(&["set", "-g", k, v]).await.0, 0, "{k}");
+    }
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    let p = pane_id(&h, "s:0.0").await;
+    h.cli(&["chat-new", "ops"]).await;
+    assert_eq!(h.cli_in(Some(p), &["chat-join", "ops", "--as", "bot", "--role", "watcher"]).await.0, 0);
+    h.cli(&["chat-say", "ops", "@you is me"]).await;
+    h.cli_in(Some(p), &["chat-say", "ops", "@you the build is red"]).await;
+    let body: serde_json::Value = serde_json::from_str(&take_request(&listener, "ok").await).unwrap();
+    assert_eq!(
+        (body["kind"].as_str(), body["channel"].as_str(), body["from"].as_str(), body["role"].as_str()),
+        (Some("chat"), Some("ops"), Some("bot"), Some("watcher")),
+        "{body}"
+    );
+    assert_eq!(body["text"], "@you the build is red", "the member's, not the person's own: {body}");
+    h.cli(&["kill-server"]).await;
 }
 
 /// A command that ran long enough in a named pane is told: kept for the

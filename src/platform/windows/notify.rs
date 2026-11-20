@@ -120,15 +120,35 @@ fn percent_decode(s: &str) -> Option<String> {
 /// Bring this process's console window to the front, for a client told to
 /// (`focus-pane`). Windows only honours it when the caller may take the
 /// foreground (it was launched by the user, as from a notification's
-/// button), and Windows Terminal's hidden console window is not the tab,
-/// so this is best effort: false when it did not happen.
+/// button), so this is best effort: false when it did not happen.
+///
+/// Under a pseudo console (Windows Terminal, and other terminals on
+/// ConPTY) the console window is ConPTY's `PseudoConsoleWindow`: a window
+/// of no size that is not the terminal. Brought to the front itself, it
+/// took the keyboard from the terminal until a click gave it back. Its root
+/// owner, when the terminal set one (Windows Terminal does), is raised
+/// instead; with none, nothing is.
 pub fn raise_console_window() -> bool {
     use windows_sys::Win32::System::Console::GetConsoleWindow;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_RESTORE, SetForegroundWindow, ShowWindow};
-    let hwnd = unsafe { GetConsoleWindow() };
-    if hwnd.is_null() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GA_ROOTOWNER, GetAncestor, GetClassNameW, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    };
+    let console = unsafe { GetConsoleWindow() };
+    if console.is_null() {
         return false;
     }
+    let mut class = [0u16; 64];
+    let n = unsafe { GetClassNameW(console, class.as_mut_ptr(), class.len() as i32) };
+    let pseudo = String::from_utf16_lossy(&class[..n.max(0) as usize]) == "PseudoConsoleWindow";
+    let hwnd = if pseudo {
+        let owner = unsafe { GetAncestor(console, GA_ROOTOWNER) };
+        if owner.is_null() || owner == console {
+            return false;
+        }
+        owner
+    } else {
+        console
+    };
     unsafe {
         ShowWindow(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd) != 0

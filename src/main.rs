@@ -84,7 +84,7 @@ Panes on other machines (both run `keepane web`; docs/design/link.md):
   link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane
 Group chat (docs/design/chat.md; from a pane, as that pane; outside every pane, as you@machine):
   chat new NAME [--topic TEXT] [--tag T]...   chat list [--tag T]... [-J]   chat who CHAN [-J]
-  chat join CHAN [--as HANDLE] [--role ROLE]   chat leave CHAN   chat say CHAN TEXT   (@handle tells that member)
+  chat join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]   chat leave CHAN [HANDLE]   chat say CHAN TEXT   (@handle tells that member, @you the person)
   chat read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J]   chat topic CHAN TEXT   chat tag CHAN +T -T   chat rename CHAN NEW   chat delete CHAN
   link disconnect host:port   (stop asking it; it still has what it was given, --none takes that)   link connect host:port   link remove host:port   (unpair: `link add` again to come back)
   link id   link trust host:port key [--full [--lan]]   link rekey

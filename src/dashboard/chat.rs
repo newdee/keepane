@@ -88,6 +88,9 @@ pub struct MemberRow {
     pub model: String,
     /// Its pane busy (an agent working), idle, or not known.
     pub busy: Option<bool>,
+    /// A pane is it now; offline: none is (its pane went, or the server
+    /// started again and no pane of its name is back yet).
+    pub online: bool,
 }
 
 /// A line of the channel, as `chat-read -J` gives it.
@@ -120,7 +123,19 @@ pub struct ChatPage {
     /// (its id, the line's number): kept while that channel stays picked
     /// and page 3 shown, though showing it reads it at once.
     pub divider: Option<(String, u64)>,
+    /// The member picked in the list a `@` being typed opens.
+    pub at_pick: usize,
 }
+
+/// The handle being typed: what follows the `@` of the text's last word,
+/// while that word is a `@` and a handle's characters.
+pub(super) fn naming(text: &str) -> Option<&str> {
+    let last = text.rsplit(char::is_whitespace).next()?;
+    last.strip_prefix('@').filter(|w| w.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'))
+}
+
+/// The most members the `@` list shows.
+const NAMING_MOST: usize = 5;
 
 /// A string of the server's answer, as the board may draw it (`inert`):
 /// what members say is theirs to write.
@@ -192,6 +207,8 @@ impl ChatPage {
                             agent: s(i, "agent"),
                             model: s(i, "model"),
                             busy: m["busy"].as_bool(),
+                            // An older server says nothing: its members are online.
+                            online: m["online"].as_bool().unwrap_or(true),
                         }
                     })
                     .collect()
@@ -249,6 +266,26 @@ impl ChatPage {
                 self.divider = Some((id, seq));
             }
         }
+    }
+
+    /// The members a `@` being typed may name: those whose handle starts
+    /// with what follows it (any case), online first, `NAMING_MOST` at most.
+    pub(super) fn naming_list(&self, text: &str) -> Vec<&MemberRow> {
+        let Some(typed) = naming(text).map(str::to_lowercase) else { return Vec::new() };
+        let mut list: Vec<&MemberRow> =
+            self.members.iter().filter(|m| m.handle.to_lowercase().starts_with(&typed)).collect();
+        list.sort_by_key(|m| !m.online);
+        list.truncate(NAMING_MOST);
+        list
+    }
+
+    /// `text` with its last word, a `@` being typed, made the handle of the
+    /// member picked in the list, and a space after it.
+    pub(super) fn complete_naming(&self, text: &str) -> Option<String> {
+        let list = self.naming_list(text);
+        let m = list.get(self.at_pick.min(list.len().saturating_sub(1)))?;
+        let typed = naming(text)?;
+        Some(format!("{}{} ", &text[..text.len() - typed.len()], m.handle))
     }
 
     /// A handle's colour: the person's ink, a member's by when it joined,
@@ -546,7 +583,10 @@ impl Board {
     /// read of it is read now.
     pub(super) fn chat_seen(&self) -> Option<Vec<String>> {
         // On the screen only: a narrow board shows [4] while it has the focus.
-        let c = self.chat.picked().filter(|c| c.unread > 0 && self.page == 3 && self.layout().main.is_some())?;
+        let c = self
+            .chat
+            .picked()
+            .filter(|c| c.unread > 0 && self.page == super::CHAT_PAGE && self.layout().main.is_some())?;
         Some(owned(&["chat-read", &c.id, "-n", "1000"]))
     }
 
@@ -686,7 +726,12 @@ impl Board {
 
     pub(super) fn members_box(&self, r: Rect) -> Vec<String> {
         let focused = self.focus == Panel::Members;
-        let title = format!("[2] Members · {}", self.chat.members.len());
+        let online = self.chat.members.iter().filter(|m| m.online).count();
+        let title = if online == self.chat.members.len() {
+            format!("[2] Members · {}", self.chat.members.len())
+        } else {
+            format!("[2] Members · {online}/{} online", self.chat.members.len())
+        };
         let lines: Vec<String> = if self.chat.members.is_empty() {
             vec![paint("2", "no one joined (chat join, from a pane)")]
         } else {
@@ -698,13 +743,19 @@ impl Board {
                 .skip(start)
                 .take(r.inner_h())
                 .map(|(i, m)| {
-                    let state = match m.busy {
-                        Some(true) => paint("33", "●"),
-                        Some(false) => paint("32", "●"),
-                        None => paint("2", "○"),
+                    let state = match (m.online, m.busy) {
+                        (false, _) => paint("90", "○"),
+                        (true, Some(true)) => paint("33", "●"),
+                        (true, Some(false)) => paint("32", "●"),
+                        (true, None) => paint("2", "○"),
                     };
                     let role = if m.role.is_empty() { String::new() } else { format!(" {}", paint("2", &m.role)) };
-                    let at = paint("2", &format!("  {} %{} {}", m.place, m.pane, m.agent));
+                    // Offline: said, then where it was last.
+                    let at = if m.online {
+                        paint("2", &format!("  {} %{} {}", m.place, m.pane, m.agent))
+                    } else {
+                        paint("90", &format!("  offline · was {} %{}", m.place, m.pane))
+                    };
                     let name = paint(&format!("1;{}", self.chat.colour(&m.handle)), &m.handle);
                     let line = format!("{state} {name}{role}{at}");
                     row_line(&line, i == self.chat.member_pick, focused, r.inner_w())
@@ -712,7 +763,7 @@ impl Board {
                 .collect()
         };
         // What the dots say, where the whole title leaves room for it.
-        let key = format!("{} idle {} busy", paint("32", "●"), paint("33", "●"));
+        let key = format!("{} idle {} busy {} off", paint("32", "●"), paint("33", "●"), paint("90", "○"));
         let key = if r.inner_w() >= width_of(&title) + width_of(&key) + 4 { key } else { String::new() };
         boxed(&title, &key, lines, r, focused)
     }
@@ -727,8 +778,19 @@ impl Board {
         };
         let topic = if c.topic.is_empty() { String::new() } else { format!(" · {}", c.topic) };
         let title = format!("[4] #{}{topic}", c.name);
-        let all = self.chat.drawn(w);
+        // At the bottom, where what the person says is typed: a rule and a
+        // line, and over them the members a `@` being typed may name; when
+        // there are rows for them and some for what was said.
+        let typing = match &self.input {
+            Some((Input::ChatSay { id, .. }, text)) if *id == c.id => Some(text.as_str()),
+            _ => None,
+        };
+        let naming = typing.map(|t| self.chat.naming_list(t)).unwrap_or_default();
         let rows = r.inner_h();
+        let with_box = rows >= 4;
+        let under: Vec<String> = if with_box { self.say_box(typing, &naming, w, rows - 3) } else { Vec::new() };
+        let rows = rows - under.len();
+        let all = self.chat.drawn(w);
         let most = all.len().saturating_sub(rows);
         self.scroll_most.set(most);
         let end = all.len().saturating_sub(self.scroll.min(most));
@@ -737,7 +799,45 @@ impl Board {
         if lines.is_empty() {
             lines.push(paint("2", "nothing said yet (s says something)"));
         }
+        lines.resize(rows, String::new());
+        lines.extend(under);
         boxed(&title, "", lines, r, focused)
+    }
+
+    /// The bottom of `[4]`: the `@` list (at most `room` rows of it, the
+    /// picked one reversed), a faint rule, and the line being typed (its
+    /// end, when longer than the line) or how to start one.
+    fn say_box(&self, typing: Option<&str>, naming: &[&MemberRow], w: usize, room: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        let pick = self.chat.at_pick.min(naming.len().saturating_sub(1));
+        for (i, m) in naming.iter().enumerate().take(room) {
+            let off = if m.online { String::new() } else { paint("90", " offline") };
+            let role = if m.role.is_empty() { String::new() } else { format!(" {}", paint("2", &m.role)) };
+            let line = format!(" @{}{role}{off}", paint(&format!("1;{}", self.chat.colour(&m.handle)), &m.handle));
+            out.push(if i == pick { format!("\x1b[7m{}\x1b[0m", fit(&super::strip(&line), w)) } else { fit(&line, w) });
+        }
+        out.push(paint("90", &"─".repeat(w)));
+        out.push(match typing {
+            Some(text) => {
+                // The end of it, the cursor after.
+                let room = w.saturating_sub(3);
+                let chars: Vec<char> = text.chars().collect();
+                let mut start = chars.len();
+                let mut used = 0;
+                while start > 0 {
+                    let cw = width_of(&chars[start - 1].to_string());
+                    if used + cw > room {
+                        break;
+                    }
+                    used += cw;
+                    start -= 1;
+                }
+                let shown: String = chars[start..].iter().collect();
+                fit(&format!("{} {}{}", paint("1;32", "›"), self.chat.tint_mentions(&shown), "\x1b[7m \x1b[0m"), w)
+            }
+            None => fit(&paint("2", "› s says something · @ names a member"), w),
+        });
+        out
     }
 }
 

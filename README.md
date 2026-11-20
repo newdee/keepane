@@ -195,16 +195,30 @@ own, `C-b :`), speak as `you@<machine>` without joining.
 What is said stays in the channel: nobody's inbox gets it, so five
 agents in a channel do not each read every line. A member named with
 `@handle` is also told at once, through its inbox, with the channel and
-who said it; the hop limit counts these as for any message. A pane in
+who said it, and under it what was said before since it last read (the
+last 20 lines; they count as read); the hop limit counts these as for
+any message. A member that joined with `--hear all` is told of every
+line instead, a few at a time: lines that come within 2 seconds go in
+one message, once nothing of the channel waits in its inbox. A pane in
 `shell` mode is never told (a message runs there as a command): the
-speaker is told so. A member says at most 20 lines a minute. A pane
-that closes leaves; what it said stays.
+speaker is told so. A member says at most 20 lines a minute. A member
+naming you (`@you`) reaches you as an agent that is done does: a desktop
+notification (its button goes to that member's pane) and the
+`done-webhook`.
+
+A member stays a member when its pane closes or the server restarts:
+offline (said in the channel), named but not told, until a pane of the
+name its pane had comes back (a resumed session brings the names back)
+or a pane joins with its handle; it then reads on from where it was.
+Outside every pane, `chat leave CHAN HANDLE` takes a member out; one
+offline longer than `chat-days` goes by itself. `chat who` says who is
+online.
 
 Channels are kept in `chat\<socket>\` beside the event log, one file a
 day each (`chat-days`, 30 by default), and come back after a restart
-with what was said and how far you read; agents join again. The same
+with what was said, how far you read and their members. The same
 commands are MCP tools (`chat_list`, `chat_new`, `chat_join`,
-`chat_say`, `chat_read`, `chat_who`). The dashboard's page 3 shows
+`chat_say`, `chat_read`, `chat_who`). The dashboard's page 2 shows
 them. Only from outside every pane, `chat delete` moves a channel to
 `chat\deleted\`. Panes of other machines join in a later release. The
 design: [docs/design/chat.md](docs/design/chat.md).
@@ -262,7 +276,7 @@ connects it, `x` disconnects it, `R` takes back what it has here and `D`
 forgets its pairing (`keepane link`, below; `R` and `D` ask first).
 
 `>` turns to the next page, `<` the one before (the bottom line says
-`page 2/3`, and keeps it when too narrow for every key). On page 2,
+`page 2/3`, and keeps it when too narrow for every key). On page 3,
 `[0]` and the
 machine stay, `[1]` lists what this machine shares (`keepane share`,
 below), each `active`, `missing` (its file gone for now), `stopped`,
@@ -275,7 +289,7 @@ same link, `r` shares it again on a new link, `y` copies its link, `a`
 hides or shows the ended ones. Sharing, stopping and sharing again ask
 first.
 
-Page 3 is the group chat (above): `[1]` the channels, with how many are
+Page 2 is the group chat (above): `[1]` the channels, with how many are
 in each, how many lines you have not read, the tags and how long ago the
 last line was, and under each that line (`/` filters them by a name or
 a tag); `[2]` the picked one's members, each in its colour, with its
@@ -285,6 +299,11 @@ colour (the first six to join a channel never share one; one member's
 lines within 5 minutes share a bubble; yours against the right edge;
 a heavy left side when it names `@you`), each `@name` in that one's
 colour, a rule at each new day and where what you had not read begins.
+An offline member is a faint `○` in `[2]`, with where it was last. At
+the bottom of `[4]` is a line to type in: `s` on `[1]`, `[2]` or `[4]`
+(or `i` on `[4]`) starts it; a `@` lists the members it may name
+(online first) over it, `↑`/`↓` pick, `Tab` or `Enter` puts one in, and
+`Enter` sends once no list is open.
 On `[1]`, `s` says something as you, `n` makes a channel
 (its name, then its topic), `t` changes its topic, `#` its tags (`+a
 -b`); on `[2]`, `o` goes to the member's pane and `s` says something
@@ -1490,8 +1509,8 @@ stays only on the same port: the status line says when it moved. A share
 whose time ran out meanwhile has ended. `share extend` brings an expired
 one back on its link; a stopped one, or one that went once, is shared
 again only on a new link (`share again`). The last 100 ended shares stay
-listed, each with how it ended and what happened to it. Page 2 of the
-dashboard (`prefix v`, then `>`) shows them all. Plain HTTP, like the page:
+listed, each with how it ended and what happened to it. Page 3 of the
+dashboard (`prefix v`, then `<`) shows them all. Plain HTTP, like the page:
 across a network you do not trust, use Tailscale. The design:
 [docs/design/share.md](docs/design/share.md).
 

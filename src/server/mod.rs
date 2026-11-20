@@ -6375,6 +6375,15 @@ impl Server {
                     return Outcome::Error(format!("focus-pane: no pane %{pane}"));
                 };
                 let wid = self.session(sid).and_then(|s| s.windows.get(widx)).map(|w| w.id).unwrap_or(0);
+                // From a popup (the dashboard's `o`): the terminal it is on
+                // goes there, and only that one; its window has the keyboard
+                // already, so nothing is raised.
+                let popup =
+                    cid.and_then(|c| self.clients.get(&c)).and_then(|c| c.pane_env).and_then(|p| self.popup_of_pane(p));
+                if let Some(owner) = popup {
+                    self.chooser_go_pane(owner, sid, wid, pane);
+                    return Outcome::Text(format!("1 client(s) switched to pane %{pane}"));
+                }
                 // Every terminal that is attached anywhere: the one the
                 // notification's reader is looking at is among them.
                 let clients: Vec<ClientId> =

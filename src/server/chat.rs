@@ -2,8 +2,13 @@
 //! name, a topic and tags; members, each a pane that joined, with a handle
 //! and a role it gave and who and where it is, stamped by the server; and
 //! what was said, kept a file a channel a day. What is said stays in the
-//! channel until a member reads it (`chat-read`); only one named in it
-//! (`@handle`) is told at once, by a message into its pane's inbox.
+//! channel until a member reads it (`chat-read`); one named in it
+//! (`@handle`) is told at once, by a message into its pane's inbox that
+//! carries what was said before it since it last read; a member that
+//! joined to hear all (`--hear all`) is told of every line, a few at a
+//! time. Members stay members when their pane goes (or the server
+//! restarts): offline, until a pane of the same name comes back or one
+//! joins with the handle.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -11,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::actor::{Message, WorkMode};
+use super::actor::{Message, MsgId, WorkMode};
 use super::{ClientId, Outcome, PaneId, Server};
 use crate::command::ChatCmd;
 
@@ -28,6 +33,39 @@ const ROLE_MOST: usize = 40;
 const TAGS_MOST: usize = 16;
 /// The characters of a channel's last line `chat-list -J` gives (`latest`).
 const LATEST: usize = 200;
+/// The lines said before it that a message to one named carries, and those
+/// a message to one that hears all carries, at most.
+const CONTEXT_MOST: usize = 20;
+/// The characters of each of those lines, at most.
+const CONTEXT_LINE_MOST: usize = 300;
+/// How long lines gather before one that hears all is told of them.
+const HEAR_SETTLE: Duration = Duration::from_secs(2);
+
+/// What a member is told of: the lines that name it (the default), or all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Hear {
+    #[default]
+    Mentions,
+    All,
+}
+
+impl Hear {
+    pub fn word(self) -> &'static str {
+        match self {
+            Hear::Mentions => "mentions",
+            Hear::All => "all",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Hear> {
+        match s {
+            "mentions" => Some(Hear::Mentions),
+            "all" => Some(Hear::All),
+            _ => None,
+        }
+    }
+}
 /// The channel there always is.
 pub const GENERAL: &str = "general";
 
@@ -94,13 +132,46 @@ pub struct Line {
 
 #[derive(Clone, Debug)]
 pub struct Member {
-    pub pane: PaneId,
+    /// Its pane while it is online; none while it is offline (its pane
+    /// gone, or the server started again and no pane is it yet).
+    pub pane: Option<PaneId>,
     pub handle: String,
     pub role: String,
+    /// Who and where it is, or was last.
     pub ident: Ident,
     pub joined: String,
     /// The last line it read.
     pub read: u64,
+    pub hear: Hear,
+    /// When it came online or went offline last.
+    pub since: String,
+    /// It hears all and lines came since it was last told: when they are
+    /// to go to it (`HEAR_SETTLE` after the first).
+    pub due: Option<Instant>,
+    /// The chain the message telling it goes on: of the speaker of those
+    /// lines furthest along one (its task and hop), so the hop limit stops
+    /// two that hear all from answering each other for ever.
+    pub due_chain: Option<(MsgId, u32)>,
+}
+
+/// What `channels.json` keeps of a member: it comes back offline. Read
+/// leniently (a member is no reason to lose the channels): what is missing
+/// takes its default, a `hear` not known (a later keepane's) is `mentions`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SavedMember {
+    handle: String,
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    ident: Ident,
+    #[serde(default)]
+    joined: String,
+    #[serde(default)]
+    read: u64,
+    #[serde(default)]
+    hear: String,
+    #[serde(default)]
+    since: String,
 }
 
 #[derive(Clone, Debug)]
@@ -120,10 +191,14 @@ pub struct Channel {
     pub you_read: u64,
 }
 
-/// What `channels.json` keeps of a channel (its members are panes, new
-/// after a restart: they join again).
+/// What `channels.json` keeps of a channel: its members too, offline
+/// until their panes are back.
 #[derive(Serialize, Deserialize)]
 struct Saved {
+    /// Each read on its own (`SavedMember`): one not readable is left out,
+    /// not the whole index.
+    #[serde(default)]
+    members: Vec<serde_json::Value>,
     id: String,
     name: String,
     #[serde(default)]
@@ -232,8 +307,13 @@ impl Channel {
         }
     }
 
+    /// The member pane `pane` is (online).
     fn member(&self, pane: PaneId) -> Option<&Member> {
-        self.members.iter().find(|m| m.pane == pane)
+        self.members.iter().find(|m| m.pane == Some(pane))
+    }
+
+    fn member_mut(&mut self, pane: PaneId) -> Option<&mut Member> {
+        self.members.iter_mut().find(|m| m.pane == Some(pane))
     }
 
     /// Lines after `after`, the first `n` of them.
@@ -340,6 +420,25 @@ impl Server {
             }
             let recent = read_back(&dir.join(&s.id), KEEP);
             let last = recent.back().map_or(0, |l| l.seq).max(s.last);
+            // Back offline: a pane is them again when it is (`chat_presence`).
+            let members = s
+                .members
+                .into_iter()
+                .filter_map(|v| serde_json::from_value::<SavedMember>(v).ok())
+                .filter(|m| valid_word(&m.handle))
+                .map(|m| Member {
+                    pane: None,
+                    handle: m.handle,
+                    role: m.role,
+                    ident: m.ident,
+                    joined: m.joined,
+                    read: m.read.min(last),
+                    hear: Hear::parse(&m.hear).unwrap_or_default(),
+                    since: m.since,
+                    due: None,
+                    due_chain: None,
+                })
+                .collect();
             self.chat.channels.push(Channel {
                 id: s.id,
                 name: s.name,
@@ -347,7 +446,7 @@ impl Server {
                 tags: s.tags,
                 created: s.created,
                 by: s.by,
-                members: Vec::new(),
+                members,
                 last,
                 recent,
                 you_read: s.you_read.min(last),
@@ -373,6 +472,22 @@ impl Server {
             .channels
             .iter()
             .map(|c| Saved {
+                members: c
+                    .members
+                    .iter()
+                    .map(|m| {
+                        serde_json::to_value(SavedMember {
+                            handle: m.handle.clone(),
+                            role: m.role.clone(),
+                            ident: m.ident.clone(),
+                            joined: m.joined.clone(),
+                            read: m.read,
+                            hear: m.hear.word().to_string(),
+                            since: m.since.clone(),
+                        })
+                        .expect("it serializes")
+                    })
+                    .collect(),
                 id: c.id.clone(),
                 name: c.name.clone(),
                 topic: c.topic.clone(),
@@ -449,27 +564,50 @@ impl Server {
         Who { handle: format!("you@{}", crate::sysinfo::hostname()), role: String::new(), ident: None }
     }
 
-    /// Members whose pane is gone left: said so in each channel.
-    fn chat_gone(&mut self) {
+    /// Who is online: a member whose pane is gone goes offline (it stays a
+    /// member); an offline one whose pane had a name comes back online when
+    /// a pane of that name is here again (a session resumed after a
+    /// restart brings the names back) and is no other member of the
+    /// channel. Each change said in the channel.
+    fn chat_presence(&mut self) {
         for at in 0..self.chat.channels.len() {
-            let gone: Vec<Member> =
-                self.chat.channels[at].members.iter().filter(|m| self.place_of(m.pane).is_none()).cloned().collect();
-            for m in gone {
-                self.chat.channels[at].members.retain(|x| x.pane != m.pane);
+            let gone: Vec<usize> = (0..self.chat.channels[at].members.len())
+                .filter(|&i| self.chat.channels[at].members[i].pane.is_some_and(|p| self.place_of(p).is_none()))
+                .collect();
+            for i in gone {
+                let m = &mut self.chat.channels[at].members[i];
+                m.pane = None;
+                m.since = now();
+                m.due = None;
                 let who = Who { handle: m.handle.clone(), role: m.role.clone(), ident: Some(m.ident.clone()) };
-                self.chat_line(at, "leave", Some(who), "left (its pane is gone)".into(), Vec::new());
+                self.chat_line(at, "away", Some(who), "went offline (its pane is gone)".into(), Vec::new());
+            }
+            for i in 0..self.chat.channels[at].members.len() {
+                let m = &self.chat.channels[at].members[i];
+                let Some(name) = m.ident.pane_name.clone().filter(|_| m.pane.is_none()) else { continue };
+                let Some(p) = self.pane_by_name(&name) else { continue };
+                if self.chat.channels[at].member(p).is_some() {
+                    continue;
+                }
+                let ident = self.chat_ident(p);
+                let m = &mut self.chat.channels[at].members[i];
+                m.pane = Some(p);
+                m.ident = ident.clone();
+                m.since = now();
+                let who = Who { handle: m.handle.clone(), role: m.role.clone(), ident: Some(ident) };
+                self.chat_line(at, "back", Some(who), format!("is back (pane {name})"), Vec::new());
             }
         }
     }
 
     pub(super) fn exec_chat(&mut self, cmd: ChatCmd, cid: Option<ClientId>) -> Outcome {
-        self.chat_gone();
+        self.chat_presence();
         let me = self.caller_pane(cid);
         match cmd {
             ChatCmd::New { name, topic, tags } => self.chat_new(me, name, topic, tags),
             ChatCmd::List { tags, json } => self.chat_list(me, &tags, json),
-            ChatCmd::Join { channel, handle, role } => self.chat_join(me, &channel, handle, role),
-            ChatCmd::Leave { channel } => self.chat_leave(me, &channel),
+            ChatCmd::Join { channel, handle, role, hear } => self.chat_join(me, &channel, handle, role, hear),
+            ChatCmd::Leave { channel, handle } => self.chat_leave(me, &channel, handle),
             ChatCmd::Say { channel, text } => self.chat_say(cid, me, &channel, text),
             ChatCmd::Read { channel, n, all, peek, wait, json } => {
                 self.chat_read(cid, me, &channel, n, all, peek, wait, json)
@@ -556,7 +694,19 @@ impl Server {
         Outcome::Text(super::align_columns(&rows).join("\n"))
     }
 
-    fn chat_join(&mut self, me: Option<PaneId>, word: &str, handle: Option<String>, role: Option<String>) -> Outcome {
+    fn chat_join(
+        &mut self,
+        me: Option<PaneId>,
+        word: &str,
+        handle: Option<String>,
+        role: Option<String>,
+        hear: Option<String>,
+    ) -> Outcome {
+        let hear = match hear.as_deref().map(|h| Hear::parse(h).ok_or(h)) {
+            None => None,
+            Some(Ok(h)) => Some(h),
+            Some(Err(h)) => return Outcome::Error(format!("chat-join: --hear {h}: all or mentions")),
+        };
         let Some(p) = me else {
             return Outcome::Error("chat-join: run it inside the pane that joins (a person says with chat-say)".into());
         };
@@ -588,50 +738,85 @@ impl Server {
                 None => format!("pane-{p}"),
             })
         });
-        if c.members.iter().any(|m| m.handle == handle && m.pane != p) {
+        if c.members.iter().any(|m| m.handle == handle && m.pane.is_some() && m.pane != Some(p)) {
             return Outcome::Error(format!("chat-join: {handle} is taken in #{} (--as another)", c.name));
         }
-        if was.is_none() && c.members.len() >= MEMBERS_MOST {
+        // An offline member of that handle: this pane is it now, where it
+        // read to, its role and what it hears kept unless given.
+        let back = c.members.iter().find(|m| m.handle == handle && m.pane.is_none()).cloned();
+        let earlier = was.clone().or_else(|| back.clone());
+        if earlier.is_none() && c.members.len() >= MEMBERS_MOST {
             return Outcome::Error(format!("chat-join: #{} has {MEMBERS_MOST} members, the most", c.name));
         }
-        let role = role.or_else(|| was.as_ref().map(|m| m.role.clone())).unwrap_or_default();
-        let read = was.as_ref().map_or(c.last, |m| m.read);
+        let role = role.or_else(|| earlier.as_ref().map(|m| m.role.clone())).unwrap_or_default();
+        let hear = hear.or_else(|| earlier.as_ref().map(|m| m.hear)).unwrap_or_default();
+        let read = earlier.as_ref().map_or(c.last, |m| m.read);
+        let joined = earlier.as_ref().map_or_else(now, |m| m.joined.clone());
         let name = c.name.clone();
         let c = &mut self.chat.channels[at];
-        c.members.retain(|m| m.pane != p);
+        c.members.retain(|m| m.pane != Some(p) && !(m.handle == handle && m.pane.is_none()));
         c.members.push(Member {
-            pane: p,
+            pane: Some(p),
             handle: handle.clone(),
             role: role.clone(),
             ident: ident.clone(),
-            joined: now(),
+            joined,
             read,
+            hear,
+            since: now(),
+            due: None,
+            due_chain: None,
         });
-        let what = if was.is_some() { "is now" } else { "joined" };
+        let what = match (&was, &back) {
+            (Some(_), _) => "is now",
+            (None, Some(_)) => "is back",
+            (None, None) => "joined",
+        };
         let who = Who { handle: handle.clone(), role: role.clone(), ident: Some(ident.clone()) };
         let seq = self.chat_line(at, "join", Some(who), what.into(), Vec::new());
         // A new member reads from after its own joining on.
-        if was.is_none()
-            && let Some(m) = self.chat.channels[at].members.iter_mut().find(|m| m.pane == p)
+        if earlier.is_none()
+            && let Some(m) = self.chat.channels[at].member_mut(p)
         {
             m.read = seq;
         }
+        self.chat.dirty = true;
         let role = if role.is_empty() { String::new() } else { format!(" ({role})") };
-        Outcome::Text(format!("#{name}: {handle}{role}, {}", ident.said()))
+        let hears = if hear == Hear::All { ", hears all" } else { "" };
+        Outcome::Text(format!("#{name}: {handle}{role}{hears}, {}", ident.said()))
     }
 
-    fn chat_leave(&mut self, me: Option<PaneId>, word: &str) -> Outcome {
-        let Some(p) = me else { return Outcome::Error("chat-leave: run it inside the pane that leaves".into()) };
+    /// A pane leaves; the person (outside every pane) takes a member out
+    /// by its handle, online or offline.
+    fn chat_leave(&mut self, me: Option<PaneId>, word: &str, handle: Option<String>) -> Outcome {
         let at = match self.chat_find(word) {
             Ok(i) => i,
             Err(e) => return Outcome::Error(format!("chat-leave: {e}")),
         };
-        let Some(m) = self.chat.channels[at].member(p).cloned() else {
-            return Outcome::Error(format!("chat-leave: %{p} is not in #{}", self.chat.channels[at].name));
+        let c = &self.chat.channels[at];
+        let (m, said) = match (me, handle) {
+            (Some(p), None) => match c.member(p).cloned() {
+                Some(m) => (m, "left".to_string()),
+                None => return Outcome::Error(format!("chat-leave: %{p} is not in #{}", c.name)),
+            },
+            (Some(_), Some(_)) => {
+                return Outcome::Error("chat-leave: a pane leaves itself; the person takes another out".into());
+            }
+            (None, Some(h)) => match c.members.iter().find(|m| m.handle == h).cloned() {
+                Some(m) => (m, format!("taken out by {}", Self::chat_you().handle)),
+                None => return Outcome::Error(format!("chat-leave: no {h} in #{}", c.name)),
+            },
+            (None, None) => {
+                return Outcome::Error(
+                    "chat-leave: inside the pane that leaves, or give the handle to take out".into(),
+                );
+            }
         };
-        self.chat.channels[at].members.retain(|x| x.pane != p);
-        let who = Who { handle: m.handle, role: m.role, ident: Some(self.chat_ident(p)) };
-        self.chat_line(at, "leave", Some(who), "left".into(), Vec::new());
+        self.chat.channels[at].members.retain(|x| x.handle != m.handle);
+        let ident = m.pane.map_or_else(|| m.ident.clone(), |p| self.chat_ident(p));
+        let who = Who { handle: m.handle, role: m.role, ident: Some(ident) };
+        self.chat_line(at, "leave", Some(who), said, Vec::new());
+        self.chat.dirty = true;
         Outcome::Ok
     }
 
@@ -660,7 +845,7 @@ impl Server {
                 }
                 said.push_back(Instant::now());
                 let ident = self.chat_ident(p);
-                if let Some(x) = self.chat.channels[at].members.iter_mut().find(|x| x.pane == p) {
+                if let Some(x) = self.chat.channels[at].member_mut(p) {
                     x.ident = ident.clone();
                 }
                 Who { handle: m.handle, role: m.role, ident: Some(ident) }
@@ -668,26 +853,58 @@ impl Server {
             None => Self::chat_you(),
         };
         let members = self.chat.channels[at].members.clone();
-        let named: Vec<String> =
-            mentions_in(&text).into_iter().filter(|h| members.iter().any(|m| &m.handle == h)).collect();
+        let words = mentions_in(&text);
+        let named: Vec<String> = words.iter().filter(|h| members.iter().any(|m| &m.handle == *h)).cloned().collect();
+        let before = self.chat.channels[at].last;
         let seq = self.chat_line(at, "say", Some(who.clone()), text.clone(), named.clone());
-        // What it says is read when the speaker reads on.
+        // Its own line is not news to the speaker: read, when it had read
+        // all before it. Not otherwise: saying something is no reading of
+        // what others said meanwhile (unread lines would be lost).
         if let Some(p) = me
-            && let Some(x) = self.chat.channels[at].members.iter_mut().find(|x| x.pane == p)
+            && let Some(x) = self.chat.channels[at].member_mut(p)
+            && x.read >= before
         {
-            x.read = x.read.max(seq);
+            x.read = seq;
         }
-        // Each one named is told at once, through its inbox.
+        // Each one named is told at once, through its inbox, with what was
+        // said before it since it last read.
         let mut not_told = Vec::new();
         for h in &named {
             let Some(m) = members.iter().find(|m| &m.handle == h) else { continue };
-            if Some(m.pane) == me {
+            let Some(to) = m.pane else {
+                not_told.push(format!("{h} not told: offline (it reads this when it is back)"));
+                continue;
+            };
+            if Some(to) == me {
                 continue;
             }
-            if let Err(why) = self.chat_tell(cid, me, m.pane, &name, &who, &text) {
-                not_told.push(format!("{h} not told: {why}"));
+            let earlier = self.chat_since(at, m.read, before, Some(to));
+            match self.chat_tell(cid, me, to, &name, &who, &text, &earlier) {
+                Ok(()) => {
+                    if let Some(x) = self.chat.channels[at].member_mut(to) {
+                        x.read = x.read.max(seq);
+                    }
+                }
+                Err(why) => not_told.push(format!("{h} not told: {why}")),
             }
         }
+        // The person, named (`@you`) by a member: told on the desktop and
+        // by the webhook, as when an agent is done.
+        if me.is_some() && words.iter().any(|w| w == "you") {
+            self.chat_call_person(&name, &who, &text, me);
+        }
+        // Those that hear all: told of it, with what else comes, shortly, on
+        // the chain of the speaker furthest along one.
+        let chain = me.and_then(|p| self.pane_ref(p)).and_then(|p| p.actor.carry(false));
+        for m in self.chat.channels[at].members.iter_mut() {
+            if m.hear == Hear::All && m.pane.is_some() && m.pane != me && m.read < seq {
+                m.due.get_or_insert_with(|| Instant::now() + HEAR_SETTLE);
+                if chain.is_some_and(|(_, hop)| m.due_chain.is_none_or(|(_, was)| hop > was)) {
+                    m.due_chain = chain;
+                }
+            }
+        }
+        self.chat.dirty = true;
         let mut out = format!("#{name} #{seq}");
         for n in not_told {
             out.push_str(&format!("\n{n}"));
@@ -695,9 +912,38 @@ impl Server {
         Outcome::Text(out)
     }
 
+    /// The lines said in channel `at` after `from` up to `to` (both line
+    /// numbers), not by pane `own`, as a message lists them: the last
+    /// `CONTEXT_MOST`, each cut to `CONTEXT_LINE_MOST` characters, and how
+    /// many earlier ones were left out.
+    fn chat_since(&self, at: usize, from: u64, to: u64, own: Option<PaneId>) -> (Vec<String>, usize) {
+        let c = &self.chat.channels[at];
+        let said: Vec<&Line> = c
+            .recent
+            .iter()
+            .filter(|l| l.seq > from && l.seq <= to && l.kind == "say")
+            .filter(|l| own.is_none() || l.from.as_ref().and_then(|w| w.ident.as_ref()).map(|i| i.pane) != own)
+            .collect();
+        let left = said.len().saturating_sub(CONTEXT_MOST);
+        let lines = said[left..]
+            .iter()
+            .map(|l| {
+                let who = l.from.as_ref().map_or("", |w| w.handle.as_str());
+                let mut text: String = l.text.chars().take(CONTEXT_LINE_MOST).collect();
+                if l.text.chars().count() > CONTEXT_LINE_MOST {
+                    text.push('…');
+                }
+                format!("#{} {} {who}: {text}", l.seq, clock_of(&l.at))
+            })
+            .collect();
+        (lines, left)
+    }
+
     /// One named in a channel told: a message into its pane's inbox, on
-    /// the chain the speaker is on (so the hop limit stops a loop). Never
-    /// into a `shell` pane, where a message runs as a command.
+    /// the chain the speaker is on (so the hop limit stops a loop), with
+    /// what was said before it since it last read. Never into a `shell`
+    /// pane, where a message runs as a command.
+    #[allow(clippy::too_many_arguments)]
     fn chat_tell(
         &mut self,
         cid: Option<ClientId>,
@@ -706,16 +952,41 @@ impl Server {
         channel: &str,
         who: &Who,
         text: &str,
+        earlier: &(Vec<String>, usize),
+    ) -> Result<(), String> {
+        let role = if who.role.is_empty() { String::new() } else { format!(" ({})", who.role) };
+        let mut body = format!("[chat #{channel}] {}{role}: {text}", who.handle);
+        let (lines, left) = earlier;
+        if !lines.is_empty() {
+            body.push_str("\n\nSaid before it, since you last read:");
+            if *left > 0 {
+                body.push_str(&format!(" ({left} earlier not shown: chat-read {channel} --all)"));
+            }
+            for l in lines {
+                body.push('\n');
+                body.push_str(l);
+            }
+        }
+        let chain = me.and_then(|p| self.pane_ref(p)).and_then(|p| p.actor.carry(false));
+        self.chat_send(cid, to, body, chain)
+    }
+
+    /// A chat message into pane `to`'s inbox, on `chain` (a task and hop:
+    /// the speaker's), or a chain of its own.
+    fn chat_send(
+        &mut self,
+        cid: Option<ClientId>,
+        to: PaneId,
+        text: String,
+        carry: Option<(MsgId, u32)>,
     ) -> Result<(), String> {
         let via = self.pane_ref(to).map_or(WorkMode::Normal, |p| p.actor.mode);
         if via == WorkMode::Shell {
             return Err(format!("%{to} is in shell mode, where a message runs as a command"));
         }
-        let carry = me.and_then(|p| self.pane_ref(p)).and_then(|p| p.actor.carry(false));
         self.next_msg += 1;
         let id = self.next_msg;
         let (task, hop) = carry.unwrap_or((id, 0));
-        let role = if who.role.is_empty() { String::new() } else { format!(" ({})", who.role) };
         let m = Message {
             id,
             task,
@@ -724,10 +995,72 @@ impl Server {
             via,
             hop,
             re: None,
-            text: format!("[chat #{channel}] {}{role}: {text}", who.handle),
+            text,
             at: chrono::SubsecRound::trunc_subsecs(chrono::Local::now(), 3),
         };
         self.enqueue(to, m)
+    }
+
+    /// The person named in a channel (`@you`): a desktop notification (its
+    /// button goes to the speaker's pane) and the `done-webhook`, as when an
+    /// agent is done.
+    fn chat_call_person(&mut self, channel: &str, who: &Who, text: &str, from: Option<PaneId>) {
+        let role = if who.role.is_empty() { String::new() } else { format!(" ({})", who.role) };
+        let line = format!("[chat #{channel}] {}{role}: {text}", who.handle);
+        if self.opts.notify {
+            let go = from.map(|p| crate::notify::go_to_pane_url(&self.socket, p));
+            crate::notify::notify_with(&format!("keepane: #{channel} {} asks you", who.handle), text, go.as_deref());
+        }
+        let host = crate::sysinfo::hostname();
+        let json = serde_json::json!({
+            "kind": "chat", "host": host, "channel": channel, "from": who.handle, "role": who.role, "text": text,
+        });
+        self.send_webhook(&format!("keepane · {host}\n{line}"), &line, json);
+    }
+
+    /// Those that hear all and whose lines have gathered long enough: told
+    /// of what was said since they last read, in one message, once nothing
+    /// of the channel waits in their inbox already.
+    fn chat_hear(&mut self) {
+        let now = Instant::now();
+        for at in 0..self.chat.channels.len() {
+            for i in 0..self.chat.channels[at].members.len() {
+                let m = &self.chat.channels[at].members[i];
+                let (Some(due), Some(to)) = (m.due, m.pane) else { continue };
+                if due > now {
+                    continue;
+                }
+                let name = self.chat.channels[at].name.clone();
+                let head = format!("[chat #{name}]");
+                if self.pane_ref(to).is_some_and(|p| p.actor.inbox.iter().any(|q| q.text.starts_with(&head))) {
+                    continue;
+                }
+                let last = self.chat.channels[at].last;
+                let (lines, left) = self.chat_since(at, m.read, last, Some(to));
+                let m = &mut self.chat.channels[at].members[i];
+                m.due = None;
+                let chain = m.due_chain.take();
+                if lines.is_empty() {
+                    m.read = last;
+                    continue;
+                }
+                let n = lines.len() + left;
+                let mut body = format!("{head} {}:", crate::format::count(n, "new line"));
+                if left > 0 {
+                    body.push_str(&format!(" ({left} earlier not shown: chat-read {name} --all)"));
+                }
+                for l in &lines {
+                    body.push('\n');
+                    body.push_str(l);
+                }
+                if self.chat_send(None, to, body, chain).is_ok()
+                    && let Some(m) = self.chat.channels[at].member_mut(to)
+                {
+                    m.read = last;
+                    self.chat.dirty = true;
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -785,8 +1118,11 @@ impl Server {
             match reader {
                 Reader::You => c.you_read = last,
                 Reader::Pane(p) => {
-                    if let Some(m) = c.members.iter_mut().find(|m| m.pane == p) {
+                    if let Some(m) = c.member_mut(p) {
                         m.read = last;
+                        // Kept with the member (at the tick): it reads on
+                        // from there after a restart.
+                        self.chat.dirty = true;
                     }
                 }
             }
@@ -865,10 +1201,8 @@ impl Server {
             };
             self.reply(w.cid, out);
         }
-        self.chat_gone();
-        if self.chat.dirty {
-            self.chat_save();
-        }
+        self.chat_presence();
+        self.chat_hear();
         if self.chat.pruned.is_none_or(|t| t.elapsed() >= Duration::from_secs(86_400))
             && let Some(dir) = self.chat.dir.clone()
         {
@@ -876,6 +1210,22 @@ impl Server {
             for c in &self.chat.channels {
                 crate::histlog::prune_events(dir.join(&c.id), self.opts.chat_days);
             }
+            // Members offline longer than what is said is kept go too.
+            if self.opts.chat_days > 0 {
+                let limit = chrono::Local::now() - chrono::Duration::days(i64::from(self.opts.chat_days));
+                let stale = |m: &Member| {
+                    m.pane.is_none()
+                        && chrono::DateTime::parse_from_rfc3339(&m.since).is_ok_and(|t| t < limit.fixed_offset())
+                };
+                for c in &mut self.chat.channels {
+                    let n = c.members.len();
+                    c.members.retain(|m| !stale(m));
+                    self.chat.dirty |= c.members.len() != n;
+                }
+            }
+        }
+        if self.chat.dirty {
+            self.chat_save();
         }
     }
 
@@ -890,10 +1240,11 @@ impl Server {
                 .members
                 .iter()
                 .map(|m| {
-                    let busy = self.pane_ref(m.pane).map(|p| !p.actor.idle());
+                    let busy = m.pane.and_then(|p| self.pane_ref(p)).map(|p| !p.actor.idle());
                     serde_json::json!({
                         "handle": m.handle, "role": m.role, "ident": m.ident, "joined": m.joined,
-                        "read": m.read, "busy": busy,
+                        "read": m.read, "busy": busy, "online": m.pane.is_some(), "since": m.since,
+                        "hear": m.hear.word(),
                     })
                 })
                 .collect();
@@ -907,15 +1258,19 @@ impl Server {
             .iter()
             .map(|m| {
                 let i = &m.ident;
+                // Offline: where it was last.
+                let state = if m.pane.is_some() { "online" } else { "offline" };
                 vec![
                     m.handle.clone(),
                     m.role.clone(),
+                    state.into(),
                     i.machine.clone(),
                     i.place.clone(),
                     format!("%{}", i.pane),
                     i.address.clone(),
                     i.agent.clone().unwrap_or_default(),
                     i.model.clone().unwrap_or_default(),
+                    if m.hear == Hear::All { "hears all".into() } else { String::new() },
                 ]
             })
             .collect();
@@ -1147,6 +1502,80 @@ mod tests {
         assert_eq!(text(a.exec_chat(topic, None)), "ok");
         let t = std::fs::read_to_string(dir.join("channels.json")).unwrap();
         assert!(t.contains("\"anything\""), "a change: written at once: {t}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Members are kept across a restart: back offline (no pane is them
+    /// yet), with their handle, role, where they read to and what they
+    /// hear; `chat-who` says so.
+    #[test]
+    fn members_come_back_offline_after_a_restart() {
+        let dir = std::env::temp_dir().join(format!("keepane-chat-members-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = server(&dir);
+        a.exec_chat(ChatCmd::New { name: "review".into(), topic: String::new(), tags: vec![] }, None);
+        let at = a.chat_find("review").unwrap();
+        let ident = Ident {
+            machine: "M".into(),
+            place: "s:0.0".into(),
+            pane: 7,
+            pane_name: Some("worker".into()),
+            ..Default::default()
+        };
+        a.chat.channels[at].members.push(Member {
+            pane: Some(7),
+            handle: "lead".into(),
+            role: "planner".into(),
+            ident,
+            joined: now(),
+            read: 1,
+            hear: Hear::All,
+            since: now(),
+            due: None,
+            due_chain: None,
+        });
+        a.chat_save();
+        drop(a);
+        let b = server(&dir);
+        let at = b.chat_find("review").unwrap();
+        let m = &b.chat.channels[at].members[0];
+        assert_eq!(
+            (m.handle.as_str(), m.role.as_str(), m.pane, m.read, m.hear, m.ident.pane_name.as_deref()),
+            ("lead", "planner", None, 1, Hear::All, Some("worker"))
+        );
+        let who = text(b.chat_who("review", false));
+        assert!(who.contains("lead") && who.contains("offline") && who.contains("hears all"), "{who}");
+        let json: serde_json::Value = serde_json::from_str(&text(b.chat_who("review", true))).unwrap();
+        assert_eq!((json[0]["online"].as_bool(), json[0]["hear"].as_str()), (Some(false), Some("all")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A member `channels.json` keeps that this keepane cannot read whole
+    /// costs that member at most, never the channels: a `hear` of a later
+    /// keepane reads as `mentions`, what is missing takes its default, and
+    /// what is no member at all is left out.
+    #[test]
+    fn a_member_not_readable_costs_no_channel() {
+        let dir = std::env::temp_dir().join(format!("keepane-chat-odd-members-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = server(&dir);
+        a.exec_chat(ChatCmd::New { name: "review".into(), topic: String::new(), tags: vec![] }, None);
+        drop(a);
+        let path = dir.join("channels.json");
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let review = v.as_array_mut().unwrap().iter_mut().find(|c| c["name"] == "review").unwrap();
+        review["members"] = serde_json::json!([
+            {"handle": "later", "hear": "loudly", "ident": {"machine": "M", "place": "s:0.0", "address": "", "pane": 3}, "joined": "x"},
+            {"handle": "bare"},
+            42,
+            {"handle": "bad handle!"}
+        ]);
+        std::fs::write(&path, v.to_string()).unwrap();
+        let b = server(&dir);
+        assert!(!dir.join("channels.json.bad").exists(), "the index was read");
+        let at = b.chat_find("review").expect("the channel is still there");
+        let got: Vec<(&str, Hear)> = b.chat.channels[at].members.iter().map(|m| (m.handle.as_str(), m.hear)).collect();
+        assert_eq!(got, [("later", Hear::Mentions), ("bare", Hear::Mentions)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

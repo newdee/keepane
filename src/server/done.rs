@@ -224,17 +224,32 @@ pub struct Request {
 /// bot's signature check wants (Feishu: in the body, the time in seconds;
 /// DingTalk: in the address, in milliseconds); `now_ms` is the Unix time in
 /// milliseconds. Other shapes have no signature and go as they are.
+#[cfg(test)]
 pub fn webhook_request(url: &str, format: &str, secret: &str, d: &Done, host: &str, now_ms: i64) -> Request {
-    let json_type = "application/json; charset=utf-8";
     let text = format!("keepane · {host}\n{}", d.full());
+    message_request(url, format, secret, &text, &d.full(), d.json(host), now_ms)
+}
+
+/// The webhook's request for any message: `text` for a chat (it starts
+/// `keepane`), `plain` for the `text` shape, `json` for the plain JSON one.
+pub fn message_request(
+    url: &str,
+    format: &str,
+    secret: &str,
+    text: &str,
+    plain: &str,
+    json: Value,
+    now_ms: i64,
+) -> Request {
+    let json_type = "application/json; charset=utf-8";
     let mut url = url.to_string();
     let mut body = match format {
-        "text" => return Request { url, content_type: "text/plain; charset=utf-8", body: d.full() },
+        "text" => return Request { url, content_type: "text/plain; charset=utf-8", body: plain.to_string() },
         "feishu" => json!({ "msg_type": "text", "content": { "text": text } }),
         "wecom" | "dingtalk" => json!({ "msgtype": "text", "text": { "content": text } }),
         "slack" => json!({ "text": text }),
         "discord" => json!({ "content": text }),
-        _ => d.json(host),
+        _ => json,
     };
     if !secret.is_empty() {
         match format {
@@ -420,22 +435,31 @@ impl Server {
             let body = lines.join("\n");
             crate::notify::notify_with(&format!("keepane: {}", d.who()), &body, Some(&go));
         }
-        if !self.opts.done_webhook.is_empty() {
-            let o = &self.opts;
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let r = webhook_request(&o.done_webhook, &o.done_webhook_format, &o.done_webhook_secret, &d, &host, now_ms);
-            let config = curl_config(&r.url, r.content_type, &r.body);
-            let events = self.events.clone();
-            let spawned = std::thread::Builder::new().name("done-webhook".into()).spawn(move || {
-                if let Err(why) = run_curl(&config) {
-                    let _ = events.send(Event::DoneWebhookFailed(why));
-                }
-            });
-            if let Err(e) = spawned {
-                log::warn!("done-webhook: {e}");
-            }
-        }
+        let text = format!("keepane · {host}\n{}", d.full());
+        self.send_webhook(&text, &d.full(), d.json(&host));
         self.feishu_tell(&d, &host);
+    }
+
+    /// A message to the `done-webhook`, when one is set, in its format, by
+    /// curl on a thread of its own (a failure comes back as an event).
+    pub(super) fn send_webhook(&self, text: &str, plain: &str, json: Value) {
+        let o = &self.opts;
+        if o.done_webhook.is_empty() {
+            return;
+        }
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let r =
+            message_request(&o.done_webhook, &o.done_webhook_format, &o.done_webhook_secret, text, plain, json, now_ms);
+        let config = curl_config(&r.url, r.content_type, &r.body);
+        let events = self.events.clone();
+        let spawned = std::thread::Builder::new().name("done-webhook".into()).spawn(move || {
+            if let Err(why) = run_curl(&config) {
+                let _ = events.send(Event::DoneWebhookFailed(why));
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("done-webhook: {e}");
+        }
     }
 
     /// `pane-wait`: the program in a pane waits for the person. The pane

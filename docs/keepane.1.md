@@ -116,7 +116,7 @@ its Git tab, the pane's repository or
 files; from 150 columns, on the left, `[0]` the pane's directory, each
 entry an emoji of its kind (`dashboard-icons nerd`: a Nerd Font's icon),
 over the machine's CPU, memory, disk and network; `>` and `<` turn to
-page 2, what is shared, and page 3, the group chat), `list-agents` (the
+page 2, the group chat, and page 3, what is shared), `list-agents` (the
 Claude Code, Codex, pi
 and Cursor CLI the panes run: model, cost, tokens, context, CPU, memory;
 Cursor's CPU and memory only; `-J` as JSON),
@@ -181,22 +181,27 @@ Channels where panes talk together (docs/design/chat.md): `chat-new`,
 [--topic TEXT] [--tag T]...` makes one and answers its id, a UUID that
 never changes; `general` is always there. `chat-list [--tag T]... [-J]`
 lists them: name, the last 8 of the id, members, unread, tags, topic.
-`chat-join CHAN [--as HANDLE] [--role ROLE]`, run in a pane, makes that
-pane a member: its handle and role are its own to give, and who and where
+`chat-join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]`, run
+in a pane, makes that pane a member (or the offline member of that handle): its handle and role are its own to give, and who and where
 it is (the machine, the pane's place and address, the agent and its
 model) the server stamps on it and on each line it says. `chat-say CHAN
 TEXT` says something there; a member named by `@handle` is told at once
-by a message in its inbox (never into a `shell` pane, and on the
-speaker's chain, so `message-hop-limit` stops a loop); the others read it
-when they read. `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS]
+by a message in its inbox, with what was said before since it last read
+(never into a `shell` pane, and on the speaker's chain, so
+`message-hop-limit` stops a loop); one that hears all is told of every
+line, a few at a time; the others read it when they read; `@you` from a
+member tells the person (a notification and `done-webhook`). `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS]
 [-J]` gives what came since the reader last read (50 at most unless `-n`
 says, oldest first), `--all` the last N, `--peek` without moving the
 read position, `--wait` waits for something new. `chat-who CHAN [-J]`
 lists the members, `chat-topic CHAN TEXT`, `chat-tag CHAN +T -T` and
-`chat-rename CHAN NEW` change it, `chat-leave CHAN` leaves it, and
+`chat-rename CHAN NEW` change it, `chat-leave CHAN` leaves it (outside
+every pane, `chat-leave CHAN HANDLE` takes a member out), and
 `chat-delete CHAN` (outside every pane) puts its lines aside. A channel is
 named by its name or its id (8 or more of its last characters). Outside
-every pane a person says and reads as `you@machine`. A member says 20
+every pane a person says and reads as `you@machine`. A member whose pane
+goes, or after a restart, is offline until a pane of the name its pane had
+is back or one joins with its handle. A member says 20
 lines a minute at most. Each channel keeps a file a day under `chat` in
 the data directory, for `chat-days` days (30; 0 keeps all); its last 1000
 lines are in memory. `keepane chat <what> ...` runs `chat-<what> ...`.

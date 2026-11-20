@@ -38,7 +38,7 @@ pub const QUERIES: &[&str] = &[
     "trace-pane",
     "show-task",
     "web-status",
-    // `share -l -J`: page 2.
+    // `share -l -J`: the shares' page (3).
     "share",
     // `show-options -gv dashboard-icons`: what marks [0]'s entries.
     "show-options",
@@ -552,7 +552,7 @@ enum Dialog {
     Help,
     /// How long to share a file or folder for (`S` in [0]), and once or not.
     ShareFor { path: String, pick: usize, once: bool },
-    /// How long a share goes on for from now (`e` on page 2).
+    /// How long a share goes on for from now (`e` on the shares' page).
     Extend { id: u32, pick: usize },
     /// The paired machines (`L`): one picked with j/k, then `c` connect,
     /// `x` disconnect, `R` revoke what it has here, `D` forget.
@@ -649,22 +649,26 @@ pub struct Board {
     pub machine: machine::Machine,
     /// `[0]`: the directory browsed.
     pub files: files::Files,
-    /// The page shown: 1 the panes, 2 the shares (`<` / `>`; `PAGES` in all).
+    /// The page shown: 1 the panes, `CHAT_PAGE`, `SHARES_PAGE` (`<` / `>`;
+    /// `PAGES` in all).
     pub page: u8,
-    /// Page 2: the shares (`share -l -J`), the one picked, whether the
-    /// ended ones show, and how far [2] is scrolled.
+    /// The shares' page: the shares (`share -l -J`), the one picked, whether
+    /// the ended ones show, and how far [2] is scrolled.
     pub shares: Vec<shares::ShareRow>,
     pub share_pick: usize,
     pub shares_ended: bool,
     pub activity_top: usize,
     /// The paired machines, read while `L` lists them.
     pub machines: Vec<MachineRow>,
-    /// Page 3: the group chat.
+    /// The chat's page: the group chat.
     pub chat: chat::ChatPage,
 }
 
-/// The board's pages: the panes, the shares, the group chat.
+/// The board's pages: the panes, the group chat, the shares (the chat
+/// second: it is looked at more often than what is shared).
 const PAGES: u8 = 3;
+const CHAT_PAGE: u8 = 2;
+const SHARES_PAGE: u8 = 3;
 
 /// Visible width of text that may hold SGR sequences.
 fn width_of(s: &str) -> usize {
@@ -922,7 +926,7 @@ impl Board {
     }
 
     /// The file or directory the main panel shows, read here: on page 1
-    /// only (page 2's main panel is the share picked), in the Detail tab.
+    /// only (the shares' page's main panel is the share picked), in the Detail tab.
     fn shown_file(&self) -> Option<&std::path::Path> {
         match (self.page, self.tab, &self.detail) {
             (1, Tab::Detail, Some(Detail::File(path))) => Some(path),
@@ -1062,13 +1066,13 @@ impl Board {
         self.page = if back { (self.page + PAGES - 2) % PAGES + 1 } else { self.page % PAGES + 1 };
         let to = match (self.page, self.focus) {
             (_, Panel::Files | Panel::Main) => self.focus,
-            (2, _) => Panel::Shares,
-            (3, _) => Panel::Channels,
+            (SHARES_PAGE, _) => Panel::Shares,
+            (CHAT_PAGE, _) => Panel::Channels,
             _ => Panel::Panes,
         };
         self.focus_on(to);
         self.scroll = 0;
-        // Back on page 3 later, the divider marks what is unread then.
+        // Back on the chat's page later, the divider marks what is unread then.
         self.chat.divider = None;
     }
 
@@ -1218,8 +1222,8 @@ impl Board {
         const TWO: [Panel; 4] = [Panel::Files, Panel::Shares, Panel::Activity, Panel::Main];
         const THREE: [Panel; 4] = [Panel::Files, Panel::Channels, Panel::Members, Panel::Main];
         let order: &[Panel] = match self.page {
-            2 => &TWO,
-            3 => &THREE,
+            SHARES_PAGE => &TWO,
+            CHAT_PAGE => &THREE,
             _ => &ONE,
         };
         let at = order.iter().position(|p| *p == self.focus).unwrap_or(0);
@@ -1243,8 +1247,8 @@ impl Board {
         // back towards the top for what is read from the top.
         let from_bottom = match self.page {
             1 => self.tab.read_up(),
-            // Page 3's [4]: a channel, the latest at the bottom.
-            3 => true,
+            // The chat page's [4]: a channel, the latest at the bottom.
+            CHAT_PAGE => true,
             _ => false,
         };
         let by = if from_bottom { up } else { -up };
@@ -1351,10 +1355,10 @@ impl Board {
             KeyCode::Char(c @ ('0' | '1' | '2' | '3' | '4')) if plain => {
                 self.focus_on(match (c, self.page) {
                     ('0', _) => Panel::Files,
-                    ('1', 2) => Panel::Shares,
-                    ('2' | '3', 2) => Panel::Activity,
-                    ('1', 3) => Panel::Channels,
-                    ('2' | '3', 3) => Panel::Members,
+                    ('1', SHARES_PAGE) => Panel::Shares,
+                    ('2' | '3', SHARES_PAGE) => Panel::Activity,
+                    ('1', CHAT_PAGE) => Panel::Channels,
+                    ('2' | '3', CHAT_PAGE) => Panel::Members,
                     ('1', _) => Panel::Panes,
                     ('2', _) => Panel::Inbox,
                     ('3', _) => Panel::Tasks,
@@ -1395,7 +1399,7 @@ impl Board {
             }
             KeyCode::Char('/') if plain => {
                 // Page 3 filters the channels (by a name or a tag).
-                let now = if self.page == 3 { self.chat.filter.clone() } else { self.filter.clone() };
+                let now = if self.page == CHAT_PAGE { self.chat.filter.clone() } else { self.filter.clone() };
                 self.input = Some((Input::Filter, now));
                 return Action::Redraw;
             }
@@ -1572,6 +1576,10 @@ impl Board {
     }
 
     fn main_key(&mut self, code: KeyCode) -> Action {
+        // The chat's [4]: s (or i) types into the line at its bottom.
+        if self.page == CHAT_PAGE && matches!(code, KeyCode::Char('s' | 'i')) {
+            return self.channel_key(KeyCode::Char('s'));
+        }
         match code {
             KeyCode::Up | KeyCode::Char('k') => self.scroll_by(1),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_by(-1),
@@ -1585,10 +1593,37 @@ impl Board {
     }
 
     fn typed(&mut self, what: Input, mut text: String, k: Key) -> Action {
+        // A `@` being typed in the chat: ↑/↓ pick a member, Tab or Enter
+        // puts its handle in (Enter sends only when no list is open).
+        if matches!(what, Input::ChatSay { .. }) && !self.chat.naming_list(&text).is_empty() {
+            let n = self.chat.naming_list(&text).len();
+            match k.code {
+                KeyCode::Up => {
+                    self.chat.at_pick = self.chat.at_pick.min(n - 1).saturating_sub(1);
+                    self.input = Some((what, text));
+                    return Action::Redraw;
+                }
+                KeyCode::Down => {
+                    self.chat.at_pick = (self.chat.at_pick + 1).min(n - 1);
+                    self.input = Some((what, text));
+                    return Action::Redraw;
+                }
+                KeyCode::Tab | KeyCode::Enter => {
+                    let done = self.chat.complete_naming(&text).unwrap_or(text);
+                    self.chat.at_pick = 0;
+                    self.input = Some((what, done));
+                    return Action::Redraw;
+                }
+                _ => {}
+            }
+        }
+        if matches!(k.code, KeyCode::Char(_) | KeyCode::BSpace) {
+            self.chat.at_pick = 0;
+        }
         match k.code {
             KeyCode::Escape => {
                 if what == Input::Filter {
-                    if self.page == 3 {
+                    if self.page == CHAT_PAGE {
                         self.chat.filter.clear();
                     } else {
                         self.filter.clear();
@@ -1614,7 +1649,7 @@ impl Board {
             _ => {}
         }
         if what == Input::Filter {
-            if self.page == 3 {
+            if self.page == CHAT_PAGE {
                 self.chat.filter = text.clone();
                 self.chat.pick = 0;
             } else {
@@ -1631,11 +1666,13 @@ impl Board {
             Dialog::Help => Action::Redraw,
             Dialog::Confirm { argv, .. } => {
                 if k.code == KeyCode::Char('y') && !k.ctrl && !k.alt {
-                    // Shared from [0]: page 2, where it is listed.
+                    // Shared from [0]: the shares' page, where it is listed.
                     let shared = argv.first().is_some_and(|c| c == "share")
                         && !matches!(argv.get(1).map(String::as_str), Some("stop" | "again" | "extend" | "-l"));
                     if shared && self.page == 1 {
-                        self.turn_page(false);
+                        self.page = SHARES_PAGE;
+                        self.scroll = 0;
+                        self.chat.divider = None;
                         self.focus_on(Panel::Shares);
                     }
                     Action::Run(argv)
@@ -1909,7 +1946,8 @@ impl Board {
             // Half, up to 64: the pane list needs the room more than the
             // screen beside it, in a popup above all. Page 3's channels and
             // members are short lines: three tenths, the chat the rest.
-            let lw = if self.page == 3 { (w * 3 / 10).clamp(32, 44) } else { (w / 2).clamp(30, 64) }.min(w - 20);
+            let lw =
+                if self.page == CHAT_PAGE { (w * 3 / 10).clamp(32, 44) } else { (w / 2).clamp(30, 64) }.min(w - 20);
             (lw, Some(Rect { x: mx + lw, y: 0, w: w - lw, h: body }))
         };
         if narrow && self.focus == Panel::Main {
@@ -1950,7 +1988,7 @@ impl Board {
         let tasks_h = body.saturating_sub(panes_h + inbox_h);
         let rect = |y, h| (h >= 3).then_some(Rect { x: mx, y, w: left_w, h });
         // Page 3: the channels half, the picked one's members the rest.
-        if self.page == 3 {
+        if self.page == CHAT_PAGE {
             let channels_h = (body / 2).max(3).min(body);
             return Layout {
                 machine,
@@ -1966,7 +2004,7 @@ impl Board {
             };
         }
         // Page 2: the shares two thirds, what happened to them the rest.
-        if self.page == 2 {
+        if self.page == SHARES_PAGE {
             let shares_h = (body * 2 / 3).max(3).min(body);
             return Layout {
                 machine,
@@ -2377,9 +2415,18 @@ impl Board {
     /// The bottom line: what is being typed, the question, a note, or the
     /// keys of the focused panel.
     fn foot(&self) -> String {
+        // Typed in the chat's own line at the bottom of [4] (when it shows):
+        // the keys only, not the text again.
+        if let Some((Input::ChatSay { name, .. }, text)) = &self.input
+            && self.page == CHAT_PAGE
+            && self.layout().main.is_some_and(|r| r.inner_h() >= 4)
+        {
+            let pick = if self.chat.naming_list(text).is_empty() { "@ names a member" } else { "↑/↓ Tab pick" };
+            return format!("\x1b[1msay in #{name}:\x1b[0m Enter sends · {pick} · Esc cancel");
+        }
         if let Some((what, text)) = &self.input {
             let label = match what {
-                Input::Filter if self.page == 3 => "filter channels (a name or a tag)".to_string(),
+                Input::Filter if self.page == CHAT_PAGE => "filter channels (a name or a tag)".to_string(),
                 Input::Filter => "filter panes".to_string(),
                 Input::Send { to } => format!("message to {to}"),
                 Input::Rename { to } => format!("name for {to}"),
@@ -2475,9 +2522,9 @@ impl Board {
             Panel::Main if self.tab == Tab::Trace => "j/k scroll  g/G top/bottom  e every turn  [/] tab  h back",
             Panel::Main => "j/k scroll  g/G top/bottom  [/] tab  h back",
         };
-        let all = if self.page == 3 {
+        let all = if self.page == CHAT_PAGE {
             "Tab/0124 panel  / filter  ? keys  q quit"
-        } else if self.page == 2 {
+        } else if self.page == SHARES_PAGE {
             "Tab/0124 panel  ? keys  q quit"
         } else {
             "Tab/01234 panel  T trace  L machines  / filter  ? keys  q quit"
@@ -2526,9 +2573,9 @@ impl Board {
         place(layout.activity, layout.activity.map(|r| self.activity_box(r)).unwrap_or_default());
         place(layout.channels, layout.channels.map(|r| self.channels_box(r)).unwrap_or_default());
         place(layout.members, layout.members.map(|r| self.members_box(r)).unwrap_or_default());
-        if self.page == 3 {
+        if self.page == CHAT_PAGE {
             place(m, m.map(|r| self.chat_box(r)).unwrap_or_default());
-        } else if self.page == 2 {
+        } else if self.page == SHARES_PAGE {
             place(m, m.map(|r| self.share_box(r)).unwrap_or_default());
         } else {
             place(m, m.map(|r| self.main_box(r)).unwrap_or_default());
@@ -2928,8 +2975,8 @@ fn help_lines() -> Vec<String> {
     [
         "Everywhere",
         "  Tab / Shift+Tab, 0-4, h / l       change panel (pages 2 and 3: 0 1 2 4)",
-        "  > / <                             the next / last page: 1 the panes, 2 what is",
-        "                                    shared, 3 the group chat",
+        "  > / <                             the next / last page: 1 the panes, 2 the group",
+        "                                    chat, 3 what is shared",
         "  [ / ]                             change the tab on the right",
         "  T                                 the trace of the pane's agent",
         "  L                                 the paired machines: j / k one, then c connect,",
@@ -2938,7 +2985,7 @@ fn help_lines() -> Vec<String> {
         "  PgUp / PgDn, C-b / C-f            page the right panel (C-u / C-d half a page;",
         "                                    in the prefix-v popup, C-b C-b sends C-b)",
         "  g / G, Home / End                 the first / last row of a list; top / bottom on the right",
-        "  /                                 filter the panes (page 3: the channels)",
+        "  /                                 filter the panes (page 2: the channels)",
         "  q, Esc                            quit (Esc first cancels a question)",
         "  mouse                             click a panel or a row; the wheel scrolls",
         "",
@@ -2966,7 +3013,22 @@ fn help_lines() -> Vec<String> {
         "  .          hidden entries          -       back to the pane's directory",
         "  S          share it (how long, once or not; asks)",
         "",
-        "Page 2 (< / >): [0] and System as on page 1",
+        "Page 2 (< / >): the group chat (keepane chat); [0] and System as on page 1",
+        "[1] Channels: name, members, what you have not read, tags, the last line and when",
+        "  j / k      pick one (shown right)  Enter   scroll its lines",
+        "  s          say something (as you)  n       a new channel: its name, then its topic",
+        "  t          its topic               #       its tags: +a adds, -b takes off",
+        "[2] Members: handle in its colour, role, where it is, busy (yellow) or idle (green)",
+        "  j / k      pick one                o       go to its pane",
+        "  s          say something to it (@ it)",
+        "  offline (a faint ○): its pane went or the server started again; back when a pane of",
+        "  its name is, or one joins with its handle",
+        "[4] The channel picked, the latest at the bottom: each one's lines in a bubble in",
+        "  its colour (yours on the right; a heavy left side: it names @you), a rule at each",
+        "  day and where what you had not read begins; shown here, it counts as read",
+        "  s / i      type in the line at its bottom; @ lists members to name: ↑/↓, Tab puts one in",
+        "",
+        "Page 3: what is shared; [0] and System as on page 1",
         "[1] Shares: what this machine shares, ended ones too (kept like the sessions)",
         "  j / k      pick one (shown right)  Enter   scroll it",
         "  x          stop it (asks)          X       stop them all (asks)",
@@ -2975,18 +3037,6 @@ fn help_lines() -> Vec<String> {
         "  states: active, missing (its file is gone), stopped, expired, used (for once, it went)",
         "[2] Activity: what happened to the shares, the latest first; j / k scroll",
         "[4] The share picked: its link, time, who opened it, its story, the code to scan",
-        "",
-        "Page 3: the group chat (keepane chat); [0] and System as on page 1",
-        "[1] Channels: name, members, what you have not read, tags, the last line and when",
-        "  j / k      pick one (shown right)  Enter   scroll its lines",
-        "  s          say something (as you)  n       a new channel: its name, then its topic",
-        "  t          its topic               #       its tags: +a adds, -b takes off",
-        "[2] Members: handle in its colour, role, where it is, busy (yellow) or idle (green)",
-        "  j / k      pick one                o       go to its pane",
-        "  s          say something to it (@ it)",
-        "[4] The channel picked, the latest at the bottom: each one's lines in a bubble in",
-        "  its colour (yours on the right; a heavy left side: it names @you), a rule at each",
-        "  day and where what you had not read begins; shown here, it counts as read",
         "",
         "System (under [0], from 150 columns): CPU, each core, memory, swap, disk, network,",
         "  temperature, power, battery, processes: this machine, every second",
@@ -3432,7 +3482,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
             }
             // Page 3: the channels, then the picked one's members and lines;
             // what the person had not read of the one shown is read.
-            if board.page == 3 {
+            if board.page == CHAT_PAGE {
                 board.chat.set_channels(&ask(&owned(&["chat-list", "-J"])).1);
                 let q = board.chat_queries();
                 if let [_, who, read] = q.as_slice() {
@@ -3462,7 +3512,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
             }
             board.refresh_files();
             // Page 2 reads the shares; its [4] is drawn from them, asked of nothing.
-            if board.page == 2 {
+            if board.page == SHARES_PAGE {
                 board.set_shares(&ask(&owned(&["share", "-l", "-J"])).1);
             } else {
                 match (board.local_main(git.as_deref()), board.main_query()) {
@@ -4595,16 +4645,16 @@ mod tests {
     /// s, n, t and # ask for text and run the chat command; o goes to a
     /// member's pane; `/` filters the channels; a click picks one.
     #[test]
-    fn page_three_shows_the_group_chat_and_says_things_as_the_person() {
+    fn page_two_shows_the_group_chat_and_says_things_as_the_person() {
         let mut b = board();
         b.resize(160, 30);
-        b.key(Key::ch('<'));
-        assert_eq!((b.page, b.focus), (3, Panel::Channels), "< from page 1: the last page");
-        b.key(Key::ch('<'));
-        assert_eq!(b.page, 2);
         b.key(Key::ch('>'));
-        assert_eq!((b.page, b.focus), (3, Panel::Channels));
-        assert!(strip(&b.foot()).contains("</> page 3/3") && strip(&b.foot()).contains("s say"));
+        assert_eq!((b.page, b.focus), (2, Panel::Channels), "> from page 1: the chat");
+        b.key(Key::ch('>'));
+        assert_eq!(b.page, 3);
+        b.key(Key::ch('<'));
+        assert_eq!((b.page, b.focus), (2, Panel::Channels));
+        assert!(strip(&b.foot()).contains("</> page 2/3") && strip(&b.foot()).contains("s say"));
         assert!(screen(&b).join("\n").contains("no channel (n makes one)"));
         assert_eq!(b.chat_queries(), [owned(&["chat-list", "-J"])], "nothing picked: the list only");
         b.chat.set_channels(
@@ -4695,7 +4745,7 @@ mod tests {
         b.key(Key::ch('s'));
         assert_eq!(b.input.as_ref().map(|(_, s)| s.as_str()), Some("@tester "));
         b.key(Key::plain(KeyCode::Escape));
-        // Tab goes round page 3's panels.
+        // Tab goes round the chat page's panels.
         b.key(Key::plain(KeyCode::Tab));
         assert_eq!(b.focus, Panel::Main);
         b.key(Key::plain(KeyCode::Tab));
@@ -4730,7 +4780,7 @@ mod tests {
         assert!(b.chat_seen().is_some(), "[4] shown: read");
         b.resize(160, 30);
         b.key(Key::ch('1'));
-        // Every row of page 3 is exactly as wide as the board, at any size
+        // Every row of the chat page is exactly as wide as the board, at any size
         // and with any panel focused: no bubble or channel line breaks out.
         b.chat.set_lines(&format!(
             r#"{{"lines":[{},{{"seq":42,"at":"2026-11-18T09:00:00.000+08:00","kind":"say","from":{{"handle":"you@M"}},
@@ -4748,16 +4798,64 @@ mod tests {
         }
         b.resize(160, 30);
         b.key(Key::ch('1'));
-        // > from page 3: page 1, the panes.
-        b.key(Key::ch('>'));
+        // < from page 2: page 1, the panes.
+        b.key(Key::ch('<'));
         assert_eq!((b.page, b.focus), (1, Panel::Panes));
-        assert_eq!(b.chat_seen(), None, "page 3 not shown: nothing read");
+        assert_eq!(b.chat_seen(), None, "the chat not shown: nothing read");
     }
-    /// Page 2 (`<` / `>`): [0] and the machine as on page 1, the shares and
+    /// The chat's own line at the bottom of [4]: how to start, what is
+    /// typed (not again in the bottom line), a `@` opens the members it may
+    /// name (online first), ↑/↓ and Tab or Enter put one in, Enter sends
+    /// once no list is open. An offline member is said so in [2] and the list.
+    #[test]
+    fn the_chat_has_a_line_to_type_in_and_names_with_a_list() {
+        let mut b = board();
+        b.resize(160, 30);
+        b.key(Key::ch('>'));
+        b.chat.set_channels(r#"[{"id":"0190a-22222222","name":"review","members":3,"unread":0}]"#);
+        b.chat.set_members(
+            r#"[{"handle":"tester","ident":{"place":"s:0.1","pane":4},"busy":false,"online":false},
+                {"handle":"lead","role":"planner","ident":{"place":"s:0.0","pane":3},"busy":true,"online":true},
+                {"handle":"lena","ident":{"place":"s:0.2","pane":5},"busy":false,"online":true}]"#,
+        );
+        let text = strip(&screen(&b).join("\n"));
+        assert!(text.contains("› s says something · @ names a member"), "{text}");
+        assert!(text.contains("[2] Members · 2/3 online") && text.contains("offline · was s:0.1 %4"), "{text}");
+        b.key(Key::ch('4'));
+        b.key(Key::ch('s'));
+        for c in "hi @le".chars() {
+            b.key(Key::ch(c));
+        }
+        let text = strip(&screen(&b).join("\n"));
+        assert!(text.contains("› hi @le"), "typed in the box: {text}");
+        assert!(text.contains(" @lead planner") && text.contains(" @lena"), "the list: {text}");
+        assert!(!text.contains(" @tester"), "not what was typed: {text}");
+        assert!(strip(&b.foot()).contains("Enter sends · ↑/↓ Tab pick") && !strip(&b.foot()).contains("hi @le"));
+        // Down then Enter: the second one put in, nothing sent yet.
+        b.key(Key::plain(KeyCode::Down));
+        assert_eq!(b.key(Key::plain(KeyCode::Enter)), Action::Redraw);
+        assert_eq!(b.input.as_ref().map(|(_, t)| t.as_str()), Some("hi @lena "));
+        for c in "and @t".chars() {
+            b.key(Key::ch(c));
+        }
+        assert!(strip(&screen(&b).join("\n")).contains(" @tester offline"), "offline, still named");
+        b.key(Key::plain(KeyCode::Tab));
+        assert_eq!(
+            b.key(Key::plain(KeyCode::Enter)),
+            Action::Run(owned(&["chat-say", "0190a-22222222", "--", "hi @lena and @tester "]))
+        );
+        // Too short for the line: none, and the bottom line keeps the text.
+        b.resize(160, 5);
+        b.key(Key::ch('s'));
+        b.key(Key::ch('x'));
+        assert!(strip(&b.foot()).contains("say in #review: x"), "{}", strip(&b.foot()));
+    }
+
+    /// Page 3 (`<` / `>`): [0] and the machine as on page 1, the shares and
     /// what happened to them in the middle, the one picked on the right;
     /// each change asks first but extending, and sharing from [0] turns to it.
     #[test]
-    fn page_two_lists_the_shares_and_acts_on_them_with_a_yes() {
+    fn page_three_lists_the_shares_and_acts_on_them_with_a_yes() {
         let json = r#"{"served":true,"shares":[
             {"id":3,"state":"active","kind":"file","name":"report.pdf","path":"/r.pdf","created":1000000,"until":9000000,
              "once":false,"sent":2,"seen":["10.0.0.9"],"from":"%1","links":["http://10.0.0.5:7681/s/abc"],"port":7681,
@@ -4768,9 +4866,9 @@ mod tests {
         b.resize(160, 30);
         // The page shown, of how many, by the key that turns it.
         assert!(strip(&b.foot()).contains("</> page 1/3"), "{}", strip(&b.foot()));
-        b.key(Key::ch('>'));
-        assert_eq!((b.page, b.focus), (2, Panel::Shares));
-        assert!(strip(&b.foot()).contains("</> page 2/3") && b.foot().contains("\x1b[1m2\x1b[0m/3"));
+        b.key(Key::ch('<'));
+        assert_eq!((b.page, b.focus), (3, Panel::Shares), "< from page 1: the last page");
+        assert!(strip(&b.foot()).contains("</> page 3/3") && b.foot().contains("\x1b[1m3\x1b[0m/3"));
         b.set_shares(json);
         let text = screen(&b).join("\n");
         assert!(text.contains("[1] Shares  1 active · 1 ended") && text.contains("[2] Activity"), "{text}");
@@ -4786,14 +4884,14 @@ mod tests {
         // Too narrow for every key: the page still shows, at the right end.
         b.resize(50, 30);
         let foot = strip(&b.foot());
-        assert!(foot.ends_with("│  </> page 2/3") && width_of(&foot) == 50, "{foot:?}");
+        assert!(foot.ends_with("│  </> page 3/3") && width_of(&foot) == 50, "{foot:?}");
         b.resize(160, 30);
         // [4] reads from the top: j goes down it.
         b.key(Key::ch('4'));
         b.key(Key::ch('j'));
         assert_eq!(b.scroll, 1, "scrolled down");
         b.key(Key::ch('g'));
-        // Numbers and Tab go round page 2's panels.
+        // Numbers and Tab go round page 3's panels.
         b.key(Key::ch('2'));
         assert_eq!(b.focus, Panel::Activity);
         b.key(Key::plain(KeyCode::Tab));
@@ -4838,10 +4936,10 @@ mod tests {
         let r = b.layout().shares.unwrap();
         b.mouse(&MouseRecord { x: (r.x + 3) as i16, y: (r.y + 1) as i16, buttons: 1, ctrl: 0, flags: 0 });
         assert_eq!(b.share_pick, 0);
-        // Back to page 1: the panes.
-        b.key(Key::ch('<'));
+        // Back to page 1: the panes (round, past the last).
+        b.key(Key::ch('>'));
         assert_eq!((b.page, b.focus), (1, Panel::Panes));
-        // Shared from [0]: for how long, once or not, asked; then page 2.
+        // Shared from [0]: for how long, once or not, asked; then page 3.
         let dir = std::env::temp_dir().join(format!("keepane-board-share-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "x").unwrap();
@@ -4861,7 +4959,7 @@ mod tests {
         );
         let path = dir.join("a.txt").to_string_lossy().into_owned();
         assert_eq!(b.key(Key::ch('y')), Action::Run(owned(&["share", &path, "--for", "1h", "--once"])));
-        assert_eq!((b.page, b.focus), (2, Panel::Shares));
+        assert_eq!((b.page, b.focus), (3, Panel::Shares), "straight to the shares, past the chat");
         // What these send is what the dashboard may send, each asking but extend.
         for argv in [owned(&["share", "-l", "-J"]), owned(&["share", "stop", "3"])] {
             assert!(QUERIES.contains(&argv[0].as_str()) && ACTIONS.contains(&argv[0].as_str()));

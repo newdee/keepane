@@ -6450,3 +6450,29 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 0.81.0（群聊页：气泡和颜色、连发合并、日期线和未读线、@ 高亮、频道列表两行；自己说的不算未读；看板去掉零宽格式字符）：第 212 条。
 
 0.81.0 发布：CI 44570337628（7fc6fef）四个 job 通过；tag v0.81.0；Release 44572171208 四个平台通过；manifests 2ee8d98；winget PR #484589；Homebrew formula 44660710441 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 213. 群聊：成员保留和在线状态、@ 带上下文、`--hear all`、点名你；群聊换到第 2 页、输入行和 @ 选人；面板跳转不再抢焦点
+
+来源：用户 2026-11-20 对 4 个待定项和"群聊收听方式"说"改吧"，并提出"成员不应该在服务重启后清空，可以检测是否在线，显示在线和离线"；之前提出"群聊放在第二页，文件分享放在第三页"、"群聊界面留一个发消息的位置，@ 时弹出下拉选择"、"@ 用户的回复可以通知或用飞书 webhook"；排查"C-b v 切换后键盘不在 keepane 里"时查到 keepane 这边的原因。
+
+- 做法：见 `docs/design/chat.md` 第 8 节。服务端：成员写进 `channels.json`，pane 没了或重启后是离线，同名 pane 回来或用称呼 `chat join` 时接上；`chat leave 频道 称呼`（pane 外）移出，离线超过 `chat-days` 天自动移出；@ 推送附上次读完后的话（≤20 句，算读过）；`chat join --hear all|mentions`（all：2 秒内合成一条，收件箱里还有这个频道的消息时不送）；成员 `@you` 时发桌面通知和 `done-webhook`（`done.rs` 拆出 `message_request`、`send_webhook`，任务完成和群聊共用）；`chat-who -J` 加 `online`、`since`、`hear`。看板：`CHAT_PAGE = 2`、`SHARES_PAGE = 3` 两个常量替换写死的页码，`[0]` 分享后直接跳到分享页；`[2]` 离线灰色 `○`、"N/M online"；`[4]` 底部输入行和 `@` 列表（↑/↓、Tab/Enter 填入）。焦点：`focus-pane` 从弹窗发起时只切那个弹窗所在的终端、不发 Raise；`raise_console_window` 遇到 ConPTY 的 `PseudoConsoleWindow` 时改为提它的 root owner（Windows Terminal 设了），没有 owner 就不提。
+- 定性：
+  - 抢焦点：共性（看板的 `o` 和群聊成员的 `o` 两处都走 `focus-pane`），结构缺陷：`focus-pane` 混了"从外部唤起"和"在本终端里导航"两种意图；`raise_console_window` 在 ConPTY 下把看不见的伪窗口提到前台（UnifyTerm 没给伪窗口设 owner，前台落空）。UnifyTerm 那边也修了。
+  - 发言吞未读（测试时发现的老问题）：成员发言时读位置跳到自己那句，别人这期间说的算成已读。个别，边界遗漏：本意是"自己的话不算新消息"。改为只在已读到最新时前移（自己的话从 0.81.0 起不算未读，计数不受影响）。
+  - 换页：写死的页码 13 处（含一处 `match` 里的 `3 => true`，第一次替换漏了，测试抓到）收敛到两个常量。
+- 评估：`chat-say` 的返回、`chat read` 文本格式不变；@ 推送第一行不变（原 e2e 断言照旧通过），只在下面附内容；`--hear` 默认 `mentions`，行为同前；成员离线而不是离开，所以原来"pane 关掉就离开"的 e2e 断言改为离线；`focus-pane` 从弹窗外（通知按钮）的行为不变（e2e 断言 2 个终端都切）。`chat-leave` 多一个可选参数，`chat-delete` 解析拆开，行为不变。
+- 测试：e2e 新增 2 个（弹窗里 focus-pane 只切自己的终端；`@you` 到 webhook）、群聊 e2e 加 4 段（@ 带上下文并算读过、离线和点名离线、同名 pane 自动回来、`--hear all` 合成一条且不含自己的）；单元新增 2 个（成员重启后离线保留、输入行和 @ 列表）、改 2 个（换页后的第 2、3 页测试）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路存活（变异）+ 全量 | fmt、clippy 干净；Windows 705 / 11 / 173。变异 8 个：从不离线、@ 不带上下文、`--hear` 不排期、`@you` 不通知、发言照旧吞未读（各让群聊 e2e 或 `@you` e2e 失败）、成员不保存（单测失败）、@ 列表按键关掉（单测失败），7 个被抓到；**弹窗分支关掉，`focus_pane_from_a_popup` 仍通过**。查明：服务端确实把 2 个终端都切了（弹窗里显示 `2 client(s) switched`），但测试读的是 `two` 没更新过的画面（终端画面只在读的时候更新）。改：问服务端 `list-clients` 每个客户端在哪个 session，并断言弹窗里写 `1 client(s) switched`；再变异，测试失败。 | **有问题**：已修（不计数） |
+| 2 | 静态一致性（文档、帮助、命令表对代码） | 逐条核对 README en/zh、man、`chat.md` 第 8 节、看板 `?` 帮助、MCP 说明、`main.rs` 帮助行对代码：20 句上下文、300 字、2 秒合成、`chat-days` 清离线、`@you` 两条渠道、`chat who` 在线列、输入行按键，都一致。发现：`command.rs` 的 `FLAGS`（补全和 `list-commands` 用）里 `chat-join` 没登记 `--hear`，声明的参数和能用的参数不一致。补上。本轮全量测试中途停掉（代码要改）。 | **有问题**：已修（不计数） |
+| 3 | 真二进制端到端（真的重启）+ 全量 | fmt、clippy 干净；Windows 705 / 11 / 172（+1 失败）。失败的是第 1 轮新写的 `focus_pane_from_a_popup_moves_only_its_terminal`：状态栏的 `[b]` 和弹窗打印的 `1 client(s) switched` 先后不定，等前者、断言后者，后者有时还没到。定性：个别，我写的测试的时序竞争；查了本条其他新断言，都是等到结果再断言。改为一起等两者；单跑 10 次 10/10。真二进制（临时 server `-L`，独立目录）：名为 `worker` 的 pane 以 `w`（`--hear all`）加入，`save-session -a`、`kill-server`，新 server 启动时自动恢复会话，`w` 立刻 `is back (pane worker)`、在线；`@w` 推送成功；看板 `[2]` 绿点、`[4]` 输入 `hi @` 时列出 `@w tester`，底栏只写按键。 | **有问题**：已修（不计数） |
+| 4 | 跨平台（Windows + Linux）+ 全量 | Windows 705 / 11 / 173 全过。Linux 689 / 170（+1 失败）：`focus_pane_from_a_popup_moves_only_its_terminal` 在弹窗里敲 `keepane focus-pane`，Linux 的 pane 里 `/bin/sh: keepane: not found`——把 keepane 的目录放进 pane 的 PATH 只在 Windows 做。定性：个别，我写的测试假定了 Windows 的环境（同一文件里其他测试用 `CARGO_BIN_EXE_keepane`）。改为用二进制的完整路径；Windows 3/3、Linux 3/3。 | **有问题**：已修（不计数） |
+| 5 | 边界与退化输入（损坏、未来版本的持久化状态） | review 读 `channels.json` 的读回：成员是 `Saved` 里的 `Vec<SavedMember>`，`hear` 是严格的枚举，`ident`、`joined` 必须有。发现：一个成员读不懂（以后的 keepane 写了新的 `hear` 值，或者缺字段），整份索引就解析失败、被改名为 `channels.json.bad`，所有频道读不回来。定性：个别（只有这一处新加的嵌套记录），结构缺陷：一条成员记录的错误扩散到整个索引。改：成员逐个从 JSON 值读（读不懂的跳过），缺的字段取默认，`hear` 存成字符串、读不认识的当 `mentions`。单测新增：`loudly`、只有 handle、数字 42、非法 handle 四种，频道照常读回、不产生 `.bad`、留下 2 个成员。本轮全量测试中途停掉（代码要改）。 | **有问题**：已修（不计数） |
+| 6 | 并发与循环（agent 之间互相回复） | review `--hear all` 的推送：合并消息经 `chat_send(None, None, …)` 发出，每次是新任务、跳数 0。发现：两个都 hear all 的 agent，A 说一句、B 收到回一句、A 收到再回……跳数永远是 0，`message-hop-limit` 拦不住，正是设计稿第 1 条要防的互相回复。定性：个别（@ 推送一直沿用发言人的链），边界遗漏：新加的推送路径没走链。改：发言时把发言人的链（任务号、跳数，几句里取跳数最大的）记在待推送的成员上，推送时沿用；`chat_send` 改为接收链。e2e 加一段：人→tester（0）→lead（1），lead 在任务里说话，合并消息跳数 2，`message-hop-limit 1` 时不送；变异（推送不带链）该段失败。本轮全量测试中途停掉（代码要改）。 | **有问题**：已修（不计数） |
+| 7 | 代码正确性：错误路径（真二进制）+ 全量 + web e2e（依次跑） | 临时 server：pane 外 `chat leave general` 不给称呼、称呼不存在、pane 外 `chat join`、`--hear loud`、`chat leave` 多一个词，都以 1 退出并说清原因；shell 模式且 hear all 的成员：`@sh` 回 `not told: … shell mode`，普通一句后它的收件箱 0 条（不往 shell 里送）；`done-webhook` 指向连不上的地址时成员说 `@you`，server 照常回答 `chat who`，`show-messages` 里写着 curl 的失败原因。fmt、clippy 干净；Windows 706 / 11 / 173，Linux 690 / 171，web e2e 41/41。 | 干净 1/3 |
+| 8 | 可复现性 + 全量 + web e2e（依次跑） | 本条新加或改过的 e2e 连跑：Windows 群聊 5/5、`@you` 5/5、focus-pane（2 个）5/5；Linux 群聊 3/3、`@you` 3/3、focus-pane 3/3。代码与第 7 轮相同；fmt、clippy 干净；Windows 706 / 11 / 173，Linux 690 / 171，web e2e 41/41。 | 干净 2/3 |
+| 9 | 资源（离线成员很多时的空闲 CPU）+ 全量 + web e2e（依次跑） | release 构建的临时 server，30 个频道 × 60 个离线成员（每个都有一个不存在的 pane 名，每次 tick 都找一遍）、10 个窗口，空闲 20 秒：109 ms（一个核的 0.55%）；同样条件不放成员：156 ms（0.78%）。差在噪声里，看不出开销。（脚本第一次 `$Members` 与 `$members` 在 PowerShell 里是同一个变量，没生成成员，改名后重跑。）代码与第 7 轮相同；fmt、clippy 干净；Windows 706 / 11 / 173，Linux 690 / 171，web e2e 41/41；`npm run check` 通过。 | 干净（3/3），验收通过 |
+
+0.82.0（群聊：成员保留和在线状态、@ 带上下文、`--hear all`、点名你、第 2 页、输入行和 @ 选人；面板跳转不再抢焦点）：第 213 条。

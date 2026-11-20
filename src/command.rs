@@ -178,15 +178,20 @@ pub enum ChatCmd {
         tags: Vec<String>,
         json: bool,
     },
-    /// `chat-join CHAN [--as HANDLE] [--role ROLE]`: the calling pane a
-    /// member (again: its handle and role changed).
+    /// `chat-join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]`:
+    /// the calling pane a member (again: its handle, role or what it hears
+    /// changed; an offline member of that handle: this pane is it now).
     Join {
         channel: String,
         handle: Option<String>,
         role: Option<String>,
+        hear: Option<String>,
     },
+    /// `chat-leave CHAN [HANDLE]`: the calling pane leaves; outside every
+    /// pane, the person takes the member of that handle out.
     Leave {
         channel: String,
+        handle: Option<String>,
     },
     /// `chat-say CHAN TEXT`: said in it; `@handle` tells that member.
     Say {
@@ -1987,7 +1992,7 @@ impl fmt::Display for Cmd {
                         }
                         Ok(())
                     }
-                    ChatCmd::Join { channel, handle, role } => {
+                    ChatCmd::Join { channel, handle, role, hear } => {
                         write!(f, "chat-join {}", q(channel))?;
                         if let Some(h) = handle {
                             write!(f, " --as {}", q(h))?;
@@ -1995,9 +2000,18 @@ impl fmt::Display for Cmd {
                         if let Some(r) = role {
                             write!(f, " --role {}", q(r))?;
                         }
+                        if let Some(h) = hear {
+                            write!(f, " --hear {}", q(h))?;
+                        }
                         Ok(())
                     }
-                    ChatCmd::Leave { channel } => write!(f, "chat-leave {}", q(channel)),
+                    ChatCmd::Leave { channel, handle } => {
+                        write!(f, "chat-leave {}", q(channel))?;
+                        if let Some(h) = handle {
+                            write!(f, " {}", q(h))?;
+                        }
+                        Ok(())
+                    }
                     ChatCmd::Say { channel, text } => {
                         let dash = if text.starts_with('-') { "-- " } else { "" };
                         write!(f, "chat-say {} {dash}{}", q(channel), q(text))
@@ -2638,20 +2652,27 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
         }
         "chat-join" => {
             let channel = channel(a)?;
-            let (mut handle, mut role) = (None, None);
+            let (mut handle, mut role, mut hear) = (None, None, None);
             while let Some(w) = a.next() {
                 match w {
                     "--as" => handle = Some(a.value("--as")?.to_string()),
                     "--role" => role = Some(a.value("--role")?.to_string()),
+                    "--hear" => hear = Some(a.value("--hear")?.to_string()),
                     f => return Err(not_taken(n, f)),
                 }
             }
-            ChatCmd::Join { channel, handle, role }
+            ChatCmd::Join { channel, handle, role, hear }
         }
-        "chat-leave" | "chat-delete" => {
+        "chat-leave" => {
+            let channel = channel(a)?;
+            let handle = a.next().map(str::to_string);
+            a.none_left(n)?;
+            ChatCmd::Leave { channel, handle }
+        }
+        "chat-delete" => {
             let channel = channel(a)?;
             a.none_left(n)?;
-            if n == "chat-leave" { ChatCmd::Leave { channel } } else { ChatCmd::Delete { channel } }
+            ChatCmd::Delete { channel }
         }
         "chat-say" | "chat-topic" => {
             let channel = channel(a)?;
@@ -3160,7 +3181,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("share", &["-l", "--for", "--once", "--all"]),
     ("chat-new", &["--topic", "--tag"]),
     ("chat-list", &["--tag", "-J"]),
-    ("chat-join", &["--as", "--role"]),
+    ("chat-join", &["--as", "--role", "--hear"]),
     ("chat-leave", &[]),
     ("chat-say", &[]),
     ("chat-read", &["-n", "--all", "--peek", "--wait", "-J"]),
