@@ -1033,7 +1033,12 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
     if let Some(refused) = check_key(req, peer, state) {
         return refused;
     }
-    if get && matches!(req.path.as_str(), "/api/send" | "/api/action" | "/api/fit" | "/api/message") {
+    if get
+        && matches!(
+            req.path.as_str(),
+            "/api/send" | "/api/action" | "/api/fit" | "/api/message" | "/api/chat/say" | "/api/chat/seen"
+        )
+    {
         return Response::text(405, "POST");
     }
     let q = |argv: Vec<String>| async move {
@@ -1159,6 +1164,30 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 _ => Response::text(500, "theme: the server would not say"),
             }
         }
+        // The group chat (docs/design/chat.md), for the page's chat view:
+        // the channels, a channel's members, its last lines (read without
+        // moving the person's place; `seen` moves it).
+        (true, "/api/chat/channels") => match q(vec!["chat-list".into(), "-J".into()]).await {
+            Ok((0, out, _)) => Response::json(out.trim().to_string()),
+            Ok((_, _, err)) => Response::text(500, err.trim()),
+            Err(e) => Response::text(500, &format!("{e:#}")),
+        },
+        (true, "/api/chat/who") | (true, "/api/chat/lines") => {
+            let Some(c) = req.param("c").filter(|c| is_channel_id(c)) else {
+                return Response::text(400, "c: a channel's id");
+            };
+            let argv: Vec<String> = if req.path == "/api/chat/who" {
+                vec!["chat-who".into(), c.into(), "-J".into()]
+            } else {
+                let n = req.param("n").and_then(|n| n.parse::<u32>().ok()).unwrap_or(300).clamp(1, 1000);
+                vec!["chat-read".into(), c.into(), "--all".into(), "-n".into(), n.to_string(), "-J".into()]
+            };
+            match q(argv).await {
+                Ok((0, out, _)) => Response::json(out.trim().to_string()),
+                Ok((_, _, err)) => Response::text(404, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
         (false, "/api/send")
         | (false, "/api/tell")
         | (false, "/api/new-session")
@@ -1166,6 +1195,8 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
         | (false, "/api/fit")
         | (false, "/api/message")
         | (false, "/api/theme")
+        | (false, "/api/chat/say")
+        | (false, "/api/chat/seen")
             if state.read_only =>
         {
             Response::text(403, "read-only")
@@ -1242,6 +1273,27 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             match q(argv).await {
                 Ok((0, _, _)) => Response::text(200, "sent"),
                 Ok((_, _, err)) => Response::text(404, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
+        // Said in a channel as the person (`chat-say`, the body the text);
+        // a channel read to its end by the person (`seen`).
+        (false, "/api/chat/say") | (false, "/api/chat/seen") => {
+            let Some(c) = req.param("c").filter(|c| is_channel_id(c)) else {
+                return Response::text(400, "c: a channel's id");
+            };
+            let argv: Vec<String> = if req.path == "/api/chat/say" {
+                let text = String::from_utf8_lossy(&req.body).into_owned();
+                if text.trim().is_empty() {
+                    return Response::text(400, "nothing to say");
+                }
+                vec!["chat-say".into(), c.into(), "--".into(), text]
+            } else {
+                vec!["chat-read".into(), c.into(), "-n".into(), "1000".into()]
+            };
+            match q(argv).await {
+                Ok((0, out, _)) => Response::text(200, out.trim().lines().next().unwrap_or("")),
+                Ok((_, _, err)) => Response::text(400, err.trim()),
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
         }
@@ -1390,6 +1442,12 @@ fn rename_body(body: &[u8]) -> Result<String, &'static str> {
 
 fn is_pane_id(p: &str) -> bool {
     p.len() > 1 && p.starts_with('%') && p[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A channel as the page names it: its id (`chat-list -J`'s), letters,
+/// digits and `-`.
+fn is_channel_id(c: &str) -> bool {
+    (1..=64).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// How long an upload may go without a byte before it counts as cut short.
@@ -2079,6 +2137,23 @@ mod tests {
         assert_eq!(handle(&req("POST", "/api/action", Some("sekrit")), ip, &ro).await.status, 403);
         let info = handle(&req("GET", "/api/info", Some("sekrit")), ip, &ro).await;
         assert!(String::from_utf8_lossy(&info.body).contains("\"readOnly\":true"));
+        // The chat: the key guards it; saying and reading to the end are
+        // POSTs, refused read-only; a channel is named by its id only.
+        for path in ["/api/chat/channels", "/api/chat/lines", "/api/chat/say"] {
+            assert_eq!(handle(&req("GET", path, None), ip, &s).await.status, 401, "{path} without a key");
+        }
+        for path in ["/api/chat/say", "/api/chat/seen"] {
+            assert_eq!(handle(&req("GET", path, Some("sekrit")), ip, &s).await.status, 405, "{path}");
+            assert_eq!(handle(&req("POST", path, Some("sekrit")), ip, &ro).await.status, 403, "{path} read-only");
+        }
+        for (method, path) in [("GET", "/api/chat/lines"), ("GET", "/api/chat/who"), ("POST", "/api/chat/say")] {
+            let mut odd = req(method, path, Some("sekrit"));
+            odd.query = vec![("c".into(), "../x y".into())];
+            assert_eq!(handle(&odd, ip, &s).await.status, 400, "{path}: not an id");
+        }
+        let mut empty = req("POST", "/api/chat/say", Some("sekrit"));
+        empty.query = vec![("c".into(), "0190a-1".into())];
+        assert_eq!(handle(&empty, ip, &s).await.status, 400, "nothing to say");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { Button, Chip, Dropdown, Header, Label, Separator, Toast, toast } from "@heroui/react";
-import { Check, Languages, Laptop, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Plus, SlidersHorizontal, Sun, Terminal } from "lucide-react";
+import { Check, Languages, Laptop, MessagesSquare, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Plus, SlidersHorizontal, Sun, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, keptPane, post, q, startPane, type DoneItem, type Info, type Pane, type Renamed } from "./api";
 import {
@@ -22,6 +22,7 @@ import { MoonToggle } from "./components/MoonToggle";
 import { PaneList, PaneRail } from "./components/PaneList";
 import { PaneView } from "./components/PaneView";
 import { ConfirmClose, InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
+import { ChatView, useChatUnread } from "./components/Chat";
 
 const THEME_NAMES: Record<string, string> = {
   "paper-dark": "Paper Dark",
@@ -48,7 +49,12 @@ export default function App() {
   // whole screen where the browser can (elsewhere, over the whole page).
   const [focus, setFocus] = useState(false);
   const showList = (wide || !current) && !(focus && current);
-  const { panes, error, reload } = usePanes(!!info, grid && showList && !rail ? GRID_LINES : 0);
+  // The group chat over the panes' place (kept on this device), and what is
+  // unread in it for the header's badge.
+  const [chat, setChat] = useStored<boolean>("keepane-chat", false);
+  const unread = useChatUnread(!!info && !chat);
+  // The panes are not asked for while the chat covers them.
+  const { panes, error, reload } = usePanes(!!info && !chat, grid && showList && !rail ? GRID_LINES : 0);
   // A pane closed: what was left in its box goes too.
   useEffect(() => void (panes && dropDrafts(panes.map((p) => p.id))), [panes]);
   const term = useTermTheme();
@@ -285,7 +291,7 @@ export default function App() {
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       <Toast.Provider placement={wide ? "bottom end" : "top"} />
-      {(showList || wide) && !(focus && current) ? (
+      {chat || ((showList || wide) && !(focus && current)) ? (
         <header className="flex items-center gap-2 border-b border-separator px-3 pt-[calc(env(safe-area-inset-top)+8px)] pb-2">
           {wide ? (
             <Button
@@ -318,6 +324,25 @@ export default function App() {
               <Plus className="size-4.5" />
             </Button>
           ) : null}
+          {info ? (
+            <Button
+              id="chat-toggle"
+              isIconOnly
+              variant={chat ? "secondary" : "ghost"}
+              size="sm"
+              className="relative pointer-coarse:size-11"
+              aria-label={chat ? t("Back to the panes", "回到 pane 列表") : t("Group chat", "群聊")}
+              aria-pressed={chat}
+              onPress={() => setChat(!chat)}
+            >
+              <MessagesSquare className="size-4.5" />
+              {!chat && unread ? (
+                <span className="absolute -top-0.5 -right-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold text-accent-foreground">
+                  {unread > 99 ? "99+" : unread}
+                </span>
+              ) : null}
+            </Button>
+          ) : null}
           {status}
           <MoonToggle dark={page.dark} onToggle={() => page.setMode(page.dark ? "light" : "dark")} />
           <Settings
@@ -344,6 +369,9 @@ export default function App() {
         </header>
       ) : null}
 
+      {chat && info ? (
+        <ChatView wide={wide} readOnly={info.readOnly} onClose={() => setChat(false)} />
+      ) : (
       <div className="flex min-h-0 flex-1" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {showList && rail ? (
           <aside className={listCol + "w-14 shrink-0 border-r border-separator"} onContextMenu={noSystemMenu}>
@@ -413,6 +441,7 @@ export default function App() {
           </div>
         ) : null}
       </div>
+      )}
 
       {done ? (
         <button

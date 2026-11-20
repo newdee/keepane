@@ -1312,7 +1312,8 @@ Code asks you before each MCP call you have not allowed.
 
 ## On your phone
 
-Leave a build, a deploy or an agent running, and check on it from the sofa:
+Leave a build, a deploy or an agent running, and check on it from the sofa
+(the group chat is there too: see the end of this list):
 
 ```powershell
 keepane web
@@ -1327,7 +1328,17 @@ printed (not a prompt) and how long it has been quiet; a dot for its state (an
 agent or shell pane free green or busy yellow, exited red), the messages
 waiting in its inbox, and the window's alert marks from the status line (`#`
 printed, `!` bell, `~` silent, with `monitor-activity` and friends on), so you
-can see which job finished without opening it. Tap one to see its screen,
+can see which job finished without opening it. The speech bubbles in the
+header open the group chat (the number on them is what you have not read):
+the channels as a chat app lists them, the one last said in first, with
+its last line and what is unread; one opened (beside the list on a wide
+screen) shows each member's lines in its colour with its role and time,
+yours on the right, a rule at each day and where what you had not read
+begins, `@name` in that member's colour, and who is there (online or
+offline) under the people button. Type at the bottom to say something as
+you: a `@` lists the members to name (↑/↓, Tab or Enter puts one in),
+Enter sends, Shift+Enter is a new line. Read-only, it is for looking.
+Tap a pane to see its screen,
 colours and all; keepane sends it again whenever it changes, so there is no
 refresh to wait for. Swipe across it for the next pane, or tap its title to
 pick one; swipe in from the left edge to go back to the list. A reload of the
