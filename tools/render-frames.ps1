@@ -90,6 +90,8 @@ $pg.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFi
 $font = New-Object System.Drawing.Font $FontName, $FontSize, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
 $fontBold = New-Object System.Drawing.Font $FontName, $FontSize, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
 $fmt = [System.Drawing.StringFormat]::GenericTypographic
+# Emoji (the chat page's 👥): the terminal font has none; GDI+ draws this one's in one colour.
+$emojiFont = New-Object System.Drawing.Font "Segoe UI Emoji", ($FontSize - 2), ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
 $sample = "M" * 40
 $cellW = [math]::Round($pg.MeasureString($sample, $font, [System.Drawing.PointF]::new(0, 0), $fmt).Width / 40, 2)
 $cellH = [math]::Ceiling($font.GetHeight($pg)) + 2
@@ -101,6 +103,19 @@ $blocks = @{
     "▀" = -0.5; "▔" = -0.125
 }
 $blockChars = [char[]]($blocks.Keys -join '')
+# A run's cells: one per character (a surrogate pair is one character). A
+# wide character (Chinese, most emoji) is followed by a NUL, its second cell.
+function Split-Cells([string]$text) {
+    $cells = [System.Collections.Generic.List[string]]::new()
+    for ($k = 0; $k -lt $text.Length; $k++) {
+        if ([char]::IsHighSurrogate($text[$k]) -and $k + 1 -lt $text.Length) {
+            $cells.Add($text.Substring($k, 2)); $k++
+        } else {
+            $cells.Add([string]$text[$k])
+        }
+    }
+    , $cells
+}
 
 $pad = 18            # padding around the grid
 $barH = 30           # window title bar
@@ -193,7 +208,10 @@ foreach ($file in $frames) {
             if ($run.d) {
                 $fg = [System.Drawing.Color]::FromArgb(($fg.R + $bg.R) / 2, ($fg.G + $bg.G) / 2, ($fg.B + $bg.B) / 2)
             }
-            $w = $cellW * $text.Length
+            # Plain runs are one cell per UTF-16 unit; a run with a wide
+            # character is split into its cells and drawn cell by cell.
+            $cells = if ($text.IndexOf([char]0) -ge 0) { Split-Cells $text } else { $null }
+            $w = $cellW * $(if ($cells) { $cells.Count } else { $text.Length })
             if ("$($run.bg)" -ne "default" -or $run.i) {
                 $b = New-Object System.Drawing.SolidBrush $bg
                 $g.FillRectangle($b, [float]($pad + $x), [float]($barH + $pad + $y * $cellH), [float]$w, [float]$cellH)
@@ -202,12 +220,14 @@ foreach ($file in $frames) {
             $b = New-Object System.Drawing.SolidBrush $fg
             $f = if ($run.b) { $fontBold } else { $font }
             $top = [float]($barH + $pad + $y * $cellH)
-            if ($text.IndexOfAny($blockChars) -ge 0) {
+            if ($cells -or $text.IndexOfAny($blockChars) -ge 0) {
                 # Block elements filled to the cell's edges, as terminals draw
                 # them: a font's glyph is shorter than the cell and leaves a
                 # stripe between rows (the clock's digits, the bars).
-                for ($k = 0; $k -lt $text.Length; $k++) {
-                    $ch = $text[$k]
+                $list = if ($cells) { $cells } else { [string[]][char[]]$text }
+                for ($k = 0; $k -lt $list.Count; $k++) {
+                    $ch = $list[$k]
+                    if ($ch -eq "`0") { continue }
                     $cx = [float]($pad + $x + $k * $cellW)
                     $share = $blocks[[string]$ch]
                     if ($null -ne $share) {
@@ -220,6 +240,8 @@ foreach ($file in $frames) {
                         $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
                         $g.FillRectangle($b, $x0, $cy, $x1 - $x0, $h)
                         $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+                    } elseif ($ch.Length -eq 2) {
+                        $g.DrawString($ch, $emojiFont, $b, $cx, [float]($top + 1), $fmt)
                     } elseif ($ch -ne ' ') {
                         $g.DrawString([string]$ch, $f, $b, $cx, $top, $fmt)
                     }

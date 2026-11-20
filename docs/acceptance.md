@@ -6527,3 +6527,21 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 0.84.0（群聊：离开的成员保留并标记已离开；成员变化当时写盘，重启不丢；看板 `o` 只跳在线成员）：第 215 条。遗留：第 5 轮 `alt.e2e.ts` 失败一次，之后全量 5 次、单跑 3 次都未再出现，原因未明。
 
 0.84.0 发布：CI 44695778347（a25a435）四个 job 通过；tag v0.84.0；Release 44696697403 四个平台通过；manifests b98c38b；winget PR #484802；Homebrew formula 44697550310 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 216. 图片和视频更新；群聊介绍（用我们的真实频道）
+
+来源：用户 2026-11-20（频道 #unifyterm-keepane）："我觉得可以更新一下视频和图片了，群聊的功能也可以介绍一下，就用我们这个群聊截图吧"；方案里问的三件事答"A可以，B也可以，C也可以"；分镜和文案草稿（第 #23 条）答"改吧"。
+
+- 素材：频道前 20 条只读拷成 `tests/fixtures/chat-unifyterm/`（`channel.json` 和两天的 `.jsonl`）。扫过：没有用户名路径、IP、邮箱、密钥、主机地址；出现的是主机名 DFINE、session 名 Dfine 和两个项目名，用户同意公开。
+- 录制：`tests/demo_frames.rs` 加 `load_channel`（把频道放进录制用的临时 sessions 目录）和 `record_chat`（看板第 2 页，两个成员在同名 pane 里在线，静态图 `chat.png`）；`record_tour` 加第 4 段"Agents talk in channels"（翻到频道开头、`@uni` Tab 补全后发一句），手机顺延为第 5 段，末尾回列表、点群聊、点进同一频道。`tools/make-demos.ps1` 加 `keepane-chat`（只出图）；`tools/phone-shot.mjs` 加 `chat`、`chat-at` 视图，`tools/make-phone-shots.ps1` 出 `phone-chat*.png`（中英文、深浅色）；`tools/phone-driver.mjs` 加 `chat`、`channel` 两步。
+- 渲染器缺陷：`render-frames.ps1` 按 UTF-16 长度算宽度，中文（占两格）一行越画越偏，emoji 是缺字方块。定性：共性（所有录制都走它；以前的画面全是英文没暴露），结构缺陷（"一个字符一格"的假设不成立）。改法收敛到一处：`frame_json` 在宽字符后放一个 NUL 占第二格，渲染器按"一个字符一格、NUL 不画"排；emoji 用 Segoe UI Emoji 画。评估：纯 ASCII 的行走原来的路径，不变；原来就有的 emoji（代理对，长度 2）宽度不变。
+- 页面：网站第 02 章加"在频道里一起讨论"小节（看板图全宽、手机图 620 宽、中文页换中文截图），首页 tour 说明改为五段；README 中英文群聊一节加两张图和一句说明。其余图片和视频全部重拍（深浅各一遍）。tour 的 GIF 从 470 KB 到 1.24 MB：向下翻回底部不录帧（原来是 2.3 MB）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性 + 全量 + web e2e（依次跑） | 核对：录制清单（`make-demos.ps1` 的 12 个、`demo_frames.rs` 头注释原写"three recordings"已改）、三处 tour 说明都改成五段且都有群聊句（各 1 处）、网站 7 个新 i18n 键中英都有；fixture 隐私扫描 9 个模式全部 0。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171；**web e2e 41/42：`enter.e2e.ts` 重新载入后"填入并执行"不带勾（没找到节点）**。单独重跑 3 次都通过；失败现场的 trace 被后面的重跑覆盖，原因未明。这次没有改 web。 | 有发现，不计数；以后失败先复制 artifacts 再重跑 |
+| 2 | 不变量 + 可复现性 + 全量 + web e2e（依次跑） | 不变量：本次 24 组录制（12 个 × 深浅）的 3687 帧、99,630 行，按一个字符一格（NUL 算一格）数，每行都正好等于列数，0 行不等；其中 1,986 行含宽字符。可复现：同一组帧（keepane-chat，56 张）渲染两遍，PNG 逐字节相同，0 张不同。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42。 | 干净（1/3） |
+| 3 | 边界与退化输入 + 全量 + web e2e（依次跑） | 渲染器喂人造帧（10 列）：最后一列的中文、整行 NUL、空行、方块+中文+emoji 混排、带底色的中文：放大看 6 行右边界都对齐，红底的中文正好两格，NUL 和空行是空白，没有报错（单独的高代理项连 JSON 都写不出，Rust 的帧不会有，不测）。`chat-days`：把 fixture 的日期挪到 40 天前，30 时第一个 tick 删掉 2 个天文件，0 时 2 个都在：录制设 0 是必要的。顺带看到旧行为：天文件删了以后，启动时读进内存的 20 行到重启前仍能读到（0.73 起就这样，不是这次改的，记为遗留）。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42。 | 干净（2/3） |
+| 4 | 代码正确性（错误路径、资源）+ 全量 + web e2e（依次跑） | 读代码：`phone-shot.mjs` 群聊分支在 try 里，失败时 finally 关浏览器；`make-phone-shots.ps1` 的群聊 session 在 finally 的 kill-server 里收掉；`load_channel` 缺文件时 panic 并写明是哪个文件；录制的临时目录连同拷进去的频道在 finish 里删掉。实跑错误路径：`phone-shot.mjs chat` 打开连不上的地址，退出码 1，没写出 PNG，前后无头 Edge 进程 0 → 0。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42。 | 干净（3/3），验收通过 |
+
+第 216 条只改网站、README、图片和录制工具，程序没变，不发版本；推到 master 后 Pages 更新网站。遗留：第 1 轮 `enter.e2e.ts` 失败一次，原因未明；chat-days 删掉天文件后内存里的行到重启前仍能读到（旧行为）。

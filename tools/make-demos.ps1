@@ -49,6 +49,8 @@ $takes = @(
     @{ Env = "KEEPANE_DEMO_OUT10"; Test = "record_clock"; Name = "keepane-clock" },
     # The machines ssh reached (a stand-in ssh): its picture only.
     @{ Env = "KEEPANE_DEMO_OUT11"; Test = "record_ssh"; Name = "keepane-ssh"; NoGif = $true },
+    # The chat page over a real channel (tests/fixtures/chat-unifyterm): its picture only.
+    @{ Env = "KEEPANE_DEMO_OUT12"; Test = "record_chat"; Name = "keepane-chat"; NoGif = $true },
     # The tour: a panel beside the terminal, and the phone (Edge through
     # puppeteer-core, as tools/make-phone-shots.ps1 does).
     @{ Env = "KEEPANE_DEMO_OUT5"; Test = "record_tour"; Name = "keepane-tour"; Panel = 380 }

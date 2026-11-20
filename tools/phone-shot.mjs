@@ -2,9 +2,11 @@
 // twice-the-pixels page in the machine's Edge, taken once the page has
 // something on it. Used by tools/make-phone-shots.ps1.
 //
-//   node phone-shot.mjs <edge.exe> <url> <out.png> <list|pane|pane-detail> [en|zh-CN]
+//   node phone-shot.mjs <edge.exe> <url> <out.png> <list|pane|pane-detail|chat|chat-at> [en|zh-CN]
 //
 // pane-detail: the pane with its command times on (the clock button).
+// chat: the group chat's first channel, its latest lines; chat-at: the same
+// with "@" typed, the list of members to name open over them.
 import puppeteer from "puppeteer-core";
 
 const [edge, url, out, view, lang = "en"] = process.argv.slice(2);
@@ -16,6 +18,9 @@ try {
     Object.defineProperty(navigator, "language", { get: () => l });
   }, lang);
   await page.evaluateOnNewDocument((on) => localStorage.setItem("keepane-detail", on ? "1" : "0"), view === "pane-detail");
+  const chat = view === "chat" || view === "chat-at";
+  // The group chat shown instead of the panes (the page keeps it so).
+  await page.evaluateOnNewDocument((on) => localStorage.setItem("keepane-chat", JSON.stringify(on)), chat);
   // The page dark (or light: KEEPANE_PHONE_MODE), as the background the two
   // pictures are put on.
   await page.evaluateOnNewDocument((m) => localStorage.setItem("keepane-mode", m), process.env.KEEPANE_PHONE_MODE || "dark");
@@ -25,8 +30,20 @@ try {
       "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
   });
   await page.goto(url, { waitUntil: "load" });
+  if (chat) {
+    // The first channel, opened; ready when its lines are there.
+    const first = 'aside button[aria-label^="#"]';
+    await page.waitForSelector(first, { timeout: 15000 });
+    await page.click(first);
+    await page.waitForFunction(() => document.querySelectorAll('section[aria-label^="#"] ol > li').length >= 5, { timeout: 15000 });
+    if (view === "chat-at") {
+      await page.focus('section[aria-label^="#"] textarea');
+      await page.keyboard.type("@");
+      await page.waitForSelector('[role="listbox"]', { timeout: 15000 });
+    }
+  }
   // Ready: the list has its panes, or the pane its text.
-  try {
+  if (!chat) try {
     await page.waitForFunction(
       (v) =>
         v === "list"
@@ -44,8 +61,8 @@ try {
   await new Promise((r) => setTimeout(r, 700));
   const state = await page.evaluate(() => {
     const m = document.getElementById("main");
-    // The list has no screen.
-    if (!m) return { panes: document.querySelectorAll("[data-pane]").length };
+    // The list and the chat have no screen.
+    if (!m || !document.getElementById("screen")) return { panes: document.querySelectorAll("[data-pane]").length };
     return { scrollTop: m.scrollTop, scrollHeight: m.scrollHeight, clientHeight: m.clientHeight, lines: document.getElementById("screen").textContent.split("\n").length };
   });
   console.log(JSON.stringify(state));

@@ -25,7 +25,7 @@ harness. The usual tmux keys, commands and config file keep working.
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-tour-light.gif">
     <img src="docs/img/keepane-tour.gif" width="900"
-         alt="A tour in four parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. keepane web prints a QR code; on a phone the list shows every pane, and a command typed there runs in build on the computer.">
+         alt="A tour in five parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. Its chat page shows a real channel where UnifyTerm's agent and keepane's worked out a bug; the person names one with @ and says something. keepane web prints a QR code; on a phone the list shows every pane, a command typed there runs in build on the computer, and the group chat shows the same channel.">
   </picture>
 </p>
 
@@ -173,6 +173,26 @@ A message goes to one pane. When several agents work on one thing, a
 channel lets them talk in one place: each joins under a handle and a
 role, says what it has to say, and reads what the others said when it
 wants to.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/chat-light.png">
+    <img src="docs/img/chat.png" width="880"
+         alt="The dashboard's chat page: the channel unifyterm-keepane on the left with its two members online; on the right each one's lines in a bubble of its own colour, the person's on the right">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/phone-chat-light.png">
+    <img src="docs/img/phone-chat.png" width="620"
+         alt="The same channel on a phone: the latest lines in coloured bubbles, and beside it @ typed in the box, the two members to name listed above it">
+  </picture>
+</p>
+
+A real channel: while this release was built, the agents of UnifyTerm
+and keepane worked out there how to make UnifyTerm's commands work in
+keepane panes, and the person asked them along the way.
 
 ```powershell
 keepane chat new review --topic "the 0.73 release" --tag release --tag ci

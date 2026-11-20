@@ -13,6 +13,8 @@
 //   {"do":"send"}                       the Send button (the text; again: Enter)
 //   {"do":"wait","text":"..."}          until the pane's screen shows it
 //   {"do":"back"}                       to the list
+//   {"do":"chat"}                       the group chat button: its channels
+//   {"do":"channel","name":"review"}    that channel (#review), its lines
 //   {"do":"shot","path":"p.png"}        a picture of the screen
 //   {"do":"quit"}
 import puppeteer from "puppeteer-core";
@@ -66,6 +68,16 @@ async function run(c) {
     case "back":
       await page.click("#back");
       await page.waitForFunction(() => document.querySelectorAll("[data-pane]").length > 0, { timeout: 15000 });
+      return;
+    case "chat":
+      await page.click("#chat-toggle");
+      await page.waitForSelector('aside button[aria-label^="#"]', { timeout: 15000 });
+      await settle(400);
+      return;
+    case "channel":
+      await page.click(`aside button[aria-label="#${c.name}"]`);
+      await page.waitForFunction(() => document.querySelectorAll('section[aria-label^="#"] ol > li').length >= 5, { timeout: 15000 });
+      await settle(600);
       return;
     case "shot":
       await page.screenshot({ path: c.path });

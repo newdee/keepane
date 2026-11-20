@@ -8,7 +8,7 @@
 //!
 //! It is a test so that it runs the same way the console tests do, and it is
 //! ignored by default because it is a recording, not an assertion. The whole
-//! job (the three recordings, the frames, the GIF and MP4, and every still that
+//! job (every recording, the frames, the GIF and MP4, and every still that
 //! `still()` marks, into docs/img) is one command:
 //!
 //! ```powershell
@@ -521,6 +521,68 @@ fn record_agents() {
     d.finish();
 }
 
+/// The chat recording's screen: wider than the others, for the channel list
+/// beside the bubbles.
+const CHAT_COLS: u16 = 120;
+const CHAT_ROWS: u16 = 34;
+
+/// A real channel for the recordings (tests/fixtures/chat-unifyterm, with
+/// the person's consent): two agents, UnifyTerm's and keepane's, working out
+/// a bug between their programs, and the person asking them. Put where the
+/// server started by the recording reads it (its sessions directory).
+fn load_channel(tmp: &std::path::Path, socket: &str) {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chat-unifyterm");
+    let entry: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture.join("channel.json")).expect("channel.json"))
+            .expect("channel.json is JSON");
+    let id = entry["id"].as_str().expect("the channel's id");
+    let dir = tmp.join("sessions").join("chat").join(socket);
+    std::fs::create_dir_all(dir.join(id)).expect("the channel's folder");
+    std::fs::write(dir.join("channels.json"), serde_json::to_string(&[&entry]).unwrap()).expect("channels.json");
+    for day in std::fs::read_dir(&fixture).expect("the fixture") {
+        let day = day.unwrap().path();
+        if day.extension().is_some_and(|e| e == "jsonl") {
+            std::fs::copy(&day, dir.join(id).join(day.file_name().unwrap())).expect("a day of the channel");
+        }
+    }
+}
+
+/// The twelfth recording: the dashboard's chat page (`C-b v`, `>`) over that
+/// channel, its two members online in panes of their names.
+#[test]
+#[ignore = "recording, not an assertion; run with --ignored"]
+fn record_chat() {
+    let out_dir = std::env::var("KEEPANE_DEMO_OUT12").unwrap_or_else(|_| "target/demo-frames-12".into());
+    // Every line kept, however old the take is next to the channel.
+    let mut d = Demo::start_sized("demo12", &out_dir, "set -g chat-days 0\n", CHAT_COLS, CHAT_ROWS);
+    load_channel(&d.tmp, &d.socket);
+    let (rec, socket) = (&mut d.rec, d.socket.clone());
+
+    rec.wait_for("shell", |s| s.contents().contains("PS>"), 30);
+    rec.hold(2);
+    rec.type_line(&format!("keepane -L {socket} new -s Dfine"));
+    rec.wait_for("session", |s| s.contents().contains("0:pwsh*"), 30);
+    rec.hold(2);
+    // Panes of the members' names: the channel finds them there, online.
+    rec.type_line("keepane rename-pane uni-term");
+    rec.hold(2);
+    rec.type_line("keepane create-pane -h -n keepane | Out-Null; clear");
+    rec.hold(4);
+    rec.key("\x02v");
+    rec.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"), 15);
+    rec.hold(3);
+    rec.key(">");
+    rec.wait_for("the channel", |s| s.contents().contains("#unifyterm-keepane"), 15);
+    // "· 2", not "· 1/2 online": both found.
+    rec.until("both online", |s| s.contents().contains("Members · 2 "), 15);
+    rec.hold(8);
+    rec.still("chat");
+    rec.key("q");
+    rec.hold(3);
+
+    d.finish();
+}
+
 /// The eighth recording: a test fails; `C-b y` takes what it printed; a
 /// message hands it to an agent, which fixes it; the test passes.
 #[test]
@@ -808,9 +870,12 @@ $p.StandardInput.Close()
 fn record_tour() {
     let out_dir = std::env::var("KEEPANE_DEMO_OUT5").unwrap_or_else(|_| "target/demo-frames-5".into());
     // Each pane's name, work mode and inbox on its top border.
+    // Every chat line kept, however old the take is next to the channel.
     let conf = "set -g pane-border-status top\n\
-                set -g pane-border-format \" #{pane_name} · #{pane_work_mode} · inbox #{pane_inbox} \"\n";
+                set -g pane-border-format \" #{pane_name} · #{pane_work_mode} · inbox #{pane_inbox} \"\n\
+                set -g chat-days 0\n";
     let mut d = Demo::start_sized("tour", &out_dir, conf, TOUR_COLS, TOUR_ROWS);
+    load_channel(&d.tmp, &d.socket);
     // A project with a little history, and the MCP client in it.
     let project = d.tmp.join("project");
     let git = |args: &[&str]| {
@@ -939,9 +1004,80 @@ fn record_tour() {
     rec.key("q");
     rec.hold(2);
 
-    // 4. The phone.
+    // 4. The group chat, over a real channel (load_channel).
     rec.caption(
         4,
+        "Agents talk in channels",
+        &[
+            "keepane chat: channels",
+            "where panes and you talk.",
+            "Name one with @ and it",
+            "is told at once, with",
+            "what came before.",
+            "",
+            "Members stay after a",
+            "restart: online, offline,",
+            "left.",
+        ],
+    );
+    // The channel's two members, UnifyTerm's agent and keepane's: in panes
+    // of their names (a window of their own) the channel finds them online.
+    rec.type_line(
+        "keepane create-pane -k window -n uni-term | Out-Null; keepane create-pane -t %uni-term -h -n keepane | Out-Null",
+    );
+    rec.hold(3);
+    rec.key("\x02v");
+    rec.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"), 15);
+    rec.hold(2);
+    rec.key(">");
+    rec.wait_for("the channel", |s| s.contents().contains("#unifyterm-keepane"), 15);
+    rec.until("both online", |s| s.contents().contains("Members · 2 "), 15);
+    rec.hold(6);
+    // Up to where it began (UnifyTerm's agent asking, 23:28), two pages a
+    // frame, then back down unrecorded: until the screen stays as it was.
+    // Every frame of scrolling text is a whole new picture in the GIF.
+    let page_to_end = |rec: &mut Recorder, key: &str, shown: bool| {
+        for _ in 0..200 {
+            let before = rec.parser.screen().contents();
+            rec.key(key);
+            rec.key(key);
+            if shown {
+                rec.hold(1);
+            } else {
+                rec.pump(Duration::from_millis(250));
+            }
+            if rec.parser.screen().contents() == before {
+                return;
+            }
+        }
+        panic!("the channel's lines did not end");
+    };
+    page_to_end(rec, "\x1b[5~", true);
+    rec.wait_for("where it began", |s| s.contents().contains("23:28"), 5);
+    rec.hold(8);
+    page_to_end(rec, "\x1b[6~", false);
+    rec.hold(3);
+    // The person says something: "@uni" lists who to name, Tab puts it in.
+    rec.key("s");
+    rec.hold(2);
+    rec.type_text("@uni");
+    rec.hold(4);
+    rec.key("\t");
+    rec.hold(2);
+    rec.type_text("the tour uses this channel");
+    rec.hold(2);
+    rec.key("\r");
+    rec.wait_for("said", |s| s.contents().contains("the tour uses this"), 10);
+    rec.hold(10);
+    rec.key("q");
+    rec.hold(2);
+    // Back to the first window (a no-op if it never left).
+    rec.key("\x020");
+    rec.hold(2);
+
+    // 5. The phone.
+    rec.caption(
+        5,
         "On your phone",
         &[
             "keepane web, then scan.",
@@ -966,16 +1102,16 @@ fn record_tour() {
     let title = "On your phone";
     phone.step(&format!("{{\"do\":\"open\",\"url\":{}}}", json_string(&url)));
     let shot = phone.shot();
-    rec.phone(4, title, &shot);
+    rec.phone(5, title, &shot);
     rec.hold(8);
     phone.step("{\"do\":\"tap\",\"name\":\"build\"}");
     let shot = phone.shot();
-    rec.phone(4, title, &shot);
+    rec.phone(5, title, &shot);
     rec.hold(6);
     for part in ["git log ", "--oneline ", "-1"] {
         phone.step(&format!("{{\"do\":\"type\",\"text\":{}}}", json_string(part)));
         let shot = phone.shot();
-        rec.phone(4, title, &shot);
+        rec.phone(5, title, &shot);
         rec.hold(2);
     }
     // Send puts the text in; Send again (the box empty) is the Enter.
@@ -984,14 +1120,26 @@ fn record_tour() {
     phone.step("{\"do\":\"wait\",\"text\":\"git log --oneline -1\"}");
     std::thread::sleep(Duration::from_millis(600));
     let shot = phone.shot();
-    rec.phone(4, title, &shot);
+    rec.phone(5, title, &shot);
     rec.hold(8);
+    // The group chat on the phone (its button is on the list's bar): the
+    // same channel, the person's line in it.
+    phone.step("{\"do\":\"back\"}");
+    phone.step("{\"do\":\"chat\"}");
+    let shot = phone.shot();
+    rec.phone(5, title, &shot);
+    rec.hold(4);
+    phone.step("{\"do\":\"channel\",\"name\":\"unifyterm-keepane\"}");
+    let shot = phone.shot();
+    rec.phone(5, title, &shot);
+    rec.hold(10);
     // Back on the computer: it ran in %build.
     rec.key("\x02z");
     rec.hold(6);
     rec.type_line("clear");
     rec.type_line("keepane web status");
-    rec.wait_for("who is on it", |s| s.contents().contains("watching"), 15);
+    // "1 connected": the phone (in the chat now, so watching no pane).
+    rec.wait_for("who is on it", |s| s.contents().contains(" connected"), 15);
     rec.hold(10);
     drop(phone);
     d.finish();
@@ -1504,7 +1652,13 @@ impl Recorder {
                     cell.underline(),
                 );
                 let text = cell.contents();
-                let text = if text.is_empty() { " ".to_string() } else { text.to_string() };
+                let mut text = if text.is_empty() { " ".to_string() } else { text.to_string() };
+                // A wide character (Chinese, most emoji) takes two cells: a NUL
+                // holds the second, so the renderer counts one cell per
+                // character and draws nothing for the NUL.
+                if wide {
+                    text.push('\0');
+                }
                 match &run_style {
                     Some(s) if *s == style => run.push_str(&text),
                     Some(s) => {

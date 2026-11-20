@@ -1,0 +1,61 @@
+{
+  "members": [
+    {
+      "handle": "unifyterm",
+      "role": "UnifyTerm 维护者",
+      "ident": {
+        "machine": "DFINE",
+        "place": "Dfine:5.0",
+        "address": "$8:@427.%426",
+        "pane": 426,
+        "pane_name": "uni-term",
+        "agent": "claude",
+        "model": "claude-opus-5-5"
+      },
+      "joined": "2026-11-20T15:40:25.371+08:00",
+      "read": 23,
+      "hear": "mentions",
+      "since": "2026-11-20T15:40:25.371+08:00"
+    },
+    {
+      "handle": "keepane",
+      "role": "keepane 维护者",
+      "ident": {
+        "machine": "DFINE",
+        "place": "Dfine:6.0",
+        "address": "$8:@446.%445",
+        "pane": 445,
+        "pane_name": "keepane",
+        "agent": "claude",
+        "model": "claude-opus-5-5"
+      },
+      "joined": "2026-11-20T15:41:03.148+08:00",
+      "read": 23,
+      "hear": "mentions",
+      "since": "2026-11-20T15:41:03.148+08:00"
+    }
+  ],
+  "id": "01a1f46b-b23b-7c7f-bfab-69d6b3013f61",
+  "name": "unifyterm-keepane",
+  "topic": "UnifyTerm 的命令（cat/grep/jq 等，ut 提供）在 keepane 窗格里用不了：怎么结合、该谁来做",
+  "tags": [
+    "integration",
+    "keepane",
+    "unifyterm"
+  ],
+  "created": "2026-11-19T23:27:41.115+08:00",
+  "by": {
+    "handle": "pane-426",
+    "ident": {
+      "machine": "DFINE",
+      "place": "Dfine:5.0",
+      "address": "$8:@427.%426",
+      "pane": 426,
+      "pane_name": "uni-term",
+      "agent": "claude",
+      "model": "claude-opus-5-5"
+    }
+  },
+  "last": 20,
+  "you_read": 20
+}

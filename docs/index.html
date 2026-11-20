@@ -79,10 +79,10 @@
                one itself on a light system, before site.js runs -->
           <picture>
             <source media="(prefers-color-scheme: light)" srcset="img/keepane-tour-light.gif" />
-            <img src="img/keepane-tour.gif" width="900" alt="A tour in four parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. keepane web prints a QR code; on a phone the list shows every pane, and a command typed there runs in build on the computer." />
+            <img src="img/keepane-tour.gif" width="900" alt="A tour in five parts. Panes named lead, build and agent, each with its work mode and inbox on its border: a message sent to build runs there as a command, one sent to the agent waits in its inbox. A small MCP client makes a pane named tests and sends it a command. The dashboard shows every pane, a pane's events and the agent's inbox. Its chat page shows a real channel where UnifyTerm's agent and keepane's worked out a bug; the person names one with @ and says something. keepane web prints a QR code; on a phone the list shows every pane, a command typed there runs in build on the computer, and the group chat shows the same channel." />
           </picture>
           <figcaption data-i18n="hero.caption">
-            Panes that message each other, an agent working through MCP, the dashboard, and the panes on a phone.
+            Panes that message each other, an agent working through MCP, the dashboard, a group chat of agents, and the panes on a phone.
           </figcaption>
         </figure>
       </section>
@@ -171,6 +171,23 @@ keepane trace-message 12 -w 600</code></pre>
         <figure class="stage">
           <img src="img/keepane-agents.gif" width="880" loading="lazy" alt="Three agents at work in three panes, each border showing its model, cost so far and how full its context is; the dashboard listing them with cost and context and the total in its title; keepane list-agents printing the same" />
         </figure>
+        <h3 class="sub-title" data-i18n="ca.chat">Talk it over in a channel</h3>
+        <div class="prose">
+          <p data-i18n="ca.chat.p">Several agents and you can talk about one task in one channel. Every line is stamped with who said it, in which pane, with which model.</p>
+        </div>
+        <ul class="points">
+          <li data-i18n="ca.c1">Name someone with @handle and they are told at once, with the lines before it they have not read.</li>
+          <li data-i18n="ca.c2">Lines that name no one stay in the channel. An agent reads them when it wants to, and spends no tokens on them before that.</li>
+          <li data-i18n="ca.c3">Members stay after a restart, shown online, offline or left.</li>
+          <li data-i18n="ca.c4">Read the whole talk on page 2 of the dashboard or on your phone, and speak in it as yourself.</li>
+        </ul>
+        <figure class="shot"><img src="img/chat.png" alt="The dashboard's chat page: the channel unifyterm-keepane on the left with its two members online; on the right each one's lines in a bubble of its own colour, the person's on the right" loading="lazy" /></figure>
+        <figure class="shot phone-shot">
+          <img src="img/phone-chat.png" data-src-zh="img/phone-chat-zh.png" width="620" loading="lazy" alt="The same channel on a phone: the latest lines in coloured bubbles, and beside it @ typed in the box, the two members to name listed above it" />
+        </figure>
+        <div class="prose">
+          <p data-i18n="ca.chat.cap">While this release was built, the agents of UnifyTerm and keepane worked out in this channel how to make UnifyTerm's commands work in keepane panes.</p>
+        </div>
         <h3 class="sub-title" data-i18n="ca.trace">Follow what an agent did</h3>
         <div class="prose" data-i18n="ca.trace.p">
           <p>Trace lays out an agent's run as a timeline.</p>

@@ -19,7 +19,7 @@ keepane 管理工作空间和任务流转，不替 Agent 决定怎么思考、�
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/img/keepane-tour-light.gif">
     <img src="docs/img/keepane-tour.gif" width="900"
-         alt="分四段的功能导览：名叫 lead、build、agent 的 pane，边框上写着各自的工作模式和收件箱；发给 build 的消息在那里作为命令执行，发给 agent 的消息在它的收件箱里等着。一个小的 MCP 客户端创建名叫 tests 的 pane 并给它发命令。dashboard 显示所有 pane、某个 pane 的事件和 agent 的收件箱。keepane web 打出二维码；手机上的列表显示所有 pane，在手机上输入的命令在电脑上的 build 里执行。">
+         alt="分五段的功能导览：名叫 lead、build、agent 的 pane，边框上写着各自的工作模式和收件箱；发给 build 的消息在那里作为命令执行，发给 agent 的消息在它的收件箱里等着。一个小的 MCP 客户端创建名叫 tests 的 pane 并给它发命令。dashboard 显示所有 pane、某个 pane 的事件和 agent 的收件箱。它的群聊页显示一个真实的频道：UnifyTerm 和 keepane 的两个 agent 在里面一起查一个 bug；你用 @ 点名一个成员，说了一句话。keepane web 打出二维码；手机上的列表显示所有 pane，在手机上输入的命令在电脑上的 build 里执行，群聊里是同一个频道。">
   </picture>
 </p>
 
@@ -94,6 +94,24 @@ keepane send-message --to %lead --task 12 "还有一件事"
 ### 群聊
 
 一条消息只发给一个 pane。几个 agent 做同一件事时，可以在一个频道里说话：每个 agent 用一个称呼和角色加入，说自己要说的，想看时再读别人说了什么。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/chat-light.png">
+    <img src="docs/img/chat.png" width="880"
+         alt="dashboard 的群聊页：左边是频道 unifyterm-keepane，两个成员都在线；右边每个成员的话在自己颜色的气泡里，你说的靠右">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/phone-chat-zh-light.png">
+    <img src="docs/img/phone-chat-zh.png" width="620"
+         alt="手机上的同一个频道：最新的几句在彩色气泡里；旁边是在输入框里打了 @，上方列出可以点名的两个成员">
+  </picture>
+</p>
+
+这是一个真实的频道：这次开发里，UnifyTerm 和 keepane 的两个 agent 在这里商量怎样让 UnifyTerm 的命令在 keepane 的 pane 里能用，你也在中途问了它们。
 
 ```powershell
 keepane chat new review --topic "0.73 发布" --tag release --tag ci

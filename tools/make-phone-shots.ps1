@@ -9,6 +9,9 @@
   puppeteer-core, fetched into target/ on first use): the pane list, one
   pane, and the two side by side. Needs node, ffmpeg and Edge. Writes
   docs/img/phone.png (English page) and docs/img/phone-zh.png (Chinese).
+  Then the group chat over a real channel (tests/fixtures/chat-unifyterm):
+  its latest lines beside "@" typed, docs/img/phone-chat.png and
+  phone-chat-zh.png.
 
 .EXAMPLE
   pwsh -File tools/make-phone-shots.ps1
@@ -38,8 +41,9 @@ $env:KEEPANE_SESSIONS_DIR = Join-Path $tmp "sessions"
 # the last run's must not be there, or they come back beside these.
 Remove-Item -Recurse -Force $env:KEEPANE_SESSIONS_DIR -ErrorAction SilentlyContinue
 $env:KEEPANE_CONFIG = Join-Path $tmp "empty.conf"
-# The light pictures have the light terminal theme too.
-Set-Content $env:KEEPANE_CONFIG $(if ($Light) { "set -g theme paper" } else { "" })
+# The light pictures have the light terminal theme too. Every chat line kept,
+# however old the channel below is.
+Set-Content $env:KEEPANE_CONFIG $(if ($Light) { "set -g theme paper`nset -g chat-days 0" } else { "set -g chat-days 0" })
 Remove-Item Env:KEEPANE -ErrorAction SilentlyContinue
 Remove-Item Env:KEEPANE_PANE -ErrorAction SilentlyContinue
 
@@ -57,6 +61,15 @@ Clear-Host
 $shell = @("pwsh.exe", "-NoLogo", "-NoProfile", "-NoExit", "-File", $prompt)
 $socket = "phone-shots"
 & $w -L $socket kill-server 2>$null
+# A real channel for the chat pictures (tests/fixtures/chat-unifyterm, with
+# the person's consent), where the server reads its channels when it starts.
+$fixture = Join-Path $repo "tests\fixtures\chat-unifyterm"
+$entry = Get-Content (Join-Path $fixture "channel.json") -Raw -Encoding utf8
+$chatDir = Join-Path $env:KEEPANE_SESSIONS_DIR "chat\$socket"
+$channelId = ($entry | ConvertFrom-Json).id
+New-Item -ItemType Directory -Force (Join-Path $chatDir $channelId) | Out-Null
+[IO.File]::WriteAllText((Join-Path $chatDir "channels.json"), "[$entry]")
+Copy-Item (Join-Path $fixture "*.jsonl") (Join-Path $chatDir $channelId)
 & $w -L $socket new -d -s dev -n build -x 70 -y 40 @shell
 # A background window that prints gets its alert mark, in the list too.
 & $w -L $socket set -g monitor-activity on
@@ -129,6 +142,33 @@ try {
         ffmpeg -v error -y -i (Join-Path $tmp "phone-list.png") -i (Join-Path $tmp "phone-pane.png") -filter_complex `
             "[0]pad=iw+60:ih:30:0:color=$bg[a];[1]pad=iw+30:ih:0:0:color=$bg[b];[a][b]hstack,scale=iw/2:-1:flags=lanczos" `
             "docs/img/phone$($lang.Suffix)$suffix.png"
+        if ($LASTEXITCODE -ne 0) { throw "combine failed" }
+    }
+
+    # The group chat: the channel's two members online in panes of their
+    # names (a session of their own, made after the pane pictures), its
+    # latest lines and, beside them, "@" typed: the members to name.
+    & $w -L $socket new -d -s Dfine -n chat -x 70 -y 40 @shell
+    & $w -L $socket rename-pane -t Dfine:0.0 uni-term
+    & $w -L $socket create-pane -t Dfine:0.0 -h -n keepane | Out-Null
+    $deadline = (Get-Date).AddSeconds(30)
+    while (@((& $w -L $socket chat who unifyterm-keepane -J | ConvertFrom-Json) | Where-Object { $_.online }).Count -lt 2) {
+        if ((Get-Date) -gt $deadline) { throw "the channel's members did not come online" }
+        Start-Sleep -Milliseconds 300
+    }
+    $url = "http://127.0.0.1:17682/#k=$key"
+    foreach ($lang in @(@{ Code = "en"; Suffix = "" }, @{ Code = "zh-CN"; Suffix = "-zh" })) {
+        foreach ($view in "chat", "chat-at") {
+            node (Join-Path $npm "phone-shot.mjs") $edge $url (Join-Path $tmp "phone-$view.png") $view $lang.Code
+            if ($LASTEXITCODE -ne 0) { throw "picture $view failed" }
+        }
+        Add-Type -AssemblyName System.Drawing
+        $first = [System.Drawing.Bitmap]::FromFile((Join-Path $tmp "phone-chat.png"))
+        $px = $first.GetPixel(2, $first.Height - 2); $first.Dispose()
+        $bg = "0x{0:x2}{1:x2}{2:x2}" -f $px.R, $px.G, $px.B
+        ffmpeg -v error -y -i (Join-Path $tmp "phone-chat.png") -i (Join-Path $tmp "phone-chat-at.png") -filter_complex `
+            "[0]pad=iw+60:ih:30:0:color=$bg[a];[1]pad=iw+30:ih:0:0:color=$bg[b];[a][b]hstack,scale=iw/2:-1:flags=lanczos" `
+            "docs/img/phone-chat$($lang.Suffix)$suffix.png"
         if ($LASTEXITCODE -ne 0) { throw "combine failed" }
     }
 } finally {
