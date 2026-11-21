@@ -243,7 +243,7 @@ impl ChatPage {
                             kind: s(l, "kind"),
                             handle: s(from, "handle"),
                             role: s(from, "role"),
-                            text: s(l, "text"),
+                            text: said_with_files(l),
                         }
                     })
                     .collect()
@@ -515,6 +515,19 @@ fn hang_of(para: &str) -> usize {
 /// `text` cut into lines of `width` columns (at spaces when it can). A
 /// paragraph's indent is kept, and its continuation lines go in as far as
 /// its first line's text (`hang_of`: a list item reads as one).
+/// A line's text, each file sent with it on a line of its own under it
+/// (`📎 report.pdf  1.2M`).
+fn said_with_files(l: &serde_json::Value) -> String {
+    // Both through `s`: a name is the sender's as much as the text is.
+    let files = l["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| format!("📎 {}  {}", s(f, "name"), super::files::size_text(f["size"].as_u64().unwrap_or(0))));
+    let text = s(l, "text");
+    std::iter::once(text).filter(|t| !t.is_empty()).chain(files).collect::<Vec<_>>().join("\n")
+}
+
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(8);
     let mut out = Vec::new();
@@ -1073,6 +1086,19 @@ mod tests {
         );
         assert_eq!(p.lines[0].text, "ab c d");
         assert_eq!(p.lines[0].handle, "x");
+        // A file's name is the sender's too: drawn as text; each file on a
+        // line of its own under the text, with its size.
+        p.set_lines(
+            r#"{"lines":[{"seq":1,"at":"2026-11-17T14:02:00.000+08:00","kind":"say","from":{"handle":"x"},
+                "text":"see","files":[{"name":"a\u001b[2Jb.png","size":1536,"file":"2026-11-17/1/ab.png"},
+                {"name":"c.md","size":20,"file":"2026-11-17/1/c.md"}]}]}"#,
+        );
+        assert_eq!(p.lines[0].text, "see\n📎 ab.png  1.5K\n📎 c.md  20B");
+        p.set_lines(
+            r#"{"lines":[{"seq":1,"at":"2026-11-17T14:02:00.000+08:00","kind":"say","from":{"handle":"x"},
+                "text":"","files":[{"name":"c.md","size":20,"file":"2026-11-17/1/c.md"}]}]}"#,
+        );
+        assert_eq!(p.lines[0].text, "📎 c.md  20B", "a file alone: no empty line above it");
         // Zero-width format characters go: Windows' console counts a joiner
         // a column, keepane none, and the rows after one would stand off.
         p.set_lines(

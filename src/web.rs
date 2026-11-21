@@ -1188,6 +1188,33 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
         }
+        // A file sent with a chat line, to save: `f` is its `file` in the
+        // line, under the channel's folder of files and nowhere else.
+        (true, "/api/chat/file") => {
+            let Some(c) = req.param("c").filter(|c| is_channel_id(c)) else {
+                return Response::text(400, "c: a channel's id");
+            };
+            let Some(f) = req.param("f") else {
+                return Response::text(400, "f: a file of the channel (day/number/name)");
+            };
+            let dir = match q(vec!["chat-dir".into(), c.into()]).await {
+                Ok((0, out, _)) => std::path::PathBuf::from(out.trim()),
+                Ok((_, _, err)) => return Response::text(404, err.trim()),
+                Err(e) => return Response::text(500, &format!("{e:#}")),
+            };
+            let Some(path) = crate::server::copy_path(&dir, f) else {
+                return Response::text(400, "f: a file of the channel (day/number/name)");
+            };
+            match tokio::fs::read(&path).await {
+                Ok(body) => {
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let mut r = Response::new(200, "application/octet-stream", body);
+                    r.headers.push(("Content-Disposition", crate::share::disposition(&name)));
+                    r
+                }
+                Err(_) => Response::text(404, "no such file (its day may be past chat-days)"),
+            }
+        }
         (false, "/api/send")
         | (false, "/api/tell")
         | (false, "/api/new-session")
@@ -1853,6 +1880,42 @@ fn json_str(s: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// A chat file is asked for as a line names it, three plain parts; any
+    /// way out of the channel's folder of files is refused
+    /// (`server::copy_path`, which the read and the @ message use too).
+    #[test]
+    fn a_chat_file_is_one_under_the_channel_only() {
+        let files = std::path::Path::new("files");
+        let is_chat_file = |f: &str| crate::server::copy_path(files, f).is_some();
+        assert!(is_chat_file("2026-11-21/42/report.pdf"));
+        assert!(is_chat_file("2026-11-21/42/notes (2).md"));
+        assert!(is_chat_file("2026-11-21/42/中文 名.png"));
+        assert_eq!(
+            crate::server::copy_path(files, "2026-11-21/42/a.md"),
+            Some(files.join("2026-11-21").join("42").join("a.md")),
+            "each part joined the system's way"
+        );
+        for bad in [
+            "../42/x",
+            "2026-11-21/../x",
+            "2026-11-21/42/..",
+            "2026-11-21/42/.",
+            "2026-11-21/42/a\\..\\..\\x",
+            "2026-11-21/42/C:x",
+            "/etc/passwd",
+            "C:/Windows/win.ini",
+            "2026-11-21/42",
+            "2026-11-21/42/a/b",
+            "not-a-day/42/x",
+            "2026-11-21/4x/x",
+            "2026-11-21//x",
+            "2026-11-21/42/a\u{0}b",
+            "",
+        ] {
+            assert!(!is_chat_file(bad), "{bad:?}");
+        }
+    }
 
     fn req(method: &str, path: &str, key: Option<&str>) -> Request {
         Request {

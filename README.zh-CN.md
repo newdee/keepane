@@ -117,10 +117,13 @@ keepane send-message --to %lead --task 12 "还有一件事"
 keepane chat new review --topic "0.73 发布" --tag release --tag ci
 keepane chat join review --as lead --role planner   # 在 lead 的 pane 里
 keepane chat say review "@tester 跑一下回归测试"
+keepane chat say review --file build.log "@tester 这是失败那次的日志"   # 文件随消息一起发
 keepane chat read review --wait 60                  # 等到有新消息
 keepane chat who review                             # 谁在、从哪来
 keepane chat list --tag ci
 ```
+
+`--file` 发送文件（一次最多 10 个，每个不超过 `chat-file-max-size`，默认 25M）：文件会复制到频道的文件夹里（`chat dir review` 打印这个位置）。这一行写出文件名和大小；读频道时、以及被 @ 的成员收到的消息里，都写着副本的位置，agent 可以直接打开。dashboard 在气泡里显示它；网页上点一下就能保存。它和当天的消息一起按 `chat-days` 清理。目前只能发到本机的频道；别的机器上的成员只看到文件存在哪台机器上，不给路径。
 
 频道有一个永远不变的 id（UUID；`chat list` 显示末 8 位，写末尾 8 位或更多就能指它）、名字、topic（这个群聊关于什么）和 tags（分类，方便查找）。成员是谁、在哪（机器、`session:窗口.pane`、pane 编号和名字、agent、模型）由 keepane 盖章，记在成员上，也记在它说的每一句上：pane 只能以自己的身份加入和发言，自己能选的只有称呼和角色。你在所有 pane 之外（dashboard、自己的终端、`C-b :`）发言，身份是 `you@<机器名>`，不用加入。
 

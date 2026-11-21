@@ -5,6 +5,8 @@ pub mod actor;
 mod agents;
 mod agentsync;
 mod chat;
+/// Where the copy of a file sent in the chat is (the web page saves it).
+pub use chat::copy_path;
 mod chat_link;
 mod clock;
 pub(crate) mod clockanim;

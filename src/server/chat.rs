@@ -33,6 +33,8 @@ const ROLE_MOST: usize = 40;
 const TAGS_MOST: usize = 16;
 /// The characters of a channel's last line `chat-list -J` gives (`latest`).
 const LATEST: usize = 200;
+/// The most files one line sends (`chat-say --file`).
+const FILES_MOST: usize = 10;
 /// The lines said before it that a message to one named carries, and those
 /// a message to one that hears all carries, at most.
 const CONTEXT_MOST: usize = 20;
@@ -128,6 +130,21 @@ pub struct Line {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<String>,
+    /// Files sent with it (`chat-say --file`), copied into the channel's
+    /// `files` folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<Attached>,
+}
+
+/// A file sent with a line: its name as sent, its size, and where the copy
+/// is under the channel's `files` folder (`2026-11-21/42/report.pdf`: the
+/// day, so it goes with the day's lines; the line's number, so names sent
+/// on different lines never meet).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Attached {
+    pub name: String,
+    pub size: u64,
+    pub file: String,
 }
 
 /// A member that is a pane of another machine (docs/design/chat.md §10):
@@ -488,10 +505,15 @@ impl Channel {
         // The last thing said, for a list that shows it under the name: who,
         // when, and the start of what (`LATEST` characters at most).
         let latest = self.recent.iter().rev().find(|l| l.kind == "say").map(|l| {
+            // A line of files alone: its first file, by name.
+            let text = match l.files.first() {
+                Some(f) if l.text.is_empty() => format!("📎 {}", f.name),
+                _ => l.text.clone(),
+            };
             serde_json::json!({
                 "at": l.at,
                 "handle": l.from.as_ref().map_or("", |w| w.handle.as_str()),
-                "text": l.text.chars().take(LATEST).collect::<String>(),
+                "text": text.chars().take(LATEST).collect::<String>(),
             })
         });
         serde_json::json!({
@@ -509,8 +531,69 @@ impl Channel {
     }
 }
 
+/// Where the copy of a file sent with a line is: its `file`
+/// (`2026-11-21/42/report.pdf`, `/` between the parts on every system)
+/// under the channel's `files` folder, each part joined the system's way,
+/// so a path on Windows has `\` throughout. None for a `file` that is not
+/// three plain parts (a day, a line's number, a name: no `..`, no root, no
+/// drive), whoever wrote it: it is under that folder or it is nowhere.
+pub fn copy_path(files: &Path, file: &str) -> Option<PathBuf> {
+    let parts: Vec<&str> = file.split('/').collect();
+    let plain = |p: &&str| {
+        !p.is_empty() && *p != "." && *p != ".." && !p.contains(['\\', ':', '\0']) && !p.chars().any(char::is_control)
+    };
+    let ok = parts.len() == 3
+        && parts.iter().all(plain)
+        && chrono::NaiveDate::parse_from_str(parts[0], "%Y-%m-%d").is_ok()
+        && parts[1].bytes().all(|b| b.is_ascii_digit());
+    ok.then(|| parts.iter().fold(files.to_path_buf(), |p, part| p.join(part)))
+}
+
+/// The files sent on days past `days` (`chat-days`) deleted: each day's
+/// folder under `files` (`2026-11-21`), as its lines go. 0 keeps all.
+fn prune_file_days(files: &Path, days: u32) {
+    // The same day as the lines' (`histlog`): more days than the calendar
+    // goes back, nothing is that old.
+    let Some(before) = chrono::Local::now().date_naive().checked_sub_days(chrono::Days::new(u64::from(days))) else {
+        return;
+    };
+    if days == 0 {
+        return;
+    }
+    for e in std::fs::read_dir(files).into_iter().flatten().flatten() {
+        let day = chrono::NaiveDate::parse_from_str(&e.file_name().to_string_lossy(), "%Y-%m-%d");
+        if e.file_type().is_ok_and(|t| t.is_dir()) && day.is_ok_and(|d| d < before) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// `name`, or, when it is `taken` already, `name (2).ext`, `name (3).ext`...
+fn unique_name(name: &str, taken: &[String]) -> String {
+    if !taken.iter().any(|t| t == name) {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (2..).map(|n| format!("{stem} ({n}){ext}")).find(|n| !taken.contains(n)).expect("some number is free")
+}
+
+/// A size as people read it: `512B`, `1.5K`, `3.2M`.
+pub fn size_shown(b: u64) -> String {
+    const UNITS: [(u64, &str); 3] = [(1 << 30, "G"), (1 << 20, "M"), (1 << 10, "K")];
+    for (n, unit) in UNITS {
+        if b >= n {
+            return format!("{:.1}{unit}", b as f64 / n as f64);
+        }
+    }
+    format!("{b}B")
+}
+
 /// A line as one reads it: `#12 14:02 lead (planner) [DFINE work:0.0 %3
-/// claude]: text`; what happened, after a `·`.
+/// claude]: text`, each file sent with it after (`📎 report.pdf (1.2M)`);
+/// what happened, after a `·`.
 pub fn line_text(l: &Line) -> String {
     let who = |w: &Who| {
         let role = if w.role.is_empty() { String::new() } else { format!(" ({})", w.role) };
@@ -519,7 +602,11 @@ pub fn line_text(l: &Line) -> String {
     };
     let head = format!("#{} {}", l.seq, clock_of(&l.at));
     match (l.kind.as_str(), &l.from) {
-        ("say", Some(w)) => format!("{head} {}: {}", who(w), l.text),
+        ("say", Some(w)) => {
+            let files = l.files.iter().map(|f| format!("📎 {} ({})", f.name, size_shown(f.size)));
+            let said: Vec<String> = std::iter::once(l.text.clone()).filter(|t| !t.is_empty()).chain(files).collect();
+            format!("{head} {}: {}", who(w), said.join(" "))
+        }
         (_, Some(w)) => format!("{head} · {} {}", who(w), l.text),
         (_, None) => format!("{head} · {}", l.text),
     }
@@ -669,9 +756,22 @@ impl Server {
         text: String,
         mentions: Vec<String>,
     ) -> u64 {
+        self.chat_line_with(at, kind, from, text, mentions, Vec::new())
+    }
+
+    /// `chat_line`, with the files sent with it.
+    fn chat_line_with(
+        &mut self,
+        at: usize,
+        kind: &str,
+        from: Option<Who>,
+        text: String,
+        mentions: Vec<String>,
+        files: Vec<Attached>,
+    ) -> u64 {
         let c = &mut self.chat.channels[at];
         c.last += 1;
-        let line = Line { seq: c.last, at: now(), kind: kind.into(), from, text, mentions };
+        let line = Line { seq: c.last, at: now(), kind: kind.into(), from, text, mentions, files };
         if let Some(dir) = &self.chat.dir {
             let day = line.at.get(..10).unwrap_or("day").to_string();
             let path = dir.join(&c.id).join(format!("{day}.jsonl"));
@@ -810,7 +910,7 @@ impl Server {
             ChatCmd::List { tags, json, .. } => self.chat_list(&caller, &tags, json, None),
             ChatCmd::Join { channel, handle, role, hear } => self.chat_join(&caller, &channel, handle, role, hear),
             ChatCmd::Leave { channel, handle } => self.chat_leave(&caller, &channel, handle),
-            ChatCmd::Say { channel, text } => self.chat_say(cid, &caller, &channel, text),
+            ChatCmd::Say { channel, text, files } => self.chat_say(cid, &caller, &channel, text, files),
             ChatCmd::Read { channel, n, all, peek, wait, json, .. } => {
                 self.chat_read(cid, &caller, &channel, n, all, peek, wait, json)
             }
@@ -819,7 +919,20 @@ impl Server {
             ChatCmd::Tag { channel, add, remove } => self.chat_tag(me, &channel, add, remove),
             ChatCmd::Rename { channel, name } => self.chat_rename(me, &channel, name),
             ChatCmd::Delete { channel } => self.chat_delete(me, &channel),
+            ChatCmd::Dir { channel } => match self.chat_find(&channel) {
+                Ok(at) => match self.chat_files_dir(&self.chat.channels[at].id) {
+                    Some(d) => Outcome::Text(d.to_string_lossy().into_owned()),
+                    None => Outcome::Error("chat-dir: the chat keeps no files".into()),
+                },
+                Err(e) => Outcome::Error(format!("chat-dir: {e}")),
+            },
         }
+    }
+
+    /// Where the files sent in channel `id` are copied: `files` in its
+    /// folder (none when the chat keeps no files, as in some tests).
+    pub(super) fn chat_files_dir(&self, id: &str) -> Option<PathBuf> {
+        self.chat.dir.as_ref().map(|d| d.join(id).join("files"))
     }
 
     /// Who did a change: the member (or the pane, joined or not), or the
@@ -882,7 +995,18 @@ impl Server {
             .filter(|c| seen_by.is_none_or(|p| chat_may_look(c, p)))
             .collect();
         if json {
-            let all: Vec<serde_json::Value> = shown.iter().map(|c| c.json(c.unread(&reader))).collect();
+            let all: Vec<serde_json::Value> = shown
+                .iter()
+                .map(|c| {
+                    let mut v = c.json(c.unread(&reader));
+                    // Its folder, to one on this machine only.
+                    if let Some(d) = self.chat_files_dir(&c.id).filter(|_| matches!(me, Caller::You | Caller::Pane(_)))
+                    {
+                        v["dir"] = d.to_string_lossy().into_owned().into();
+                    }
+                    v
+                })
+                .collect();
             return Outcome::Text(serde_json::Value::Array(all).to_string());
         }
         if shown.is_empty() {
@@ -1097,7 +1221,85 @@ impl Server {
         Outcome::Ok
     }
 
-    pub(super) fn chat_say(&mut self, cid: Option<ClientId>, me: &Caller, word: &str, text: String) -> Outcome {
+    /// The files a `chat-say` sends, looked at: each one's path (a relative
+    /// one from where the command was run), name and size; why not, when
+    /// one is not a file or is past `chat-file-max-size`.
+    fn chat_files_sent(&self, cid: Option<ClientId>, files: &[String]) -> Result<Vec<(PathBuf, String, u64)>, String> {
+        if files.len() > FILES_MOST {
+            return Err(format!("{} files; {FILES_MOST} is the most one line sends", files.len()));
+        }
+        if !files.is_empty() && self.chat.dir.is_none() {
+            return Err("the chat keeps no files".into());
+        }
+        let cwd = self.client_cwd(cid);
+        let most = self.opts.chat_file_max_size;
+        files
+            .iter()
+            .map(|p| {
+                let path = match &cwd {
+                    Some(c) if Path::new(p).is_relative() => Path::new(c).join(p),
+                    _ => PathBuf::from(p),
+                };
+                let meta = std::fs::metadata(&path).map_err(|e| format!("{p}: {e}"))?;
+                if !meta.is_file() {
+                    return Err(format!("{p} is no file"));
+                }
+                if meta.len() > most {
+                    return Err(format!(
+                        "{p} is {}; chat-file-max-size is {}",
+                        size_shown(meta.len()),
+                        size_shown(most)
+                    ));
+                }
+                let name = path.file_name().map(|n| crate::histlog::safe_name(&n.to_string_lossy()));
+                Ok((path, name.unwrap_or_else(|| "file".into()), meta.len()))
+            })
+            .collect()
+    }
+
+    /// The files looked at by `chat_files_sent`, copied for the next line
+    /// of channel `at`: into `files/<day>/<its number>/`, a name sent twice
+    /// on it the second time as `name (2).ext`. None copied when one fails.
+    fn chat_copy_files(&self, at: usize, sending: &[(PathBuf, String, u64)]) -> Result<Vec<Attached>, String> {
+        if sending.is_empty() {
+            return Ok(Vec::new());
+        }
+        let c = &self.chat.channels[at];
+        let Some(root) = self.chat_files_dir(&c.id) else {
+            return Err("the chat keeps no files".into());
+        };
+        let day = now().get(..10).unwrap_or("day").to_string();
+        let seq = c.last + 1;
+        let here = root.join(&day).join(seq.to_string());
+        let mut taken: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        let copied = (|| {
+            std::fs::create_dir_all(&here).map_err(|e| format!("{}: {e}", here.display()))?;
+            for (path, name, size) in sending {
+                let name = unique_name(name, &taken);
+                taken.push(name.clone());
+                std::fs::copy(path, here.join(&name)).map_err(|e| format!("{}: {e}", path.display()))?;
+                out.push(Attached { name: name.clone(), size: *size, file: format!("{day}/{seq}/{name}") });
+            }
+            Ok::<(), String>(())
+        })();
+        match copied {
+            Ok(()) => Ok(out),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&here);
+                Err(e)
+            }
+        }
+    }
+
+    pub(super) fn chat_say(
+        &mut self,
+        cid: Option<ClientId>,
+        me: &Caller,
+        word: &str,
+        text: String,
+        files: Vec<String>,
+    ) -> Outcome {
         let at = match self.chat_find(word) {
             Ok(i) => i,
             Err(e) => return Outcome::Error(format!("chat-say: {e}")),
@@ -1106,6 +1308,12 @@ impl Server {
         if text.len() > max {
             return Outcome::Error(format!("chat-say: {} bytes; message-max-size is {max}", text.len()));
         }
+        // Each file looked at before anything is said or copied: one that is
+        // not there, or too big, and nothing is.
+        let sending = match self.chat_files_sent(cid, &files) {
+            Ok(s) => s,
+            Err(e) => return Outcome::Error(format!("chat-say: {e}")),
+        };
         let name = self.chat.channels[at].name.clone();
         let who = match me {
             Caller::Pane(_) | Caller::There { .. } => {
@@ -1138,11 +1346,38 @@ impl Server {
             Caller::You => Self::chat_you(),
             Caller::YouThere { machine } => Who { handle: format!("you@{machine}"), role: String::new(), ident: None },
         };
+        let attached = match self.chat_copy_files(at, &sending) {
+            Ok(a) => a,
+            Err(e) => return Outcome::Error(format!("chat-say: {e}")),
+        };
+        // What those told are told: the text, and each file with where its
+        // copy is, so an agent can open it.
+        let mut told = text.clone();
+        // To a member on another machine: which machine keeps them.
+        let mut told_there = text.clone();
+        for f in &attached {
+            let sep = if told_there.is_empty() { "" } else { "\n" };
+            told_there.push_str(&format!(
+                "{sep}📎 {} ({}): kept on {}; files are not sent over link yet",
+                f.name,
+                size_shown(f.size),
+                crate::sysinfo::hostname()
+            ));
+        }
+        if let Some(dir) = self.chat_files_dir(&self.chat.channels[at].id) {
+            // Copied just now under names `chat_files_sent` made plain: each
+            // has its place.
+            for f in &attached {
+                let Some(path) = copy_path(&dir, &f.file) else { continue };
+                let sep = if told.is_empty() { "" } else { "\n" };
+                told.push_str(&format!("{sep}📎 {} ({}): {}", f.name, size_shown(f.size), path.display()));
+            }
+        }
         let members = self.chat.channels[at].members.clone();
         let words = mentions_in(&text);
         let named: Vec<String> = words.iter().filter(|h| members.iter().any(|m| &m.handle == *h)).cloned().collect();
         let before = self.chat.channels[at].last;
-        let seq = self.chat_line(at, "say", Some(who.clone()), text.clone(), named.clone());
+        let seq = self.chat_line_with(at, "say", Some(who.clone()), text.clone(), named.clone(), attached);
         // Its own line is not news to the speaker: read, when it had read
         // all before it. Not otherwise: saying something is no reading of
         // what others said meanwhile (unread lines would be lost).
@@ -1169,7 +1404,16 @@ impl Server {
             }
             let earlier = self.chat_since(at, m.read, before, Some(m.own()));
             let id = self.chat.channels[at].id.clone();
-            match self.chat_tell(cid, me, m, &id, &name, &who, &text, &earlier) {
+            match self.chat_tell(
+                cid,
+                me,
+                m,
+                &id,
+                &name,
+                &who,
+                if m.there.is_some() { &told_there } else { &told },
+                &earlier,
+            ) {
                 Ok(()) => {
                     if let Some(x) = self.chat.channels[at].members.iter_mut().find(|x| x.handle == m.handle) {
                         x.read = x.read.max(seq);
@@ -1181,7 +1425,7 @@ impl Server {
         // The person, named (`@you`) by a member: told on the desktop and
         // by the webhook, as when an agent is done.
         if me.is_pane() && words.iter().any(|w| w == "you") {
-            self.chat_call_person(&name, &who, &text, me.pane());
+            self.chat_call_person(&name, &who, &told, me.pane());
         }
         // Those that hear all: told of it, with what else comes, shortly, on
         // the chain of the speaker furthest along one.
@@ -1221,8 +1465,14 @@ impl Server {
             .iter()
             .map(|l| {
                 let who = l.from.as_ref().map_or("", |w| w.handle.as_str());
-                let mut text: String = l.text.chars().take(CONTEXT_LINE_MOST).collect();
-                if l.text.chars().count() > CONTEXT_LINE_MOST {
+                // Its files by name (`chat-read` says where they are).
+                let said: Vec<String> = std::iter::once(l.text.clone())
+                    .filter(|t| !t.is_empty())
+                    .chain(l.files.iter().map(|f| format!("📎 {}", f.name)))
+                    .collect();
+                let said = said.join(" ");
+                let mut text: String = said.chars().take(CONTEXT_LINE_MOST).collect();
+                if said.chars().count() > CONTEXT_LINE_MOST {
                     text.push('…');
                 }
                 format!("#{} {} {who}: {text}", l.seq, clock_of(&l.at))
@@ -1395,19 +1645,21 @@ impl Server {
         };
         let n = n.unwrap_or(READ_DEFAULT).min(KEEP);
         let c = &self.chat.channels[at];
+        // One reading from another machine has no use for this one's paths.
+        let here = matches!(me, Caller::You | Caller::Pane(_));
         // A pane not in it reads it whole, as a person might look; so does
         // the person at another machine, who has no read position here.
         let reader = match me {
             Caller::Pane(_) | Caller::There { .. } if c.member_by(me).is_some() => reader_of(me),
             Caller::Pane(_) | Caller::There { .. } | Caller::YouThere { .. } => {
-                return self.chat_answer(at, c.last_lines(n), false, json);
+                return self.chat_answer(at, c.last_lines(n), false, json, here);
             }
             Caller::You => Reader::You,
         };
         if all || peek {
             let lines = if all { c.last_lines(n) } else { c.since(read_of(c, &reader), n) };
             let more = !all && c.recent.iter().filter(|l| l.seq > read_of(c, &reader)).count() > n;
-            return self.chat_answer(at, lines, more, json);
+            return self.chat_answer(at, lines, more, json, here);
         }
         let lines = c.since(read_of(c, &reader), n);
         if lines.is_empty()
@@ -1456,25 +1708,43 @@ impl Server {
         if reader == Reader::You && !lines.is_empty() {
             self.chat_save();
         }
-        self.chat_answer(at, lines, more, json)
+        let here = !matches!(reader, Reader::There(..));
+        self.chat_answer(at, lines, more, json, here)
     }
 
-    fn chat_answer(&self, at: usize, lines: Vec<Line>, more: bool, json: bool) -> Outcome {
+    /// Lines as a read answers them; `here`, to one on this machine, each
+    /// file with where its copy is; to one on another machine, which this
+    /// machine it is kept on (files are not sent over link yet).
+    fn chat_answer(&self, at: usize, lines: Vec<Line>, more: bool, json: bool, here: bool) -> Outcome {
         let c = &self.chat.channels[at];
+        let dir = if here { self.chat_files_dir(&c.id) } else { None };
         if json {
-            return Outcome::Text(
-                serde_json::json!({
-                    "channel": { "id": c.id, "name": c.name, "topic": c.topic, "tags": c.tags },
-                    "lines": lines,
-                    "more": more,
-                })
-                .to_string(),
-            );
+            // A file's `file` is under the channel's `dir`.
+            let mut channel = serde_json::json!({ "id": c.id, "name": c.name, "topic": c.topic, "tags": c.tags });
+            if let Some(d) = &dir {
+                channel["dir"] = d.to_string_lossy().into_owned().into();
+            }
+            return Outcome::Text(serde_json::json!({ "channel": channel, "lines": lines, "more": more }).to_string());
         }
         if lines.is_empty() {
             return Outcome::Text(format!("nothing new in #{}", c.name));
         }
-        let mut out: Vec<String> = lines.iter().map(line_text).collect();
+        // Each file under its line, where its copy is: so it can be opened.
+        let mut out: Vec<String> = Vec::new();
+        for l in &lines {
+            out.push(line_text(l));
+            if !here && !l.files.is_empty() {
+                out.push(format!("    (kept on {}; files are not sent over link yet)", crate::sysinfo::hostname()));
+            }
+            if let Some(d) = &dir {
+                // A line changed by hand to name a file elsewhere: said so,
+                // no path.
+                out.extend(l.files.iter().map(|f| match copy_path(d, &f.file) {
+                    Some(p) => format!("    {}", p.display()),
+                    None => format!("    ({}: not a file of the channel's folder)", f.file),
+                }));
+            }
+        }
         if more {
             out.push(format!("(more: chat-read {} again)", c.name));
         }
@@ -1545,6 +1815,7 @@ impl Server {
             self.chat.pruned = Some(now);
             for c in &self.chat.channels {
                 crate::histlog::prune_events(dir.join(&c.id), self.opts.chat_days);
+                prune_file_days(&dir.join(&c.id).join("files"), self.opts.chat_days);
             }
             // Members offline longer than what is said is kept go too.
             if self.opts.chat_days > 0 {
@@ -1798,6 +2069,163 @@ mod tests {
         }
     }
 
+    /// Files sent with a line: copied under the channel's `files` folder by
+    /// day and line number (a name sent twice, the second `name (2).ext`),
+    /// the copies' bytes the same; the line names them with their sizes,
+    /// a read says where each copy is, the JSON gives the folder (`dir`),
+    /// and so does `chat-dir`. A file not there, too big, not a file, or
+    /// one too many: nothing said, nothing copied; a pane not in it copies
+    /// nothing either.
+    #[test]
+    fn files_sent_with_a_line_are_copied_named_and_found() {
+        let dir = std::env::temp_dir().join(format!("keepane-chat-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = server(&dir.join("chat"));
+        let src = dir.join("src");
+        for (sub, body) in [("one", "first notes"), ("two", "second notes, longer")] {
+            std::fs::create_dir_all(src.join(sub)).unwrap();
+            std::fs::write(src.join(sub).join("notes.md"), body).unwrap();
+        }
+        std::fs::write(src.join("pic.png"), [0x89u8, b'P', b'N', b'G', 0, 1, 2]).unwrap();
+        let path = |p: &str| src.join(p).to_string_lossy().into_owned();
+        let files = vec![path("one/notes.md"), path("two/notes.md"), path("pic.png")];
+        let out = text(a.chat_say(None, &Caller::You, GENERAL, "see these".into(), files));
+        assert!(out.starts_with("#general #"), "{out}");
+        let line = a.chat.channels[0].recent.back().unwrap().clone();
+        let names: Vec<&str> = line.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["notes.md", "notes (2).md", "pic.png"], "a name sent twice: the second (2)");
+        let root = a.chat_files_dir(&a.chat.channels[0].id).unwrap();
+        let day = line.at.get(..10).unwrap();
+        for (f, from) in line.files.iter().zip(["one/notes.md", "two/notes.md", "pic.png"]) {
+            assert_eq!(f.file, format!("{day}/{}/{}", line.seq, f.name), "by day and line number");
+            assert_eq!(
+                std::fs::read(copy_path(&root, &f.file).unwrap()).unwrap(),
+                std::fs::read(src.join(from)).unwrap(),
+                "{from}"
+            );
+            assert_eq!(f.size, std::fs::metadata(src.join(from)).unwrap().len());
+        }
+        // A read: the line with each file by name and size, and under it
+        // where the copy is.
+        let read = text(a.chat_read(None, &Caller::You, GENERAL, None, true, false, None, false));
+        assert!(read.contains("see these 📎 notes.md (11B) 📎 notes (2).md (20B) 📎 pic.png (7B)"), "{read}");
+        assert!(
+            read.contains(&copy_path(&root, &line.files[2].file).unwrap().display().to_string()),
+            "where it is: {read}"
+        );
+        // The path is written the system's way throughout (no `/` among the
+        // `\` of a Windows path).
+        let other = if cfg!(windows) { '/' } else { '\\' };
+        let shown = read.lines().find(|l| l.trim_start().starts_with(&root.display().to_string())).unwrap();
+        assert!(!shown.contains(other), "one kind of separator: {shown}");
+        let json: serde_json::Value =
+            serde_json::from_str(&text(a.chat_read(None, &Caller::You, GENERAL, None, true, false, None, true)))
+                .unwrap();
+        assert_eq!(json["channel"]["dir"], root.to_string_lossy().as_ref(), "the folder the files are under");
+        assert_eq!(json["lines"].as_array().unwrap().last().unwrap()["files"][1]["name"], "notes (2).md");
+        let list: serde_json::Value = serde_json::from_str(&text(a.chat_list(&Caller::You, &[], true, None))).unwrap();
+        assert_eq!(list[0]["dir"], root.to_string_lossy().as_ref(), "chat-list -J gives it too");
+        let shown = text(a.exec_chat(ChatCmd::Dir { channel: GENERAL.into() }, None));
+        assert_eq!(shown, root.to_string_lossy(), "and chat-dir");
+        // A file alone, no text: said, its name the channel's latest.
+        let out = text(a.chat_say(None, &Caller::You, GENERAL, String::new(), vec![path("pic.png")]));
+        assert!(out.starts_with("#general #"), "{out}");
+        assert_eq!(list_latest(&mut a), "📎 pic.png");
+        // What fails says why and leaves no line and no copy behind.
+        let lines = |a: &Server| a.chat.channels[0].last;
+        let copies = |root: &Path| walk_files(root).len();
+        let (before, copied) = (lines(&a), copies(&root));
+        let missing =
+            text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png"), path("gone.txt")]));
+        assert!(missing.starts_with("error: chat-say:") && missing.contains("gone.txt"), "{missing}");
+        let folder = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("one")]));
+        assert!(folder.contains("is no file"), "{folder}");
+        a.opts.chat_file_max_size = 10;
+        let big = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("two/notes.md")]));
+        assert!(big.contains("chat-file-max-size is 10B"), "{big}");
+        a.opts.chat_file_max_size = 25 * 1024 * 1024;
+        let many = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png"); FILES_MOST + 1]));
+        assert!(many.contains(&format!("{FILES_MOST} is the most")), "{many}");
+        let stranger = Caller::There { key: "k9".into(), ident: Ident { pane: 4, ..Default::default() } };
+        let not_in = text(a.chat_say(None, &stranger, GENERAL, "x".into(), vec![path("pic.png")]));
+        assert!(not_in.contains("is not in #general"), "{not_in}");
+        // The folder the next line's files go to is taken by a file: the copy
+        // fails, nothing is said.
+        let next = root.join(chrono::Local::now().format("%Y-%m-%d").to_string()).join((lines(&a) + 1).to_string());
+        std::fs::create_dir_all(next.parent().unwrap()).unwrap();
+        std::fs::write(&next, "in the way").unwrap();
+        let blocked = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png")]));
+        assert!(blocked.starts_with("error: chat-say:"), "{blocked}");
+        std::fs::remove_file(&next).unwrap();
+        // The first file copied, the second not (a folder is where it goes):
+        // the first copy is taken away again.
+        std::fs::create_dir_all(next.join("pic.png")).unwrap();
+        let half =
+            text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("one/notes.md"), path("pic.png")]));
+        assert!(half.starts_with("error: chat-say:") && half.contains("pic.png"), "{half}");
+        assert!(!next.exists(), "the line's folder gone with what was copied into it");
+        assert_eq!((lines(&a), copies(&root)), (before, copied), "no line, no copy left behind");
+        // One reading from another machine: which machine keeps the files,
+        // not this machine's paths; no folder in the list either.
+        let there = Caller::There { key: "k1".into(), ident: Ident { pane: 7, ..Default::default() } };
+        let far = text(a.chat_read(None, &there, GENERAL, None, true, false, None, false));
+        assert!(far.contains("📎 notes.md (11B)") && far.contains("files are not sent over link yet"), "{far}");
+        assert!(!far.contains(&root.display().to_string()), "no path of this machine: {far}");
+        let far_json: serde_json::Value =
+            serde_json::from_str(&text(a.chat_read(None, &there, GENERAL, None, true, false, None, true))).unwrap();
+        assert!(far_json["channel"]["dir"].is_null(), "{far_json}");
+        let far_list: serde_json::Value = serde_json::from_str(&text(a.chat_list(&there, &[], true, None))).unwrap();
+        assert!(far_list[0]["dir"].is_null(), "{far_list}");
+        // A line changed by hand to name a file outside the folder: read
+        // with no path to it, said so.
+        a.chat.channels[0].recent.back_mut().unwrap().files[0].file = "../../secret".into();
+        let read = text(a.chat_read(None, &Caller::You, GENERAL, Some(1), true, false, None, false));
+        assert!(read.contains("(../../secret: not a file of the channel's folder)"), "{read}");
+        assert!(!read.contains(&root.join("..").display().to_string()), "no path out of it: {read}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `chat-list -J`'s `latest` text of the first channel.
+    fn list_latest(a: &mut Server) -> String {
+        let list: serde_json::Value = serde_json::from_str(&text(a.chat_list(&Caller::You, &[], true, None))).unwrap();
+        list[0]["latest"]["text"].as_str().unwrap_or_default().to_string()
+    }
+
+    /// Every file under `root`.
+    fn walk_files(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                out.extend(walk_files(&e.path()));
+            } else {
+                out.push(e.path());
+            }
+        }
+        out
+    }
+
+    /// The files sent on days past `chat-days` go with their lines: each
+    /// day's folder older than that, not today's, not a folder that is no
+    /// day; `chat-days 0` keeps them all.
+    #[test]
+    fn files_of_days_past_chat_days_go() {
+        let files = std::env::temp_dir().join(format!("keepane-chat-file-days-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&files);
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        for d in ["2000-01-01", today.as_str(), "not-a-day"] {
+            std::fs::create_dir_all(files.join(d).join("1")).unwrap();
+            std::fs::write(files.join(d).join("1").join("a.txt"), "a").unwrap();
+        }
+        prune_file_days(&files, 0);
+        assert!(files.join("2000-01-01").exists(), "0 keeps all");
+        prune_file_days(&files, u32::MAX);
+        assert!(files.join("2000-01-01").exists(), "more days than the calendar: nothing that old");
+        prune_file_days(&files, 30);
+        assert!(!files.join("2000-01-01").exists(), "an old day goes");
+        assert!(files.join(&today).exists() && files.join("not-a-day").exists(), "today and a folder of no day stay");
+        let _ = std::fs::remove_dir_all(&files);
+    }
+
     /// A pane of another machine (§10): online while its machine says it is
     /// there; its next `here` without it, offline (said once); with it
     /// again, back; nothing heard for `THERE_STALE`, offline. Kept over a
@@ -1908,12 +2336,21 @@ mod tests {
         };
         assert!(text(a.chat_join(&me, GENERAL, Some("blog".into()), None, None)).contains("blog"));
         for i in 0..RATE {
-            assert!(text(a.chat_say(None, &me, GENERAL, format!("line {i}"))).starts_with("#general #"), "{i}");
+            assert!(
+                text(a.chat_say(None, &me, GENERAL, format!("line {i}"), Vec::new())).starts_with("#general #"),
+                "{i}"
+            );
         }
-        let out = text(a.chat_say(None, &me, GENERAL, "one more".into()));
+        let out = text(a.chat_say(None, &me, GENERAL, "one more".into(), Vec::new()));
         assert!(out.contains("a minute is the most"), "{out}");
         let big = "x".repeat(a.opts.message_max_size + 1);
-        let out = text(a.chat_say(None, &Caller::There { key: "k1".into(), ident: Ident::default() }, GENERAL, big));
+        let out = text(a.chat_say(
+            None,
+            &Caller::There { key: "k1".into(), ident: Ident::default() },
+            GENERAL,
+            big,
+            Vec::new(),
+        ));
         assert!(out.contains("message-max-size"), "{out}");
         a.chat_save();
         // One member's `there` spoiled in the file: that member alone goes.
@@ -1981,7 +2418,7 @@ mod tests {
             v[0]["last"].as_u64().unwrap()
         };
         assert_eq!(last_saved(), 1, "general made: written");
-        let say = ChatCmd::Say { channel: GENERAL.into(), text: "hi".into() };
+        let say = ChatCmd::Say { channel: GENERAL.into(), text: "hi".into(), files: Vec::new() };
         assert!(text(a.exec_chat(say, None)).starts_with("#general #2"));
         assert_eq!(last_saved(), 1, "a line: not written yet");
         a.chat_tick();
@@ -2077,7 +2514,10 @@ mod tests {
         .unwrap();
         let review = list.as_array().unwrap().iter().find(|c| c["name"] == "review").unwrap().clone();
         assert_eq!(review["members"], 1, "not counted: {review}");
-        let said = text(a.exec_chat(ChatCmd::Say { channel: "review".into(), text: "@tester @lead hi".into() }, None));
+        let said = text(a.exec_chat(
+            ChatCmd::Say { channel: "review".into(), text: "@tester @lead hi".into(), files: Vec::new() },
+            None,
+        ));
         assert!(said.contains("tester not told: it left #review"), "{said}");
         assert!(said.contains("lead not told: offline"), "{said}");
         assert!(text(a.exec_chat(leave("tester"), None)).contains("left #review already"));
@@ -2131,7 +2571,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut a = server(&dir);
         a.exec_chat(ChatCmd::New { name: "review".into(), topic: String::new(), tags: vec![] }, None);
-        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into() };
+        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into(), files: Vec::new() };
         a.exec_chat(say("one"), None);
         a.exec_chat(say("two"), None);
         a.exec_chat(ChatCmd::Topic { channel: "review".into(), topic: "t".into() }, None);
@@ -2171,7 +2611,7 @@ mod tests {
             ChatCmd::New { name: "review".into(), topic: "the 0.72 release".into(), tags: vec!["release".into()] };
         let id = text(a.exec_chat(new, None));
         assert_eq!(id.len(), 36, "{id}");
-        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into() };
+        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into(), files: Vec::new() };
         assert!(text(a.exec_chat(say("one"), None)).starts_with("#review #"));
         let read = ChatCmd::Read {
             channel: "review".into(),
@@ -2255,9 +2695,28 @@ mod tests {
             }),
             text: "hi".into(),
             mentions: vec![],
+            files: vec![],
         };
         assert_eq!(line_text(&l), "#3 14:02 lead (planner) [DFINE work:0.0 %3 claude]: hi");
         let back: Line = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
         assert_eq!(back, l, "a line reads back as it was written");
+        // A line of a version before files reads back with none.
+        let old = r#"{"seq":1,"at":"2026-11-17T14:02:33.120+08:00","kind":"say","text":"hi"}"#;
+        assert!(serde_json::from_str::<Line>(old).unwrap().files.is_empty());
+        let with = Line {
+            text: String::new(),
+            files: vec![
+                Attached { name: "a.png".into(), size: 1536, file: "2026-11-17/3/a.png".into() },
+                Attached { name: "notes.md".into(), size: 20, file: "2026-11-17/3/notes.md".into() },
+            ],
+            ..l
+        };
+        assert_eq!(
+            line_text(&with),
+            "#3 14:02 lead (planner) [DFINE work:0.0 %3 claude]: 📎 a.png (1.5K) 📎 notes.md (20B)",
+            "files by name and size, with no text"
+        );
+        assert_eq!(size_shown(0), "0B");
+        assert_eq!(size_shown(25 * 1024 * 1024), "25.0M");
     }
 }

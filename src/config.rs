@@ -234,6 +234,9 @@ pub struct Options {
     pub dashboard_icons: String,
     /// Days a group chat line is kept (`chat-days`; 0 keeps them all).
     pub chat_days: u32,
+    /// The most bytes one file sent with a chat line holds
+    /// (`chat-file-max-size`).
+    pub chat_file_max_size: u64,
 }
 
 /// What `dashboard-icons` can be.
@@ -536,6 +539,7 @@ pub const SHOWABLE: &[&str] = &[
     "choose-tree-style",
     "dashboard-icons",
     "chat-days",
+    "chat-file-max-size",
 ];
 
 impl Default for Options {
@@ -664,6 +668,7 @@ impl Default for Options {
             choose_tree_style: "chart".into(),
             dashboard_icons: "emoji".into(),
             chat_days: 30,
+            chat_file_max_size: 25 * 1024 * 1024,
         }
     }
 }
@@ -757,6 +762,7 @@ pub const KNOWN: &[&str] = &[
     "autosave",
     "base-index",
     "chat-days",
+    "chat-file-max-size",
     "choose-tree-style",
     "clock-mode-animation",
     "clock-mode-colour",
@@ -1257,6 +1263,9 @@ impl Options {
                 self.chat_days =
                     value.trim().parse().map_err(|_| format!("bad chat-days '{value}' (days; 0 keeps every line)"))?
             }
+            "chat-file-max-size" => {
+                self.chat_file_max_size = parse_size(name, value, 1024, 1024 * 1024 * 1024)?;
+            }
             "default-terminal" => {
                 let v = value.trim();
                 if v.is_empty() || v.contains(char::is_whitespace) {
@@ -1398,6 +1407,7 @@ impl Options {
             "choose-tree-style" => self.choose_tree_style.clone(),
             "dashboard-icons" => self.dashboard_icons.clone(),
             "chat-days" => self.chat_days.to_string(),
+            "chat-file-max-size" => size_name(self.chat_file_max_size),
             "log-history-dir" => {
                 if self.log_history_dir.is_empty() {
                     crate::histlog::default_dir().to_string_lossy().into_owned()

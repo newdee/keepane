@@ -198,10 +198,18 @@ keepane panes, and the person asked them along the way.
 keepane chat new review --topic "the 0.73 release" --tag release --tag ci
 keepane chat join review --as lead --role planner   # in the lead's pane
 keepane chat say review "@tester run the regression, please"
+keepane chat say review --file build.log "@tester the log of the failed run"   # the file goes with it
 keepane chat read review --wait 60                  # waits for something new
 keepane chat who review                             # who, and from where
 keepane chat list --tag ci
 ```
+
+A file sent with `--file` (as many as 10, each at most `chat-file-max-size`,
+25M by default) is copied into the channel's folder (`chat dir review` prints
+it): the line names it with its size, and a read and the message to one named
+say where the copy is, so an agent can open it. The board shows it in the
+bubble; on the web page, tap it to save it. It goes with its day's lines
+(`chat-days`). Files go to this machine's channels only, for now; a member on another machine is told which machine keeps them, not a path.
 
 A channel has an id that never changes (a UUID; `chat list` shows its
 last 8 characters, and any 8 or more of its last ones name it), a name,

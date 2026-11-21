@@ -15384,6 +15384,29 @@ async fn a_pane_of_another_machine_joins_a_channel_over_link() {
     let (code, _, err) = a.cli(&["chat-topic", &there, "mine"]).await;
     assert!(code != 0 && err.contains("is changed at"), "{err}");
 
+    // A file sent there with @: its member here is told which machine keeps
+    // it, not that machine's path (no use here); a read from here the same.
+    let rel = format!("chat-far-file-{}.txt", std::process::id());
+    std::fs::write(std::env::temp_dir().join(&rel), "far").unwrap();
+    let (code, out, err) = b.cli(&["chat-say", "review", "--file", &rel, "@blog the log"]).await;
+    let _ = std::fs::remove_file(std::env::temp_dir().join(&rel));
+    assert!(code == 0 && !out.contains("not told"), "{out}{err}");
+    let b_dir = b.cli(&["chat-dir", "review"]).await.1.trim().to_string();
+    assert!(!b_dir.is_empty());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let told = loop {
+        let (_, got, _) = a.cli_in(Some(pa), &["read-message"]).await;
+        if got.contains("the log") {
+            break got;
+        }
+        assert!(Instant::now() < deadline, "never told of the file");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert!(told.contains(&format!("📎 {rel}")) && told.contains("files are not sent over link yet"), "{told}");
+    assert!(!told.contains(&b_dir), "no path of that machine: {told}");
+    let (_, read, _) = a.cli_in(Some(pa), &["chat-read", &there, "--all", "-n", "3"]).await;
+    assert!(read.contains("files are not sent over link yet") && !read.contains(&b_dir), "{read}");
+    let _ = std::fs::remove_dir_all(&b_dir);
     // It leaves: kept there, marked left.
     let (code, _, err) = a.cli_in(Some(pa), &["chat-leave", &there]).await;
     assert_eq!(code, 0, "{err}");
@@ -15456,4 +15479,69 @@ fn keepane_exe_needs_no_visual_cpp_runtime() {
     for dll in ["vcruntime140", "msvcp140", "api-ms-win-crt-"] {
         assert!(!lower.windows(dll.len()).any(|w| w == dll.as_bytes()), "keepane.exe still names {dll}");
     }
+}
+
+/// Files sent with a chat line, end to end: `chat say --file` with a path
+/// relative to where it is run copies it into the channel; the member named
+/// is told where the copy is, a read says it too, `chat dir` gives the
+/// folder, the copy is the same bytes; a channel of another machine is told
+/// files go to this machine's channels only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_sent_in_the_chat_is_copied_and_its_place_told() {
+    let h = Harness::start("chatfile").await;
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    let tester = pane_id(&h, "s:0.0").await;
+    let (code, _, err) = h.cli(&["chat-new", "review"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.cli_in(Some(tester), &["chat-join", "review", "--as", "tester"]).await;
+    assert_eq!(code, 0, "{err}");
+    // A file in the directory the command is run in (the harness runs them
+    // in the temp directory; the server's own is elsewhere), named by a
+    // relative path.
+    let rel = format!("chat-file-e2e-{}.md", std::process::id());
+    let body = "# notes\n\nwith a second line\n";
+    let source = std::env::temp_dir().join(&rel);
+    std::fs::write(&source, body).unwrap();
+    let (code, out, err) = h.cli(&["chat-say", "review", "--file", &rel, "@tester have a look"]).await;
+    let _ = std::fs::remove_file(&source);
+    assert!(code == 0 && out.starts_with("#review #"), "{out}{err}");
+    let name = std::path::Path::new(&rel).file_name().unwrap().to_string_lossy().into_owned();
+    let dir = h.cli(&["chat-dir", "review"]).await.1.trim().to_string();
+    assert!(!dir.is_empty(), "chat-dir gives the folder");
+    // The member named is told the text and where the copy is.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let inbox = h.cli(&["list-messages", "-t", &format!("%{tester}")]).await.1;
+        if inbox.contains("have a look") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "told: {inbox}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let told = h.cli_in(Some(tester), &["read-message"]).await.1;
+    assert!(told.contains(&format!("📎 {name}")), "{told}");
+    // A read: the line by name and size, the copy's place under it.
+    let (_, read, _) = h.cli_in(Some(tester), &["chat-read", "review", "--all"]).await;
+    assert!(read.contains(&format!("have a look 📎 {name} ({}B)", body.len())), "{read}");
+    let copy = read
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with(&dir) && l.ends_with(&name))
+        .unwrap_or_else(|| panic!("where the copy is: {read}"))
+        .to_string();
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), body, "the same bytes");
+    assert!(told.contains(&copy), "the one told is told the same place: {told}");
+    // JSON: the line's file under the channel's dir.
+    let json: serde_json::Value =
+        serde_json::from_str(&h.cli(&["chat-read", "review", "--all", "-J"]).await.1).unwrap();
+    let file = json["lines"].as_array().unwrap().iter().rev().find_map(|l| l["files"][0]["file"].as_str()).unwrap();
+    assert_eq!(std::path::Path::new(json["channel"]["dir"].as_str().unwrap()).join(file), std::path::Path::new(&copy));
+    // Not a file there: nothing said.
+    let (code, _, err) = h.cli(&["chat-say", "review", "--file", "target/no-such-file.md", "x"]).await;
+    assert!(code != 0 && err.contains("no-such-file.md"), "{err}");
+    // A channel of another machine: not yet.
+    let (code, _, err) = h.cli(&["chat-say", "elsewhere/#review", "--file", "Cargo.toml"]).await;
+    assert!(code != 0 && err.contains("this machine's channels only"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+    h.cli(&["kill-server"]).await;
 }

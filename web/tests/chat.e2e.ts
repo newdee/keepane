@@ -4,12 +4,15 @@
 // a `@` listing the members to name. Expected values come from the server
 // (`chat` commands), never from the page.
 import { execFileSync } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { expect } from "e2e";
 import { afterEach, beforeEach } from "@e2e-dev/web";
 import { test } from "../e2e/fixtures.ts";
-import { EXE, SOCKET, kp, page, paneNumber, portOf, token } from "../e2e/keepane.ts";
+import { EXE, SOCKET, keyOn, kp, page, paneNumber, portOf, token } from "../e2e/keepane.ts";
 
-type Line = { kind: string; text: string; from?: { handle: string } };
+type Line = { kind: string; text: string; from?: { handle: string }; files?: { name: string; size: number; file: string }[] };
 type Channel = { name: string; unread: number };
 
 let tok = "";
@@ -100,4 +103,54 @@ test("the channels are listed by their last line and one opened says what was sa
   // Back to the panes: the page as the other tests expect it.
   await screen.getByRole("button", "回到 pane 列表").first().click();
   await expect(screen.getByRole("button", "群聊")).toBeVisible();
+});
+
+test("a file sent in a channel shows by name and size and saves as it was sent", async ({ app, screen, browser }) => {
+  // Sent by the bot, from a file of known bytes; what the line says of it
+  // is the server's.
+  const source = path.join(os.tmpdir(), `report-${tok}.txt`);
+  const body = `report ${tok}\nsecond line, ünïcode\n`;
+  writeFileSync(source, body);
+  try {
+    asPane(paneNumber(`work:${window}`), "chat-say", older, "--file", source, "the report");
+  } finally {
+    rmSync(source, { force: true });
+  }
+  const sent = lines(older).at(-1)!.files![0];
+  expect(sent.name).toBe(`report-${tok}.txt`);
+  expect(sent.size).toBe(Buffer.byteLength(body));
+
+  await app.open(page(portOf(app.baseUrl)));
+  await screen.getByRole("button", "群聊").click();
+  await screen.getByRole("complementary", "频道").getByRole("button", `#${older}`).click();
+  const talk = screen.getByRole("region", `#${older}`);
+  await expect(talk.getByText("the report")).toBeVisible();
+  const save = talk.getByRole("button", `保存 ${sent.name}`);
+  await expect(save).toBeVisible();
+  await expect(save).toContainText(`${sent.size} B`);
+
+  // Saved: what the page hands the browser is the file's name and bytes.
+  await browser.evaluate(() => {
+    const w = window as unknown as { saved?: { name: string; text: string } };
+    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+      const name = this.download;
+      void fetch(this.href).then((r) => r.text()).then((text) => (w.saved = { name, text }));
+    };
+    return null;
+  });
+  await save.click();
+  await expect
+    .poll(() => browser.evaluate(() => (window as unknown as { saved?: { name: string; text: string } }).saved ?? null), {
+      message: "the page saved it",
+    })
+    .toEqual({ name: sent.name, text: body });
+
+  // Asked for outside the channel's folder: refused, by the server.
+  const base = app.baseUrl!.replace(/\/$/, "");
+  const key = keyOn(portOf(app.baseUrl));
+  const id = (JSON.parse(kp("chat-list", "-J")) as { name: string; id: string }[]).find((c) => c.name === older)!.id;
+  const ask = (f: string) => fetch(`${base}/api/chat/file?c=${id}&f=${encodeURIComponent(f)}`, { headers: { "X-Keepane-Key": key } });
+  expect((await ask(sent.file)).status).toBe(200);
+  expect((await ask("../../channels.json")).status).toBe(400);
+  expect((await ask(sent.file.replace(sent.name, "..\\..\\x"))).status).toBe(400);
 });

@@ -201,10 +201,13 @@ pub enum ChatCmd {
         channel: String,
         handle: Option<String>,
     },
-    /// `chat-say CHAN TEXT`: said in it; `@handle` tells that member.
+    /// `chat-say CHAN [--file PATH]... TEXT`: said in it; `@handle` tells
+    /// that member; each file copied into the channel with the line (the
+    /// text may then be empty).
     Say {
         channel: String,
         text: String,
+        files: Vec<String>,
     },
     /// `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J] [--cached]`:
     /// what came since the caller last read (`--all`: the last N of it);
@@ -240,6 +243,10 @@ pub enum ChatCmd {
     },
     /// Its files moved to `deleted`; from outside every pane only.
     Delete {
+        channel: String,
+    },
+    /// `chat-dir CHAN`: the folder the files sent in it are copied to.
+    Dir {
         channel: String,
     },
 }
@@ -2031,9 +2038,16 @@ impl fmt::Display for Cmd {
                         }
                         Ok(())
                     }
-                    ChatCmd::Say { channel, text } => {
-                        let dash = if text.starts_with('-') { "-- " } else { "" };
-                        write!(f, "chat-say {} {dash}{}", q(channel), q(text))
+                    ChatCmd::Say { channel, text, files } => {
+                        write!(f, "chat-say {}", q(channel))?;
+                        for p in files {
+                            write!(f, " --file {}", q(p))?;
+                        }
+                        if !text.is_empty() {
+                            let dash = if text.starts_with('-') { "-- " } else { "" };
+                            write!(f, " {dash}{}", q(text))?;
+                        }
+                        Ok(())
                     }
                     ChatCmd::Read { channel, n, all, peek, wait, json, cached } => {
                         write!(f, "chat-read {}", q(channel))?;
@@ -2082,6 +2096,7 @@ impl fmt::Display for Cmd {
                     }
                     ChatCmd::Rename { channel, name } => write!(f, "chat-rename {} {}", q(channel), q(name)),
                     ChatCmd::Delete { channel } => write!(f, "chat-delete {}", q(channel)),
+                    ChatCmd::Dir { channel } => write!(f, "chat-dir {}", q(channel)),
                 }
             }
             Cmd::Share(ShareWhat::Add { path, for_secs, once }) => {
@@ -2705,18 +2720,32 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
             a.none_left(n)?;
             ChatCmd::Delete { channel }
         }
+        "chat-dir" => {
+            let channel = channel(a)?;
+            a.none_left(n)?;
+            ChatCmd::Dir { channel }
+        }
         "chat-say" | "chat-topic" => {
             let channel = channel(a)?;
+            // `--file PATH`, as many as sent, before the text.
+            let mut files = Vec::new();
+            while n == "chat-say" && a.peek() == Some("--file") {
+                a.next();
+                match a.next() {
+                    Some(p) if !p.is_empty() => files.push(p.to_string()),
+                    _ => return Err(format!("{n}: --file takes a path")),
+                }
+            }
             // `--` lets a text start with a dash.
             if a.peek() == Some("--") {
                 a.next();
             }
             let text = rest(a);
             if n == "chat-say" {
-                if text.trim().is_empty() {
-                    return Err(format!("{n}: what to say"));
+                if text.trim().is_empty() && files.is_empty() {
+                    return Err(format!("{n}: what to say (or --file PATH)"));
                 }
-                ChatCmd::Say { channel, text }
+                ChatCmd::Say { channel, text, files }
             } else {
                 ChatCmd::Topic { channel, topic: text }
             }
@@ -3063,6 +3092,7 @@ pub const COMMANDS: &[&str] = &[
     "chat-tag",
     "chat-rename",
     "chat-delete",
+    "chat-dir",
     "web-share-open",
     "web-share-sent",
     "web-uploaded",
@@ -3218,13 +3248,14 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("chat-list", &["--tag", "-J", "--cached", "--machines"]),
     ("chat-join", &["--as", "--role", "--hear"]),
     ("chat-leave", &[]),
-    ("chat-say", &[]),
+    ("chat-say", &["--file"]),
     ("chat-read", &["-n", "--all", "--peek", "--wait", "-J", "--cached"]),
     ("chat-who", &["-J", "--cached"]),
     ("chat-topic", &[]),
     ("chat-tag", &[]),
     ("chat-rename", &[]),
     ("chat-delete", &[]),
+    ("chat-dir", &[]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
     ("web-uploaded", &[]),
@@ -6215,11 +6246,32 @@ mod tests {
             "display-menu -T pane Split h \"split-window -h\" \"\" Kill x kill-pane",
             "next-window -a",
             "previous-window -a",
+            "chat-say review --file a.png --file \"C:\\my notes\\b c.md\" look at these",
+            "chat-say review --file only.pdf",
+            "chat-say review -- --flag-like text",
+            "chat-dir review",
         ];
         for c in cmds {
             let parsed = p(c);
             let shown = parsed.to_string();
             assert_eq!(p(&shown), parsed, "roundtrip of {c:?} via {shown:?}");
+        }
+    }
+
+    /// `chat-say --file`: as many as sent, before the text, which may then
+    /// be empty; one with no path, or nothing at all to say, refused.
+    #[test]
+    fn chat_say_takes_files() {
+        let Cmd::Chat(ChatCmd::Say { channel, text, files }) = p("chat-say review --file a.png --file b.md hi there")
+        else {
+            panic!("a chat-say");
+        };
+        assert_eq!((channel.as_str(), text.as_str()), ("review", "hi there"));
+        assert_eq!(files, ["a.png", "b.md"]);
+        let Cmd::Chat(ChatCmd::Say { text, files, .. }) = p("chat-say review --file a.png") else { panic!() };
+        assert!(text.is_empty() && files == ["a.png"], "a file alone");
+        for bad in ["chat-say review", "chat-say review --file", "chat-say review --file \"\" hi"] {
+            assert!(parse_line(bad).is_err(), "{bad}");
         }
     }
 

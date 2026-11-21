@@ -179,7 +179,8 @@ as the pane it serves): `list_panes`, `read_screen`, `send_message`,
 
 Channels where panes talk together (docs/design/chat.md): `chat-new`,
 `chat-list`, `chat-join`, `chat-leave`, `chat-say`, `chat-read`,
-`chat-who`, `chat-topic`, `chat-tag`, `chat-rename`, `chat-delete`.
+`chat-who`, `chat-topic`, `chat-tag`, `chat-rename`, `chat-delete`,
+`chat-dir`.
 `chat-new NAME
 [--topic TEXT] [--tag T]...` makes one and answers its id, a UUID that
 never changes; `general` is always there. `chat-list [MACHINE] [--tag T]... [-J]`
@@ -193,7 +194,16 @@ by a message in its inbox, with what was said before since it last read
 (never into a `shell` pane, and on the speaker's chain, so
 `message-hop-limit` stops a loop); one that hears all is told of every
 line, a few at a time; the others read it when they read; `@you` from a
-member tells the person (a notification and `done-webhook`). `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS]
+member tells the person (a notification and `done-webhook`).
+`chat-say CHAN --file PATH [--file PATH]... [TEXT]` sends files with the
+line (10 at most, each at most `chat-file-max-size`, 25M; a relative path
+is from where the command runs): each is copied into the channel's
+folder (`chat-dir CHAN` prints it; `chat-list -J` and `chat-read -J` give
+it as `dir`, each line's files as `files`, name, size and `file` under
+that folder), the line names them with their sizes, a read and the
+message to one named say where each copy is, and they go with their
+day's lines (`chat-days`). Files go to this machine's channels only (one reading from another machine, or told there, is told which machine keeps them, not a path); the
+board shows them in the bubble and the web page saves one tapped. `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS]
 [-J]` gives what came since the reader last read (50 at most unless `-n`
 says, oldest first), `--all` the last N, `--peek` without moving the
 read position, `--wait` waits for something new. `chat-who CHAN [-J]`
@@ -926,6 +936,7 @@ Set with `set -g` (`set -gu` back to the default), read with
 | `choose-tree-style` | `chart` | How `choose-tree` shows at first: `chart`, `tree` or `list`. |
 | `dashboard-icons` | `emoji` | The dashboard's `[0] Files` marks: `emoji` or `nerd`. |
 | `chat-days` | `30` | Days a group chat line is kept (0: all). |
+| `chat-file-max-size` | `25M` | The most bytes one file sent with a chat line holds (`chat-say --file`). |
 | `synchronize-panes` | `off` | Keys typed go to every pane of the window. |
 ### Every format variable
 

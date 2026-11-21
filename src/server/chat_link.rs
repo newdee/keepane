@@ -186,7 +186,20 @@ impl Server {
             ChatCmd::List { machine: Some(m), cached, .. } => ("list", m.clone(), *cached),
             ChatCmd::Join { channel, .. } => ("join", channel.clone(), false),
             ChatCmd::Leave { channel, .. } => ("leave", channel.clone(), false),
-            ChatCmd::Say { channel, .. } => ("say", channel.clone(), false),
+            ChatCmd::Say { channel, files, .. } => {
+                // Files go to this machine's channels only, for now.
+                if !files.is_empty() {
+                    let (machine, _) = split_machine(channel)?;
+                    return Some(Outcome::Error(format!(
+                        "chat-say: files are sent to this machine's channels only, not yet to {machine}'s"
+                    )));
+                }
+                ("say", channel.clone(), false)
+            }
+            ChatCmd::Dir { channel } => {
+                let (machine, _) = split_machine(channel)?;
+                return Some(Outcome::Error(format!("chat-dir: the files of a channel of {machine} are at {machine}")));
+            }
             ChatCmd::Read { channel, cached, .. } => ("read", channel.clone(), *cached),
             ChatCmd::Who { channel, cached, .. } => ("who", channel.clone(), *cached),
             ChatCmd::Topic { channel, .. }
@@ -443,7 +456,7 @@ impl Server {
                 Outcome::Ok => Outcome::Text(id.clone()),
                 other => other,
             },
-            "say" => self.chat_say(None, &me, &id, b.text),
+            "say" => self.chat_say(None, &me, &id, b.text, Vec::new()),
             "read" => {
                 let out = self.chat_read(cid, &me, &id, b.n, b.all, b.peek, b.wait, b.json);
                 // Waiting: answered when something comes, or the wait runs

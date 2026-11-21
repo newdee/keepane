@@ -273,9 +273,15 @@ fn tools() -> Vec<Value> {
         tool(
             "chat_say",
             "Say something in a channel you joined. Each member you name with @handle is told at once in their inbox; \
-             the others read it when they read the channel.",
-            json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's"), "text": s("What to say") }),
-            &["channel", "text"],
+             the others read it when they read the channel. files: paths of files to send with it (relative ones from \
+             your directory); each is copied into the channel, and those told and chat_read say where the copy is. \
+             Files go to this machine's channels only.",
+            json!({
+                "channel": s("Its name or id; MACHINE/#name for a paired machine's"),
+                "text": s("What to say (may be empty when files are sent)"),
+                "files": { "type": "array", "items": { "type": "string" }, "description": "Files to send with it" },
+            }),
+            &["channel"],
         ),
         tool(
             "chat_read",
@@ -516,7 +522,20 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             }
             c
         }
-        "chat_say" => vec!["chat-say".into(), need("channel")?, "--".into(), need("text")?],
+        "chat_say" => {
+            let mut c = vec!["chat-say".into(), need("channel")?];
+            for f in a["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()) {
+                c.extend(["--file".into(), f.to_string()]);
+            }
+            let text = str_of("text").unwrap_or_default();
+            if text.trim().is_empty() && c.len() == 2 {
+                return Err("chat_say: 'text' or 'files' is needed".into());
+            }
+            if !text.is_empty() {
+                c.extend(["--".into(), text]);
+            }
+            c
+        }
         "chat_read" => {
             let mut c = vec!["chat-read".into(), need("channel")?];
             if let Some(n) = num("count") {
@@ -656,6 +675,15 @@ mod tests {
             ["send-message", "--to", "%b", "--", "-not a flag"]
         );
         assert!(command("send_message", &json!({"to": "%b"})).is_err());
+        // A chat line: its files before the text, each a --file; files alone
+        // with no text; neither, refused. Each reads as a chat-say.
+        let say = command("chat_say", &json!({"channel": "review", "text": "-see", "files": ["a.png", "b c.md"]}));
+        assert_eq!(say.unwrap(), ["chat-say", "review", "--file", "a.png", "--file", "b c.md", "--", "-see"]);
+        let alone = command("chat_say", &json!({"channel": "review", "files": ["a.png"]})).unwrap();
+        assert_eq!(alone, ["chat-say", "review", "--file", "a.png"]);
+        assert!(crate::command::parse(&alone).is_ok(), "{alone:?}");
+        assert!(command("chat_say", &json!({"channel": "review"})).is_err());
+        assert!(command("chat_say", &json!({"channel": "review", "text": " ", "files": []})).is_err());
         // A pane's output: 120 seconds unless said; a text like a flag stays a text.
         assert_eq!(
             command("wait_output", &json!({"pane": "%dev", "texts": ["Listening", "-x"], "ignore_case": true}))

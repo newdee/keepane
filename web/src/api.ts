@@ -149,5 +149,20 @@ export async function api(path: string, opts: RequestInit = {}): Promise<Respons
 }
 
 export const getJson = async <T,>(path: string): Promise<T> => (await api(path)).json() as Promise<T>;
+
+/** A file at `path` saved as `name`: fetched with the key (a plain link
+ *  cannot carry it), then handed to the browser as a download. */
+export async function saveFile(path: string, name: string): Promise<void> {
+  const blob = await (await api(path)).blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // After the browser took it.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 export const post = (path: string, body?: string) => api(path, { method: "POST", body: body ?? "" });
 export const q = (s: string) => encodeURIComponent(s);

@@ -1,7 +1,7 @@
 import { Button } from "@heroui/react";
-import { ArrowLeft, AtSign, Hash, MessagesSquare, SendHorizontal, Users, X } from "lucide-react";
+import { ArrowLeft, AtSign, Hash, MessagesSquare, Paperclip, SendHorizontal, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { getJson, post, q } from "../api";
+import { getJson, post, q, saveFile } from "../api";
 import { useVisible } from "../hooks";
 import { t } from "../i18n";
 
@@ -42,6 +42,8 @@ type Line = {
   kind: string;
   from?: { handle: string; role?: string; ident?: Ident } | null;
   text: string;
+  /** Files sent with it: `file` is under the channel's folder of files. */
+  files?: { name: string; size: number; file: string }[];
 };
 
 /** The members' colours, by the order they joined (as the board's): six
@@ -458,7 +460,7 @@ function Conversation({
                     {it.line.text}
                   </p>
                 ) : (
-                  <Bubbles group={it.group} members={members} />
+                  <Bubbles group={it.group} members={members} channel={channel.id} />
                 )}
               </li>
             ))}
@@ -503,7 +505,38 @@ function Said({ text, members }: { text: string; members: Member[] }) {
   );
 }
 
-function Bubbles({ group, members }: { group: Group; members: Member[] }) {
+/** A size as people read it: `512 B`, `1.5 KB`, `3.2 MB`. */
+const sizeText = (b: number) =>
+  b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : b >= 1 << 20 ? `${(b / (1 << 20)).toFixed(1)} MB` : b >= 1024 ? `${(b / 1024).toFixed(1)} KB` : `${b} B`;
+
+/** The files sent with a line, each a button that saves it. */
+function Files({ line, channel }: { line: Line; channel: string }) {
+  const [failed, setFailed] = useState("");
+  if (!line.files?.length) return null;
+  return (
+    <span className={"flex flex-col gap-1 " + (line.text ? "mt-1.5" : "")}>
+      {line.files.map((f) => (
+        <button
+          key={f.file}
+          type="button"
+          className="flex items-center gap-2 rounded-xl border border-separator bg-background/60 px-2.5 py-1.5 text-left text-[13px] text-foreground hover:bg-background pointer-coarse:min-h-11"
+          aria-label={t(`Save ${f.name}`, `保存 ${f.name}`)}
+          onClick={() => {
+            setFailed("");
+            saveFile(`/api/chat/file?c=${q(channel)}&f=${q(f.file)}`, f.name).catch((e: Error) => setFailed(e.message));
+          }}
+        >
+          <Paperclip className="size-4 shrink-0 text-muted" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{f.name}</span>
+          <span className="shrink-0 text-xs text-muted">{sizeText(f.size)}</span>
+        </button>
+      ))}
+      {failed ? <span className="text-xs text-danger">{failed}</span> : null}
+    </span>
+  );
+}
+
+function Bubbles({ group, members, channel }: { group: Group; members: Member[]; channel: string }) {
   const colour = colourOf(group.handle, members);
   // A line that names the person: ringed in the accent, that line only.
   const calls = (l: Line) => !group.person && /(^|\s)@you\b/.test(l.text);
@@ -517,6 +550,7 @@ function Bubbles({ group, members }: { group: Group; members: Member[] }) {
             className="max-w-[85%] rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-[14px] leading-relaxed whitespace-pre-wrap break-words text-accent-foreground shadow-sm sm:max-w-[70%]"
           >
             {l.text}
+            <Files line={l} channel={channel} />
           </div>
         ))}
       </div>
@@ -542,6 +576,7 @@ function Bubbles({ group, members }: { group: Group; members: Member[] }) {
             }
           >
             <Said text={l.text} members={members} />
+            <Files line={l} channel={channel} />
           </div>
         ))}
       </div>
