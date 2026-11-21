@@ -257,11 +257,14 @@ pub fn run(path: &str, line: Option<usize>, search: Option<&str>) -> anyhow::Res
         loop {
             for ev in c.read_events()? {
                 match ev {
+                    // A record of a held key the console merged is that many presses.
                     InputEvent::Key(k) => {
-                        if let Some(key) = crate::keys::key_from_record(&k)
-                            && view.key(key) == Action::Quit
-                        {
-                            return Ok(());
+                        for k in crate::keys::each_press(k) {
+                            if let Some(key) = crate::keys::key_from_record(&k)
+                                && view.key(key) == Action::Quit
+                            {
+                                return Ok(());
+                            }
                         }
                     }
                     InputEvent::Resize => {

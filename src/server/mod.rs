@@ -7344,6 +7344,15 @@ impl Server {
     }
 
     fn handle_key(&mut self, cid: ClientId, rec: KeyRecord) {
+        // A held key the client's console merged into one record is that
+        // many presses: a binding, a menu, copy mode each take them all, and
+        // a pane is typed into as many times.
+        if rec.down && rec.repeat > 1 {
+            for one in crate::keys::each_press(rec) {
+                self.handle_key(cid, one);
+            }
+            return;
+        }
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(sid) = c.session else { return };
         // `window-size latest`: the client typing is the one used last, so

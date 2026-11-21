@@ -322,6 +322,20 @@ pub fn ascii_form(k: Key) -> Key {
     Key { code: KeyCode::Char(ascii), ..k }
 }
 
+/// The most presses one record stands for: a console that merged a held key
+/// counts it in the record; past this the count is taken as noise.
+pub const PRESSES_MOST: u16 = 64;
+
+/// A record as the presses it stands for, each a record of one. A console
+/// merges the repeats of a held key that arrive before they are read into
+/// one record (`wRepeatCount`), so a record is not one press: a list moved
+/// once per record moves a step where the key was held for twenty. A key-up,
+/// or a record of 0 or 1, is itself.
+pub fn each_press(r: KeyRecord) -> impl Iterator<Item = KeyRecord> {
+    let n = if r.down { r.repeat.clamp(1, PRESSES_MOST) } else { 1 };
+    std::iter::repeat_n(KeyRecord { repeat: 1, ..r }, usize::from(n))
+}
+
 /// Convert a raw key-down record into a logical key, if it represents one.
 /// Modifier-only presses, key-ups and lone surrogate halves yield `None`.
 pub fn key_from_record(r: &KeyRecord) -> Option<Key> {
@@ -470,6 +484,19 @@ mod tests {
 
     fn rec(vk: u16, ch: u16, ctrl: u32) -> KeyRecord {
         KeyRecord { down: true, repeat: 1, vk, sc: 0, ch, ctrl }
+    }
+
+    /// A record of a held key the console merged stands for that many
+    /// presses, each a record of one; a key-up and a record of 0 or 1 are one.
+    #[test]
+    fn a_merged_record_is_as_many_presses() {
+        let j = KeyRecord { repeat: 5, ..rec(0x4A, u16::from(b'j'), 0) };
+        let presses: Vec<KeyRecord> = each_press(j).collect();
+        assert_eq!(presses, vec![KeyRecord { repeat: 1, ..j }; 5]);
+        assert_eq!(each_press(KeyRecord { repeat: 1, ..j }).count(), 1, "one as it is");
+        assert_eq!(each_press(KeyRecord { repeat: 0, ..j }).count(), 1, "0 is still a press");
+        assert_eq!(each_press(KeyRecord { down: false, ..j }).count(), 1, "a key-up is one, whatever it says");
+        assert_eq!(each_press(KeyRecord { repeat: 5000, ..j }).count(), usize::from(PRESSES_MOST), "capped");
     }
 
     /// Input handed over as bytes (no Ctrl flag, no key code) still reads

@@ -15178,3 +15178,79 @@ async fn files_sent_from_the_page_go_under_the_panes_folder() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&elsewhere);
 }
+
+/// A held key the console merged into one record (`wRepeatCount`) moves the
+/// board's pick as many rows as it stands for. The board runs in a pane; j is
+/// written to it as the server writes a client's key, a win32-input-mode
+/// record: one record of 5, then 6 records in one write (which the pane's
+/// console merges as a held key's are). The pick was moved a row a record.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_key_merged_by_the_console_moves_the_board_that_many_rows() {
+    let h = Harness::start("holdj").await;
+    h.cli(&["new", "-d", "-s", "work"]).await;
+    for _ in 0..19 {
+        h.cli(&["new-window", "-d", "-t", "work"]).await;
+    }
+    let exe = env!("CARGO_BIN_EXE_keepane");
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "board", "-x", "160", "-y", "50", exe, "dashboard"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("board:0", "the board", |t| t.contains("[1] Panes")).await;
+    // The row picked: where the pane [4] shows stands in [1]'s list.
+    let row = |t: &str| -> Option<usize> {
+        let picked = t.split("[4] %").nth(1)?.split(|c: char| !c.is_ascii_digit()).next()?.to_string();
+        let ids: Vec<String> = t
+            .lines()
+            .filter_map(|l| {
+                let at = l.find(" %")?;
+                let before = l[..at].trim_end();
+                before
+                    .rsplit(' ')
+                    .next()
+                    .filter(|p| p.contains('.') && p.chars().all(|c| c.is_ascii_digit() || c == '.'))?;
+                Some(l[at + 2..].split(|c: char| !c.is_ascii_digit()).next()?.to_string())
+            })
+            .collect();
+        ids.iter().position(|id| *id == picked)
+    };
+    let down = |n: u16| format!("\x1b[74;36;106;1;0;{n}_");
+    let up = "\x1b[74;36;106;0;0;1_";
+    h.cli(&["send-keys", "-t", "board:0", "g"]).await;
+    let top = h.wait_capture("board:0", "the first row picked", |t| row(t) == Some(0)).await;
+    assert_eq!(row(&top), Some(0));
+    h.cli(&["send-keys", "-t", "board:0", "-l", &format!("{}{up}", down(5))]).await;
+    h.wait_capture("board:0", "five rows down for a record of five", |t| row(t) == Some(5)).await;
+    h.cli(&["send-keys", "-t", "board:0", "-l", &format!("{}{up}", down(1).repeat(6))]).await;
+    h.wait_capture("board:0", "six more for six records in one write", |t| row(t) == Some(11)).await;
+    // And no more than that: it stays.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (_, t, _) = h.cli(&["capture-pane", "-p", "-t", "board:0"]).await;
+    assert_eq!(row(&t), Some(11), "{t}");
+    h.cli(&["kill-server"]).await;
+}
+/// A held key the client's console merged into one record is as many presses
+/// for what keepane does with keys itself, not one: the key list (prefix ?)
+/// scrolled by j, five rows for a record of five.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merged_record_is_as_many_presses_for_keepanes_own_keys() {
+    let h = Harness::start("mergedkeys").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "mk"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let bare = |ch: u16| KeyRecord { down: true, repeat: 1, vk: 0, sc: 0, ch, ctrl: 0 };
+    for ch in [0x02, u16::from(b'?')] {
+        c.send(ClientMsg::Key(bare(ch))).await;
+        c.send(ClientMsg::Key(KeyRecord { down: false, ..bare(ch) })).await;
+    }
+    c.wait_for("the key list", |s| s.contents().contains("bind-key")).await;
+    // From the top (it opens at the end): "[1-…", then a record of five j.
+    let at = |s: &vt100::Screen, from: &str| s.contents().contains(&format!("[{from}-"));
+    c.send(ClientMsg::Key(bare(u16::from(b'g')))).await;
+    c.send(ClientMsg::Key(KeyRecord { down: false, ..bare(u16::from(b'g')) })).await;
+    c.wait_for("the top", |s| at(s, "1")).await;
+    let j = KeyRecord { down: true, repeat: 5, vk: 0x4A, sc: 0x24, ch: u16::from(b'j'), ctrl: 0 };
+    c.send(ClientMsg::Key(j)).await;
+    c.send(ClientMsg::Key(KeyRecord { down: false, repeat: 1, ..j })).await;
+    c.wait_for("five rows on", |s| at(s, "6")).await;
+    h.cli(&["kill-server"]).await;
+}

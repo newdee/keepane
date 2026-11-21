@@ -3528,7 +3528,12 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
                 Err(_) => return Ok(()),
             };
-            for ev in first.into_iter().chain(rx.try_iter()) {
+            // A record of a held key the console merged is that many presses.
+            let events = first.into_iter().chain(rx.try_iter()).flat_map(|ev| match ev {
+                InputEvent::Key(k) => crate::keys::each_press(k).map(InputEvent::Key).collect::<Vec<_>>(),
+                other => vec![other],
+            });
+            for ev in events {
                 let action = match ev {
                     InputEvent::Key(k) => match crate::keys::key_from_record(&k) {
                         Some(key) => board.key(key),

@@ -476,11 +476,9 @@ impl Server {
         let Some(p) = self.find_pane_mut(pid) else {
             return self.link_answer(nonce, 404, format!("{to}: no such pane"));
         };
-        for k in keys.iter().filter(|k| k.down) {
-            let bytes = p.key_bytes(k);
-            for _ in 0..k.repeat.clamp(1, 64) {
-                p.write_input(&bytes);
-            }
+        for k in keys.iter().filter(|k| k.down).flat_map(|k| crate::keys::each_press(*k)) {
+            let bytes = p.key_bytes(&k);
+            p.write_input(&bytes);
         }
         self.link_answer(nonce, 200, String::new())
     }

@@ -6545,3 +6545,20 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 4 | 代码正确性（错误路径、资源）+ 全量 + web e2e（依次跑） | 读代码：`phone-shot.mjs` 群聊分支在 try 里，失败时 finally 关浏览器；`make-phone-shots.ps1` 的群聊 session 在 finally 的 kill-server 里收掉；`load_channel` 缺文件时 panic 并写明是哪个文件；录制的临时目录连同拷进去的频道在 finish 里删掉。实跑错误路径：`phone-shot.mjs chat` 打开连不上的地址，退出码 1，没写出 PNG，前后无头 Edge 进程 0 → 0。fmt、clippy 干净；Windows 707 / 11 / 173，Linux 691 / 171，web e2e 42/42。 | 干净（3/3），验收通过 |
 
 第 216 条只改网站、README、图片和录制工具，程序没变，不发版本；推到 master 后 Pages 更新网站。遗留：第 1 轮 `enter.e2e.ts` 失败一次，原因未明；chat-days 删掉天文件后内存里的行到重启前仍能读到（旧行为）。
+
+## 217. 长按 j/k 在列表里只走一两步
+
+来源：用户 2026-11-21："keepane 里预览文件列表，或者 pane 列表这些，长按 jk 无法连续跳转"。
+
+- 查明：看板在 pane 里读按键（ReadConsoleInput）。几个按键一起到达时，控制台把同一个键的连续按下合并成一条记录，次数放在 `wRepeatCount`；长按就是这样（按键重复得比看板读得快）。看板一条记录只当按一次。实测（临时 server，40 个 pane，win32-input-mode 记录用 `send-keys -l` 写进看板的 pane）：20 次按下一次写入只走 2 行，20 次分 20 次写入走 20 行，一条重复 20 的记录走 1 行。另外量到看板每按一次键刷新约 165 ms（152–178，8 次）。
+- 定性：共性。按键记录带着次数，但 `key_from_record` 只给一个键：看板、pager、server 自己处理的按键（按键列表、复制模式、菜单、提示行、选择器）都没看次数；只有 link 收按键的地方看了，而且它先按原记录编码（Windows 上编码里带着次数 N）再写 N 遍，远程按键按 N 次就成了 N×N 次。结构缺陷："一条记录 = 一次按键"不成立。收敛到一处：`keys::each_press` 把一条按下记录拆成 N 条次数为 1 的记录（上限 `PRESSES_MOST` = 64，同 link 原来的上限），看板、pager、server 的 `handle_key` 入口、link 收按键都用它。
+- 评估：松开的记录、次数 0 或 1 的记录不变（仍是一条）；转发给 pane 的按键由一条次数 N 变成 N 条次数 1，程序收到的按键数相同，原来忽略次数的程序不再丢键；长按前缀键算多次按前缀，同没被合并时一样。
+- 测试：单元 `a_merged_record_is_as_many_presses`（5 拆成 5 条、1 和 0 是一条、松开是一条、5000 截到 64）；e2e `a_held_key_merged_by_the_console_moves_the_board_that_many_rows`（Windows：看板在 pane 里，一条次数 5 的记录走 5 行，6 条一次写入再走 6 行，1.5 秒后仍在第 11 行）、`a_merged_record_is_as_many_presses_for_keepanes_own_keys`（按键列表里一条次数 5 的 j 滚 5 行）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路存活（变异）+ 全量 + web e2e（依次跑） | 变异 2 个：`each_press` 不看次数（一条只算一次）→ 看板 e2e 超时（等"5 行"）；去掉 `handle_key` 入口的拆分 → 按键列表 e2e 超时（等"[6-"）。两个都被抓到。fmt、clippy 干净；Windows 708 / 11 / 175，Linux 692 / 172，web e2e 42/42。 | 干净（1/3） |
+| 2 | 边界与退化输入 + 全量 + web e2e（依次跑） | 临时 server 里的看板（40 个 pane），win32 记录一次写入：j×3、k×2、j×1 混在一起净走 2 行（实测 2）；次数 0 走 1 行（实测 1）；次数 65535 截到 64，在 41 行的列表里停在最后一行（实测到最后的看板 pane）；松开记录带次数 9，不动（实测 0）。fmt、clippy 干净；Windows 708 / 11 / 175，Linux 692 / 172，web e2e 42/42。 | 干净（2/3） |
+| 3 | 静态一致性（所有入口）+ 可复现性 + 全量 + web e2e（依次跑） | 读按键记录的 18 处逐个归类：真正处理按键动作的 4 处（看板、pager、server `handle_key`、link 收按键）都经过 `each_press`；只转发的 2 处（客户端给 server、`link_watch` 给远端）落到上面改过的入口；其余是按键的来源、只显示的 show-keys、测试代码：0 处漏掉。两个新 e2e 各连跑 5 次：10/10 通过（每次 3.73–3.94 秒）。fmt、clippy 干净；Windows 708 / 11 / 175，Linux 692 / 172，web e2e 42/42；`npm run check` 通过。 | 干净（3/3），验收通过 |
+
+0.84.1（长按 j/k 在列表里连续走：控制台合并的按键记录按次数处理；远程按键不再按 N×N 算）：第 217 条。
