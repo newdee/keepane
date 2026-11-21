@@ -6668,3 +6668,7 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 2 | 静态一致性（文档对代码）+ 全量 + web e2e（依次跑） | man "of the last 1000" 对 `KEEP = 1000`；chat.md 的 `(via #45)` 对代码 `(via #{n})`；man、README en/zh、help 行都写了 `--re` 和 `--thread`；MCP 的 `reply_to`、`thread` 在说明和 argv 里各 1 处；chat.md 写"老版本忽略新字段"，查过仓库里没有 `deny_unknown_fields`。fmt、clippy 干净；Windows 725 / 11 / 180，Linux 709 / 176，web e2e 44/44。 | 干净（1/3） |
 | 3 | 机制通路存活（真看板）+ 全量 + web e2e（依次跑） | 临时 server：`chat-say review "is the release branch cut yet?"`（#2），`--re 2 "yes, cut this morning"`；看板第 2 页回复的气泡第一行 "↩ #2 you@DFINE: is the release branch cut yet?"，下一行回复正文；`chat-read --thread 2` 两行，第二行 `↩ #2 yes, cut this morning`。fmt、clippy 干净；Windows 725 / 11 / 180，Linux 709 / 176，web e2e 44/44。 | 干净（2/3） |
 | 4 | 边界与退化输入（真命令、重启）+ 全量 + web e2e（依次跑） | 临时 server：回复只有文件的一行（收下，话题里文件行带路径、再是回复）；`--re 18446744073709551615`（u64 最大）"has no line"，`…616` 解析时就拒绝；server 重启后用回复的行号读 `--thread`，第一行和回复都在（`re` 存进文件、读回来）。fmt、clippy 干净；Windows 725 / 11 / 180，Linux 709 / 176，web e2e 44/44。 | 干净（3/3），验收通过 |
+
+0.88.0（群聊回复和话题：`chat say --re`、`chat read --thread`、看板和网页引用、网页回复）：第 222 条。
+
+0.88.0 发布：CI 44921057328（d611a66）四个 job 通过（含 macOS）；tag v0.88.0；Release 44921579630 四个平台通过；manifests 6f95e7a；winget PR #485931；Homebrew formula 44922461666 通过，三个 tar.gz 的 sha256 与 release 一致。
