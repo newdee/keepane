@@ -6562,3 +6562,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 3 | 静态一致性（所有入口）+ 可复现性 + 全量 + web e2e（依次跑） | 读按键记录的 18 处逐个归类：真正处理按键动作的 4 处（看板、pager、server `handle_key`、link 收按键）都经过 `each_press`；只转发的 2 处（客户端给 server、`link_watch` 给远端）落到上面改过的入口；其余是按键的来源、只显示的 show-keys、测试代码：0 处漏掉。两个新 e2e 各连跑 5 次：10/10 通过（每次 3.73–3.94 秒）。fmt、clippy 干净；Windows 708 / 11 / 175，Linux 692 / 172，web e2e 42/42；`npm run check` 通过。 | 干净（3/3），验收通过 |
 
 0.84.1（长按 j/k 在列表里连续走：控制台合并的按键记录按次数处理；远程按键不再按 N×N 算）：第 217 条。
+
+0.84.1 发布：CI 44869959259（37b90d9）四个 job 通过；tag v0.84.1；Release 44870478092 四个平台通过；manifests 507436d；winget PR #485588；Homebrew formula 44871035147 通过，三个 tar.gz 的 sha256 与 release 一致。
