@@ -15443,3 +15443,17 @@ async fn a_channels_machine_gone_is_said_and_the_board_does_not_wait() {
     assert!(code != 0 && err.contains("no paired machine"), "{err}");
     a.cli(&["kill-server"]).await;
 }
+
+/// keepane.exe brings its own C runtime: it names neither the Visual C++
+/// runtime (VCRUNTIME140.dll, which Windows has only when something installed
+/// the redistributable) nor the Universal CRT's api-ms-win-crt-* forwarders,
+/// so it starts on a fresh Windows (`.cargo/config.toml`, `+crt-static`).
+#[cfg(windows)]
+#[test]
+fn keepane_exe_needs_no_visual_cpp_runtime() {
+    let exe = std::fs::read(env!("CARGO_BIN_EXE_keepane")).unwrap();
+    let lower: Vec<u8> = exe.iter().map(u8::to_ascii_lowercase).collect();
+    for dll in ["vcruntime140", "msvcp140", "api-ms-win-crt-"] {
+        assert!(!lower.windows(dll.len()).any(|w| w == dll.as_bytes()), "keepane.exe still names {dll}");
+    }
+}

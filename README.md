@@ -299,7 +299,10 @@ battery and processes, as far as the system says them. In `[0]`, `j`/`k`
 move, `h` goes up a directory and `l` into one, as in mini.files; what is
 under the cursor shows on the right (a directory's entries, a file's text
 with its line numbers, the first 256 KiB of it; a binary file only by its
-size), and `l` on a file scrolls it; `.` shows hidden entries and `-`
+size; where [UnifyTerm](https://github.com/newdee/unifyterm)'s `ut` is on
+this machine, a picture (PNG, JPEG, GIF, WebP, BMP) as `ut view` draws it,
+in coloured half blocks, and markdown styled as `ut md` shows it), and `l`
+on a file scrolls it; `.` shows hidden entries and `-`
 goes back to the pane's directory, which `[0]` follows when another pane
 is chosen or this one changes directory. Each entry is marked by its kind
 with an emoji: 📁 a folder (📂 the one whose entries are on the right),
@@ -530,7 +533,8 @@ keepane`, or the releases page; `keepane update` says which).
 
 ### Windows
 
-keepane needs Windows 10 1809 or newer (for ConPTY). From the
+keepane needs Windows 10 1809 or newer (for ConPTY) and nothing else: the C
+runtime is in keepane.exe, so no Visual C++ redistributable is needed. From the
 [releases page](https://github.com/newdee/keepane/releases):
 
 - `keepane-v<version>-windows-x86_64.zip` holds one folder,

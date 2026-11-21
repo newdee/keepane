@@ -6588,3 +6588,39 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 0.85.0（群聊第二期：别的机器的 pane 用 机器/频道 加入、发言、读；@ 推送进它那台机器的收件箱；chat list 机器；link share 机器 #频道；看板第 2 页列出别的机器的频道）：第 218 条。遗留：真实两台机器之间互连没在验收里做（Windows 防火墙对新路径的 exe 会弹窗），发版后用两台机器的真实 server 实测。
 
 0.85.0 发布：CI 44876865787（ac25eba）四个 job 通过（含 macOS）；tag v0.85.0；Release 44877455087 四个平台通过；manifests e6e5bde；winget PR #485649；Homebrew formula 44878031409 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 219. 文件预览用 UnifyTerm 的 ut：图片和 Markdown
+
+来源：用户 2026-11-21："检测如果 ut 就是 unifyterm 的相关命令可用，文件预览的时候，用 ut 的相关命令预览，比如 ut view 这种"；方案（终端里给出）用户在频道里答"都按推荐来"（图片和 Markdown，视频先不做）。
+
+- 做法：`src/dashboard/ut.rs`。看板启动时找一次 `ut`（PATH、`UNIFYTERM_COMMANDS`、`%LOCALAPPDATA%\unifyterm\bin`），`ut --version` 以 "ut " 开头且写着 commands 才算 UnifyTerm 的；`[0] Files` 的预览遇到图片（png jpg jpeg gif webp bmp）用 `ut view --mode half --width W`，Markdown（md markdown）用 `ut md --color=always --width W`，2 秒超时；输出只留 SGR（颜色、样式），OSC 8 链接、标题、光标移动和控制字符去掉；按（路径、修改时间、大小、宽度）缓存，预览每次刷新都画也不重跑；ut 出错时退回原来的预览，上面一行写原因。没有 ut 时一切照旧。单元测试里的看板不找 ut（`Files::default()` 的 ut 是 None），只有用 `Ut::new` 给了替身的测试才有；e2e 里的真看板启动时会找 ut（这台机器上找得到），但没有哪个 e2e 测试或演示录制预览 md 或图片，结果不随机器变。
+- 定性：新功能；评估：`files::preview` 多一个 `Option<&Ut>`，原有 7 处调用传 `None`，行为不变。
+- 测试：单元 `only_colours_and_styles_are_kept_of_what_ut_prints`、`pictures_and_markdown_are_what_ut_shows`、`what_ut_prints_is_shown_kept_and_a_failure_said`（替身 ut：输出、缓存只问一次、换宽度再问、失败说原因）、`only_unifyterms_ut_is_taken`（同名的别的程序不认）、`the_preview_shows_what_ut_gives_or_says_why_not`；`the_real_ut_shows_a_picture_and_markdown`（`--ignored`，本机真 ut：PNG 22 行 31 ms，README.md 2836 行 36 ms）。真看板：临时 server 的 pane 里跑看板，起在 docs/img，`[0]` 的预览 2520 个半格块、921 处  24 位色，标题 as ut view shows it。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路存活（变异）+ 全量 + web e2e（依次跑） | 变异 4 个（写入后读回确认）：保留所有转义、缓存不起作用、任何叫 ut 的程序都认、失败不说原因：各被对应的测试抓到（4/4），都已复原。fmt、clippy 干净；Windows 719 / 11 / 177，Linux 703 / 174（含用 sh 替身 ut 的测试），web e2e 42/42。 | 干净（1/3） |
+| 2 | 静态一致性（文档对代码）+ 全量 + web e2e（依次跑） | README en/zh、man 对 `ut.rs`：6 种图片扩展名、Markdown 两种、`--mode half`、`--color=always`、三个查找位置（PATH、`UNIFYTERM_COMMANDS`、`%LOCALAPPDATA%\unifyterm\bin`）各对得上（代码 8 处、README en 1、zh 1、man 1）；常量 `TIMEOUT`、`PICTURE_MOST` 都有人用。想去那台 Mac 看 UnifyTerm 把 ut 装在哪，Mac 连不上（3 秒无回答），不反复重试：Mac 上靠 PATH 和 `UNIFYTERM_COMMANDS`（UnifyTerm 的标签页、或 `ut shell enable` 之后），记为遗留。fmt、clippy 干净；Windows 719 / 11 / 177，Linux 703 / 174，web e2e 42/42。 | 干净（2/3） |
+| 3 | 边界与退化输入 + 全量 + web e2e（依次跑） | 新加 `a_ut_that_hangs_is_stopped`（替身 ut 睡 5 秒：2.0 秒被停，报 "more than 2s"），真 ut 过一个带空格和中文的路径（`keepane-ut-中 文-…/说明 文件.md`，标题照出）。全量：Windows 720 / 11 / 177，web e2e 42/42；**Linux 703 过 1 败**：`what_ut_prints_is_shown_kept_and_a_failure_said` 报 `ut: Text file busy (os error 26)`。定性：边界遗漏，只在我新写的两个测试里（写完替身脚本马上执行，别的测试线程 fork 的子进程 exec 前还拿着写句柄，Linux 拒绝执行）；仓库已有共享的正确做法 `platform::process::wait_runnable`（git.rs、takeover.rs 在用；e2e.rs 8 处用 `ready_to_run`，第 9 处 14391 行是给目录 chmod，不算）。修法：`fake` 的脚本第一行 `settle` 出口并 `wait_runnable`，内联的那个测试也改用 `fake`；评估：settle 先退出不写计数，"只问一次"断言不变，Windows 不受影响。复测：Linux 库测试连跑 10 次 0 失败（704 过）。 | 有发现，不计数，重来 |
+| 4 | 可复现性 + 全量 + web e2e（依次跑） | 同样输入连跑 3 次：`ut view --mode half --width 60 docs/img/chat.png` 输出 SHA-256 前 8 字节三次都是 D6-B0-C9-BE-A9-AA-16-2C，`ut md --color=always --width 60 README.md` 三次都是 B8-7F-98-53-B7-08-B3-B1（缓存键里没有时间之类会变的东西，只有路径、修改时间、大小、宽度）；真 ut 测试连跑 3 次都过。fmt、clippy 干净；Windows 720 / 11 / 177，Linux 704 / 174，web e2e 42/42。 | 干净（1/3） |
+| 5 | 代码正确性（错误路径、资源） | 读 `run()` 与预览路径：spawn 失败、非零退出、超时都给原因并退回纯文本预览，失败结果也按（路径、修改时间、大小、宽度）缓存，不会每次刷新都重跑；超时后 kill + wait，读输出的线程在管道关闭后结束。**发现**：纯文本预览最多读 `PREVIEW_MAX`（256 KiB），ut 路径却把整个 md 交给 `ut md`：4.5 MB 的 md 得 239999 行、8.3 MB 字符（377 ms），每次刷新 clone 一遍。定性：边界遗漏，只在 ut 路径，原有的"预览最多读 `PREVIEW_MAX`"规则没被新入口遵守。修法：超过 `PREVIEW_MAX` 的 md 不给 ut，交给纯文本预览（前 256 KiB，原样）；图片不限（行数由宽度定，时间由 2 秒兜底）。评估：只影响大于 256 KiB 的 md。测试加进 `what_ut_prints_is_shown_kept_and_a_failure_said`：超限不问 ut（计数不变），正好 `PREVIEW_MAX` 仍给 ut；变异（去掉上限）被抓到，已复原。 | 有发现，不计数，重来 |
+| 6 | 逻辑与不变量（"没有 ut 时一切照旧"）+ 全量 + web e2e（依次跑） | `files::preview` 的入口只有 `local_main`（看板主循环 1 处、单元测试 4 处，都走 `Files::default()`，ut 为 None）；e2e 里用到 .md 的两处（7242 文件复制、12089 git 状态）不走看板预览，演示 tour 不进 `[0] Files`。**发现**：本条记录写的"测试里一律没有 ut"不准，e2e 的真看板启动时会找 ut，这台机器上找得到；产品与测试结果不受影响，改正为准确的说法。全量（代码与第 5 轮修后相同）：fmt、clippy 干净；Windows 720 / 11 / 177，Linux 704 / 174，web e2e 42/42。 | 有发现（记录不准），不计数，重来 |
+| 7 | 机制通路存活（真看板）+ 全量 + web e2e（依次跑） | 临时 server 的 pane 里跑看板、起在一个放了小 md（71 B）和大 md（4.5 MB）的目录：小 md 标题 "as ut md shows it"，下面 Title / Some bold and a link (https://example.com). / • one • two，粗体 SGR 86 处，OSC 0 处；大 md 是 "13734 lines, the first 256.0K shown" 加原文，ut 没被叫。图片第 1 轮已看过。fmt、clippy 干净；Windows 720 / 11 / 177，Linux 704 / 174，web e2e 42/42。之后同一版加了静态 CRT（第 220 条），整个树变了，从第 8 轮起两条一起重新计数。 | 干净，但树已变，计数从 0 重来 |
+
+第 8 轮起和第 220 条同一棵树一起验，记在第 220 条的表里。
+
+## 220. keepane.exe 不再需要 VC++ 运行库
+
+来源：用户 2026-11-21："另外keepane是否需要vc runtime这种环境？""安装的话""我怕有的windows用不了"；方案（静态链接 CRT）用户答"改吧"。
+
+- 事实（dumpbin /dependents 发布版 0.84.0）：导入 `VCRUNTIME140.dll` 和 6 个 `api-ms-win-crt-*.dll`。UCRT 是 Windows 10 起系统自带的；VCRUNTIME140 不是，只有装过 VC++ 2015–2022 可再发行组件的机器才有，MSI（`installer/keepane.wxs`）没带，winget 清单没声明依赖，`.cargo` 和 release.yml 都没有 `crt-static`。干净的 Windows（Sandbox、新装、精简镜像）上 keepane 起不来。
+- 做法：新建 `.cargo/config.toml`，`[target.'cfg(all(windows, target_env = "msvc"))'] rustflags = ["-C", "target-feature=+crt-static"]`；release.yml 不设 `RUSTFLAGS`，所以这份配置生效；macOS、Linux 的目标不受影响。README en/zh 的系统要求加一句不需要 VC++ 运行库。
+- 结果：release 版 dumpbin 19 个 DLL，全是系统 DLL（kernel32、user32、ws2_32、bcrypt…），VCRUNTIME140 和 api-ms-win-crt-* 都没了；`ring` 的 C 代码由 cc 按 crt-static 用 /MT 编，链接无 LNK 警告。exe 17,017,856 字节（0.84.0 是 16,698,368，中间还有 0.85.0 和 ut 预览的代码，差值不全是 CRT）。Windows Sandbox 本机没装，开它要改 Windows 功能，不自己开；导入表就是加载器要找的 DLL 的全集，作为证据。
+- 定性：结构缺陷（构建配置缺一项，所有 Windows 发布物都受影响），一处配置修全部。评估：debug 和 release 都改为静态 CRT；keepane 动态加载的 conpty.dll 不和它交换 CRT 对象。
+- 测试：e2e `keepane_exe_needs_no_visual_cpp_runtime`（Windows）：exe 里不出现 vcruntime140、msvcp140、api-ms-win-crt-；变异（拿掉 config.toml 重编）报 "keepane.exe still names vcruntime140"，已复原。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 8 | 静态一致性（构建配置对发布流程）+ 全量 + web e2e（依次跑） | release.yml 只在第 48 行编一个 Windows 目标（宿主 x86_64-pc-windows-msvc，不带 `--target`），cfg 条件命中；矩阵里的 musl、macOS aarch64、macOS x86_64 都不是 Windows，不受影响；工作流里没有 `RUSTFLAGS` 盖掉配置；README en/zh 各 1 处新说法，compatibility.md、packaging/README.md 不讲运行库，无需改。fmt、clippy 干净；Windows 720 / 11 / 178（多出的 1 个是守卫测试），Linux 704 / 174，web e2e 42/42。 | 干净（1/3） |
+| 9 | 机制通路存活（发布版 exe）+ 全量 + web e2e（依次跑） | 用静态 CRT 的 release exe 在临时 server 里跑真看板，四种情况：有 ut 的图片（半格块 2604、24 位色 1073、"as ut view shows it"）、有 ut 的小 md（"as ut md shows it"，Title / Some bold and a link…）、没有 ut 的图片（LOCALAPPDATA 指空目录、PATH 只留系统目录："binary: not shown"，和 0.84.0 一样）、没有 ut 的小 md（"6 lines" 加带行号原文，和以前一样）。中途看到起始光标位置不一：查明是我的脚本 `1..$Down` 在 $Down=0 时给出 1、0 两个值，多按了两下；不按键时 0.84.0 与新版各跑 3 次都停在第一项，不是产品问题，脚本改成只发给定的键。fmt、clippy 干净；Windows 720 / 11 / 178，Linux 704 / 174，web e2e 42/42。 | 干净（2/3） |
+| 10 | 代码正确性（整个改动再读一遍）+ 全量 + web e2e（依次跑） | ut 的输出不经 `clip` 直接进 `head`：查明看板画主面板时每行都过 `fit`（`clip` 到面板宽，"a cut string ends its styles"，切断处补 reset），边框颜色不受图片背景色影响；`ut view` 15 行全以 `ESC[0m` 结尾，`ut md` 2842 行里 824 行以 OSC 8 结尾，`keep_sgr` 去掉后也以 reset 结尾。传给 ut 的路径是绝对路径，不会以 `-` 开头被当成选项。`run()` 的超时、非零退出、spawn 失败都有原因；stdin 为 null，不会卡在读输入。fmt、clippy 干净；Windows 720 / 11 / 178，Linux 704 / 174，web e2e 42/42。 | 干净（3/3），验收通过 |

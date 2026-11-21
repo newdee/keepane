@@ -115,6 +115,9 @@ machine, its name and address, while another's sessions are here;
 its Git tab, the pane's repository or
 files; from 150 columns, on the left, `[0]` the pane's directory, each
 entry an emoji of its kind (`dashboard-icons nerd`: a Nerd Font's icon),
+what is under the cursor on the right (a picture drawn by `ut view` and
+markdown by `ut md` where UnifyTerm's `ut` is on the PATH, in
+`UNIFYTERM_COMMANDS` or in `%LOCALAPPDATA%\unifyterm\bin`),
 over the machine's CPU, memory, disk and network; `>` and `<` turn to
 page 2, the group chat, and page 3, what is shared), `list-agents` (the
 Claude Code, Codex, pi

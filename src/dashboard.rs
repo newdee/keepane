@@ -26,6 +26,7 @@ mod files;
 mod gitview;
 mod machine;
 mod shares;
+mod ut;
 
 /// The only server commands the dashboard sends to look.
 pub const QUERIES: &[&str] = &[
@@ -940,7 +941,7 @@ impl Board {
     pub fn local_main(&self, git: Option<&std::path::Path>) -> Option<Vec<String>> {
         if let Some(path) = self.shown_file() {
             let width = self.layout().main.map_or(80, |r| r.inner_w());
-            return Some(files::preview(path, width, self.files.hidden, self.files.icons));
+            return Some(files::preview(path, width, self.files.hidden, self.files.icons, self.files.ut.as_ref()));
         }
         if self.tab != Tab::Git {
             return None;
@@ -3461,6 +3462,9 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
     let (cols, rows) = console.size();
     let mut board = Board::new(cols, rows);
     board.chosen = here.map(|n| format!("%{n}"));
+    // UnifyTerm's `ut`, when this machine has it: pictures and markdown in
+    // the preview.
+    board.files.ut = ut::find().map(ut::Ut::new);
     // The Git tab asks git on this machine, as the pane's shell would.
     let git = crate::git::command("");
     let result = (|| -> anyhow::Result<()> {

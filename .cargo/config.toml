@@ -1,0 +1,8 @@
+# The C runtime linked into keepane.exe, not taken from VCRUNTIME140.dll:
+# Windows has the Universal CRT (api-ms-win-crt-*) of its own since Windows 10,
+# but not the Visual C++ runtime, which a machine has only when something
+# installed the redistributable. Without this, a fresh Windows (Windows
+# Sandbox, a new install, a trimmed image) says VCRUNTIME140.dll was not found
+# and keepane does not start.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
