@@ -6586,3 +6586,5 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 8 | 资源与开销 + 全量 + web e2e（依次跑） | 两个临时 server 回环配对、分享频道，照看板的方式每秒问一次、30 秒：`chat-list --machines -J` 平均 55 ms（最长 74），`chat-who --cached` 平均 48 ms（最长 90），`chat-read --cached` 平均 47 ms（最长 73），同本机 `chat who`（49 ms，进程启动为主）：看板不等网络。对方机器收到的请求按缓存规则有上限：列表 5 秒最多 1 次，所选远程频道成员、记录各 1 秒最多 1 次。那台 Mac 这轮连不上（`link info` 3 秒无回答），按约定不反复重试：最终代码的 macOS 验证交给 CI 的 macOS 任务；上一版（只差身份字段净化和新测试）已在 Mac 上通过。fmt、clippy 干净；Windows 714 / 11 / 177，Linux 698 / 174，web e2e 42/42；`npm run check` 通过。 | 干净（3/3），验收通过 |
 
 0.85.0（群聊第二期：别的机器的 pane 用 机器/频道 加入、发言、读；@ 推送进它那台机器的收件箱；chat list 机器；link share 机器 #频道；看板第 2 页列出别的机器的频道）：第 218 条。遗留：真实两台机器之间互连没在验收里做（Windows 防火墙对新路径的 exe 会弹窗），发版后用两台机器的真实 server 实测。
+
+0.85.0 发布：CI 44876865787（ac25eba）四个 job 通过（含 macOS）；tag v0.85.0；Release 44877455087 四个平台通过；manifests e6e5bde；winget PR #485649；Homebrew formula 44878031409 通过，三个 tar.gz 的 sha256 与 release 一致。
