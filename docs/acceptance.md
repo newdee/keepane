@@ -6649,3 +6649,7 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 8 | 静态一致性（第 7 轮改动的说法对代码）+ 全量 + web e2e（依次跑） | 读的文本 `(kept on <机器>; files are not sent over link yet)`、@ 消息 `📎 名字 (大小): kept on <机器>; …`，README en/zh、man、chat.md 都写"别的机器上的成员只知道存在哪台机器、不给路径"，对得上；MCP 说明仍是"只发本机频道"。fmt、clippy 干净；Windows 724 / 11 / 179，Linux 708 / 175，web e2e 43/43。 | 干净（1/3） |
 | 9 | 代码正确性（第 7 轮改动的各条读路径）+ 全量 + web e2e（依次跑） | 别的机器的成员等新消息，由 `chat_take` 回答，读者是 `There`，`here` 为假；本机不是成员的 pane 看全部，`here` 为真；别的机器的人（`YouThere`）为假；网页按 `You` 读，仍有 `dir`（Chat.tsx 里 0 处用到 `dir`）；没有文件时 `told_there` 就是原文，和以前一样。fmt、clippy 干净；Windows 724 / 11 / 179，Linux 708 / 175，web e2e 43/43。 | 干净（2/3） |
 | 10 | 机制通路存活（第 5、7 轮改动后再走真看板）+ 全量 + web e2e（依次跑） | 临时 server 真看板第 2 页：气泡 "the failed run" 下一行 "📎 build.log  18B"；读出来的路径全是 `\`（`…\files\2026-11-21\2\build.log`）；`chat-dir` 下 1 个副本。fmt、clippy 干净；Windows 724 / 11 / 179，Linux 708 / 175，web e2e 43/43。 | 干净（3/3），验收通过 |
+
+0.87.0（群聊附件：`chat say --file`、`chat dir`、看板气泡和网页保存；新选项 `chat-file-max-size`）：第 221 条。遗留：复制在服务器主循环里同步做（和 `load-buffer`、`source-file` 同一个已有写法），本机最多 65 ms，慢盘上会更久；改成后台复制等用户定；经 link 发文件以后单独做。
+
+0.87.0 发布：CI 44896112270（b9f97af）四个 job 通过（含 macOS）；tag v0.87.0；Release 44896596517 四个平台通过；manifests 6781c15；winget PR #485806；Homebrew formula 44897208561 通过，三个 tar.gz 的 sha256 与 release 一致。
