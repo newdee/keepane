@@ -98,6 +98,9 @@ pub struct MemberRow {
     pub left: bool,
 }
 
+/// The characters of a line a reply's bubble quotes, at most.
+const QUOTE_MOST: usize = 40;
+
 /// A line of the channel, as `chat-read -J` gives it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatLine {
@@ -249,6 +252,31 @@ impl ChatPage {
                     .collect()
             })
             .unwrap_or_default();
+        // A reply: the start of the line it answers above it (`↩ #42 lead:
+        // the plan…`), or the number alone when that line is not loaded.
+        let replies: Vec<(usize, u64)> = v["lines"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(i, l)| l["re"].as_u64().map(|r| (i, r)))
+            .collect();
+        for (i, r) in replies {
+            let quote = match self.lines.iter().find(|l| l.seq == r) {
+                Some(q) => {
+                    let first = q.text.lines().next().unwrap_or_default();
+                    let mut start: String = first.chars().take(QUOTE_MOST).collect();
+                    if first.chars().count() > QUOTE_MOST {
+                        start.push('…');
+                    }
+                    format!("↩ #{r} {}: {start}", q.handle)
+                }
+                None => format!("↩ #{r}"),
+            };
+            if let Some(l) = self.lines.get_mut(i) {
+                l.text = if l.text.is_empty() { quote } else { format!("{quote}\n{}", l.text) };
+            }
+        }
         self.mark_unread();
     }
 
@@ -1099,6 +1127,16 @@ mod tests {
                 "text":"","files":[{"name":"c.md","size":20,"file":"2026-11-17/1/c.md"}]}]}"#,
         );
         assert_eq!(p.lines[0].text, "📎 c.md  20B", "a file alone: no empty line above it");
+        // A reply: the start of the line it answers above it; the number
+        // alone when that line is not among those loaded.
+        p.set_lines(
+            r#"{"lines":[{"seq":4,"at":"2026-11-17T14:02:00.000+08:00","kind":"say","from":{"handle":"lead"},
+                "text":"the plan for the 0.88 release is ready, please look at the second part first"},
+                {"seq":5,"at":"2026-11-17T14:03:00.000+08:00","kind":"say","from":{"handle":"x"},"text":"ok","re":4},
+                {"seq":6,"at":"2026-11-17T14:04:00.000+08:00","kind":"say","from":{"handle":"x"},"text":"and","re":2}]}"#,
+        );
+        assert_eq!(p.lines[1].text, "↩ #4 lead: the plan for the 0.88 release is ready, …\nok");
+        assert_eq!(p.lines[2].text, "↩ #2\nand");
         // Zero-width format characters go: Windows' console counts a joiner
         // a column, keepane none, and the rows after one would stand off.
         p.set_lines(

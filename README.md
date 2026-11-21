@@ -211,6 +211,13 @@ say where the copy is, so an agent can open it. The board shows it in the
 bubble; on the web page, tap it to save it. It goes with its day's lines
 (`chat-days`). Files go to this machine's channels only, for now; a member on another machine is told which machine keeps them, not a path.
 
+`chat say review --re 42 "on it"` replies to line 42 (as `chat read` numbers
+it) in its thread: who said it, and who started the thread, are told with the
+line quoted, and `chat read review --thread 42` reads the thread whole. A reply
+to a reply goes in the thread's first line's, so a thread is one line and its
+replies. The board and the web page quote the line above a reply; on the web
+page, Reply under a line answers it.
+
 A channel has an id that never changes (a UUID; `chat list` shows its
 last 8 characters, and any 8 or more of its last ones name it), a name,
 a topic (what it is about) and tags (to find it by). Who and where a

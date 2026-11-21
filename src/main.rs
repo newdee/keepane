@@ -84,8 +84,8 @@ Panes on other machines (both run `keepane web`; docs/design/link.md):
   link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane
 Group chat (docs/design/chat.md; from a pane, as that pane; outside every pane, as you@machine):
   chat new NAME [--topic TEXT] [--tag T]...   chat list [MACHINE] [--tag T]... [-J]   chat who CHAN [-J]
-  chat join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]   chat leave CHAN [HANDLE]   chat say CHAN [--file PATH]... TEXT   (@handle tells that member, @you the person; files copied into the channel)   chat dir CHAN
-  chat read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J]   chat topic CHAN TEXT   chat tag CHAN +T -T   chat rename CHAN NEW   chat delete CHAN
+  chat join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]   chat leave CHAN [HANDLE]   chat say CHAN [--file PATH]... [--re N] TEXT   (@handle tells that member, @you the person; files copied into the channel; --re replies in line N's thread)   chat dir CHAN
+  chat read CHAN [-n N] [--all] [--peek] [--wait SECS] [--thread N] [-J]   chat topic CHAN TEXT   chat tag CHAN +T -T   chat rename CHAN NEW   chat delete CHAN
   link disconnect host:port   (stop asking it; it still has what it was given, --none takes that)   link connect host:port   link remove host:port   (unpair: `link add` again to come back)
   link id   link trust host:port key [--full [--lan]]   link rekey
 Panes from a Feishu (Lark) app of your own (set -g feishu-app-id / feishu-app-secret; docs/design/feishu.md):

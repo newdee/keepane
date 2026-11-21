@@ -203,7 +203,14 @@ it as `dir`, each line's files as `files`, name, size and `file` under
 that folder), the line names them with their sizes, a read and the
 message to one named say where each copy is, and they go with their
 day's lines (`chat-days`). Files go to this machine's channels only (one reading from another machine, or told there, is told which machine keeps them, not a path); the
-board shows them in the bubble and the web page saves one tapped. `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS]
+board shows them in the bubble and the web page saves one tapped.
+`chat-say CHAN --re N TEXT` replies in line N's thread (a reply to a reply
+goes in the thread's first line's; the line reads `↩ #N`): who said line N
+and who started the thread are told as when named (the person as with
+`@you`), the line it answers quoted first; the board and the web page
+quote it above the reply, and the web page has Reply under each line.
+`chat-read CHAN --thread N` gives line N's thread (its first line and
+every reply, of the last 1000) without moving the read position. `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS]
 [-J]` gives what came since the reader last read (50 at most unless `-n`
 says, oldest first), `--all` the last N, `--peek` without moving the
 read position, `--wait` waits for something new. `chat-who CHAN [-J]`

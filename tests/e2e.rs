@@ -11642,6 +11642,17 @@ async fn naming_you_in_a_channel_reaches_the_webhook() {
         "{body}"
     );
     assert_eq!(body["text"], "@you the build is red", "the member's, not the person's own: {body}");
+    // A member replying to the person's line reaches them the same way,
+    // the line it answers quoted first.
+    let (_, out, _) = h.cli(&["chat-say", "ops", "can you deploy?"]).await;
+    let asked = out.lines().next().unwrap_or_default().rsplit('#').next().unwrap().trim().to_string();
+    h.cli_in(Some(p), &["chat-say", "ops", "--re", &asked, "deploying now"]).await;
+    let body: serde_json::Value = serde_json::from_str(&take_request(&listener, "ok").await).unwrap();
+    let text = body["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with(&format!("↩ #{asked} you@")) && text.ends_with("can you deploy?\ndeploying now"),
+        "{body}"
+    );
     h.cli(&["kill-server"]).await;
 }
 
@@ -15384,6 +15395,17 @@ async fn a_pane_of_another_machine_joins_a_channel_over_link() {
     let (code, _, err) = a.cli(&["chat-topic", &there, "mine"]).await;
     assert!(code != 0 && err.contains("is changed at"), "{err}");
 
+    // A reply from here, over link: in that line's thread there, and the
+    // thread read from here.
+    let (_, out, _) = b.cli(&["chat-say", "review", "which branch?"]).await;
+    let asked = out.lines().next().unwrap_or_default().rsplit('#').next().unwrap().trim().to_string();
+    let (code, out, err) = a.cli_in(Some(pa), &["chat-say", &there, "--re", &asked, "the release one"]).await;
+    assert_eq!(code, 0, "{out}{err}");
+    let (_, thread, _) = b.cli(&["chat-read", "review", "--thread", &asked]).await;
+    assert!(thread.contains(&format!("↩ #{asked} the release one")), "{thread}");
+    let (code, far, err) = a.cli_in(Some(pa), &["chat-read", &there, "--thread", &asked]).await;
+    assert!(code == 0 && far.contains("which branch?") && far.contains("the release one"), "{far}{err}");
+    assert_eq!(far.lines().count(), 2, "{far}");
     // A file sent there with @: its member here is told which machine keeps
     // it, not that machine's path (no use here); a read from here the same.
     let rel = format!("chat-far-file-{}.txt", std::process::id());
@@ -15543,5 +15565,60 @@ async fn a_file_sent_in_the_chat_is_copied_and_its_place_told() {
     let (code, _, err) = h.cli(&["chat-say", "elsewhere/#review", "--file", "Cargo.toml"]).await;
     assert!(code != 0 && err.contains("this machine's channels only"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
+    h.cli(&["kill-server"]).await;
+}
+
+/// Replies, end to end: a pane replies to another's line with `--re`; the
+/// one that said it is told, the line it answers quoted first; a reply to
+/// that reply is in the first line's thread and tells both; `--thread`
+/// reads the thread whole, by any of its lines; a line that is not there
+/// is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_tells_who_said_the_line_and_the_thread_reads_whole() {
+    let h = Harness::start("chatreply").await;
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    h.cli(&["split-window", "-d", "-t", "s:0"]).await;
+    let (lead, tester) = (pane_id(&h, "s:0.0").await, pane_id(&h, "s:0.1").await);
+    h.cli(&["chat-new", "review"]).await;
+    h.cli_in(Some(lead), &["chat-join", "review", "--as", "lead"]).await;
+    h.cli_in(Some(tester), &["chat-join", "review", "--as", "tester"]).await;
+    let seq =
+        |out: &str| -> String { out.lines().next().unwrap_or_default().rsplit('#').next().unwrap().trim().to_string() };
+    let (_, out, _) = h.cli_in(Some(lead), &["chat-say", "review", "the plan is ready"]).await;
+    let root = seq(&out);
+    let (code, out, err) = h.cli_in(Some(tester), &["chat-say", "review", "--re", &root, "looks good"]).await;
+    assert!(code == 0 && !out.contains("not told"), "{out}{err}");
+    let first = seq(&out);
+    // Told: lead, with the line it answers first.
+    let told = async |p: u32, what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (_, got, _) = h.cli_in(Some(p), &["read-message"]).await;
+            if got.contains(what) {
+                return got;
+            }
+            assert!(Instant::now() < deadline, "never told {what}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    let got = told(lead, "looks good").await;
+    assert!(got.contains(&format!("↩ #{root} lead: the plan is ready")), "{got}");
+    // A reply to the reply: in the first line's thread; both told.
+    let (code, out, err) = h.cli(&["chat-say", "review", "--re", &first, "agreed"]).await;
+    assert!(code == 0 && !out.contains("not told"), "{out}{err}");
+    for p in [lead, tester] {
+        let got = told(p, "agreed").await;
+        assert!(got.contains(&format!("↩ #{root} lead: the plan is ready (via #{first})")), "{got}");
+    }
+    h.cli(&["chat-say", "review", "something else"]).await;
+    // The thread, whole, by its first line or a reply.
+    let (_, by_root, _) = h.cli(&["chat-read", "review", "--thread", &root]).await;
+    let (_, by_reply, _) = h.cli(&["chat-read", "review", "--thread", &first]).await;
+    assert_eq!(by_root, by_reply);
+    assert_eq!(by_root.lines().count(), 3, "{by_root}");
+    assert!(by_root.contains(&format!("↩ #{root} agreed")) && !by_root.contains("something else"), "{by_root}");
+    // No such line.
+    let (code, _, err) = h.cli(&["chat-say", "review", "--re", "999", "x"]).await;
+    assert!(code != 0 && err.contains("has no line #999"), "{err}");
     h.cli(&["kill-server"]).await;
 }

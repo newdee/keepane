@@ -1314,7 +1314,15 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 if text.trim().is_empty() {
                     return Response::text(400, "nothing to say");
                 }
-                vec!["chat-say".into(), c.into(), "--".into(), text]
+                // `re`: the line it replies to.
+                let mut argv: Vec<String> = vec!["chat-say".into(), c.into()];
+                match req.param("re") {
+                    Some(r) if r.parse::<u64>().is_ok_and(|n| n > 0) => argv.extend(["--re".into(), r.to_string()]),
+                    Some(_) => return Response::text(400, "re: a line's number"),
+                    None => {}
+                }
+                argv.extend(["--".into(), text]);
+                argv
             } else {
                 vec!["chat-read".into(), c.into(), "-n".into(), "1000".into()]
             };

@@ -1,5 +1,5 @@
 import { Button } from "@heroui/react";
-import { ArrowLeft, AtSign, Hash, MessagesSquare, Paperclip, SendHorizontal, Users, X } from "lucide-react";
+import { ArrowLeft, AtSign, Hash, MessagesSquare, Paperclip, Reply, SendHorizontal, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getJson, post, q, saveFile } from "../api";
 import { useVisible } from "../hooks";
@@ -44,7 +44,30 @@ type Line = {
   text: string;
   /** Files sent with it: `file` is under the channel's folder of files. */
   files?: { name: string; size: number; file: string }[];
+  /** A reply: the number of the line its thread starts with. */
+  re?: number;
 };
+
+/** A line as a reply quotes it: `#42 lead: the start of what it said…`. */
+const quoteOf = (l: Line) => {
+  const said = l.text ? l.text.replace(/\s+/g, " ") : l.files?.length ? `📎 ${l.files[0].name}` : "";
+  return `#${l.seq} ${l.from?.handle ?? ""}: ${said.length > 60 ? said.slice(0, 60) + "…" : said}`;
+};
+
+/** Above a reply's text: the line it answers (its number alone when that
+ *  line is no longer loaded). */
+function Quote({ n, line, person }: { n: number; line?: Line; person: boolean }) {
+  return (
+    <span
+      className={
+        "mb-1 block truncate border-l-2 pl-2 text-[12px] " +
+        (person ? "border-accent-foreground/50 text-accent-foreground/80" : "border-separator text-muted")
+      }
+    >
+      ↩ {line ? quoteOf(line) : `#${n}`}
+    </span>
+  );
+}
 
 /** The members' colours, by the order they joined (as the board's): six
  *  that read on a light page and a dark one. */
@@ -334,6 +357,10 @@ function Conversation({
   const [members, setMembers] = useState<Member[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showMembers, setShowMembers] = useState(false);
+  // The line what is typed replies to, while one is picked.
+  const [replyTo, setReplyTo] = useState<Line | null>(null);
+  useEffect(() => setReplyTo(null), [channel.id]);
+  const find = useCallback((seq: number) => lines?.find((l) => l.seq === seq), [lines]);
   // Where what the person had not read began, kept while the channel is
   // open (showing it reads it at once).
   const [divider, setDivider] = useState<number | null>(null);
@@ -460,7 +487,7 @@ function Conversation({
                     {it.line.text}
                   </p>
                 ) : (
-                  <Bubbles group={it.group} members={members} channel={channel.id} />
+                  <Bubbles group={it.group} members={members} channel={channel.id} find={find} onReply={readOnly ? undefined : setReplyTo} />
                 )}
               </li>
             ))}
@@ -471,7 +498,7 @@ function Conversation({
       {readOnly ? (
         <p className="border-t border-separator px-4 py-3 text-center text-xs text-muted">{t("Read-only: watching only.", "只读：只能看。")}</p>
       ) : (
-        <Composer channel={channel} members={members} onSaid={() => { atBottom.current = true; load(); onSaid(); }} />
+        <Composer channel={channel} members={members} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} onSaid={() => { atBottom.current = true; load(); onSaid(); }} />
       )}
     </section>
   );
@@ -536,7 +563,37 @@ function Files({ line, channel }: { line: Line; channel: string }) {
   );
 }
 
-function Bubbles({ group, members, channel }: { group: Group; members: Member[]; channel: string }) {
+/** Under a bubble: Reply, which puts the line below into reply mode. */
+function ReplyButton({ line, onReply }: { line: Line; onReply?: (l: Line) => void }) {
+  if (!onReply) return null;
+  return (
+    <button
+      type="button"
+      className="flex items-center gap-1 px-1 text-[11px] text-muted hover:text-foreground pointer-coarse:min-h-8"
+      aria-label={t(`Reply to #${line.seq}`, `回复 #${line.seq}`)}
+      onClick={() => onReply(line)}
+    >
+      <Reply className="size-3" aria-hidden />
+      {t("Reply", "回复")}
+    </button>
+  );
+}
+
+function Bubbles({
+  group,
+  members,
+  channel,
+  find,
+  onReply,
+}: {
+  group: Group;
+  members: Member[];
+  channel: string;
+  /** A loaded line by its number, for a reply's quote. */
+  find: (seq: number) => Line | undefined;
+  /** None on a read-only page. */
+  onReply?: (l: Line) => void;
+}) {
   const colour = colourOf(group.handle, members);
   // A line that names the person: ringed in the accent, that line only.
   const calls = (l: Line) => !group.person && /(^|\s)@you\b/.test(l.text);
@@ -545,12 +602,13 @@ function Bubbles({ group, members, channel }: { group: Group; members: Member[];
       <div className="flex flex-col items-end gap-1">
         <span className="px-1 text-[11px] text-muted">{clock(group.at)}</span>
         {group.lines.map((l) => (
-          <div
-            key={l.seq}
-            className="max-w-[85%] rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-[14px] leading-relaxed whitespace-pre-wrap break-words text-accent-foreground shadow-sm sm:max-w-[70%]"
-          >
-            {l.text}
-            <Files line={l} channel={channel} />
+          <div key={l.seq} className="flex max-w-[85%] flex-col items-end sm:max-w-[70%]">
+            <div className="max-w-full rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-[14px] leading-relaxed whitespace-pre-wrap break-words text-accent-foreground shadow-sm">
+              {l.re ? <Quote n={l.re} line={find(l.re)} person /> : null}
+              {l.text}
+              <Files line={l} channel={channel} />
+            </div>
+            <ReplyButton line={l} onReply={onReply} />
           </div>
         ))}
       </div>
@@ -568,15 +626,18 @@ function Bubbles({ group, members, channel }: { group: Group; members: Member[];
           <span className="text-[11px] text-muted">{clock(group.at)}</span>
         </div>
         {group.lines.map((l) => (
-          <div
-            key={l.seq}
-            className={
-              "max-w-full rounded-2xl rounded-tl-md bg-surface px-3.5 py-2 text-[14px] leading-relaxed whitespace-pre-wrap break-words shadow-sm sm:max-w-[42rem] " +
-              (calls(l) ? "ring-2 ring-accent/50" : "")
-            }
-          >
-            <Said text={l.text} members={members} />
-            <Files line={l} channel={channel} />
+          <div key={l.seq} className="flex max-w-full flex-col items-start sm:max-w-[42rem]">
+            <div
+              className={
+                "max-w-full rounded-2xl rounded-tl-md bg-surface px-3.5 py-2 text-[14px] leading-relaxed whitespace-pre-wrap break-words shadow-sm " +
+                (calls(l) ? "ring-2 ring-accent/50" : "")
+              }
+            >
+              {l.re ? <Quote n={l.re} line={find(l.re)} person={false} /> : null}
+              <Said text={l.text} members={members} />
+              <Files line={l} channel={channel} />
+            </div>
+            <ReplyButton line={l} onReply={onReply} />
           </div>
         ))}
       </div>
@@ -645,7 +706,19 @@ function MemberList({ members, wide, onClose }: { members: Member[]; wide: boole
   );
 }
 
-function Composer({ channel, members, onSaid }: { channel: ChatChannel; members: Member[]; onSaid: () => void }) {
+function Composer({
+  channel,
+  members,
+  replyTo,
+  onCancelReply,
+  onSaid,
+}: {
+  channel: ChatChannel;
+  members: Member[];
+  replyTo: Line | null;
+  onCancelReply: () => void;
+  onSaid: () => void;
+}) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [pick, setPick] = useState(0);
@@ -668,6 +741,10 @@ function Composer({ channel, members, onSaid }: { channel: ChatChannel; members:
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 6 * 22 + 18) + "px";
   }, [text]);
+  // A line picked to reply to: typing goes on there.
+  useEffect(() => {
+    if (replyTo) area.current?.focus();
+  }, [replyTo]);
   const complete = (m: Member) => {
     setText(text.replace(/@[\p{L}\p{N}_-]*$/u, "@" + m.handle + " "));
     setPick(0);
@@ -677,9 +754,10 @@ function Composer({ channel, members, onSaid }: { channel: ChatChannel; members:
     if (!text.trim() || busy) return;
     setBusy(true);
     try {
-      await post(`/api/chat/say?c=${q(channel.id)}`, text);
+      await post(`/api/chat/say?c=${q(channel.id)}${replyTo ? `&re=${replyTo.seq}` : ""}`, text);
       setText("");
       setError(null);
+      onCancelReply();
       onSaid();
     } catch (e) {
       setError((e as Error).message);
@@ -715,6 +793,24 @@ function Composer({ channel, members, onSaid }: { channel: ChatChannel; members:
         </ul>
       ) : null}
       {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
+      {replyTo ? (
+        <div
+          className="mx-auto mb-1.5 flex max-w-3xl items-center gap-2 rounded-xl bg-surface px-3 py-1.5 text-xs text-muted"
+          role="status"
+          aria-label={t(`Replying to #${replyTo.seq}`, `正在回复 #${replyTo.seq}`)}
+        >
+          <Reply className="size-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{quoteOf(replyTo)}</span>
+          <button
+            type="button"
+            className="grid size-6 shrink-0 place-items-center rounded-full hover:bg-surface-secondary pointer-coarse:size-9"
+            aria-label={t("Cancel the reply", "取消回复")}
+            onClick={onCancelReply}
+          >
+            <X className="size-3.5" aria-hidden />
+          </button>
+        </div>
+      ) : null}
       <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-3xl border border-separator bg-surface px-3 py-1.5 focus-within:border-accent">
         <AtSign className="mb-2 size-4 shrink-0 text-muted" aria-hidden />
         <textarea
@@ -746,6 +842,11 @@ function Composer({ channel, members, onSaid }: { channel: ChatChannel; members:
                 complete(list[at]);
                 return;
               }
+            }
+            if (e.key === "Escape" && replyTo) {
+              e.preventDefault();
+              onCancelReply();
+              return;
             }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

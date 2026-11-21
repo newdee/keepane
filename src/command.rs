@@ -201,17 +201,20 @@ pub enum ChatCmd {
         channel: String,
         handle: Option<String>,
     },
-    /// `chat-say CHAN [--file PATH]... TEXT`: said in it; `@handle` tells
-    /// that member; each file copied into the channel with the line (the
-    /// text may then be empty).
+    /// `chat-say CHAN [--file PATH]... [--re N] TEXT`: said in it;
+    /// `@handle` tells that member; each file copied into the channel with
+    /// the line (the text may then be empty); `--re` makes it a reply to
+    /// line N's thread.
     Say {
         channel: String,
         text: String,
         files: Vec<String>,
+        re: Option<u64>,
     },
-    /// `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J] [--cached]`:
-    /// what came since the caller last read (`--all`: the last N of it);
-    /// `--peek` moves no read position.
+    /// `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS] [--thread N]
+    /// [-J] [--cached]`: what came since the caller last read (`--all`: the
+    /// last N of it); `--peek` moves no read position; `--thread`, line N's
+    /// thread (its first line and every reply), moving none either.
     Read {
         channel: String,
         n: Option<usize>,
@@ -220,6 +223,7 @@ pub enum ChatCmd {
         wait: Option<u64>,
         json: bool,
         cached: bool,
+        thread: Option<u64>,
     },
     /// `chat-who CHAN [-J] [--cached]`: its members, each who and where.
     Who {
@@ -2038,10 +2042,13 @@ impl fmt::Display for Cmd {
                         }
                         Ok(())
                     }
-                    ChatCmd::Say { channel, text, files } => {
+                    ChatCmd::Say { channel, text, files, re } => {
                         write!(f, "chat-say {}", q(channel))?;
                         for p in files {
                             write!(f, " --file {}", q(p))?;
+                        }
+                        if let Some(r) = re {
+                            write!(f, " --re {r}")?;
                         }
                         if !text.is_empty() {
                             let dash = if text.starts_with('-') { "-- " } else { "" };
@@ -2049,8 +2056,11 @@ impl fmt::Display for Cmd {
                         }
                         Ok(())
                     }
-                    ChatCmd::Read { channel, n, all, peek, wait, json, cached } => {
+                    ChatCmd::Read { channel, n, all, peek, wait, json, cached, thread } => {
                         write!(f, "chat-read {}", q(channel))?;
+                        if let Some(t) = thread {
+                            write!(f, " --thread {t}")?;
+                        }
                         if let Some(n) = n {
                             write!(f, " -n {n}")?;
                         }
@@ -2727,13 +2737,24 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
         }
         "chat-say" | "chat-topic" => {
             let channel = channel(a)?;
-            // `--file PATH`, as many as sent, before the text.
+            // `--file PATH`, as many as sent, and `--re N`, before the text.
             let mut files = Vec::new();
-            while n == "chat-say" && a.peek() == Some("--file") {
-                a.next();
+            let mut re = None;
+            while n == "chat-say" && matches!(a.peek(), Some("--file" | "--re")) {
                 match a.next() {
-                    Some(p) if !p.is_empty() => files.push(p.to_string()),
-                    _ => return Err(format!("{n}: --file takes a path")),
+                    Some("--file") => match a.next() {
+                        Some(p) if !p.is_empty() => files.push(p.to_string()),
+                        _ => return Err(format!("{n}: --file takes a path")),
+                    },
+                    _ => {
+                        let v = a.next().unwrap_or_default();
+                        re = Some(
+                            v.parse::<u64>()
+                                .ok()
+                                .filter(|r| *r > 0)
+                                .ok_or_else(|| format!("{n}: --re takes a line's number, not '{v}'"))?,
+                        );
+                    }
                 }
             }
             // `--` lets a text start with a dash.
@@ -2745,15 +2766,15 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
                 if text.trim().is_empty() && files.is_empty() {
                     return Err(format!("{n}: what to say (or --file PATH)"));
                 }
-                ChatCmd::Say { channel, text, files }
+                ChatCmd::Say { channel, text, files, re }
             } else {
                 ChatCmd::Topic { channel, topic: text }
             }
         }
         "chat-read" => {
             let channel = channel(a)?;
-            let (mut count, mut all, mut peek, mut wait, mut json, mut cached) =
-                (None, false, false, None, false, false);
+            let (mut count, mut all, mut peek, mut wait, mut json, mut cached, mut thread) =
+                (None, false, false, None, false, false, None);
             while let Some(w) = a.next() {
                 match w {
                     "-n" => {
@@ -2771,12 +2792,21 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
                         let v = a.value("--wait")?;
                         wait = Some(v.parse::<u64>().map_err(|_| format!("{n}: --wait takes seconds, not '{v}'"))?);
                     }
+                    "--thread" => {
+                        let v = a.value("--thread")?;
+                        thread = Some(
+                            v.parse::<u64>()
+                                .ok()
+                                .filter(|t| *t > 0)
+                                .ok_or_else(|| format!("{n}: --thread takes a line's number, not '{v}'"))?,
+                        );
+                    }
                     "-J" => json = true,
                     "--cached" => cached = true,
                     f => return Err(not_taken(n, f)),
                 }
             }
-            ChatCmd::Read { channel, n: count, all, peek, wait, json, cached }
+            ChatCmd::Read { channel, n: count, all, peek, wait, json, cached, thread }
         }
         "chat-who" => {
             let channel = channel(a)?;
@@ -3248,8 +3278,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("chat-list", &["--tag", "-J", "--cached", "--machines"]),
     ("chat-join", &["--as", "--role", "--hear"]),
     ("chat-leave", &[]),
-    ("chat-say", &["--file"]),
-    ("chat-read", &["-n", "--all", "--peek", "--wait", "-J", "--cached"]),
+    ("chat-say", &["--file", "--re"]),
+    ("chat-read", &["-n", "--all", "--peek", "--wait", "--thread", "-J", "--cached"]),
     ("chat-who", &["-J", "--cached"]),
     ("chat-topic", &[]),
     ("chat-tag", &[]),
@@ -6250,6 +6280,9 @@ mod tests {
             "chat-say review --file only.pdf",
             "chat-say review -- --flag-like text",
             "chat-dir review",
+            "chat-say review --re 42 sounds good",
+            "chat-say review --file a.png --re 7",
+            "chat-read review --thread 42 -J",
         ];
         for c in cmds {
             let parsed = p(c);
@@ -6262,7 +6295,8 @@ mod tests {
     /// be empty; one with no path, or nothing at all to say, refused.
     #[test]
     fn chat_say_takes_files() {
-        let Cmd::Chat(ChatCmd::Say { channel, text, files }) = p("chat-say review --file a.png --file b.md hi there")
+        let Cmd::Chat(ChatCmd::Say { channel, text, files, .. }) =
+            p("chat-say review --file a.png --file b.md hi there")
         else {
             panic!("a chat-say");
         };
@@ -6270,6 +6304,18 @@ mod tests {
         assert_eq!(files, ["a.png", "b.md"]);
         let Cmd::Chat(ChatCmd::Say { text, files, .. }) = p("chat-say review --file a.png") else { panic!() };
         assert!(text.is_empty() && files == ["a.png"], "a file alone");
+        let Cmd::Chat(ChatCmd::Say { re, text, .. }) = p("chat-say review --re 42 --file a.png ok") else { panic!() };
+        assert_eq!((re, text.as_str()), (Some(42), "ok"), "--re and --file in any order");
+        let Cmd::Chat(ChatCmd::Read { thread, .. }) = p("chat-read review --thread 9") else { panic!() };
+        assert_eq!(thread, Some(9));
+        for bad in [
+            "chat-say review --re 0 x",
+            "chat-say review --re x y",
+            "chat-say review --re",
+            "chat-read review --thread 0",
+        ] {
+            assert!(parse_line(bad).is_err(), "{bad}");
+        }
         for bad in ["chat-say review", "chat-say review --file", "chat-say review --file \"\" hi"] {
             assert!(parse_line(bad).is_err(), "{bad}");
         }

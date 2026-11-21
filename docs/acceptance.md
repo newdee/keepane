@@ -6653,3 +6653,18 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 0.87.0（群聊附件：`chat say --file`、`chat dir`、看板气泡和网页保存；新选项 `chat-file-max-size`）：第 221 条。遗留：复制在服务器主循环里同步做（和 `load-buffer`、`source-file` 同一个已有写法），本机最多 65 ms，慢盘上会更久；改成后台复制等用户定；经 link 发文件以后单独做。
 
 0.87.0 发布：CI 44896112270（b9f97af）四个 job 通过（含 macOS）；tag v0.87.0；Release 44896596517 四个平台通过；manifests 6781c15；winget PR #485806；Homebrew formula 44897208561 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 222. 群聊回复和话题：chat say --re、chat read --thread、网页回复
+
+来源：2026-11-20 用户对整个队列说"改吧"（第二项：回复，`--re seq`）；2026-11-21 用户说"继续"，四个细节问用户，都选推荐：被回复的人像被 @ 一样收到通知；回复的回复归到话题第一行（一层）；`chat read --thread N`；网页能看也能回复。设计记在 chat.md 第 12 节。
+
+- 做法：`Line.re`（话题第一行的行号，老行没有）；`chat_thread_of` 查 N（存在、是说出的话，不是事件行；内存外的照收），回复的回复归到第一行；说那一行的人和开话题的人加进要通知的名单（不进 `mentions`），成员走收件箱，你走 `chat_call_person`（和 `@you` 一样）；通知第一行 `↩ #42 lead: 开头…`，经过回复再回复加 `(via #45)`；`chat_thread` 给第一行和全部回复，不动读到哪里；读的文本 `↩ #42`，上下文行也是；`ChatBody` 多 `re`、`thread` 两个字段（serde 默认值，仓库里没有 `deny_unknown_fields`，老版本忽略）；MCP `chat_say.reply_to`、`chat_read.thread`；网页 `/api/chat/say?re=`；看板气泡在回复上方引用被回复那行开头 40 个字符（找不到只写行号）；网页气泡上方引用、每行下面"回复"按钮、输入框上方"正在回复 #N"，X/Esc 取消，发出后取消。
+- 定性：新功能。顺带发现并修一个老问题（共性，@ 和回复同一个循环）：通知循环先判"离线"再判"是不是说话的人"，说话的人自己离线时（别的机器上的成员）@ 自己会多一句"没通知到：离线"；回复时自己回复自己的话题很常见。改成先判是不是说话的人。评估：`chat_say` 多一个参数，link 进来的 say 带上 `b.re`；`ChatCmd::Say`/`Read` 各多一个字段，没有时 Display 和以前一样（往返测试）；本机没有回复时行为不变。
+- 测试：单元 `a_reply_goes_in_its_thread_and_its_authors_are_told`（归到第一行、两个作者都通知、不进 mentions、`↩ #N`、自己的话题不通知自己、不存在/事件行拒绝、按任一行读话题、JSON 的 `re`）、`chat_say_takes_files` 加 `--re`/`--thread` 解析和 4 种错误、往返 3 条、mcp argv 两条、看板引用（截断、找不到只写行号）；e2e `a_reply_tells_who_said_the_line_and_the_thread_reads_whole`（真 pane：通知带引用、回复的回复两人都通知且带 via、`--thread` 3 行、不存在拒绝）、两台 server 的 e2e 加经 link 回复和读话题、`naming_you_in_a_channel_reaches_the_webhook` 加"成员回复你的那行"走 webhook；web e2e `a line is replied to from the page…`（Esc 取消、回复后服务器的 `re`、引用显示）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路存活（变异）+ 全量 + web e2e（依次跑） | 变异 13 个（写入后读回确认）：回复的回复不归第一行、作者不通知、先判离线再判说话人、事件行当话题、话题只给第一行、通知不带引用、读的文本没有 ↩、link 丢 `re`、看板丢引用、MCP 丢 `reply_to`、回复你那行不叫你、`--thread` 不起作用、网页回复不带 `re`：13/13 被对应测试抓到，都已复原，web/dist 由复原后的源码重建。测试全过：Windows 725 / 11 / 180，Linux 709 / 176，web e2e 44/44；**发现：`fmt --check` 不过**（Windows 和 Linux 都是）：扩写 `@you` 那个 e2e 后只跑了它，没先 `cargo fmt`，一个 assert 超长。定性：流程疏漏（"先 fmt"这条规则没照做）；`cargo fmt` 只是把那个 assert 折行，行为不变。 | 有发现，不计数，重来 |
+| 2 | 静态一致性（文档对代码）+ 全量 + web e2e（依次跑） | man "of the last 1000" 对 `KEEP = 1000`；chat.md 的 `(via #45)` 对代码 `(via #{n})`；man、README en/zh、help 行都写了 `--re` 和 `--thread`；MCP 的 `reply_to`、`thread` 在说明和 argv 里各 1 处；chat.md 写"老版本忽略新字段"，查过仓库里没有 `deny_unknown_fields`。fmt、clippy 干净；Windows 725 / 11 / 180，Linux 709 / 176，web e2e 44/44。 | 干净（1/3） |
+| 3 | 机制通路存活（真看板）+ 全量 + web e2e（依次跑） | 临时 server：`chat-say review "is the release branch cut yet?"`（#2），`--re 2 "yes, cut this morning"`；看板第 2 页回复的气泡第一行 "↩ #2 you@DFINE: is the release branch cut yet?"，下一行回复正文；`chat-read --thread 2` 两行，第二行 `↩ #2 yes, cut this morning`。fmt、clippy 干净；Windows 725 / 11 / 180，Linux 709 / 176，web e2e 44/44。 | 干净（2/3） |
+| 4 | 边界与退化输入（真命令、重启）+ 全量 + web e2e（依次跑） | 临时 server：回复只有文件的一行（收下，话题里文件行带路径、再是回复）；`--re 18446744073709551615`（u64 最大）"has no line"，`…616` 解析时就拒绝；server 重启后用回复的行号读 `--thread`，第一行和回复都在（`re` 存进文件、读回来）。fmt、clippy 干净；Windows 725 / 11 / 180，Linux 709 / 176，web e2e 44/44。 | 干净（3/3），验收通过 |

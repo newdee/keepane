@@ -110,6 +110,13 @@ struct ChatBody {
     wait: Option<u64>,
     #[serde(default)]
     json: bool,
+    /// `say --re`: the line it replies to (a machine before replies sends
+    /// none; one before them leaves it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    re: Option<u64>,
+    /// `read --thread`: the line whose thread is asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thread: Option<u64>,
     /// `here`: the panes of the asking machine in this one's channels that
     /// are still there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -238,9 +245,9 @@ impl Server {
                 (body.handle, body.role, body.hear) = (handle.clone(), role.clone(), hear.clone());
             }
             ChatCmd::Leave { handle, .. } => body.handle = handle.clone(),
-            ChatCmd::Say { text, .. } => body.text = text.clone(),
-            ChatCmd::Read { n, all, peek, wait, json, .. } => {
-                (body.n, body.all, body.peek, body.json) = (*n, *all, *peek, *json);
+            ChatCmd::Say { text, re, .. } => (body.text, body.re) = (text.clone(), *re),
+            ChatCmd::Read { n, all, peek, wait, json, thread, .. } => {
+                (body.n, body.all, body.peek, body.json, body.thread) = (*n, *all, *peek, *json, *thread);
                 body.wait = wait.map(|w| w.min(self.opts.message_wait_max));
             }
             ChatCmd::Who { json, .. } => body.json = *json,
@@ -456,7 +463,8 @@ impl Server {
                 Outcome::Ok => Outcome::Text(id.clone()),
                 other => other,
             },
-            "say" => self.chat_say(None, &me, &id, b.text, Vec::new()),
+            "say" => self.chat_say(None, &me, &id, b.text, Vec::new(), b.re),
+            "read" if b.thread.is_some() => self.chat_thread(at, b.thread.unwrap_or(0), b.json, false),
             "read" => {
                 let out = self.chat_read(cid, &me, &id, b.n, b.all, b.peek, b.wait, b.json);
                 // Waiting: answered when something comes, or the wait runs

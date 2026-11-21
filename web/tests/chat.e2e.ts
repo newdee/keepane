@@ -12,7 +12,7 @@ import { afterEach, beforeEach } from "@e2e-dev/web";
 import { test } from "../e2e/fixtures.ts";
 import { EXE, SOCKET, keyOn, kp, page, paneNumber, portOf, token } from "../e2e/keepane.ts";
 
-type Line = { kind: string; text: string; from?: { handle: string }; files?: { name: string; size: number; file: string }[] };
+type Line = { seq: number; kind: string; text: string; from?: { handle: string }; files?: { name: string; size: number; file: string }[]; re?: number };
 type Channel = { name: string; unread: number };
 
 let tok = "";
@@ -153,4 +153,31 @@ test("a file sent in a channel shows by name and size and saves as it was sent",
   expect((await ask(sent.file)).status).toBe(200);
   expect((await ask("../../channels.json")).status).toBe(400);
   expect((await ask(sent.file.replace(sent.name, "..\\..\\x"))).status).toBe(400);
+});
+test("a line is replied to from the page: the reply is in its thread and quotes it", async ({ app, screen }) => {
+  // The line replied to, and its number, from the server.
+  const asked = lines(older).filter((l) => l.kind === "say").at(-1)!;
+  expect(asked.text).toBe("an older line");
+  await app.open(page(portOf(app.baseUrl)));
+  await screen.getByRole("button", "群聊").click();
+  await screen.getByRole("complementary", "频道").getByRole("button", `#${older}`).click();
+  const talk = screen.getByRole("region", `#${older}`);
+  await expect(talk.getByText("an older line")).toBeVisible();
+
+  // Reply picked, then let go with Esc: nothing changes on the server.
+  await talk.getByRole("button", `回复 #${asked.seq}`).click();
+  await expect(talk.getByRole("status", `正在回复 #${asked.seq}`)).toBeVisible();
+  const box = talk.getByRole("textbox", `在 #${older} 里说点什么`);
+  await box.press("Escape");
+  await expect(talk.getByRole("status", `正在回复 #${asked.seq}`)).toBeHidden();
+
+  // Picked again and said: the server has it as a reply to that line.
+  await talk.getByRole("button", `回复 #${asked.seq}`).click();
+  await box.pressSequentially(`on it ${tok}`);
+  await box.press("Enter");
+  await expect.poll(() => lines(older).at(-1)!.text, { message: "said" }).toBe(`on it ${tok}`);
+  expect(lines(older).at(-1)!.re).toBe(asked.seq);
+  await expect(talk.getByRole("status", `正在回复 #${asked.seq}`)).toBeHidden();
+  // And the page quotes the line it answers above it.
+  await expect(talk.getByText(`↩ #${asked.seq} ${bot}: an older line`)).toBeVisible();
 });

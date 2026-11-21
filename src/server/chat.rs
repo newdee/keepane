@@ -35,6 +35,8 @@ const TAGS_MOST: usize = 16;
 const LATEST: usize = 200;
 /// The most files one line sends (`chat-say --file`).
 const FILES_MOST: usize = 10;
+/// The characters of a line a reply quotes, at most.
+const QUOTE_MOST: usize = 60;
 /// The lines said before it that a message to one named carries, and those
 /// a message to one that hears all carries, at most.
 const CONTEXT_MOST: usize = 20;
@@ -134,6 +136,10 @@ pub struct Line {
     /// `files` folder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<Attached>,
+    /// A reply: the number of the line its thread starts with
+    /// (`chat-say --re`; a reply to a reply points at that first line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub re: Option<u64>,
 }
 
 /// A file sent with a line: its name as sent, its size, and where the copy
@@ -604,7 +610,13 @@ pub fn line_text(l: &Line) -> String {
     match (l.kind.as_str(), &l.from) {
         ("say", Some(w)) => {
             let files = l.files.iter().map(|f| format!("📎 {} ({})", f.name, size_shown(f.size)));
-            let said: Vec<String> = std::iter::once(l.text.clone()).filter(|t| !t.is_empty()).chain(files).collect();
+            // A reply: the thread it is in, first.
+            let said: Vec<String> =
+                l.re.map(|r| format!("↩ #{r}"))
+                    .into_iter()
+                    .chain(std::iter::once(l.text.clone()).filter(|t| !t.is_empty()))
+                    .chain(files)
+                    .collect();
             format!("{head} {}: {}", who(w), said.join(" "))
         }
         (_, Some(w)) => format!("{head} · {} {}", who(w), l.text),
@@ -756,10 +768,11 @@ impl Server {
         text: String,
         mentions: Vec<String>,
     ) -> u64 {
-        self.chat_line_with(at, kind, from, text, mentions, Vec::new())
+        self.chat_line_with(at, kind, from, text, mentions, Vec::new(), None)
     }
 
-    /// `chat_line`, with the files sent with it.
+    /// `chat_line`, with the files sent with it and the thread it replies in.
+    #[allow(clippy::too_many_arguments)]
     fn chat_line_with(
         &mut self,
         at: usize,
@@ -768,10 +781,11 @@ impl Server {
         text: String,
         mentions: Vec<String>,
         files: Vec<Attached>,
+        re: Option<u64>,
     ) -> u64 {
         let c = &mut self.chat.channels[at];
         c.last += 1;
-        let line = Line { seq: c.last, at: now(), kind: kind.into(), from, text, mentions, files };
+        let line = Line { seq: c.last, at: now(), kind: kind.into(), from, text, mentions, files, re };
         if let Some(dir) = &self.chat.dir {
             let day = line.at.get(..10).unwrap_or("day").to_string();
             let path = dir.join(&c.id).join(format!("{day}.jsonl"));
@@ -910,7 +924,11 @@ impl Server {
             ChatCmd::List { tags, json, .. } => self.chat_list(&caller, &tags, json, None),
             ChatCmd::Join { channel, handle, role, hear } => self.chat_join(&caller, &channel, handle, role, hear),
             ChatCmd::Leave { channel, handle } => self.chat_leave(&caller, &channel, handle),
-            ChatCmd::Say { channel, text, files } => self.chat_say(cid, &caller, &channel, text, files),
+            ChatCmd::Say { channel, text, files, re } => self.chat_say(cid, &caller, &channel, text, files, re),
+            ChatCmd::Read { channel, thread: Some(t), json, .. } => match self.chat_find(&channel) {
+                Ok(at) => self.chat_thread(at, t, json, matches!(caller, Caller::You | Caller::Pane(_))),
+                Err(e) => Outcome::Error(format!("chat-read: {e}")),
+            },
             ChatCmd::Read { channel, n, all, peek, wait, json, .. } => {
                 self.chat_read(cid, &caller, &channel, n, all, peek, wait, json)
             }
@@ -1292,6 +1310,55 @@ impl Server {
         }
     }
 
+    /// The thread line `n` of channel `at` is in: its first line's number
+    /// (`n` itself, or the line `n` replies in). A line said that long ago
+    /// it is no longer kept in memory is taken as it is.
+    fn chat_thread_of(&self, at: usize, n: u64) -> Result<u64, String> {
+        let c = &self.chat.channels[at];
+        if n == 0 || n > c.last {
+            return Err(format!("#{} has no line #{n}", c.name));
+        }
+        match c.recent.iter().find(|l| l.seq == n) {
+            Some(l) if l.kind != "say" => Err(format!("#{n} of #{} is no line said (it says what happened)", c.name)),
+            Some(l) => Ok(l.re.unwrap_or(n)),
+            None => Ok(n),
+        }
+    }
+
+    /// Who said line `n` of channel `at`, while it is kept in memory.
+    fn chat_author_of(&self, at: usize, n: u64) -> Option<String> {
+        let l = self.chat.channels[at].recent.iter().find(|l| l.seq == n)?;
+        l.from.as_ref().map(|w| w.handle.clone())
+    }
+
+    /// Line `n` of channel `at` as a reply quotes it: `#42 lead: the start
+    /// of what it said…` (its first file's name when it said nothing).
+    fn chat_quote(&self, at: usize, n: u64) -> Option<String> {
+        let l = self.chat.channels[at].recent.iter().find(|l| l.seq == n)?;
+        let who = l.from.as_ref().map_or("", |w| w.handle.as_str());
+        let said = match l.files.first() {
+            Some(f) if l.text.is_empty() => format!("📎 {}", f.name),
+            _ => l.text.replace('\n', " "),
+        };
+        let mut start: String = said.chars().take(QUOTE_MOST).collect();
+        if said.chars().count() > QUOTE_MOST {
+            start.push('…');
+        }
+        Some(format!("#{n} {who}: {start}"))
+    }
+
+    /// Line `n`'s thread: its first line and every reply to it, of those
+    /// kept in memory, oldest first; no read position moves.
+    pub(super) fn chat_thread(&self, at: usize, n: u64, json: bool, here: bool) -> Outcome {
+        let root = match self.chat_thread_of(at, n) {
+            Ok(r) => r,
+            Err(e) => return Outcome::Error(format!("chat-read: {e}")),
+        };
+        let lines: Vec<Line> =
+            self.chat.channels[at].recent.iter().filter(|l| l.seq == root || l.re == Some(root)).cloned().collect();
+        self.chat_answer(at, lines, false, json, here)
+    }
+
     pub(super) fn chat_say(
         &mut self,
         cid: Option<ClientId>,
@@ -1299,9 +1366,15 @@ impl Server {
         word: &str,
         text: String,
         files: Vec<String>,
+        re: Option<u64>,
     ) -> Outcome {
         let at = match self.chat_find(word) {
             Ok(i) => i,
+            Err(e) => return Outcome::Error(format!("chat-say: {e}")),
+        };
+        // A reply: in the thread of that line (its first line's number).
+        let thread = match re.map(|n| self.chat_thread_of(at, n)).transpose() {
+            Ok(t) => t,
             Err(e) => return Outcome::Error(format!("chat-say: {e}")),
         };
         let max = self.opts.message_max_size;
@@ -1373,11 +1446,28 @@ impl Server {
                 told.push_str(&format!("{sep}📎 {} ({}): {}", f.name, size_shown(f.size), path.display()));
             }
         }
+        // A reply: those told see which line it answers first.
+        if let (Some(n), Some(root)) = (re, thread)
+            && let Some(quote) = self.chat_quote(at, root)
+        {
+            let shown = if n == root { quote } else { format!("{quote} (via #{n})") };
+            told = format!("↩ {shown}\n{told}");
+            told_there = format!("↩ {shown}\n{told_there}");
+        }
         let members = self.chat.channels[at].members.clone();
         let words = mentions_in(&text);
         let named: Vec<String> = words.iter().filter(|h| members.iter().any(|m| &m.handle == *h)).cloned().collect();
+        // Told too: who said the line replied to, and who started the thread
+        // (a member each; the person, as when named @you).
+        let authors: Vec<String> = re.into_iter().chain(thread).filter_map(|n| self.chat_author_of(at, n)).collect();
+        let mut tell = named.clone();
+        for a in &authors {
+            if members.iter().any(|m| &m.handle == a) && !tell.contains(a) {
+                tell.push(a.clone());
+            }
+        }
         let before = self.chat.channels[at].last;
-        let seq = self.chat_line_with(at, "say", Some(who.clone()), text.clone(), named.clone(), attached);
+        let seq = self.chat_line_with(at, "say", Some(who.clone()), text.clone(), named.clone(), attached, thread);
         // Its own line is not news to the speaker: read, when it had read
         // all before it. Not otherwise: saying something is no reading of
         // what others said meanwhile (unread lines would be lost).
@@ -1389,17 +1479,18 @@ impl Server {
         // Each one named is told at once, through its inbox, with what was
         // said before it since it last read.
         let mut not_told = Vec::new();
-        for h in &named {
+        for h in &tell {
             let Some(m) = members.iter().find(|m| &m.handle == h) else { continue };
+            // The speaker is told nothing of its own line, whatever it is.
+            if m.is(me) {
+                continue;
+            }
             if m.left {
                 not_told.push(format!("{h} not told: it left #{name}"));
                 continue;
             }
             if !m.online() {
                 not_told.push(format!("{h} not told: offline (it reads this when it is back)"));
-                continue;
-            }
-            if m.is(me) {
                 continue;
             }
             let earlier = self.chat_since(at, m.read, before, Some(m.own()));
@@ -1424,7 +1515,8 @@ impl Server {
         }
         // The person, named (`@you`) by a member: told on the desktop and
         // by the webhook, as when an agent is done.
-        if me.is_pane() && words.iter().any(|w| w == "you") {
+        let replied_to_you = authors.iter().any(|a| a.starts_with("you@"));
+        if me.is_pane() && (words.iter().any(|w| w == "you") || replied_to_you) {
             self.chat_call_person(&name, &who, &told, me.pane());
         }
         // Those that hear all: told of it, with what else comes, shortly, on
@@ -1466,10 +1558,12 @@ impl Server {
             .map(|l| {
                 let who = l.from.as_ref().map_or("", |w| w.handle.as_str());
                 // Its files by name (`chat-read` says where they are).
-                let said: Vec<String> = std::iter::once(l.text.clone())
-                    .filter(|t| !t.is_empty())
-                    .chain(l.files.iter().map(|f| format!("📎 {}", f.name)))
-                    .collect();
+                let said: Vec<String> =
+                    l.re.map(|r| format!("↩ #{r}"))
+                        .into_iter()
+                        .chain(std::iter::once(l.text.clone()).filter(|t| !t.is_empty()))
+                        .chain(l.files.iter().map(|f| format!("📎 {}", f.name)))
+                        .collect();
                 let said = said.join(" ");
                 let mut text: String = said.chars().take(CONTEXT_LINE_MOST).collect();
                 if said.chars().count() > CONTEXT_LINE_MOST {
@@ -2089,7 +2183,7 @@ mod tests {
         std::fs::write(src.join("pic.png"), [0x89u8, b'P', b'N', b'G', 0, 1, 2]).unwrap();
         let path = |p: &str| src.join(p).to_string_lossy().into_owned();
         let files = vec![path("one/notes.md"), path("two/notes.md"), path("pic.png")];
-        let out = text(a.chat_say(None, &Caller::You, GENERAL, "see these".into(), files));
+        let out = text(a.chat_say(None, &Caller::You, GENERAL, "see these".into(), files, None));
         assert!(out.starts_with("#general #"), "{out}");
         let line = a.chat.channels[0].recent.back().unwrap().clone();
         let names: Vec<&str> = line.files.iter().map(|f| f.name.as_str()).collect();
@@ -2128,7 +2222,7 @@ mod tests {
         let shown = text(a.exec_chat(ChatCmd::Dir { channel: GENERAL.into() }, None));
         assert_eq!(shown, root.to_string_lossy(), "and chat-dir");
         // A file alone, no text: said, its name the channel's latest.
-        let out = text(a.chat_say(None, &Caller::You, GENERAL, String::new(), vec![path("pic.png")]));
+        let out = text(a.chat_say(None, &Caller::You, GENERAL, String::new(), vec![path("pic.png")], None));
         assert!(out.starts_with("#general #"), "{out}");
         assert_eq!(list_latest(&mut a), "📎 pic.png");
         // What fails says why and leaves no line and no copy behind.
@@ -2136,32 +2230,39 @@ mod tests {
         let copies = |root: &Path| walk_files(root).len();
         let (before, copied) = (lines(&a), copies(&root));
         let missing =
-            text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png"), path("gone.txt")]));
+            text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png"), path("gone.txt")], None));
         assert!(missing.starts_with("error: chat-say:") && missing.contains("gone.txt"), "{missing}");
-        let folder = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("one")]));
+        let folder = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("one")], None));
         assert!(folder.contains("is no file"), "{folder}");
         a.opts.chat_file_max_size = 10;
-        let big = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("two/notes.md")]));
+        let big = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("two/notes.md")], None));
         assert!(big.contains("chat-file-max-size is 10B"), "{big}");
         a.opts.chat_file_max_size = 25 * 1024 * 1024;
-        let many = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png"); FILES_MOST + 1]));
+        let many =
+            text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png"); FILES_MOST + 1], None));
         assert!(many.contains(&format!("{FILES_MOST} is the most")), "{many}");
         let stranger = Caller::There { key: "k9".into(), ident: Ident { pane: 4, ..Default::default() } };
-        let not_in = text(a.chat_say(None, &stranger, GENERAL, "x".into(), vec![path("pic.png")]));
+        let not_in = text(a.chat_say(None, &stranger, GENERAL, "x".into(), vec![path("pic.png")], None));
         assert!(not_in.contains("is not in #general"), "{not_in}");
         // The folder the next line's files go to is taken by a file: the copy
         // fails, nothing is said.
         let next = root.join(chrono::Local::now().format("%Y-%m-%d").to_string()).join((lines(&a) + 1).to_string());
         std::fs::create_dir_all(next.parent().unwrap()).unwrap();
         std::fs::write(&next, "in the way").unwrap();
-        let blocked = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png")]));
+        let blocked = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("pic.png")], None));
         assert!(blocked.starts_with("error: chat-say:"), "{blocked}");
         std::fs::remove_file(&next).unwrap();
         // The first file copied, the second not (a folder is where it goes):
         // the first copy is taken away again.
         std::fs::create_dir_all(next.join("pic.png")).unwrap();
-        let half =
-            text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), vec![path("one/notes.md"), path("pic.png")]));
+        let half = text(a.chat_say(
+            None,
+            &Caller::You,
+            GENERAL,
+            "x".into(),
+            vec![path("one/notes.md"), path("pic.png")],
+            None,
+        ));
         assert!(half.starts_with("error: chat-say:") && half.contains("pic.png"), "{half}");
         assert!(!next.exists(), "the line's folder gone with what was copied into it");
         assert_eq!((lines(&a), copies(&root)), (before, copied), "no line, no copy left behind");
@@ -2202,6 +2303,81 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Replies: `--re N` puts a line in N's thread (a reply to a reply, in
+    /// the thread's first line's); the line shows it (`↩ #N`); who said
+    /// the line replied to and who started the thread are told (here, both
+    /// offline members of another machine: said not told, so asked); a
+    /// line that is not there, or says what happened, is no line to reply
+    /// to; `--thread` gives the first line and every reply, any of them
+    /// named; JSON carries `re`.
+    #[test]
+    fn a_reply_goes_in_its_thread_and_its_authors_are_told() {
+        let dir = std::env::temp_dir().join(format!("keepane-chat-replies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = server(&dir);
+        let peer =
+            crate::link::Peer { key: "k1".into(), addr: "10.0.0.2:7681".into(), full: true, lan: false, off: false };
+        let member = |pane: u32, name: &str| Caller::There {
+            key: peer.key.clone(),
+            ident: Ident {
+                machine: "mac".into(),
+                addr: peer.addr.clone(),
+                pane,
+                pane_name: Some(name.into()),
+                ..Default::default()
+            },
+        };
+        let (lead, tester) = (member(1, "lead"), member(2, "tester"));
+        let joined = text(a.chat_join(&lead, GENERAL, Some("lead".into()), None, None));
+        assert!(joined.contains("lead"), "{joined}");
+        let joined = text(a.chat_join(&tester, GENERAL, Some("tester".into()), None, None));
+        assert!(joined.contains("tester"), "{joined}");
+        let seq_of = |out: String| -> u64 {
+            out.lines()
+                .next()
+                .unwrap_or_default()
+                .rsplit('#')
+                .next()
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{out}"))
+        };
+        let root = seq_of(text(a.chat_say(None, &lead, GENERAL, "the plan is ready".into(), Vec::new(), None)));
+        let first = seq_of(text(a.chat_say(None, &tester, GENERAL, "looks good".into(), Vec::new(), Some(root))));
+        a.chat_say(None, &Caller::You, GENERAL, "unrelated".into(), Vec::new(), None);
+        // Both offline (their machine says neither is there): each reply
+        // says who was not told, so who it would tell.
+        a.chat_here(&peer, &[]);
+        let out = text(a.chat_say(None, &Caller::You, GENERAL, "agreed".into(), Vec::new(), Some(first)));
+        assert!(out.contains("tester not told: offline") && out.contains("lead not told: offline"), "{out}");
+        let line = a.chat.channels[0].recent.back().unwrap().clone();
+        assert_eq!(line.re, Some(root), "a reply to a reply is in the thread's first line's");
+        assert!(line.mentions.is_empty(), "those told for a reply are not mentions");
+        assert!(line_text(&line).ends_with(&format!(": ↩ #{root} agreed")), "{}", line_text(&line));
+        let own = text(a.chat_say(None, &tester, GENERAL, "x".into(), Vec::new(), Some(first)));
+        assert!(!own.contains("tester not told"), "its own line: no one to tell about it: {own}");
+        // No line to reply to.
+        let last = a.chat.channels[0].last;
+        for (n, why) in [(last + 1, "has no line"), (1, "is no line said")] {
+            let out = text(a.chat_say(None, &Caller::You, GENERAL, "x".into(), Vec::new(), Some(n)));
+            assert!(out.starts_with("error: chat-say:") && out.contains(why), "#{n}: {out}");
+        }
+        assert_eq!(a.chat.channels[0].last, last, "nothing said");
+        // The thread, by any of its lines: its first line and every reply.
+        let by_root = text(a.chat_thread(0, root, false, true));
+        let by_reply = text(a.chat_thread(0, first, false, true));
+        assert_eq!(by_root, by_reply);
+        let shown: Vec<&str> = by_root.lines().collect();
+        assert_eq!(shown.len(), 4, "{by_root}");
+        assert!(shown[0].ends_with("the plan is ready") && !by_root.contains("unrelated"), "{by_root}");
+        let json: serde_json::Value = serde_json::from_str(&text(a.chat_thread(0, root, true, true))).unwrap();
+        assert_eq!(json["lines"][1]["re"], root);
+        assert!(json["lines"][0]["re"].is_null(), "the first line is no reply");
+        assert!(text(a.chat_thread(0, last + 5, false, true)).contains("has no line"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The files sent on days past `chat-days` go with their lines: each
@@ -2337,11 +2513,11 @@ mod tests {
         assert!(text(a.chat_join(&me, GENERAL, Some("blog".into()), None, None)).contains("blog"));
         for i in 0..RATE {
             assert!(
-                text(a.chat_say(None, &me, GENERAL, format!("line {i}"), Vec::new())).starts_with("#general #"),
+                text(a.chat_say(None, &me, GENERAL, format!("line {i}"), Vec::new(), None)).starts_with("#general #"),
                 "{i}"
             );
         }
-        let out = text(a.chat_say(None, &me, GENERAL, "one more".into(), Vec::new()));
+        let out = text(a.chat_say(None, &me, GENERAL, "one more".into(), Vec::new(), None));
         assert!(out.contains("a minute is the most"), "{out}");
         let big = "x".repeat(a.opts.message_max_size + 1);
         let out = text(a.chat_say(
@@ -2350,6 +2526,7 @@ mod tests {
             GENERAL,
             big,
             Vec::new(),
+            None,
         ));
         assert!(out.contains("message-max-size"), "{out}");
         a.chat_save();
@@ -2418,7 +2595,7 @@ mod tests {
             v[0]["last"].as_u64().unwrap()
         };
         assert_eq!(last_saved(), 1, "general made: written");
-        let say = ChatCmd::Say { channel: GENERAL.into(), text: "hi".into(), files: Vec::new() };
+        let say = ChatCmd::Say { channel: GENERAL.into(), text: "hi".into(), files: Vec::new(), re: None };
         assert!(text(a.exec_chat(say, None)).starts_with("#general #2"));
         assert_eq!(last_saved(), 1, "a line: not written yet");
         a.chat_tick();
@@ -2515,7 +2692,7 @@ mod tests {
         let review = list.as_array().unwrap().iter().find(|c| c["name"] == "review").unwrap().clone();
         assert_eq!(review["members"], 1, "not counted: {review}");
         let said = text(a.exec_chat(
-            ChatCmd::Say { channel: "review".into(), text: "@tester @lead hi".into(), files: Vec::new() },
+            ChatCmd::Say { channel: "review".into(), text: "@tester @lead hi".into(), files: Vec::new(), re: None },
             None,
         ));
         assert!(said.contains("tester not told: it left #review"), "{said}");
@@ -2571,7 +2748,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut a = server(&dir);
         a.exec_chat(ChatCmd::New { name: "review".into(), topic: String::new(), tags: vec![] }, None);
-        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into(), files: Vec::new() };
+        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into(), files: Vec::new(), re: None };
         a.exec_chat(say("one"), None);
         a.exec_chat(say("two"), None);
         a.exec_chat(ChatCmd::Topic { channel: "review".into(), topic: "t".into() }, None);
@@ -2611,7 +2788,7 @@ mod tests {
             ChatCmd::New { name: "review".into(), topic: "the 0.72 release".into(), tags: vec!["release".into()] };
         let id = text(a.exec_chat(new, None));
         assert_eq!(id.len(), 36, "{id}");
-        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into(), files: Vec::new() };
+        let say = |t: &str| ChatCmd::Say { channel: "review".into(), text: t.into(), files: Vec::new(), re: None };
         assert!(text(a.exec_chat(say("one"), None)).starts_with("#review #"));
         let read = ChatCmd::Read {
             channel: "review".into(),
@@ -2621,6 +2798,7 @@ mod tests {
             wait: None,
             json: false,
             cached: false,
+            thread: None,
         };
         assert!(text(a.exec_chat(read.clone(), None)).contains(": one"));
         a.exec_chat(say("two"), None);
@@ -2696,6 +2874,7 @@ mod tests {
             text: "hi".into(),
             mentions: vec![],
             files: vec![],
+            re: None,
         };
         assert_eq!(line_text(&l), "#3 14:02 lead (planner) [DFINE work:0.0 %3 claude]: hi");
         let back: Line = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();

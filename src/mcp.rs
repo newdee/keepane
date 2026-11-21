@@ -275,19 +275,22 @@ fn tools() -> Vec<Value> {
             "Say something in a channel you joined. Each member you name with @handle is told at once in their inbox; \
              the others read it when they read the channel. files: paths of files to send with it (relative ones from \
              your directory); each is copied into the channel, and those told and chat_read say where the copy is. \
-             Files go to this machine's channels only.",
+             Files go to this machine's channels only. reply_to: a line's number (#42 as chat_read shows it) to \
+             reply in its thread; who said it, and who started the thread, are told.",
             json!({
                 "channel": s("Its name or id; MACHINE/#name for a paired machine's"),
                 "text": s("What to say (may be empty when files are sent)"),
                 "files": { "type": "array", "items": { "type": "string" }, "description": "Files to send with it" },
+                "reply_to": n("The number of the line this replies to"),
             }),
             &["channel"],
         ),
         tool(
             "chat_read",
             "What was said in a channel since you last read it (oldest first; up to 50 unless count says). \
-             With wait_seconds, waits for something new when there is nothing yet.",
-            json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's"), "count": n("At most this many"), "wait_seconds": n("Wait up to this long for something new") }),
+             With wait_seconds, waits for something new when there is nothing yet. With thread (a line's number), \
+             that line's thread instead: its first line and every reply, read or not.",
+            json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's"), "count": n("At most this many"), "wait_seconds": n("Wait up to this long for something new"), "thread": n("A line's number: read its thread") }),
             &["channel"],
         ),
         tool(
@@ -527,8 +530,12 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             for f in a["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()) {
                 c.extend(["--file".into(), f.to_string()]);
             }
+            let files = c.len() > 2;
+            if let Some(r) = num("reply_to") {
+                c.extend(["--re".into(), r]);
+            }
             let text = str_of("text").unwrap_or_default();
-            if text.trim().is_empty() && c.len() == 2 {
+            if text.trim().is_empty() && !files {
                 return Err("chat_say: 'text' or 'files' is needed".into());
             }
             if !text.is_empty() {
@@ -543,6 +550,9 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             }
             if let Some(w) = num("wait_seconds") {
                 c.extend(["--wait".into(), w]);
+            }
+            if let Some(t) = num("thread") {
+                c.extend(["--thread".into(), t]);
             }
             c
         }
@@ -683,6 +693,11 @@ mod tests {
         assert_eq!(alone, ["chat-say", "review", "--file", "a.png"]);
         assert!(crate::command::parse(&alone).is_ok(), "{alone:?}");
         assert!(command("chat_say", &json!({"channel": "review"})).is_err());
+        let reply = command("chat_say", &json!({"channel": "review", "text": "ok", "reply_to": 42})).unwrap();
+        assert_eq!(reply, ["chat-say", "review", "--re", "42", "--", "ok"]);
+        assert!(crate::command::parse(&reply).is_ok(), "{reply:?}");
+        let thread = command("chat_read", &json!({"channel": "review", "thread": 42})).unwrap();
+        assert_eq!(thread, ["chat-read", "review", "--thread", "42"]);
         assert!(command("chat_say", &json!({"channel": "review", "text": " ", "files": []})).is_err());
         // A pane's output: 120 seconds unless said; a text like a flag stays a text.
         assert_eq!(
