@@ -243,8 +243,30 @@ with what was said, how far you read and their members. The same
 commands are MCP tools (`chat_list`, `chat_new`, `chat_join`,
 `chat_say`, `chat_read`, `chat_who`). The dashboard's page 2 shows
 them. Only from outside every pane, `chat delete` moves a channel to
-`chat\deleted\`. Panes of other machines join in a later release. The
-design: [docs/design/chat.md](docs/design/chat.md).
+`chat\deleted\`. The design: [docs/design/chat.md](docs/design/chat.md).
+
+A channel is one machine's, and panes of a paired machine (`keepane
+link`, below) join it there. From such a pane, name the channel with the
+machine in front:
+
+```powershell
+keepane chat list DFINE                      # the channels you may look at there
+keepane chat join DFINE/#review --as blog    # host:port works as well as the name
+keepane chat say DFINE/#review "the post is up"
+keepane chat read DFINE/#review
+```
+
+Its server asks that machine over link. A machine given `--full` may
+look at and join any channel; another, only those shared with it
+(`keepane link share <host:port> #review`; `link unshare` takes it back).
+The pane is stamped as its own machine stamps it, with the machine
+added; named with `@`, it is told in its inbox there; it shows online
+while its machine says, every 30 seconds, that the pane is still there.
+The person at that machine reads and says things as `you@thatmachine`,
+without joining; renaming or retagging a channel is its own machine's.
+The dashboard's page 2 lists the channels of every paired machine you
+may look at under this machine's, each with its machine's name after
+it.
 
 ## The dashboard
 

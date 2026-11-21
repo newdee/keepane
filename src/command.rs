@@ -173,10 +173,18 @@ pub enum ChatCmd {
         topic: String,
         tags: Vec<String>,
     },
-    /// `chat-list [--tag T]... [-J]`: the channels (those with every tag).
+    /// `chat-list [MACHINE] [--tag T]... [-J] [--cached]`: the channels
+    /// (those with every tag); of a paired machine, those this one may look
+    /// at there. `--cached`: what was last heard from it, at once (the board).
     List {
+        machine: Option<String>,
         tags: Vec<String>,
         json: bool,
+        cached: bool,
+        /// `--machines`: these channels, then those of every paired machine
+        /// this one may look at there (`MACHINE/ID`, with its name), as last
+        /// heard (the board).
+        machines: bool,
     },
     /// `chat-join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]`:
     /// the calling pane a member (again: its handle, role or what it hears
@@ -198,8 +206,8 @@ pub enum ChatCmd {
         channel: String,
         text: String,
     },
-    /// `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J]`: what
-    /// came since the caller last read (`--all`: the last N of it);
+    /// `chat-read CHAN [-n N] [--all] [--peek] [--wait SECS] [-J] [--cached]`:
+    /// what came since the caller last read (`--all`: the last N of it);
     /// `--peek` moves no read position.
     Read {
         channel: String,
@@ -208,11 +216,13 @@ pub enum ChatCmd {
         peek: bool,
         wait: Option<u64>,
         json: bool,
+        cached: bool,
     },
-    /// `chat-who CHAN [-J]`: its members, each who and where.
+    /// `chat-who CHAN [-J] [--cached]`: its members, each who and where.
     Who {
         channel: String,
         json: bool,
+        cached: bool,
     },
     Topic {
         channel: String,
@@ -1982,13 +1992,22 @@ impl fmt::Display for Cmd {
                         }
                         Ok(())
                     }
-                    ChatCmd::List { tags, json } => {
+                    ChatCmd::List { machine, tags, json, cached, machines } => {
                         f.write_str("chat-list")?;
+                        if *machines {
+                            f.write_str(" --machines")?;
+                        }
+                        if let Some(m) = machine {
+                            write!(f, " {}", q(m))?;
+                        }
                         for t in tags {
                             write!(f, " --tag {}", q(t))?;
                         }
                         if *json {
                             f.write_str(" -J")?;
+                        }
+                        if *cached {
+                            f.write_str(" --cached")?;
                         }
                         Ok(())
                     }
@@ -2016,7 +2035,7 @@ impl fmt::Display for Cmd {
                         let dash = if text.starts_with('-') { "-- " } else { "" };
                         write!(f, "chat-say {} {dash}{}", q(channel), q(text))
                     }
-                    ChatCmd::Read { channel, n, all, peek, wait, json } => {
+                    ChatCmd::Read { channel, n, all, peek, wait, json, cached } => {
                         write!(f, "chat-read {}", q(channel))?;
                         if let Some(n) = n {
                             write!(f, " -n {n}")?;
@@ -2033,10 +2052,19 @@ impl fmt::Display for Cmd {
                         if *json {
                             f.write_str(" -J")?;
                         }
+                        if *cached {
+                            f.write_str(" --cached")?;
+                        }
                         Ok(())
                     }
-                    ChatCmd::Who { channel, json } => {
-                        write!(f, "chat-who {}{}", q(channel), if *json { " -J" } else { "" })
+                    ChatCmd::Who { channel, json, cached } => {
+                        write!(
+                            f,
+                            "chat-who {}{}{}",
+                            q(channel),
+                            if *json { " -J" } else { "" },
+                            if *cached { " --cached" } else { "" }
+                        )
                     }
                     ChatCmd::Topic { channel, topic } => {
                         let dash = if topic.starts_with('-') { "-- " } else { "" };
@@ -2640,15 +2668,18 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
             ChatCmd::New { name, topic, tags }
         }
         "chat-list" => {
-            let (mut tags, mut json) = (Vec::new(), false);
+            let (mut machine, mut tags, mut json, mut cached, mut machines) = (None, Vec::new(), false, false, false);
             while let Some(w) = a.next() {
                 match w {
                     "--tag" => tags.push(a.value("--tag")?.to_string()),
                     "-J" => json = true,
+                    "--cached" => cached = true,
+                    "--machines" => machines = true,
+                    m if machine.is_none() && !m.starts_with('-') => machine = Some(m.to_string()),
                     f => return Err(not_taken(n, f)),
                 }
             }
-            ChatCmd::List { tags, json }
+            ChatCmd::List { machine, tags, json, cached, machines }
         }
         "chat-join" => {
             let channel = channel(a)?;
@@ -2692,7 +2723,8 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
         }
         "chat-read" => {
             let channel = channel(a)?;
-            let (mut count, mut all, mut peek, mut wait, mut json) = (None, false, false, None, false);
+            let (mut count, mut all, mut peek, mut wait, mut json, mut cached) =
+                (None, false, false, None, false, false);
             while let Some(w) = a.next() {
                 match w {
                     "-n" => {
@@ -2711,20 +2743,23 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
                         wait = Some(v.parse::<u64>().map_err(|_| format!("{n}: --wait takes seconds, not '{v}'"))?);
                     }
                     "-J" => json = true,
+                    "--cached" => cached = true,
                     f => return Err(not_taken(n, f)),
                 }
             }
-            ChatCmd::Read { channel, n: count, all, peek, wait, json }
+            ChatCmd::Read { channel, n: count, all, peek, wait, json, cached }
         }
         "chat-who" => {
             let channel = channel(a)?;
-            let json = match a.next() {
-                None => false,
-                Some("-J") => true,
-                Some(f) => return Err(not_taken(n, f)),
-            };
-            a.none_left(n)?;
-            ChatCmd::Who { channel, json }
+            let (mut json, mut cached) = (false, false);
+            while let Some(w) = a.next() {
+                match w {
+                    "-J" => json = true,
+                    "--cached" => cached = true,
+                    f => return Err(not_taken(n, f)),
+                }
+            }
+            ChatCmd::Who { channel, json, cached }
         }
         "chat-tag" => {
             let channel = channel(a)?;
@@ -3180,12 +3215,12 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("web-tails", &[]),
     ("share", &["-l", "--for", "--once", "--all"]),
     ("chat-new", &["--topic", "--tag"]),
-    ("chat-list", &["--tag", "-J"]),
+    ("chat-list", &["--tag", "-J", "--cached", "--machines"]),
     ("chat-join", &["--as", "--role", "--hear"]),
     ("chat-leave", &[]),
     ("chat-say", &[]),
-    ("chat-read", &["-n", "--all", "--peek", "--wait", "-J"]),
-    ("chat-who", &["-J"]),
+    ("chat-read", &["-n", "--all", "--peek", "--wait", "-J", "--cached"]),
+    ("chat-who", &["-J", "--cached"]),
     ("chat-topic", &[]),
     ("chat-tag", &[]),
     ("chat-rename", &[]),

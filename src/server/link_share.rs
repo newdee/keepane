@@ -182,7 +182,9 @@ impl Server {
             Spot::Window(i) => (1, *i),
             Spot::Pane(i) => (2, *i),
         });
-        spots.into_iter().filter_map(|s| self.spot_label(s)).collect()
+        let mut out: Vec<String> = spots.into_iter().filter_map(|s| self.spot_label(s)).collect();
+        out.extend(self.chat_shared_with(key));
+        out
     }
 
     /// What the machine at `addr` has here, in a word or two: `full`, `3
@@ -208,7 +210,7 @@ impl Server {
             n += before - keys.len();
         }
         self.link_shares.retain(|_, k| !k.is_empty());
-        n
+        n + self.chat_unshare_all(key)
     }
 
     /// The session a spot is in.
@@ -239,8 +241,23 @@ impl Server {
             },
             Err(e) => return Outcome::Error(e),
         };
+        // Channels (`#review`): the group chat's (docs/design/chat.md §10).
+        let (chans, targets): (Vec<String>, Vec<String>) = targets.iter().cloned().partition(|t| t.starts_with('#'));
+        let chat_said = if chans.is_empty() {
+            None
+        } else {
+            match self.chat_share(&peer, &chans, share) {
+                Ok(t) => Some(t),
+                Err(e) => return Outcome::Error(format!("{name}: {e}")),
+            }
+        };
+        if targets.is_empty()
+            && let Some(said) = chat_said.clone()
+        {
+            return Outcome::Text(said);
+        }
         let mut spots = Vec::new();
-        for t in targets {
+        for t in &targets {
             match self.spot_of(t) {
                 // Named twice (`work $1`): once.
                 Ok(s) if spots.contains(&s) => {}
@@ -248,7 +265,10 @@ impl Server {
                 Err(e) => return Outcome::Error(format!("{name}: {e}")),
             }
         }
-        self.share_spots(cid, &peer, &spots, share, targets.is_empty())
+        match (self.share_spots(cid, &peer, &spots, share, targets.is_empty()), chat_said) {
+            (Outcome::Text(t), Some(c)) => Outcome::Text(format!("{t}\n{c}")),
+            (out, _) => out,
+        }
     }
 
     /// Mark (or unmark) those spots for the machine, and say what it has

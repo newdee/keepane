@@ -5,6 +5,7 @@ pub mod actor;
 mod agents;
 mod agentsync;
 mod chat;
+mod chat_link;
 mod clock;
 pub(crate) mod clockanim;
 mod digits;
@@ -1303,6 +1304,8 @@ pub struct Server {
     observe: observe::Store,
     /// The group chat: channels, members, what was said (`chat-*`).
     chat: chat::Chat,
+    /// The group chat between machines (docs/design/chat.md §10).
+    chat_link: chat_link::ChatLink,
     /// What the screen rules keep of each Codex or Cursor pane (`screenrules`).
     screen_watch: HashMap<PaneId, screenrules::Watch>,
     /// Clients waiting in a `-w` for a message or an inbox.
@@ -1787,6 +1790,7 @@ impl Server {
             next_msg: 0,
             observe: observe::Store::default(),
             chat: chat::Chat::default(),
+            chat_link: chat_link::ChatLink::default(),
             screen_watch: HashMap::new(),
             msg_waits: Vec::new(),
             out_waits: Vec::new(),

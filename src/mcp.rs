@@ -247,8 +247,9 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "chat_list",
-            "The group chat's channels: name, id, topic, tags, members, how many you have not read.",
-            json!({ "tag": s("Only channels with this tag") }),
+            "The group chat's channels: name, id, topic, tags, members, how many you have not read. With machine: \
+             a paired machine's channels you may look at there; name one of them MACHINE/#name in the other chat tools.",
+            json!({ "machine": s("A paired machine: host:port, or its name as link list shows it"), "tag": s("Only channels with this tag") }),
             &[],
         ),
         tool(
@@ -266,27 +267,27 @@ fn tools() -> Vec<Value> {
             "Join a channel as your pane. keepane stamps who and where you are (machine, pane, agent, model); \
              you choose a handle (default: your pane's name) and a role. hear: mentions (default: you are told \
              of the lines that name you, with what came before them) or all (told of every line, a few at a time).",
-            json!({ "channel": s("Its name or id"), "handle": s("What you are called there"), "role": s("Your part there, e.g. reviewer"), "hear": s("mentions or all") }),
+            json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's"), "handle": s("What you are called there"), "role": s("Your part there, e.g. reviewer"), "hear": s("mentions or all") }),
             &["channel"],
         ),
         tool(
             "chat_say",
             "Say something in a channel you joined. Each member you name with @handle is told at once in their inbox; \
              the others read it when they read the channel.",
-            json!({ "channel": s("Its name or id"), "text": s("What to say") }),
+            json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's"), "text": s("What to say") }),
             &["channel", "text"],
         ),
         tool(
             "chat_read",
             "What was said in a channel since you last read it (oldest first; up to 50 unless count says). \
              With wait_seconds, waits for something new when there is nothing yet.",
-            json!({ "channel": s("Its name or id"), "count": n("At most this many"), "wait_seconds": n("Wait up to this long for something new") }),
+            json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's"), "count": n("At most this many"), "wait_seconds": n("Wait up to this long for something new") }),
             &["channel"],
         ),
         tool(
             "chat_who",
             "A channel's members: handle, role, and who and where each is (machine, pane, agent, model).",
-            json!({ "channel": s("Its name or id") }),
+            json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's") }),
             &["channel"],
         ),
     ]
@@ -483,6 +484,10 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
         }
         "chat_list" => {
             let mut c = v(&["chat-list"]);
+            // A paired machine's channels (docs/design/chat.md §10).
+            if let Some(m) = str_of("machine") {
+                c.push(m);
+            }
             if let Some(t) = str_of("tag") {
                 c.extend(["--tag".into(), t]);
             }

@@ -66,6 +66,9 @@ pub struct ChanRow {
     pub latest_at: String,
     pub latest_by: String,
     pub latest_text: String,
+    /// Another machine's channel: that machine's name (its id is then
+    /// `MACHINE/ID`, which every chat command takes); empty for one here.
+    pub machine: String,
 }
 
 impl ChanRow {
@@ -179,6 +182,7 @@ impl ChatPage {
                         latest_at: s(&c["latest"], "at"),
                         latest_by: s(&c["latest"], "handle"),
                         latest_text: s(&c["latest"], "text").replace('\n', " "),
+                        machine: s(c, "machine"),
                     })
                     .filter(|c| !c.id.is_empty())
                     .collect()
@@ -574,10 +578,17 @@ impl Board {
     /// What page 3 asks the server each refresh, the picked channel's
     /// members and lines with the list (`run` asks them in this order).
     pub(super) fn chat_queries(&self) -> Vec<Vec<String>> {
-        let mut q = vec![owned(&["chat-list", "-J"])];
+        let mut q = vec![owned(&["chat-list", "--machines", "-J"])];
         if let Some(c) = self.chat.picked() {
-            q.push(owned(&["chat-who", &c.id, "-J"]));
-            q.push(owned(&["chat-read", &c.id, "--all", "-n", &SHOWN.to_string(), "-J"]));
+            let mut who = owned(&["chat-who", &c.id, "-J"]);
+            let mut read = owned(&["chat-read", &c.id, "--all", "-n", &SHOWN.to_string(), "-J"]);
+            // Another machine's: what was last heard of it, at once.
+            if !c.machine.is_empty() {
+                who.push("--cached".into());
+                read.push("--cached".into());
+            }
+            q.push(who);
+            q.push(read);
         }
         q
     }
@@ -586,10 +597,9 @@ impl Board {
     /// read of it is read now.
     pub(super) fn chat_seen(&self) -> Option<Vec<String>> {
         // On the screen only: a narrow board shows [4] while it has the focus.
-        let c = self
-            .chat
-            .picked()
-            .filter(|c| c.unread > 0 && self.page == super::CHAT_PAGE && self.layout().main.is_some())?;
+        let c = self.chat.picked().filter(|c| {
+            c.unread > 0 && c.machine.is_empty() && self.page == super::CHAT_PAGE && self.layout().main.is_some()
+        })?;
         Some(owned(&["chat-read", &c.id, "-n", "1000"]))
     }
 
@@ -703,8 +713,10 @@ impl Board {
             let picked = i == self.chat.pick;
             let unread = if c.unread > 0 { paint("1;33", &format!(" ●{}", c.unread)) } else { String::new() };
             let tags = if c.tags.is_empty() { String::new() } else { paint("2", &format!("  {}", c.tags.join(","))) };
+            // Another machine's: its name after the channel's, faint.
+            let at = if c.machine.is_empty() { String::new() } else { paint("2", &format!("@{}", inert(&c.machine))) };
             let left = format!(
-                "{} {}{unread}{tags}",
+                "{}{at} {}{unread}{tags}",
                 paint("1", &format!("#{}", c.name)),
                 paint("2", &format!("{people}{}", c.members))
             );

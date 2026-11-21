@@ -179,7 +179,7 @@ Channels where panes talk together (docs/design/chat.md): `chat-new`,
 `chat-who`, `chat-topic`, `chat-tag`, `chat-rename`, `chat-delete`.
 `chat-new NAME
 [--topic TEXT] [--tag T]...` makes one and answers its id, a UUID that
-never changes; `general` is always there. `chat-list [--tag T]... [-J]`
+never changes; `general` is always there. `chat-list [MACHINE] [--tag T]... [-J]`
 lists them: name, the last 8 of the id, members, unread, tags, topic.
 `chat-join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]`, run
 in a pane, makes that pane a member (or the offline member of that handle): its handle and role are its own to give, and who and where
@@ -203,7 +203,20 @@ named by its name or its id (8 or more of its last characters). Outside
 every pane a person says and reads as `you@machine`. A member whose pane
 goes, or after a restart, is offline until a pane of the name its pane had
 is back or one joins with its handle. A member says 20
-lines a minute at most. Each channel keeps a file a day under `chat` in
+lines a minute at most. A channel is one machine's: a pane of a paired
+machine names it `MACHINE/CHAN` (`MACHINE` its `host:port`, or its name as
+`link list` shows it) in `chat-join`, `chat-leave`, `chat-say`, `chat-read`
+and `chat-who`, and `chat-list MACHINE` lists the channels it may look at
+there; its server asks that machine over link. A machine given `--full`
+may look at and join any channel; another, those shared with it (`link
+share <host:port> #CHAN`). Its pane is stamped as its machine stamps it,
+with the machine as this one knows it; it is told in its inbox there when
+named; it is online while its machine says, every 30 seconds, that the
+pane is there. Its person looks and says things as `you@thatmachine`;
+changing a channel is its own machine's person's. `chat-list --machines`
+lists these channels and then the other machines' (`MACHINE/ID`), and
+`--cached` answers with what was last heard of another machine, asking
+again behind it (the board's page 2 shows them both). Each channel keeps a file a day under `chat` in
 the data directory, for `chat-days` days (30; 0 keeps all); its last 1000
 lines are in memory. `keepane chat <what> ...` runs `chat-<what> ...`.
 
@@ -445,7 +458,8 @@ things are shared with it).
 
 A paired machine has one of two levels here, and nothing until one is
 given. `keepane link share <host:port> <target>...` (`link-share`) shares
-sessions (`work`), windows (`work:logs`) and panes (`%worker`) with it: it
+sessions (`work`), windows (`work:logs`), panes (`%worker`) and group chat
+channels (`#review`: it may look at and join them) with it: it
 sees them (its chart, `link panes`, `link capture`, `link watch`) and may
 send them messages, and nothing else of this machine exists for it; a
 session or a

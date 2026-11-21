@@ -49,6 +49,8 @@ pub(super) enum LinkOp {
     Keys { addr: String, key: String },
     /// `link-attach`: a client made there for `keepane link attach`.
     Attach { addr: String, key: String },
+    /// A group chat request (docs/design/chat.md §10).
+    Chat(Box<super::chat_link::ChatAsk>),
 }
 
 /// How a message handed to another machine is known there, for asking
@@ -321,6 +323,37 @@ impl Server {
         answer: Option<(MsgId, Origin)>,
         wait: Option<u64>,
     ) -> Outcome {
+        self.send_remote_as(cid, addr, to, text, from, carry, answer, wait, None)
+    }
+
+    /// A group chat message for a pane of another machine that joined a
+    /// channel here (docs/design/chat.md §10): marked with the channel, which
+    /// that machine takes it by. Nobody waits for its answer.
+    pub(super) fn send_remote_chat(
+        &mut self,
+        addr: &str,
+        to: &str,
+        text: String,
+        from: Sender,
+        carry: Option<(MsgId, u32)>,
+        channel: &str,
+    ) -> Outcome {
+        self.send_remote_as(None, addr, to, text, from, carry, None, None, Some(channel.to_string()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn send_remote_as(
+        &mut self,
+        cid: Option<ClientId>,
+        addr: &str,
+        to: &str,
+        text: String,
+        from: Sender,
+        carry: Option<(MsgId, u32)>,
+        answer: Option<(MsgId, Origin)>,
+        wait: Option<u64>,
+        chat: Option<String>,
+    ) -> Outcome {
         let key = match self.peer_key(addr) {
             Ok(k) => k,
             Err(e) => return Outcome::Error(e),
@@ -370,6 +403,7 @@ impl Server {
             re: answer.as_ref().map(|(_, o)| o.id),
             into: answer.as_ref().map(|(_, o)| o.task),
             wait,
+            chat,
         };
         let body = serde_json::to_vec(&body).expect("a body serializes");
         let longest = ANSWER_GRACE + Duration::from_secs(wait.unwrap_or(0));
@@ -386,6 +420,10 @@ impl Server {
     /// The answer came (or did not): check it, act on it, tell the client.
     pub(super) fn link_answered(&mut self, a: LinkAnswer) {
         let LinkAnswer { cid, nonce, op, result } = a;
+        let op = match op {
+            LinkOp::Chat(ask) => return self.chat_answered(cid, &nonce, *ask, result),
+            other => other,
+        };
         let op = match op {
             // The chart's asking: kept for it, said to no one.
             LinkOp::Tree { addr, key } => {
@@ -509,7 +547,9 @@ impl Server {
                 Ok(ans) => Outcome::Error(format!("{addr} said: {}", ans.text())),
                 Err(e) => Outcome::Error(e),
             },
-            LinkOp::Tree { .. } | LinkOp::Name { .. } | LinkOp::Access { .. } => unreachable!("answered above"),
+            LinkOp::Tree { .. } | LinkOp::Name { .. } | LinkOp::Access { .. } | LinkOp::Chat(_) => {
+                unreachable!("answered above")
+            }
         };
         if let Some(cid) = cid {
             self.reply(cid, out);

@@ -189,6 +189,7 @@ impl Server {
         let peer = link::Peer { addr: addr.clone(), full: peer.full && !held, ..peer };
         match (req.method.as_str(), req.path.as_str()) {
             ("POST", "/link/send") => self.link_send_in(cid, &req, &nonce, &peer),
+            ("POST", "/link/chat") => self.link_chat_in(cid, &req.body, &nonce, &peer),
             ("GET", "/link/access") => self.link_access_in(&nonce, &peer, held),
             ("GET", "/link/info") => {
                 let text = self.machine_info(&peer);
@@ -687,8 +688,22 @@ impl Server {
         });
         let asker = asker.filter(|p| self.pane_ref(*p).is_some_and(|p| p.actor.mode != WorkMode::Shell));
         let named = self.resolve(Some(&Target::parse(&body.to)), None).ok().map(|(_, _, p)| p);
+        // A group chat message of a channel there that the pane joined: it
+        // asked to be told (docs/design/chat.md §10). Never into a `shell`
+        // pane, where it would run as a command.
+        let joined = body
+            .chat
+            .as_ref()
+            .and_then(|ch| named.filter(|p| self.chat_joined_there(&peer.key, *p, ch)))
+            .filter(|_| Target::parse(&body.to).remote.is_none());
+        if let Some(p) = joined
+            && self.pane_ref(p).is_some_and(|p| p.actor.mode == WorkMode::Shell)
+        {
+            return self.link_answer(nonce, 409, format!("%{p} is in shell mode, where a message runs as a command"));
+        }
         let to = match (asker, named) {
             (Some(a), Some(n)) if a == n && Target::parse(&body.to).remote.is_none() => n,
+            _ if joined.is_some() => joined.expect("just checked"),
             _ => match self.reached(&body.to, nonce, peer) {
                 Ok(p) => p,
                 Err(out) => return out,

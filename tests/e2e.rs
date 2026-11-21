@@ -15254,3 +15254,192 @@ async fn a_merged_record_is_as_many_presses_for_keepanes_own_keys() {
     c.wait_for("five rows on", |s| at(s, "6")).await;
     h.cli(&["kill-server"]).await;
 }
+
+/// A pane of another machine in a channel here (docs/design/chat.md §10):
+/// not shared, the channel is not there for it; shared (`link share MACHINE
+/// #channel`), it lists it, joins it under its machine's stamp, says things
+/// in it, reads it, is told when named in its inbox there, and leaves; taken
+/// back, the channel is gone for it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_of_another_machine_joins_a_channel_over_link() {
+    let _dir = link_test_dir();
+    let a = Harness::start("chata").await;
+    let b = Harness::start("chatb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    let pa = pane_id(&a, "wa:0.0").await;
+    a.cli(&["rename-pane", "-t", &format!("%{pa}"), "blog"]).await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    assert_eq!(b.cli(&["chat-new", "review", "--topic", "the release"]).await.0, 0);
+    let there = format!("{addr_b}/#review");
+    let json = |s: &str| -> serde_json::Value { serde_json::from_str(s).unwrap_or_else(|e| panic!("{e}: {s}")) };
+
+    // Not shared: not there for it.
+    let (code, _, err) = a.cli_in(Some(pa), &["chat-join", &there, "--as", "blog"]).await;
+    assert!(code != 0 && err.contains("no channel #review"), "{err}");
+    assert!(!a.cli(&["chat-list", &addr_b]).await.1.contains("review"));
+
+    // Shared: listed, joined, its machine's stamp kept.
+    let (code, out, err) = b.cli(&["link-share", &addr_a, "#review"]).await;
+    assert!(code == 0 && out.contains("#review shared with"), "{out}{err}");
+    assert!(b.cli(&["link-list"]).await.1.contains("#review"), "link list says what is shared");
+    let (code, out, err) = a.cli(&["chat-list", &addr_b, "-J"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(json(&out).as_array().unwrap().iter().any(|c| c["name"] == "review"), "{out}");
+    // By its name as well, once this machine heard it (asked at a tick).
+    let name = keepane::sysinfo::hostname();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, out, err) = a.cli(&["chat-list", &name]).await;
+        if code == 0 && out.contains("#review") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never by its name {name}: {out}{err}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let (code, out, err) = a.cli_in(Some(pa), &["chat-join", &there, "--as", "blog", "--role", "writer"]).await;
+    assert!(code == 0 && out.contains("blog (writer)"), "{out}{err}");
+    let who = json(&b.cli(&["chat-who", "review", "-J"]).await.1);
+    let blog = who.as_array().unwrap().iter().find(|m| m["handle"] == "blog").expect("a member").clone();
+    assert_eq!(blog["ident"]["addr"], addr_a.as_str(), "where it is, as this machine knows it");
+    assert_eq!(blog["ident"]["pane"], pa, "its pane there");
+    assert_eq!(blog["online"], true);
+
+    // It says something: a line of the channel, its stamp on it.
+    let (code, out, err) = a.cli_in(Some(pa), &["chat-say", &there, "hello from the other machine"]).await;
+    assert!(code == 0 && out.starts_with("#review #"), "{out}{err}");
+    let read = json(&b.cli(&["chat-read", "review", "--all", "-J"]).await.1);
+    let said = read["lines"].as_array().unwrap().iter().find(|l| l["text"] == "hello from the other machine").unwrap();
+    assert_eq!(
+        (said["from"]["handle"].as_str(), said["from"]["ident"]["addr"].as_str()),
+        (Some("blog"), Some(addr_a.as_str()))
+    );
+
+    // The board's list: this machine's channels, then the other's as last
+    // heard (asked behind the first look), by MACHINE/ID with its machine's
+    // name; its lines as last heard.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let remote = loop {
+        let all = json(&a.cli(&["chat-list", "--machines", "-J"]).await.1);
+        if let Some(c) = all.as_array().unwrap().iter().find(|c| c["name"] == "review") {
+            break c.clone();
+        }
+        assert!(Instant::now() < deadline, "never listed: {all}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let rid = remote["id"].as_str().unwrap().to_string();
+    assert!(
+        rid.starts_with(&format!("{addr_b}/")) && !remote["machine"].as_str().unwrap_or_default().is_empty(),
+        "{remote}"
+    );
+    let (code, out, err) = a.cli(&["chat-read", &rid, "--all", "-J", "--cached"]).await;
+    assert!(code == 0 && out.contains("hello from the other machine"), "{out}{err}");
+    // And the board itself, on page 2: the other machine's channel, its
+    // machine's name after it.
+    let exe = env!("CARGO_BIN_EXE_keepane");
+    let (code, _, err) = a.cli(&["new", "-d", "-s", "board", "-x", "160", "-y", "40", exe, "dashboard"]).await;
+    assert_eq!(code, 0, "{err}");
+    a.wait_capture("board:0", "the board", |t| t.contains("[1] Panes")).await;
+    a.cli(&["send-keys", "-t", "board:0", ">"]).await;
+    a.wait_capture("board:0", "the other machine's channel on page 2", |t| t.contains("#review@")).await;
+    a.cli(&["kill-session", "-t", "board"]).await;
+
+    // Named here: told in its inbox there, with the channel.
+    let (code, out, err) = b.cli(&["chat-say", "review", "@blog how is it going"]).await;
+    assert!(code == 0 && !out.contains("not told"), "{out}{err}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, inbox, _) = a.cli(&["list-messages", "-t", &format!("%{pa}")]).await;
+        if inbox.contains("[chat #review]") && inbox.contains("how is it going") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never told: {inbox}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // It reads the channel from there: what came since it last read.
+    let (code, out, err) = a.cli_in(Some(pa), &["chat-read", &there, "--all"]).await;
+    assert!(code == 0 && out.contains("how is it going") && out.contains("hello from the other machine"), "{out}{err}");
+    // Waiting from there: answered when something comes.
+    let wait_argv = ["chat-read", there.as_str(), "--wait", "10"];
+    let waiting = a.cli_in(Some(pa), &wait_argv);
+    let saying = async {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        b.cli(&["chat-say", "review", "a line while it waits"]).await
+    };
+    let ((code, out, err), _) = tokio::join!(waiting, saying);
+    assert!(code == 0 && out.contains("a line while it waits"), "{out}{err}");
+    // The person there looks without joining; a change is not theirs to make.
+    let (code, out, _) = a.cli(&["chat-who", &there]).await;
+    assert!(code == 0 && out.contains("blog"), "{out}");
+    let (code, _, err) = a.cli(&["chat-topic", &there, "mine"]).await;
+    assert!(code != 0 && err.contains("is changed at"), "{err}");
+
+    // It leaves: kept there, marked left.
+    let (code, _, err) = a.cli_in(Some(pa), &["chat-leave", &there]).await;
+    assert_eq!(code, 0, "{err}");
+    let who = json(&b.cli(&["chat-who", "review", "-J"]).await.1);
+    let blog = who.as_array().unwrap().iter().find(|m| m["handle"] == "blog").unwrap().clone();
+    assert_eq!((blog["left"].as_bool(), blog["online"].as_bool()), (Some(true), Some(false)));
+
+    // Taken back: not there for it again.
+    assert_eq!(b.cli(&["link-unshare", &addr_a, "#review"]).await.0, 0);
+    let (code, _, err) = a.cli(&["chat-read", &there]).await;
+    assert!(code != 0 && err.contains("no channel #review"), "{err}");
+    a.cli(&["kill-server"]).await;
+    b.cli(&["kill-server"]).await;
+}
+
+/// The machine a channel is on gone (docs/design/chat.md §10): a command
+/// about its channel says so within seconds; the board's list (`chat-list
+/// --machines`, `--cached`) answers at once with what was last heard, never
+/// waiting for the network.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channels_machine_gone_is_said_and_the_board_does_not_wait() {
+    let _dir = link_test_dir();
+    let a = Harness::start("gonea").await;
+    let b = Harness::start("goneb").await;
+    a.cli(&["new", "-d", "-s", "wa"]).await;
+    b.cli(&["new", "-d", "-s", "wb"]).await;
+    let web = async |h: &Harness| {
+        let (code, status, err) = h.cli(&["web-start", "-p", "0", "-b", "127.0.0.1"]).await;
+        assert_eq!(code, 0, "{err}");
+        let url = keepane::web::status_url(&status).expect(&status).to_string();
+        let addr = url["http://".len()..].split('/').next().unwrap().to_string();
+        (url, addr)
+    };
+    let (_, addr_a) = web(&a).await;
+    let (ub, addr_b) = web(&b).await;
+    assert_eq!(a.cli(&["link-add", &ub]).await.0, 0);
+    assert_eq!(b.cli(&["chat-new", "review"]).await.0, 0);
+    assert_eq!(b.cli(&["link-share", &addr_a, "#review"]).await.0, 0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !a.cli(&["chat-list", "--machines"]).await.1.contains("#review") {
+        assert!(Instant::now() < deadline, "never listed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    b.cli(&["kill-server"]).await;
+    // The board's list: at once, with what was last heard.
+    let started = Instant::now();
+    let (code, out, err) = a.cli(&["chat-list", "--machines"]).await;
+    assert!(code == 0 && out.contains("#review"), "{out}{err}");
+    assert!(started.elapsed() < Duration::from_secs(2), "it waited {:?}", started.elapsed());
+    // A command about the channel: said, within seconds.
+    let started = Instant::now();
+    let (code, _, err) = a.cli(&["chat-read", &format!("{addr_b}/#review")]).await;
+    assert!(code != 0 && !err.trim().is_empty(), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(8), "it took {:?}", started.elapsed());
+    // A machine not paired, by name or address: said at once.
+    let (code, _, err) = a.cli(&["chat-read", "nosuch/#review"]).await;
+    assert!(code != 0 && err.contains("no paired machine"), "{err}");
+    a.cli(&["kill-server"]).await;
+}

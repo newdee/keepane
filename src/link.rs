@@ -728,6 +728,11 @@ pub struct SendBody {
     /// `-w`: wait there until it is delivered, this many seconds at most.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<u64>,
+    /// A group chat message of this channel (its id at the sender's
+    /// machine) for a pane that joined it: taken for that pane without more
+    /// (docs/design/chat.md §10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
 }
 
 /// What the receiver says of it.

@@ -128,7 +128,18 @@ keepane chat list --tag ci
 
 pane 关掉或服务重启后，成员还在频道里，只是变成离线（频道里会写一句）；@ 它不会推送。同名的 pane 回来时（恢复会话会恢复 pane 名），或者有 pane 用它的称呼加入时，它重新在线，接着从原来读到的地方读。成员主动离开（在它的 pane 里 `chat leave 频道`），或者被你移出（在所有 pane 之外 `chat leave 频道 称呼`），都会留在频道里，标成"已离开"：不算成员数，@ 它不推送，同名的 pane 回来也不自动接回；pane 重新加入（用这个称呼，或者同一个 pane 不给称呼）就回来了。离线或离开超过 `chat-days` 天的自动清掉。`chat who` 显示谁在线、离线、已离开。
 
-频道保存在事件日志旁边的 `chat\<socket>\`，每个频道一天一个文件（保留 `chat-days` 天，默认 30），重启后频道、说过的话和你读到哪里都在；agent 重新加入。同样的命令也是 MCP 工具（`chat_list`、`chat_new`、`chat_join`、`chat_say`、`chat_read`、`chat_who`）。dashboard 第 2 页显示群聊。只能在所有 pane 之外运行 `chat delete`，它把频道移到 `chat\deleted\`。别的机器的 pane 加入放在以后的版本。设计稿：[docs/design/chat.md](docs/design/chat.md)。
+频道保存在事件日志旁边的 `chat\<socket>\`，每个频道一天一个文件（保留 `chat-days` 天，默认 30），重启后频道、说过的话和你读到哪里都在；agent 重新加入。同样的命令也是 MCP 工具（`chat_list`、`chat_new`、`chat_join`、`chat_say`、`chat_read`、`chat_who`）。dashboard 第 2 页显示群聊。只能在所有 pane 之外运行 `chat delete`，它把频道移到 `chat\deleted\`。设计稿：[docs/design/chat.md](docs/design/chat.md)。
+
+频道只属于一台机器，配对过的机器（`keepane link`，见下文）上的 pane 可以加入它。在那样的 pane 里，频道前面写上机器：
+
+```powershell
+keepane chat list DFINE                      # 那台机器上你能看的频道
+keepane chat join DFINE/#review --as blog    # 写 host:port 也行
+keepane chat say DFINE/#review "文章发出去了"
+keepane chat read DFINE/#review
+```
+
+本机 server 通过 link 去问那台机器。给了本机 `--full` 的机器能看、能加入任何频道；其余的只能看、加入分享给它的频道（`keepane link share <host:port> #review`，`link unshare` 收回）。pane 的身份由它自己的机器盖章，频道那边再加上是哪台机器；被 `@` 点名时，消息进它在那台机器上的收件箱；它的机器每 30 秒报告一次"这个 pane 还在"，报告着就显示在线。那台机器上的人不用加入就能看、能以 `you@那台机器` 发言；改名、改 tags 只能在频道所在的机器上做。看板第 2 页在本机频道下面列出配对机器上你能看的频道，频道名后面写着是哪台机器的。
 
 ## dashboard
 

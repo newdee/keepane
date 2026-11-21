@@ -3483,7 +3483,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
             // Page 3: the channels, then the picked one's members and lines;
             // what the person had not read of the one shown is read.
             if board.page == CHAT_PAGE {
-                board.chat.set_channels(&ask(&owned(&["chat-list", "-J"])).1);
+                board.chat.set_channels(&ask(&owned(&["chat-list", "--machines", "-J"])).1);
                 let q = board.chat_queries();
                 if let [_, who, read] = q.as_slice() {
                     board.chat.set_members(&ask(who).1);
@@ -4647,6 +4647,36 @@ mod tests {
     }
     /// Page 3: the channels over the picked one's members, its lines on the
     /// right with the latest at the bottom; `<` goes back a page, `>` on;
+    /// Another machine's channel on page 2 (docs/design/chat.md §10): listed
+    /// after these, its machine's name after its own; picked, its members
+    /// and lines asked as last heard (`--cached`), by its `MACHINE/ID`; never
+    /// marked read (the person here has no read position there); said in as
+    /// the person, by the same id.
+    #[test]
+    fn another_machines_channel_is_listed_with_its_machine_and_asked_cached() {
+        let mut b = board();
+        b.resize(160, 30);
+        b.key(Key::ch('>'));
+        b.chat.set_channels(
+            r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0,"unread":0},
+                {"id":"10.0.0.2:7681/0190a-33333333","name":"review","topic":"","tags":[],"members":2,"unread":4,"machine":"mac"}]"#,
+        );
+        assert!(screen(&b).join("\n").contains("#review@mac"), "{}", screen(&b).join("\n"));
+        b.key(Key::ch('j'));
+        let q = b.chat_queries();
+        assert_eq!(q[1], owned(&["chat-who", "10.0.0.2:7681/0190a-33333333", "-J", "--cached"]));
+        assert_eq!(q[2].last().map(String::as_str), Some("--cached"));
+        assert_eq!(b.chat_seen(), None, "not marked read there");
+        b.key(Key::ch('s'));
+        for c in "hi".chars() {
+            b.key(Key::ch(c));
+        }
+        match b.key(Key::plain(KeyCode::Enter)) {
+            Action::Run(argv) => assert_eq!(argv, owned(&["chat-say", "10.0.0.2:7681/0190a-33333333", "--", "hi"])),
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// s, n, t and # ask for text and run the chat command; o goes to a
     /// member's pane; `/` filters the channels; a click picks one.
     #[test]
@@ -4661,7 +4691,7 @@ mod tests {
         assert_eq!((b.page, b.focus), (2, Panel::Channels));
         assert!(strip(&b.foot()).contains("</> page 2/3") && strip(&b.foot()).contains("s say"));
         assert!(screen(&b).join("\n").contains("no channel (n makes one)"));
-        assert_eq!(b.chat_queries(), [owned(&["chat-list", "-J"])], "nothing picked: the list only");
+        assert_eq!(b.chat_queries(), [owned(&["chat-list", "--machines", "-J"])], "nothing picked: the list only");
         b.chat.set_channels(
             r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0,"unread":0},
                 {"id":"0190a-22222222","name":"review","topic":"the release","tags":["ci"],"members":2,"unread":3}]"#,
