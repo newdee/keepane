@@ -1618,6 +1618,10 @@ impl Server {
         text: String,
         carry: Option<(MsgId, u32)>,
     ) -> Result<(), String> {
+        // What keepane put round the line (its header, the lines before it)
+        // is cut, from the end, to what a message may hold: the line said
+        // is never refused for keepane's own words.
+        let text = super::mail::fit_to(text, self.opts.message_max_size);
         match (&to.there, to.pane) {
             (Some(t), _) => self.chat_send_there(cid, &to.ident.addr, t.pane, channel_id, text, carry),
             (None, Some(p)) => self.chat_send(cid, p, text, carry),

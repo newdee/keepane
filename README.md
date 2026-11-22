@@ -158,6 +158,7 @@ holds:
 keepane send-message --to %builder "cargo test"
 keepane send-message --re 12 "the tests pass"          # to whoever sent #12
 keepane send-message --to %lead --task 12 "one more thing"
+keepane send-message --to %builder --in 30m "is the build green?"   # sent then, not now
 ```
 Run inside a pane, `set-work-mode` changes only that pane; run from a
 terminal outside keepane, a key or the `C-b :` prompt, it can change any
@@ -166,6 +167,17 @@ which runs its messages by itself. Renaming, managing inboxes and closing
 panes are not limited by this; a close can be undone with `C-b u` within
 10 seconds. The rule is there to cut down on mistakes, not to isolate
 processes of the same user from each other.
+
+`--in 30m` (or `90s`, `2h`, `1d`) or `--at 14:30` (the next 14:30; or
+`--at "2026-11-23 09:00"`, this machine's time) sends the message then
+instead of now, as a follow-up an agent asks for itself ("look again in
+half an hour"). It is listed under the pane it is for (`list-messages`),
+`drop-message ID` cancels it, and `trace-message` says when it was
+scheduled and sent. The pane is found by its address when it is due
+(`%builder` finds whichever pane is named builder then); when there is
+none, the sender pane is told it was not sent. Scheduled messages are kept
+over a restart: one whose time passed while keepane was not running is
+sent at once, saying how late it is.
 
 ### Group chat
 

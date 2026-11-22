@@ -29,6 +29,8 @@ pub enum Stage {
     /// Handed to another machine (docs/design/link.md): what became of it
     /// there is in that machine's event log; `why` holds what it said.
     Forwarded,
+    /// Sent later (`send-message --in` / `--at`): `why` says when.
+    Scheduled,
 }
 
 impl Stage {
@@ -43,6 +45,7 @@ impl Stage {
             Stage::Dropped => "dropped",
             Stage::Rejected => "rejected",
             Stage::Forwarded => "forwarded",
+            Stage::Scheduled => "scheduled",
         }
     }
 
@@ -57,6 +60,7 @@ impl Stage {
             Stage::Dropped,
             Stage::Rejected,
             Stage::Forwarded,
+            Stage::Scheduled,
         ]
         .into_iter()
         .find(|st| st.as_str() == s)
@@ -66,7 +70,7 @@ impl Stage {
     /// `read-message` is its business from then on: no signal ever says
     /// more, so it counts as done with.
     pub fn finished(self) -> bool {
-        !matches!(self, Stage::Queued | Stage::Delivered)
+        !matches!(self, Stage::Queued | Stage::Delivered | Stage::Scheduled)
     }
 }
 
@@ -87,6 +91,9 @@ pub struct Record {
     pub why: Option<String>,
     /// What an agent's work on it did in its repository.
     pub git: Option<crate::git::Work>,
+    /// Sent later (`send-message --in` / `--at`): when it was scheduled, and
+    /// for whom and when (`for %builder at 2026-11-22 14:30`).
+    pub planned: Option<(Time, String)>,
 }
 
 /// Records kept in memory; older finished ones are only in the files.
@@ -164,6 +171,8 @@ impl Store {
         let ev = if rejected.is_some() { "rejected" } else { "sent" };
         self.write(m.at, ev, &format!(",\"msg\":{},\"text\":{}{why}", m.envelope(), js(&m.text)));
         let stage = if rejected.is_some() { Stage::Rejected } else { Stage::Queued };
+        // One scheduled before: that it was is kept.
+        let planned = self.records.get(&m.id).and_then(|r| r.planned.clone());
         self.records.insert(
             m.id,
             Record {
@@ -176,6 +185,40 @@ impl Store {
                 cut: false,
                 why: rejected.map(String::from),
                 git: None,
+                planned,
+            },
+        );
+        self.trim();
+    }
+
+    /// A message to be sent later, to `target` (as it was given, found when
+    /// due) at `due`.
+    pub fn scheduled(&mut self, m: &Message, target: &str, due: Time) {
+        let when = due.to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+        self.write(
+            m.at,
+            "scheduled",
+            &format!(
+                ",\"msg\":{},\"text\":{},\"target\":{},\"due\":{}",
+                m.envelope(),
+                js(&m.text),
+                js(target),
+                js(&when)
+            ),
+        );
+        self.records.insert(
+            m.id,
+            Record {
+                msg: m.clone(),
+                stage: Stage::Scheduled,
+                delivered: None,
+                ended: None,
+                ok: None,
+                output: None,
+                cut: false,
+                why: None,
+                git: None,
+                planned: Some((m.at, scheduled_why(target, due))),
             },
         );
         self.trim();
@@ -337,7 +380,14 @@ impl Store {
             let Some(day) = today.checked_sub_days(chrono::Days::new(back)) else { continue };
             self.load_file(&dir.join(format!("{}.jsonl", day.format("%Y-%m-%d"))));
         }
-        let open: Vec<MsgId> = self.records.iter().filter(|(_, r)| !r.stage.finished()).map(|(id, _)| *id).collect();
+        // What is scheduled is kept in a file of its own and armed again
+        // there (`schedule.rs`), not dropped.
+        let open: Vec<MsgId> = self
+            .records
+            .iter()
+            .filter(|(_, r)| !r.stage.finished() && r.stage != Stage::Scheduled)
+            .map(|(id, _)| *id)
+            .collect();
         for id in &open {
             self.dropped(*id, "the server restarted");
         }
@@ -355,19 +405,34 @@ impl Store {
             // A message sent, or refused as it was sent, carries itself; one
             // refused later (another machine would not take it: `refused`)
             // carries its id, and ends the record that is there.
-            if ev == "sent" || (ev == "rejected" && v.get("msg").is_some()) {
+            if ev == "sent" || ev == "scheduled" || (ev == "rejected" && v.get("msg").is_some()) {
                 if let Some(m) = message_of(&v["msg"], v["text"].as_str().unwrap_or_default(), at) {
                     let rejected = ev == "rejected";
+                    let due = v["due"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok());
+                    let planned = match due {
+                        Some(due) if ev == "scheduled" => {
+                            Some((at, scheduled_why(v["target"].as_str().unwrap_or_default(), due.into())))
+                        }
+                        // Sent when due: what was planned is kept.
+                        _ => self.records.get(&m.id).and_then(|r| r.planned.clone()),
+                    };
+                    let why = if ev == "scheduled" { None } else { v["why"].as_str().map(String::from) };
+                    let stage = match ev {
+                        "rejected" => Stage::Rejected,
+                        "scheduled" => Stage::Scheduled,
+                        _ => Stage::Queued,
+                    };
                     self.records.insert(
                         m.id,
                         Record {
-                            stage: if rejected { Stage::Rejected } else { Stage::Queued },
+                            stage,
                             delivered: None,
                             ended: rejected.then_some(at),
                             ok: None,
                             output: None,
                             cut: false,
-                            why: v["why"].as_str().map(String::from),
+                            why,
+                            planned,
                             git: None,
                             msg: m,
                         },
@@ -407,7 +472,12 @@ impl Store {
         let m = &r.msg;
         let t = |x: Time| x.format("%H:%M:%S").to_string();
         let mut out = vec![format!("#{id} {} · task #{} · hop {}", r.stage.as_str(), m.task, m.hop), m.header(style)];
-        out.push(format!("  sent       {}", t(m.at)));
+        if let Some((made, what)) = &r.planned {
+            out.push(format!("  scheduled  {}  {what}", t(*made)));
+        }
+        if r.stage != Stage::Scheduled {
+            out.push(format!("  sent       {}", t(m.at)));
+        }
         if let Some(d) = r.delivered {
             let how = if r.stage == Stage::Read { "read" } else { "delivered" };
             out.push(format!("  {how:<10} {}  (queued {})", t(d), since(m.at, d)));
@@ -459,6 +529,8 @@ impl Store {
             "output": r.output,
             "cut": r.cut,
             "git": r.git,
+            // Sent later: when it was scheduled, and whom for and when.
+            "scheduled": r.planned.as_ref().map(|(at, what)| serde_json::json!({ "at": t(*at), "what": what })),
         })
     }
 
@@ -525,7 +597,13 @@ pub fn since(a: Time, b: Time) -> String {
 }
 
 /// A message back from its envelope, as the event log holds it.
-fn message_of(env: &serde_json::Value, text: &str, at: Time) -> Option<Message> {
+/// What a scheduled message's record says of it: `for %builder at
+/// 2026-11-22 14:30`.
+fn scheduled_why(target: &str, due: Time) -> String {
+    format!("for {target} at {}", due.format("%Y-%m-%d %H:%M"))
+}
+
+pub(super) fn message_of(env: &serde_json::Value, text: &str, at: Time) -> Option<Message> {
     let mode = |k: &str| env[k].as_str().and_then(WorkMode::parse);
     let name = env["name"].as_str().map(String::from);
     let from = match env["from"].as_str()? {

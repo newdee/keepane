@@ -87,7 +87,10 @@ pane 当前的状态用一个词表示（`#{pane_state}`，dashboard 和手机�
 keepane send-message --to %builder "cargo test"
 keepane send-message --re 12 "测试通过了"                # 发给第 12 条的发送方
 keepane send-message --to %lead --task 12 "还有一件事"
+keepane send-message --to %builder --in 30m "构建过了吗？"           # 到时间再发
 ```
+
+`--in 30m`（或 `90s`、`2h`、`1d`）或 `--at 14:30`（下一个 14:30；也可以写 `--at "2026-11-23 09:00"`，按这台机器的时间）让消息到时间再发，比如 agent 给自己留一句"半小时后再看一眼"。它列在目标 pane 下面（`list-messages`），`drop-message 编号` 取消，`trace-message` 写着什么时候定的、什么时候发的。到时间才按地址找 pane（`%builder` 找那时叫 builder 的 pane）；找不到时，发送方的 pane 会收到"没发出去"的通知。定时消息重启后还在：keepane 没运行期间到了时间的，启动后立刻发出，并写明晚了多久。
 
 在 pane 内运行 `set-work-mode`，只能修改当前 pane；从外部终端、快捷键或 `C-b :` 命令行运行时，可以修改任意 pane。这样，pane 内的程序不能直接把别的 pane 切成自动执行消息的 `shell` 模式。改名、管理收件箱和关闭 pane 不受这条限制；关闭操作可在 10 秒内用 `C-b u` 撤销。此规则用于减少误操作，并非针对同一用户进程的安全隔离。
 

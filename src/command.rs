@@ -255,6 +255,87 @@ pub enum ChatCmd {
     },
 }
 
+/// When a scheduled message goes (`send-message --in` / `--at`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Due {
+    /// This many seconds from when it is sent.
+    In(u64),
+    /// This machine's local time: a time of day (`14:30`, the next one) or a
+    /// day and a time (`2026-11-23 09:00`), as it was typed.
+    At(String),
+}
+
+/// How far ahead a message may be scheduled.
+pub const DUE_MOST_SECS: u64 = 30 * 86_400;
+
+/// `--in`'s value: seconds, or a number with `s`, `m`, `h` or `d`.
+fn due_in(v: &str) -> Option<u64> {
+    let v = v.trim();
+    let (num, unit) = match v.char_indices().last()? {
+        (i, c) if c.is_ascii_alphabetic() => (&v[..i], c.to_ascii_lowercase()),
+        _ => (v, 's'),
+    };
+    let mult = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        _ => return None,
+    };
+    num.parse::<u64>().ok()?.checked_mul(mult).filter(|s| (1..=DUE_MOST_SECS).contains(s))
+}
+
+/// `--at`'s value as a day and time, or a time of day.
+fn due_at(v: &str) -> Option<Result<chrono::NaiveDateTime, chrono::NaiveTime>> {
+    let v = v.trim();
+    for f in ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"] {
+        if let Ok(t) = chrono::NaiveDateTime::parse_from_str(v, f) {
+            return Some(Ok(t));
+        }
+    }
+    for f in ["%H:%M", "%H:%M:%S"] {
+        if let Ok(t) = chrono::NaiveTime::parse_from_str(v, f) {
+            return Some(Err(t));
+        }
+    }
+    None
+}
+
+/// When `due` is, said at `now`: a time of day already past today is
+/// tomorrow's; a day and time past, or further than `DUE_MOST_SECS`, is no
+/// time to schedule for.
+pub fn due_time(due: &Due, now: chrono::DateTime<chrono::Local>) -> Result<chrono::DateTime<chrono::Local>, String> {
+    use chrono::TimeZone;
+    let at = match due {
+        Due::In(secs) => now + chrono::Duration::seconds(*secs as i64),
+        Due::At(v) => {
+            let local = |t: chrono::NaiveDateTime| {
+                chrono::Local
+                    .from_local_datetime(&t)
+                    .earliest()
+                    .ok_or_else(|| format!("--at {v}: no such time here (a clock change?)"))
+            };
+            match due_at(v).ok_or_else(|| format!("--at {v}: a time (14:30) or a day and time (2026-11-23 09:00)"))? {
+                Ok(t) => {
+                    let at = local(t)?;
+                    if at <= now {
+                        return Err(format!("--at {v}: that time has passed"));
+                    }
+                    at
+                }
+                Err(t) => {
+                    let today = local(now.date_naive().and_time(t))?;
+                    if today > now { today } else { local((now.date_naive() + chrono::Days::new(1)).and_time(t))? }
+                }
+            }
+        }
+    };
+    if (at - now).num_seconds() > DUE_MOST_SECS as i64 {
+        return Err(format!("more than {} days ahead", DUE_MOST_SECS / 86_400));
+    }
+    Ok(at)
+}
+
 /// What `share` is asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShareWhat {
@@ -392,6 +473,8 @@ pub enum Cmd {
         task: Option<u64>,
         wait: Option<u64>,
         text: String,
+        /// `--in` / `--at`: sent then, not now.
+        due: Option<Due>,
     },
     /// `read-message [-t pane] [-w seconds]`: take the oldest message.
     ReadMessage {
@@ -1381,9 +1464,14 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
-            Cmd::SendMessage { target, reply, re, task, wait, text } => {
+            Cmd::SendMessage { target, reply, re, task, wait, text, due } => {
                 f.write_str("send-message")?;
                 fmt_target(f, target)?;
+                match due {
+                    Some(Due::In(s)) => write!(f, " --in {s}s")?,
+                    Some(Due::At(v)) => write!(f, " --at {}", quote(v))?,
+                    None => {}
+                }
                 if *reply {
                     f.write_str(" -r")?;
                 }
@@ -3188,7 +3276,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("hints", &[]),
     ("shell-history", &["-c", "-m", "-n", "-t"]),
     ("list-done", &["-a", "-J"]),
-    ("send-message", &["-t", "-r", "-w", "--to", "--re", "--task"]),
+    ("send-message", &["-t", "-r", "-w", "--to", "--re", "--task", "--in", "--at"]),
     ("read-message", &["-t", "-w"]),
     ("list-messages", &["-t", "-a", "-J"]),
     ("trace-message", &["-w", "-J"]),
@@ -3805,7 +3893,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ListDone { after, json }
         }
         "send-message" => {
-            let (mut target, mut reply, mut wait, mut re, mut task) = (None, false, None, None, None);
+            let (mut target, mut reply, mut wait, mut re, mut task, mut due) = (None, false, None, None, None, None);
             let id = |flag: &str, v: &str| -> Result<u64, String> {
                 v.trim_start_matches('#')
                     .parse::<u64>()
@@ -3820,6 +3908,24 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     "--re" => re = Some(id("--re", a.value("--re")?)?),
                     "--task" => task = Some(id("--task", a.value("--task")?)?),
                     "-w" => wait = Some(seconds(n, a.value("-w")?)?),
+                    f @ ("--in" | "--at") => {
+                        if due.is_some() {
+                            return Err(format!("{n}: --in or --at, once"));
+                        }
+                        let v = a.value(f)?;
+                        due = Some(if f == "--in" {
+                            Due::In(due_in(v).ok_or_else(|| {
+                                format!("{n}: --in takes how long (90s, 30m, 2h, 1d; 30 days at most), not '{v}'")
+                            })?)
+                        } else {
+                            if due_at(v).is_none() {
+                                return Err(format!(
+                                    "{n}: --at takes a time (14:30) or a day and time (2026-11-23 09:00), not '{v}'"
+                                ));
+                            }
+                            Due::At(v.to_string())
+                        });
+                    }
                     f @ ("--from" | "--name" | "--mode" | "--id" | "--hop" | "--via") => {
                         return Err(format!(
                             "{n}: {f} is keepane's to fill in (who sends, its number, its hop and how it goes are never the sender's word)"
@@ -3831,11 +3937,14 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             if reply && (target.is_some() || re.is_some()) {
                 return Err(format!("{n}: -r answers the message being worked on; it takes no --to or --re"));
             }
+            if due.is_some() && wait.is_some() {
+                return Err(format!("{n}: a scheduled message is not waited for (trace-message -w, once it is sent)"));
+            }
             let text = a.rest().join(" ");
             if text.is_empty() {
                 return Err(format!("{n}: text required"));
             }
-            Cmd::SendMessage { target, reply, re, task, wait, text }
+            Cmd::SendMessage { target, reply, re, task, wait, text, due }
         }
         "read-message" => {
             let (mut target, mut wait) = (None, None);
@@ -6289,6 +6398,51 @@ mod tests {
             let shown = parsed.to_string();
             assert_eq!(p(&shown), parsed, "roundtrip of {c:?} via {shown:?}");
         }
+    }
+
+    /// `send-message --in` / `--at`: how long, or when; one of them, once;
+    /// not with `-w`; read back as written. `due_time` makes them a time: a
+    /// time of day already past is tomorrow's, a day and time past is
+    /// refused, and so is one more than 30 days ahead.
+    #[test]
+    fn a_message_is_scheduled_by_how_long_or_when() {
+        let due = |s: &str| match p(s) {
+            Cmd::SendMessage { due, .. } => due,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(due("send-message --to %b --in 90 hi"), Some(Due::In(90)));
+        assert_eq!(due("send-message --to %b --in 30m hi"), Some(Due::In(1800)));
+        assert_eq!(due("send-message --to %b --in 2H hi"), Some(Due::In(7200)));
+        assert_eq!(due("send-message --to %b --in 1d hi"), Some(Due::In(86_400)));
+        assert_eq!(due("send-message --to %b --at 14:30 hi"), Some(Due::At("14:30".into())));
+        assert_eq!(due("send-message --to %b --at \"2026-11-23 09:00\" hi"), Some(Due::At("2026-11-23 09:00".into())));
+        assert_eq!(due("send-message --to %b hi"), None);
+        for bad in [
+            "send-message --to %b --in 0 hi",
+            "send-message --to %b --in 31d hi",
+            "send-message --to %b --in 5x hi",
+            "send-message --to %b --in soon hi",
+            "send-message --to %b --at 25:00 hi",
+            "send-message --to %b --at tomorrow hi",
+            "send-message --to %b --in 5m --at 14:30 hi",
+            "send-message --to %b --in 5m -w 10 hi",
+        ] {
+            assert!(parse_line(bad).is_err(), "{bad}");
+        }
+        for c in ["send-message --to %b --in 600s -- hi", "send-message --to %b --at \"2026-11-23 09:00\" -- hi"] {
+            let parsed = p(c);
+            assert_eq!(p(&parsed.to_string()), parsed, "{c}");
+        }
+        use chrono::TimeZone;
+        let now = chrono::Local.with_ymd_and_hms(2026, 11, 22, 15, 0, 0).unwrap();
+        let at = |d: Due| due_time(&d, now).map(|t| t.format("%Y-%m-%d %H:%M").to_string());
+        assert_eq!(at(Due::In(90 * 60)), Ok("2026-11-22 16:30".into()));
+        assert_eq!(at(Due::At("16:00".into())), Ok("2026-11-22 16:00".into()), "later today");
+        assert_eq!(at(Due::At("14:30".into())), Ok("2026-11-23 14:30".into()), "past today: tomorrow");
+        assert_eq!(at(Due::At("15:00".into())), Ok("2026-11-23 15:00".into()), "now itself: tomorrow");
+        assert_eq!(at(Due::At("2026-11-24 09:00".into())), Ok("2026-11-24 09:00".into()));
+        assert!(at(Due::At("2026-11-22 14:00".into())).unwrap_err().contains("has passed"));
+        assert!(at(Due::At("2027-01-01 09:00".into())).unwrap_err().contains("more than 30 days"));
     }
 
     /// `chat-say --file`: as many as sent, before the text, which may then

@@ -76,6 +76,22 @@ pub(super) fn unheard_advice(pid: PaneId, program: Option<&str>) -> String {
     )
 }
 
+/// What keepane puts after a message it cut to fit.
+const CUT_MARK: &str = "\n… (cut: longer than message-max-size)";
+
+/// A message keepane made up (a header and lines round what was said) cut,
+/// from the end, to `max` bytes on a character's edge, marked so; as it is
+/// when it fits. What a sender wrote is checked against `max` as sent; this
+/// is for keepane's own words round it, which must not get it refused.
+pub(super) fn fit_to(text: String, max: usize) -> String {
+    if text.len() <= max {
+        return text;
+    }
+    let room = max.saturating_sub(CUT_MARK.len());
+    let end = (0..=room).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+    format!("{}{CUT_MARK}", &text[..end])
+}
+
 impl Server {
     pub(super) fn pane_ref(&self, id: PaneId) -> Option<&super::pane::Pane> {
         self.sessions.iter().flat_map(|s| s.windows.iter()).find_map(|w| w.pane(id))
@@ -110,7 +126,7 @@ impl Server {
 
     /// The pane a mail command is about: the one named, else the caller's
     /// own, else the current pane of the attached client.
-    fn mail_target(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<PaneId, String> {
+    pub(super) fn mail_target(&self, target: Option<&Target>, cid: Option<ClientId>) -> Result<PaneId, String> {
         if target.is_none()
             && let Some(p) = self.caller_pane(cid)
         {
@@ -207,8 +223,8 @@ impl Server {
     /// Run a pane-message command.
     pub(super) fn exec_mail(&mut self, cmd: Cmd, cid: Option<ClientId>) -> Outcome {
         let out = match cmd {
-            Cmd::SendMessage { target, reply, re, task, wait, text } => {
-                self.send_message(cid, target.as_ref(), Answer { reply, re, task }, wait, text)
+            Cmd::SendMessage { target, reply, re, task, wait, text, due } => {
+                self.send_message(cid, target.as_ref(), Answer { reply, re, task }, wait, text, due)
             }
             Cmd::ReadMessage { target, wait } => self.read_message(cid, target.as_ref(), wait),
             Cmd::ListMessages { target, all, json } => self.list_messages(cid, target.as_ref(), all, json),
@@ -265,6 +281,7 @@ impl Server {
         answer: Answer,
         wait: Option<u64>,
         text: String,
+        due: Option<crate::command::Due>,
     ) -> Outcome {
         let Answer { reply, re, task: into_task } = answer;
         let me = self.caller_pane(cid);
@@ -294,6 +311,10 @@ impl Server {
             carry = Some((t, furthest + 1));
         }
         let reply = reply || (re.is_some() && target.is_none());
+        // Sent later: made now, kept until due (schedule.rs).
+        if let Some(due) = due {
+            return self.schedule_send(cid, target, reply, answering.as_ref(), carry, re, text, &due);
+        }
         // A pane of another machine (docs/design/link.md): what was asked
         // for by `host:port/…`, or the sender of a message that came from
         // there. It goes out through `send_remote`; the record here says so.
@@ -712,7 +733,8 @@ impl Server {
         for pid in panes {
             let Some(p) = self.pane_ref(pid) else { continue };
             let a = &p.actor;
-            if all && a.inbox.is_empty() && a.current.is_none() {
+            let later = self.scheduled_for(Some(pid));
+            if all && a.inbox.is_empty() && a.current.is_none() && later.is_empty() {
                 continue;
             }
             let state = match a.mode {
@@ -748,6 +770,21 @@ impl Server {
                 let mismatch = if m.via != a.mode { format!("  [sent for {}]", m.via.as_str()) } else { String::new() };
                 out.push(format!("  #{}  from {from}  waiting {waited}  {first}{more}{mismatch}", m.id));
             }
+            // Sent later (schedule.rs), soonest first.
+            out.extend(later.iter().map(|s| self.scheduled_line(s, now)));
+        }
+        // All: those for a pane of another machine, or for one not there now.
+        if all {
+            let elsewhere: Vec<String> = self
+                .scheduled_for(None)
+                .into_iter()
+                .filter(|s| self.scheduled_pane(&s.target).is_none())
+                .map(|s| self.scheduled_line(s, now))
+                .collect();
+            if !elsewhere.is_empty() {
+                out.push(format!("elsewhere (another machine, or no such pane now) · {} scheduled", elsewhere.len()));
+                out.extend(elsewhere);
+            }
         }
         Outcome::Text(out.join("\n"))
     }
@@ -765,7 +802,8 @@ impl Server {
         for &pid in panes {
             let Some(p) = self.pane_ref(pid) else { continue };
             let a = &p.actor;
-            if all && a.inbox.is_empty() && a.current.is_none() {
+            let later = self.scheduled_for(Some(pid));
+            if all && a.inbox.is_empty() && a.current.is_none() && later.is_empty() {
                 continue;
             }
             let own = format!(".%{pid}");
@@ -801,6 +839,14 @@ impl Server {
                     "for": (m.via != a.mode).then(|| m.via.as_str()),
                 })).collect::<Vec<_>>(),
                 "recent": recent,
+                // Sent later: when, and in how many seconds.
+                "scheduled": later.iter().map(|s| json!({
+                    "id": s.msg.id,
+                    "from": from(&s.msg.from),
+                    "due": s.due.to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+                    "in": (s.due - now).num_seconds().max(0),
+                    "text": s.msg.text,
+                })).collect::<Vec<_>>(),
             }));
         }
         serde_json::Value::Array(out).to_string()
@@ -835,6 +881,10 @@ impl Server {
             return Outcome::Text(self.stand(id));
         }
         let id = id.expect("parser: an id or -u");
+        // A scheduled one: cancelled.
+        if let Some(out) = self.scheduled_cancel(id, &by) {
+            return out;
+        }
         let Some(pid) = self.holder(id) else {
             return Outcome::Error(format!("#{id} is not waiting in any inbox"));
         };
@@ -1064,7 +1114,7 @@ impl Server {
         let mut out = vec![self.whoami(new)];
         if let Some(text) = message {
             let t = Target { pane_id: Some(new), ..Default::default() };
-            match self.send_message(cid, Some(&t), Answer { reply: false, re: None, task: None }, None, text) {
+            match self.send_message(cid, Some(&t), Answer { reply: false, re: None, task: None }, None, text, None) {
                 Outcome::Text(s) => out.push(s),
                 Outcome::Error(e) => out.push(e),
                 _ => {}
@@ -1320,6 +1370,7 @@ impl Server {
             }
         }
         self.sync_event_log();
+        self.scheduled_tick();
         // A pane can go in many ways (killed, exited, its session or the
         // server's): whatever the way, a wait on it is answered within the second.
         self.wake_waits();
@@ -1346,6 +1397,7 @@ impl Server {
         self.sync_event_log();
         let dropped = self.observe.load(1);
         self.next_msg = self.observe.last_id();
+        self.scheduled_start();
         if dropped > 0 {
             self.note_message(&format!(
                 "{dropped} undelivered messages were dropped when the server restarted; see the event log"
@@ -1374,7 +1426,21 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
-    use super::unheard_advice;
+    use super::{CUT_MARK, fit_to, unheard_advice};
+
+    /// What fits is as it is; what does not is cut from the end on a
+    /// character's edge (never inside a Chinese character), marked, within
+    /// the limit.
+    #[test]
+    fn a_message_keepane_made_is_cut_to_fit() {
+        assert_eq!(fit_to("short".into(), 100), "short");
+        let exact = "x".repeat(100);
+        assert_eq!(fit_to(exact.clone(), 100), exact);
+        let long = format!("{}{}", "中".repeat(60), "tail");
+        let cut = fit_to(long, 100);
+        assert!(cut.len() <= 100 && cut.ends_with(CUT_MARK) && cut.starts_with("中"), "{cut:?}");
+        assert!(!cut.contains("tail"), "the end goes first");
+    }
 
     /// The advice names the agent the pane runs, when it is one `setup`
     /// knows (Codex needs its hook trusted too), else points at the list.

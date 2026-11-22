@@ -165,3 +165,5 @@ MCP 工具：`chat_list`、`chat_new`、`chat_join`、`chat_say`、`chat_read`�
 - **怎么读**：`chat read CHAN --thread N`（MCP `chat_read` 的 `thread`）给出话题第一行和全部回复（内存里的最后 1000 行之内），不移动读到哪里；用话题里任何一行的行号都行。
 - **显示**：`chat read` 的行写 `↩ #42`；dashboard 气泡和网页在回复上方引用被回复那一行的开头（找不到就只写行号）；网页点"回复"后输入框上方出现"正在回复 #42 …"，X 或 Esc 取消，发出后自动取消。
 - **别的机器**：`--re` 和 `--thread` 也经 link 传（请求里多两个字段；老版本收到会忽略，回复就成了普通的一行）。
+
+补充（0.89.0）：keepane 给成员的消息（@ 的通知、--hear all 的汇总）里，自己加的标题和"上次读到之后的话"如果让消息超过 `message-max-size`，从末尾截掉并注明"(cut: longer than message-max-size)"，所说的那一行本身不截；以前整条会被拒，成员收不到（`mail::fit_to`，在 `chat_deliver` 里统一处理）。

@@ -60,7 +60,7 @@ History (what panes printed, a file a day, 30 days):  choose-history [-s text] (
 Panes that talk (a name, a work mode, an inbox; docs/design/mailbox.md):
   rename-pane [-t pane] name   (then -t %name finds it; a full address $1:@3.%7 works too)   whoami
   set-work-mode [-t pane] normal|shell|ai   (shell: runs what it gets; ai: its agent says pane-ready; from a pane, only that pane)
-  send-message [--to pane] [-r | --re id] [--task id] [-w secs] text   read-message [-w secs]   list-messages [-t pane] [-a]
+  send-message [--to pane] [-r | --re id] [--task id] [-w secs | --in 30m | --at 14:30] text   read-message [-w secs]   list-messages [-t pane] [-a]
   trace-message id [-w secs] [-J]   drop-message id | -u   move-message id up|down|top   pane-status [text]
   pane-wait [-q] [-t pane] [text]   (the pane waits for you: done-events wait; an agent's hook gives it on standard input)
   list-tasks [-t session]   show-task id [-J]   list-events [-t target] [-S 1h] [-n lines]   (the event log, 30 days)

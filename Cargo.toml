@@ -1,6 +1,6 @@
 [package]
 name = "keepane"
-version = "0.88.0"
+version = "0.89.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A terminal workspace for AI agents: persistent panes, an inbox for each, and what every agent is doing; tmux's keys and commands."

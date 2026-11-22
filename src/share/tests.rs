@@ -246,6 +246,31 @@ async fn a_folder_is_a_zip_a_reader_takes() {
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
+/// A file still being written (a log another program holds open) goes into
+/// the zip whole, as far as it is written: its size is the file's own, not
+/// the copy the folder's list keeps, which Windows brings up to date only
+/// later (it said nothing yet, and the file went in empty).
+#[tokio::test]
+async fn a_file_still_being_written_goes_in_whole() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("keepane-share-open-{}", std::process::id())).join("logs");
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut log = std::fs::File::create(dir.join("run.log")).unwrap();
+    let body: Vec<u8> = (0..100_000u32).map(|i| b"0123456789\n"[(i % 11) as usize]).collect();
+    log.write_all(&body).unwrap();
+    log.flush().unwrap();
+    // Still open while it is zipped.
+    let mut z = Vec::new();
+    write_zip(&mut z, &dir, "logs", false).await.unwrap();
+    let found = read_zip(&z, false);
+    let run = found.iter().find(|f| f.name == "logs/run.log").expect("in the zip");
+    assert_eq!(run.data.len(), body.len(), "as much as was written");
+    assert_eq!(run.data, body);
+    drop(log);
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
 #[tokio::test]
 async fn an_empty_folder_is_a_zip_of_one_entry() {
     let dir = std::env::temp_dir().join(format!("keepane-share-empty-{}", std::process::id()));

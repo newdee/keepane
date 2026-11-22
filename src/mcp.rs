@@ -100,13 +100,18 @@ fn tools() -> Vec<Value> {
             "send_message",
             "Send a message to a pane. Returns its id and whether it was delivered or queued. \
              With re, it answers that message (and goes to its sender unless to says otherwise); \
-             with task, it carries that task on. Who sends it, its id and its hop are keepane's to fill in.",
+             with task, it carries that task on. Who sends it, its id and its hop are keepane's to fill in. \
+             With in (90s, 30m, 2h, 1d) or at (14:30, or 2026-11-23 09:00, this machine's time), it is sent then \
+             instead, to the pane its address names then (kept over a restart); list_messages shows it, \
+             drop_message cancels it.",
             json!({
                 "to": pane.clone(),
                 "text": s("The message"),
                 "re": n("The number of the message this answers"),
                 "task": n("The number of the task this carries on"),
                 "wait_seconds": n("Wait until it is delivered"),
+                "in": s("Send it this long from now instead: 90s, 30m, 2h, 1d (30 days at most)"),
+                "at": s("Send it at this time instead: 14:30 (the next one) or 2026-11-23 09:00"),
             }),
             &["text"],
         ),
@@ -353,6 +358,11 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             }
             if let Some(w) = num("wait_seconds") {
                 c.extend(["-w".into(), w]);
+            }
+            for f in ["in", "at"] {
+                if let Some(x) = str_of(f) {
+                    c.extend([format!("--{f}"), x]);
+                }
             }
             c.push("--".into());
             c.push(need("text")?);
@@ -685,6 +695,12 @@ mod tests {
             ["send-message", "--to", "%b", "--", "-not a flag"]
         );
         assert!(command("send_message", &json!({"to": "%b"})).is_err());
+        let later = command("send_message", &json!({"to": "%b", "text": "check", "in": "30m"})).unwrap();
+        assert_eq!(later, ["send-message", "--to", "%b", "--in", "30m", "--", "check"]);
+        assert!(crate::command::parse(&later).is_ok(), "{later:?}");
+        let at = command("send_message", &json!({"to": "%b", "text": "check", "at": "2026-11-23 09:00"})).unwrap();
+        assert_eq!(at, ["send-message", "--to", "%b", "--at", "2026-11-23 09:00", "--", "check"]);
+        assert!(crate::command::parse(&at).is_ok(), "{at:?}");
         // A chat line: its files before the text, each a --file; files alone
         // with no text; neither, refused. Each reads as a chat-say.
         let say = command("chat_say", &json!({"channel": "review", "text": "-see", "files": ["a.png", "b c.md"]}));

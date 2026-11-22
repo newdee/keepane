@@ -540,15 +540,23 @@ pub async fn write_zip<W: AsyncWrite + Unpin>(out: &mut W, dir: &Path, root: &st
             let entry = format!("{name}{}", e.file_name().to_string_lossy());
             // A link (a Windows junction too) is a kind of its own here, not
             // followed: neither a folder nor a file, so left out below.
+            // Its size and time from the thing itself, not from the folder's
+            // list: Windows keeps a copy of them in the list and brings it up
+            // to date later, so a file just written read short and its time
+            // came out otherwise the next time (2026-11-22).
             if kind.is_dir() {
-                let Ok(m) = e.metadata().await else {
+                let Ok(m) = tokio::fs::metadata(e.path()).await else {
                     left_out += 1;
                     continue;
                 };
                 out.write_all(&zip.folder(&format!("{entry}/"), when(&m))).await?;
                 folders.push((e.path(), format!("{entry}/")));
             } else if kind.is_file() {
-                let (Ok(m), Ok(f)) = (e.metadata().await, tokio::fs::File::open(e.path()).await) else {
+                let Ok(f) = tokio::fs::File::open(e.path()).await else {
+                    left_out += 1;
+                    continue;
+                };
+                let Ok(m) = f.metadata().await else {
                     left_out += 1;
                     continue;
                 };

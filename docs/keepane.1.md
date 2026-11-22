@@ -143,7 +143,11 @@ window named after it; `s` connects in a split, `y` copies the command,
 
 `rename-pane` (then `-t %name` finds it), `whoami`, `set-work-mode`
 (`normal`, `shell` or `ai`), `send-message` (`--to` a pane, `--re` a message,
-`--task`), `read-message`, `list-messages`, `trace-message` (`-J`: as JSON), `drop-message`,
+`--task`; `--in 30m` or `--at 14:30` sends it then: listed under its pane
+(`list-messages`), cancelled with `drop-message`, found by its address when
+it is due, its sender told when no pane is there; kept over a restart, one
+due meanwhile sent at once saying how late; 30 days ahead at most, 100 bytes short of `message-max-size` (room to say it is late), 1000 at
+once), `read-message`, `list-messages`, `trace-message` (`-J`: as JSON), `drop-message`,
 `move-message`, `pane-ready`, `pane-status`, `list-tasks`, `show-task` (`-J`),
 `list-events`, `create-pane`, `mcp` (MCP for an agent in a pane), `setup`
 (`setup` alone lists the agents and what each lacks; `setup claude`, `codex`,

@@ -15622,3 +15622,161 @@ async fn a_reply_tells_who_said_the_line_and_the_thread_reads_whole() {
     assert!(code != 0 && err.contains("has no line #999"), "{err}");
     h.cli(&["kill-server"]).await;
 }
+
+/// A scheduled message, end to end: made now (its number, who sends it),
+/// listed under the pane it is for, sent to it when due (its trace says it
+/// was scheduled, then sent); cancelled with drop-message; and when the pane
+/// it names is gone by then, the sender pane is told it was not sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scheduled_message_goes_when_due_or_its_sender_is_told() {
+    let h = Harness::start("schedule").await;
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    h.cli(&["split-window", "-d", "-t", "s:0"]).await;
+    h.cli(&["split-window", "-d", "-t", "s:0"]).await;
+    let (lead, builder, ghost) = (pane_id(&h, "s:0.0").await, pane_id(&h, "s:0.1").await, pane_id(&h, "s:0.2").await);
+    for (p, name) in [(lead, "lead"), (builder, "builder"), (ghost, "ghost")] {
+        h.cli(&["rename-pane", "-t", &format!("%{p}"), name]).await;
+    }
+    let (code, out, err) =
+        h.cli_in(Some(lead), &["send-message", "--to", "%builder", "--in", "2s", "check the build"]).await;
+    assert!(code == 0 && out.contains("scheduled for %builder at") && out.contains("(in 2s)"), "{out}{err}");
+    let id = out.trim_start_matches('#').split_whitespace().next().unwrap().to_string();
+    // A pane not there now: said at once, not when due.
+    let (code, _, err) = h.cli(&["send-message", "--to", "%nobody", "--in", "5m", "x"]).await;
+    assert!(code != 0 && err.contains("can't find pane"), "{err}");
+    // Listed under it, not queued yet.
+    let (_, list, _) = h.cli(&["list-messages", "-t", "%builder"]).await;
+    assert!(
+        list.contains("0 queued") && list.contains(&format!("#{id}  from ")) && list.contains("scheduled for"),
+        "{list}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&h.cli(&["list-messages", "-t", "%builder", "-J"]).await.1).unwrap();
+    assert_eq!(json[0]["scheduled"][0]["text"], "check the build", "{json}");
+    // When due: in its inbox, from the pane that scheduled it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, list, _) = h.cli(&["list-messages", "-t", "%builder"]).await;
+        if list.contains("1 queued") {
+            assert!(list.contains(&format!("#{id}  from ")) && list.contains("check the build"), "{list}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "never sent: {list}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (_, trace, _) = h.cli(&["trace-message", &id]).await;
+    assert!(trace.contains("scheduled") && trace.contains("for %builder at") && trace.contains("  sent "), "{trace}");
+    // Cancelled before its time.
+    let (_, out, _) = h.cli_in(Some(lead), &["send-message", "--to", "%builder", "--in", "1h", "never"]).await;
+    let later = out.trim_start_matches('#').split_whitespace().next().unwrap().to_string();
+    let (code, out, err) = h.cli(&["drop-message", &later]).await;
+    assert!(code == 0 && out.contains("cancelled"), "{out}{err}");
+    assert!(!h.cli(&["list-messages", "-t", "%builder"]).await.1.contains("never"));
+    assert!(h.cli(&["trace-message", &later]).await.1.contains("cancelled by user"));
+    // Its pane gone by the time it is due: the sender is told.
+    let (code, out, err) =
+        h.cli_in(Some(lead), &["send-message", "--to", "%ghost", "--in", "2s", "are you there"]).await;
+    assert_eq!(code, 0, "{out}{err}");
+    h.cli(&["kill-pane", "-t", &format!("%{ghost}")]).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, list, _) = h.cli(&["list-messages", "-t", "%lead"]).await;
+        if list.contains("was not sent") {
+            assert!(list.contains("no pane %ghost when it was due"), "{list}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "sender never told: {list}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    h.cli(&["kill-server"]).await;
+}
+
+/// A scheduled message is kept over a restart: the server stopped, its time
+/// passing meanwhile (the file says it was due two hours ago), the next
+/// server sends it to the pane its address names now (brought back with the
+/// session), first saying how late it is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scheduled_message_is_kept_over_a_restart_and_sent_late() {
+    let dir = std::env::temp_dir().join(format!("keepane-sched-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let place = dir.to_string_lossy().replace('\\', "/");
+    let conf = format!("set -g sessions-dir \"{place}\"\n");
+    let h = Harness::start_with("schedrestart", &conf).await;
+    // The harness points sessions-dir at its own, which the next start empties.
+    assert_eq!(h.cli(&["set", "-g", "sessions-dir", &place]).await.0, 0);
+    h.cli(&["new", "-d", "-s", "keep"]).await;
+    let builder = pane_id(&h, "keep:0.0").await;
+    h.cli(&["rename-pane", "-t", &format!("%{builder}"), "builder"]).await;
+    let (code, out, err) = h.cli(&["send-message", "--to", "%builder", "--in", "1h", "after the restart"]).await;
+    assert_eq!(code, 0, "{out}{err}");
+    let id = out.trim_start_matches('#').split_whitespace().next().unwrap().to_string();
+    assert_eq!(h.cli(&["save-session", "-a"]).await.0, 0);
+    h.cli(&["kill-server"]).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Its time passes while no server runs.
+    let file = dir.join("scheduled").join(format!("{}.json", keepane::histlog::safe_name(&h.socket)));
+    let mut kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    kept[0]["due"] = (chrono::Local::now() - chrono::Duration::hours(2)).to_rfc3339().into();
+    std::fs::write(&file, kept.to_string()).unwrap();
+    let h = Harness::start_with("schedrestart", &format!("{conf}set -g restore-on-start on\n")).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, list, _) = h.cli(&["list-messages", "-t", "%builder"]).await;
+        if list.contains("1 queued") {
+            assert!(list.contains(&format!("#{id}  from user")), "{list}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "never sent after the restart: {list}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (_, json, _) = h.cli(&["list-messages", "-t", "%builder", "-J"]).await;
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let text = v[0]["queued"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with("(scheduled for ") && text.contains("2h late") && text.ends_with("\nafter the restart"),
+        "{text}"
+    );
+    assert!(!file.exists(), "sent: nothing left to keep");
+    // Scheduled is not "dropped by the restart" in the event log: only sent.
+    let (_, events, _) = h.cli(&["list-events", "-n", "200"]).await;
+    let mine: Vec<&str> = events
+        .lines()
+        .filter(|l| l.contains(&format!("\"id\":{id},")) || l.contains(&format!("\"id\":{id}}}")))
+        .collect();
+    assert!(mine.iter().any(|l| l.contains("\"ev\":\"sent\"")), "its sending is there to be read: {events}");
+    assert!(mine.iter().all(|l| !l.contains("\"ev\":\"dropped\"")), "{mine:?}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A member named is told even when the lines keepane adds before what
+/// was said (the ones since it last read) would make the message longer
+/// than message-max-size: those are cut, the line itself never; once it
+/// was refused, and the member not told.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_member_named_is_told_with_keepanes_lines_cut_to_fit() {
+    let h = Harness::start("chatfit").await;
+    assert_eq!(h.cli(&["set", "-g", "message-max-size", "1K"]).await.0, 0);
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    let p = pane_id(&h, "s:0.0").await;
+    h.cli(&["chat-new", "review"]).await;
+    h.cli_in(Some(p), &["chat-join", "review", "--as", "tester"]).await;
+    let long = "a long line of context ".repeat(7);
+    for i in 0..20 {
+        h.cli(&["chat-say", "review", &format!("{i} {long}")]).await;
+    }
+    let (code, out, err) = h.cli(&["chat-say", "review", "@tester the line itself"]).await;
+    assert!(code == 0 && !out.contains("not told"), "{out}{err}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, got, _) = h.cli_in(Some(p), &["read-message"]).await;
+        if got.contains("the line itself") {
+            assert!(got.contains("(cut: longer than message-max-size)"), "{got}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "never told");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.cli(&["kill-server"]).await;
+}

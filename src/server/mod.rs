@@ -40,6 +40,7 @@ pub mod pane;
 mod prices;
 mod public_ip;
 pub mod render;
+mod schedule;
 mod screenrules;
 mod share_host;
 mod shellhist;
@@ -1302,6 +1303,11 @@ pub struct Server {
     ending: Option<Instant>,
     /// Pane messages (docs/design/mailbox.md): the id the last one got.
     next_msg: actor::MsgId,
+    /// Messages sent later (`send-message --in` / `--at`), until due.
+    scheduled: Vec<schedule::Scheduled>,
+    /// Where they were last read from or written to: when `sessions-dir`
+    /// changes, the file there goes (or it would bring them back once sent).
+    scheduled_was: Option<PathBuf>,
     /// What happened to every message, and the event log it is kept in.
     observe: observe::Store,
     /// The group chat: channels, members, what was said (`chat-*`).
@@ -1790,6 +1796,8 @@ impl Server {
             by_machine: false,
             ending: None,
             next_msg: 0,
+            scheduled: Vec::new(),
+            scheduled_was: None,
             observe: observe::Store::default(),
             chat: chat::Chat::default(),
             chat_link: chat_link::ChatLink::default(),
