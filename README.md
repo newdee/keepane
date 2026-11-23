@@ -1103,6 +1103,7 @@ shell) forgets it 10 seconds later, unless the machine is shutting down;
 ```powershell
 keepane resume              # bring back every saved session, attach to the first
 keepane resume work         # bring back (or just attach to) the session "work"
+keepane resume --prev work  # the save before its windows or panes last changed
 keepane list-saved          # what can be resumed, newest first
 keepane delete-saved old    # forget one
 keepane save-session -a     # save each session to its own file now (prefix C-s)
@@ -1123,7 +1124,12 @@ were doing does not come back; no multiplexer can do that. Saving happens
 by itself: the tree whenever it changes, the pane text every 30 seconds,
 and everything once more when Windows shuts down, restarts or you log
 off (the server holds the shutdown up for the moment that takes), or when
-the server is sent SIGTERM or SIGHUP on Linux and macOS. A server that
+the server is sent SIGTERM or SIGHUP on Linux and macOS. A shutdown may end
+the panes' programs before it tells keepane: a pane whose program Windows
+ended so stays in its window for 10 seconds, so the save still has it, and
+goes after that when no shutdown came. Before a save that has windows or
+panes other than the last one's, that one is kept (`name-….json.prev`):
+`keepane resume --prev work` brings it back (close `work` first). A server that
 starts brings every saved session back by itself, however it was started
 (`keepane`, `keepane new -s x`, at logon), so no session is made beside
 saved ones not running: `keepane new -s work` with `work` saved says it

@@ -127,6 +127,46 @@ impl SavedSession {
         }
         out
     }
+
+    /// Its windows and the panes in each (a pane by its number; one of an
+    /// older file, which has none, by its command and directory): what
+    /// changes when a window or a pane comes or goes, not when a pane's
+    /// directory, size or output does.
+    pub fn shape(&self) -> Vec<(Option<u32>, Vec<String>)> {
+        self.windows
+            .iter()
+            .map(|w| {
+                let panes = w.layout.panes().into_iter().map(|p| match p.id {
+                    Some(id) => format!("%{id}"),
+                    None => format!("{:?} {:?}", p.argv, p.cwd),
+                });
+                (w.id, panes.collect())
+            })
+            .collect()
+    }
+}
+
+/// Where the save before the last change of its windows or panes is kept,
+/// beside the save (`name-hash.json.prev`; not a `.json`, so never read as
+/// a session of its own).
+pub fn prev_for(path: &Path) -> PathBuf {
+    path.with_extension("json.prev")
+}
+
+/// Before `path` is written over with a session of the shape `next`: the
+/// save there kept as `prev_for` when its windows or panes were other ones
+/// (a pane or a window came or went since). A save of the same shape is no
+/// step back, and the one kept stays: so it is the save before the last
+/// change, whatever was saved since.
+pub fn keep_prev(path: &Path, next: &SavedSession) {
+    let Ok(was) = SavedFile::load(path) else { return };
+    if was.session.shape() != next.shape() {
+        // Not kept, said: `resume --prev` would otherwise find none, or an
+        // older one, with nothing to tell why.
+        if let Err(e) = std::fs::copy(path, prev_for(path)) {
+            log::warn!("keep the save before as {}: {e}", prev_for(path).display());
+        }
+    }
 }
 
 /// One file: one session.
@@ -283,6 +323,53 @@ mod tests {
                 },
             ],
         })
+    }
+
+    /// The save before the last change of windows or panes is kept: written
+    /// over with one of the same shape (a directory changed, more output),
+    /// nothing is kept; with one a window less, the one before is kept as
+    /// `.prev`, and stays through saves of the new shape after.
+    #[test]
+    fn the_save_before_a_window_went_is_kept() {
+        let dir = std::env::temp_dir().join(format!("keepane-prev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = file_for(&dir, "main");
+        // As a save is written now: every pane by its number.
+        fn number(n: &mut SavedNode, next: &mut u32) {
+            match n {
+                SavedNode::Pane { pane } => {
+                    pane.id = Some(*next);
+                    *next += 1;
+                }
+                SavedNode::Split { children, .. } => children.iter_mut().for_each(|c| number(c, next)),
+            }
+        }
+        let mut full = sample();
+        let mut next = 10;
+        for w in &mut full.session.windows {
+            number(&mut w.layout, &mut next);
+        }
+        full.save(&path).unwrap();
+        let mut moved = full.session.clone();
+        if let SavedNode::Split { children, .. } = &mut moved.windows[0].layout
+            && let SavedNode::Pane { pane } = &mut children[0]
+        {
+            pane.cwd = Some("D:\\elsewhere".into());
+            pane.history = vec!["more output".into()];
+        }
+        keep_prev(&path, &moved);
+        assert!(!prev_for(&path).exists(), "the same windows and panes: nothing kept");
+        let mut less = full.session.clone();
+        less.windows.pop();
+        keep_prev(&path, &less);
+        SavedFile::new(less.clone()).save(&path).unwrap();
+        let kept = SavedFile::load(&prev_for(&path)).unwrap();
+        assert_eq!(kept.session.windows.len(), 2, "the one before, both windows");
+        keep_prev(&path, &less);
+        SavedFile::new(less).save(&path).unwrap();
+        assert_eq!(SavedFile::load(&prev_for(&path)).unwrap().session.windows.len(), 2, "kept through the same shape");
+        assert_eq!(list(&dir).len(), 1, "the kept one is no session of its own");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Each server keeps its own saves: the default one where they always

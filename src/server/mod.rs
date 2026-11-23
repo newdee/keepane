@@ -1293,6 +1293,10 @@ pub struct Server {
     /// is shutting down (then it is the shutdown that ended them, and
     /// `resume` is to bring them back).
     forget_after: Vec<(String, Instant)>,
+    /// Panes whose program the system ended (`system_ended`): kept in their
+    /// windows until `SYSTEM_END_HOLD` passes, by number, generation, exit
+    /// code and when.
+    system_ended: Vec<(PaneId, u32, u32, Instant)>,
     /// A command of another machine is being done (`stream_command`): a
     /// session it kills keeps its save, so the next start brings it back
     /// (only one killed by hand here stays away; decision 20).
@@ -1793,6 +1797,7 @@ impl Server {
             events,
             last_saved: HashMap::new(),
             forget_after: Vec::new(),
+            system_ended: Vec::new(),
             by_machine: false,
             ending: None,
             next_msg: 0,
@@ -2031,6 +2036,9 @@ impl Server {
         // second and must not make the file be rewritten every second.
         let key = serde_json::to_string(&self.snapshot(s, &HashMap::new())).unwrap_or_default();
         let path = crate::resurrect::file_for(&self.sessions_dir(), &saved.name);
+        // A window or a pane came or went: the save before, kept (`resume
+        // --prev` brings it back).
+        crate::resurrect::keep_prev(&path, &saved);
         crate::resurrect::SavedFile::new(saved).save(&path)?;
         self.last_saved.insert(path.to_string_lossy().into_owned(), key);
         Ok(path)
@@ -2238,6 +2246,20 @@ impl Server {
         }
         for (name, _, path, back) in saved {
             if self.sessions.iter().any(|s| s.name == name) {
+                continue;
+            }
+            // Another machine's session (`work@10.0.0.2:7681`, as a mirror
+            // names it; saved there): a file an older keepane wrote here is
+            // put aside once, not warned of at every start.
+            if name.contains(':') {
+                if back.is_none() {
+                    let to = self.killed_dir().join(path.file_name().unwrap_or_default());
+                    let moved = std::fs::create_dir_all(self.killed_dir()).and_then(|()| std::fs::rename(&path, &to));
+                    match moved {
+                        Ok(()) => log::info!("the save of {name} is another machine's session: put aside (killed)"),
+                        Err(e) => problems.push(format!("put aside {}: {e}", path.display())),
+                    }
+                }
                 continue;
             }
             match crate::resurrect::SavedFile::load(&path) {
@@ -2770,15 +2792,23 @@ impl Server {
                     self.note_message(&format!("pane %{id} ({command}) exited with {code}"));
                     return;
                 }
-                // Its last program gone, the session ends by itself: its
-                // save is to be forgotten (see `forget_due`).
-                let session = self.session_of_pane(id).and_then(|s| self.session(s)).map(|s| s.name.clone());
-                self.remove_pane(id, Some(code));
-                if let Some(name) = session
-                    && !self.sessions.iter().any(|s| s.name == name)
-                {
-                    self.forget_after.push((name, Instant::now()));
+                // Ended by the system: a shutdown or a logoff ends every
+                // program, and tells keepane tens of milliseconds before or
+                // after, as it happens. Kept in its window a while, so the
+                // save made when the shutdown is told still has it; gone
+                // when no shutdown came (2026-11-23: eight windows lost).
+                if system_ended(code) {
+                    let generation = self.find_pane_mut(id).map(|p| {
+                        p.exit_code = Some(code);
+                        p.died_at = Some(Instant::now());
+                        p.generation
+                    });
+                    if let Some(g) = generation {
+                        self.system_ended.push((id, g, code, Instant::now()));
+                        return;
+                    }
                 }
+                self.pane_gone(id, code);
             }
             Event::Connected(id, tx) => self.client_connected(id, tx),
             Event::Gone(id) => self.client_gone(id),
@@ -2895,6 +2925,7 @@ impl Server {
                 // windows watching their panes (once each).
                 self.ask_machine_names();
                 self.forget_due();
+                self.system_ended_due();
                 // An open chart keeps the paired machines' panes fresh.
                 if self.a_chart_is_open() {
                     self.ask_remote_trees(false);
@@ -4377,7 +4408,8 @@ impl Server {
                     && !self.forget_after.iter().any(|(f, _)| f == n)
                     && attach_existing
                 {
-                    return self.exec(Cmd::RestoreSession { name: Some(n.clone()), attach: !detached }, cid);
+                    return self
+                        .exec(Cmd::RestoreSession { name: Some(n.clone()), attach: !detached, prev: false }, cid);
                 }
                 if let Some(n) = &name
                     && let Err(e) = self.name_unsaved(n)
@@ -4726,7 +4758,7 @@ impl Server {
                 }
                 Outcome::Text(lines.join("\n"))
             }
-            Cmd::RestoreSession { name, attach } => {
+            Cmd::RestoreSession { name, attach, prev } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive && c.session.is_none());
                 // Only a terminal about to attach has a size worth using;
@@ -4734,6 +4766,27 @@ impl Server {
                 let size = if interactive && attach { client.map(|c| (c.cols, c.rows)) } else { None };
                 let dir = self.sessions_dir();
                 let (created, problems, target_sid) = match &name {
+                    // The save before its windows or panes last changed.
+                    Some(n) if prev => {
+                        if self.sessions.iter().any(|s| s.name == *n) {
+                            return Outcome::Error(format!(
+                                "resume --prev {n}: {n} is running; kill-session -t {n} first (its save is put aside, its earlier one stays)"
+                            ));
+                        }
+                        let kept = [dir.clone(), self.killed_dir()]
+                            .into_iter()
+                            .map(|d| crate::resurrect::prev_for(&crate::resurrect::file_for(&d, n)))
+                            .find(|p| p.is_file());
+                        let Some(path) = kept else {
+                            return Outcome::Error(format!(
+                                "resume --prev {n}: no earlier save of {n} (one is kept when its windows or panes change)"
+                            ));
+                        };
+                        match self.restore_session_file(&path, size) {
+                            Ok((sid, p)) => (vec![sid], p, Some(sid)),
+                            Err(e) => return Outcome::Error(e),
+                        }
+                    }
                     Some(n) => {
                         // Already running: resuming just means attaching.
                         if let Some(s) = self.sessions.iter().find(|s| s.name == *n) {
@@ -9056,6 +9109,37 @@ impl Server {
     /// The saves of sessions that ended by themselves `FORGET_AFTER` ago,
     /// unless a shutdown was announced in the last `ENDING_HOLDS`, a session of that name runs
     /// again, or autosave is off (a save made by hand is kept).
+    /// A pane whose program ended goes: from its window (the window and the
+    /// session too when it was the last); a session that ended by itself
+    /// has its save forgotten later (see `forget_due`).
+    fn pane_gone(&mut self, id: PaneId, code: u32) {
+        let session = self.session_of_pane(id).and_then(|s| self.session(s)).map(|s| s.name.clone());
+        self.remove_pane(id, Some(code));
+        if let Some(name) = session
+            && !self.sessions.iter().any(|s| s.name == name)
+        {
+            self.forget_after.push((name, Instant::now()));
+        }
+    }
+
+    /// From the tick: panes the system ended that no shutdown followed, gone
+    /// now. While a shutdown is under way they stay: the server ends with it,
+    /// and its save has them.
+    fn system_ended_due(&mut self) {
+        if self.system_ended.is_empty() || self.ending_holds() {
+            return;
+        }
+        let (due, waiting): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.system_ended).into_iter().partition(|(.., at)| at.elapsed() >= SYSTEM_END_HOLD);
+        self.system_ended = waiting;
+        for (id, generation, code, _) in due {
+            // Started again meanwhile (`respawn-pane`), or closed by hand: not ours.
+            if self.find_pane_mut(id).is_some_and(|p| p.generation == generation && p.exit_code == Some(code)) {
+                self.pane_gone(id, code);
+            }
+        }
+    }
+
     fn forget_due(&mut self) {
         if self.ending_holds() {
             return;
@@ -11120,6 +11204,17 @@ const FORGET_AFTER: Duration = Duration::from_secs(10);
 /// How long after a shutdown is announced nothing is forgotten: the
 /// machine is expected to be gone by then; if it is not, it was called off.
 const ENDING_HOLDS: Duration = Duration::from_secs(60);
+
+/// How long a pane whose program the system ended stays in its window, for
+/// a shutdown to be told (it comes within a second of the programs ending).
+const SYSTEM_END_HOLD: Duration = Duration::from_secs(10);
+
+/// The exit code Windows gives a program it ends itself (DBG_TERMINATE_PROCESS,
+/// as at a shutdown or logoff): not the program's own end, nor Ctrl+C
+/// (`STATUS_CONTROL_C_EXIT`, which a program also ends with when asked to).
+fn system_ended(code: u32) -> bool {
+    cfg!(windows) && code == 0x4001_0004
+}
 
 /// The file in the sessions directory that keeps the id counter: the next
 /// number, as text.

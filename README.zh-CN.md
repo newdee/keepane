@@ -515,6 +515,7 @@ pane 的输出也可保存到磁盘（`log-history`，默认开）：每个 pane
 ```powershell
 keepane resume              # 把存过的 session 全恢复出来，进第一个
 keepane resume work         # 只恢复 work（要是它本来就在跑，那就直接进去）
+keepane resume --prev work  # 换成它窗口或 pane 上一次变化之前的存档
 keepane list-saved          # 有哪些能恢复，最新的排前面
 keepane delete-saved old    # 不要了
 keepane save-session -a     # 现在就把每个 session 各存一遍（prefix C-s 也是这样）
@@ -522,7 +523,7 @@ keepane save-session -a     # 现在就把每个 session 各存一遍（prefix C
 
 直接运行 `keepane` 也会接着用：有 session 在跑，就进最近用的那个；一个都没在跑，就把存档全恢复出来（手动 kill 掉的除外），进最近存的那个；什么都没有才新开一个（`keepane new` 总是新开）。所以反复打开 keepane 不会攒下一堆空 session，下次恢复时也不会冒出来。
 
-恢复出来的是布局、每个 pane 的启动命令、所在目录，还有每块屏幕上最后 `save-history` 行（默认 500 行；`set -g save-history all` 把整段 scrollback 连颜色一起存下来）的输出。程序当时跑到哪是回不来的，谁也做不到。存档是自动的：布局一变就存，pane 上的文字每 30 秒存一次，Windows 关机、重启、注销时再整个存一遍（server 会把关机拖住那一瞬间）；Linux 和 macOS 上 server 收到 SIGTERM 或 SIGHUP 时也一样。`kill-session` 会把这个 session 的存档挪到一边：下次启动和直接运行 `keepane` 时它都不会自己回来，`resume` 或 `resume 名字` 仍能找回，`list-saved` 会标出它是被 kill 的。server 一启动就会自己恢复所有保存的 session，不管是怎么启动的（`keepane`、`keepane new -s x`、登录自启动），所以不会在存档旁边另起一个同名的新 session：`work` 有存档时，`keepane new -s work` 会说它已存在（加 `-A` 就进入它）。`set -g restore-on-start off` 改为只在 `resume` 时恢复；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
+恢复出来的是布局、每个 pane 的启动命令、所在目录，还有每块屏幕上最后 `save-history` 行（默认 500 行；`set -g save-history all` 把整段 scrollback 连颜色一起存下来）的输出。程序当时跑到哪是回不来的，谁也做不到。存档是自动的：布局一变就存，pane 上的文字每 30 秒存一次，Windows 关机、重启、注销时再整个存一遍（server 会把关机拖住那一瞬间）；Linux 和 macOS 上 server 收到 SIGTERM 或 SIGHUP 时也一样。关机时 Windows 可能先结束 pane 里的程序、后通知 keepane：被系统这样结束的 pane 在窗口里留 10 秒，存档里就还有它；10 秒内没有关机就照常关掉。存档的窗口或 pane 和上一次不同时，上一次的存档会留一份（`名字-….json.prev`），`keepane resume --prev work` 能把它找回来（先关掉正在跑的 work）。`kill-session` 会把这个 session 的存档挪到一边：下次启动和直接运行 `keepane` 时它都不会自己回来，`resume` 或 `resume 名字` 仍能找回，`list-saved` 会标出它是被 kill 的。server 一启动就会自己恢复所有保存的 session，不管是怎么启动的（`keepane`、`keepane new -s x`、登录自启动），所以不会在存档旁边另起一个同名的新 session：`work` 有存档时，`keepane new -s work` 会说它已存在（加 `-A` 就进入它）。`set -g restore-on-start off` 改为只在 `resume` 时恢复；不想存就 `set -g autosave off`；`sessions-dir` 可以换目录。
 
 重启后恢复出来的 session、窗口、pane 编号（`$1`、`@3`、`%4`）不变。server 把计数器存在存档目录里（`next-id`），所以同一台机器上一个编号只会给一个 pane：脚本或别的机器记着 `%4`，找到的就是那个 pane，或者找不到。同一个 server 运行期间先 kill 再恢复的 session 会拿新编号；编号已被占用时也拿新编号。
 

@@ -1221,11 +1221,13 @@ pub enum Cmd {
         target: Option<Target>,
         all: bool,
     },
-    /// `restore-session [-a] [name]` / `resume [name]`: recreate a saved
-    /// session (or every saved one); `-a` attaches to it afterwards.
+    /// `restore-session [-a] [--prev] [name]` / `resume [name]`: recreate a
+    /// saved session (or every saved one); `-a` attaches to it afterwards;
+    /// `--prev`, from the save before its windows or panes last changed.
     RestoreSession {
         name: Option<String>,
         attach: bool,
+        prev: bool,
     },
     /// `list-saved`: saved sessions, newest first.
     ListSaved,
@@ -2505,10 +2507,13 @@ impl fmt::Display for Cmd {
                 }
                 fmt_target(f, target)
             }
-            Cmd::RestoreSession { name, attach } => {
+            Cmd::RestoreSession { name, attach, prev } => {
                 f.write_str("restore-session")?;
                 if *attach {
                     f.write_str(" -a")?;
+                }
+                if *prev {
+                    f.write_str(" --prev")?;
                 }
                 if let Some(n) = name {
                     write!(f, " {}", quote(n))?;
@@ -3321,8 +3326,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("rename-window", &["-t"]),
     ("resize-pane", &["-D", "-U", "-L", "-R", "-Z", "-x", "-y", "-t"]),
     ("resize-window", &["-x", "-y", "-U", "-D", "-L", "-R", "-A", "-a", "-t"]),
-    ("restore-session", &["-a"]),
-    ("resume", &[]),
+    ("restore-session", &["-a", "--prev"]),
+    ("resume", &["-a", "-t", "--prev"]),
     ("run-shell", &["-b", "-t"]),
     ("save-buffer", &["-a", "-b"]),
     ("save-session", &["-a", "-t"]),
@@ -5629,22 +5634,24 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::SaveSession { target, all }
         }
         "restore-session" | "resume" => {
-            let mut attach = n == "resume";
+            let (mut attach, mut prev, mut name) = (n == "resume", false, None);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-a" => attach = true,
-                    "-t" => {
-                        // `resume -t name` reads naturally next to attach -t.
-                        let v = a.value("-t")?.to_string();
-                        a.none_left(n)?;
-                        return Ok(Cmd::RestoreSession { name: Some(v), attach });
-                    }
+                    "--prev" => prev = true,
+                    // `resume -t name` reads naturally next to attach -t.
+                    "-t" => name = Some(a.value("-t")?.to_string()),
                     f => return Err(bad_flag(n, f)),
                 }
             }
-            let name = a.next().map(str::to_string);
+            if name.is_none() {
+                name = a.next().map(str::to_string);
+            }
             a.none_left(n)?;
-            Cmd::RestoreSession { name, attach }
+            if prev && name.is_none() {
+                return Err(format!("{n} --prev: which session (its name)"));
+            }
+            Cmd::RestoreSession { name, attach, prev }
         }
         "list-saved" => {
             a.none_flags(n)?;
@@ -6040,10 +6047,10 @@ mod tests {
             Cmd::ShowOptions { name: Some("@theme".into()), value_only: true, quiet: true }
         );
         assert_eq!(p("show -g"), Cmd::ShowOptions { name: None, value_only: false, quiet: false });
-        assert_eq!(p("resume"), Cmd::RestoreSession { name: None, attach: true });
-        assert_eq!(p("resume work"), Cmd::RestoreSession { name: Some("work".into()), attach: true });
-        assert_eq!(p("resume -t work"), Cmd::RestoreSession { name: Some("work".into()), attach: true });
-        assert_eq!(p("restore-session"), Cmd::RestoreSession { name: None, attach: false });
+        assert_eq!(p("resume"), Cmd::RestoreSession { name: None, attach: true, prev: false });
+        assert_eq!(p("resume work"), Cmd::RestoreSession { name: Some("work".into()), attach: true, prev: false });
+        assert_eq!(p("resume -t work"), Cmd::RestoreSession { name: Some("work".into()), attach: true, prev: false });
+        assert_eq!(p("restore-session"), Cmd::RestoreSession { name: None, attach: false, prev: false });
         assert_eq!(p("save -t work"), Cmd::SaveSession { target: Some(Target::parse("work")), all: false });
         assert_eq!(p("save -a"), Cmd::SaveSession { target: None, all: true });
         assert_eq!(p("saved"), Cmd::ListSaved);

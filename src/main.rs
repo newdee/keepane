@@ -39,7 +39,7 @@ Other:  clock-mode   show-messages   list-clients   list-commands   if-shell   f
   notify [-T title] message   (a desktop notification; `set -g notify on` for alerts; on Windows with a Go-to-pane button)
   focus-pane %N   (every attached client switches to that pane and comes to the front)
 Resume after a reboot (sessions autosave to the data directory's sessions folder):
-  resume [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [name]   delete-saved name
+  resume [--prev] [name]   list-saved   save-session [-t target|-a]   restore-session [-a] [--prev] [name]   delete-saved name
   set-cwd [-t target] [dir]   (record the directory a pane resumes in; default: caller's cwd)
   startup on|off|status   (start the server at logon and restore every saved session, and the phone page if it was on;
   Windows: a Run value, macOS: a launchd agent, Linux: a systemd user unit)

@@ -171,6 +171,19 @@ impl Harness {
 
     /// `start`, the server reading `config` as its config file at start.
     async fn start_with(name: &str, config_text: &str) -> Harness {
+        test_process_env();
+        let socket = format!("test-{name}-{}", std::process::id());
+        Harness::start_server(name, socket, config_text).await
+    }
+}
+
+/// What every server a test starts in this process must see, before it
+/// starts: no toasts, no update check, the sessions directory a temporary
+/// one (never the real one, which a server writes to as it starts, before a
+/// test can point `sessions-dir` elsewhere), keepane.exe as the replay
+/// helper, history out of the real directory, a plain prompt.
+fn test_process_env() {
+    {
         // No toasts from tests: a toast registers the running binary as the
         // keepane:// handler on the developer's machine.
         unsafe { std::env::set_var("KEEPANE_NO_TOAST", "1") };
@@ -206,7 +219,13 @@ impl Harness {
             std::env::set_var("PS1", "keepane>");
             std::env::remove_var("ENV");
         }
-        let socket = format!("test-{name}-{}", std::process::id());
+    }
+}
+
+impl Harness {
+    /// A server on `socket` for test `name`, started in this process with
+    /// `config_text` after an empty config of its own.
+    async fn start_server(name: &str, socket: String, config_text: &str) -> Harness {
         let s = socket.clone();
         // Process ids come round again, and with them the names below: what
         // an earlier run left under them (saved sessions, link keys and
@@ -2058,8 +2077,16 @@ async fn choose_tree_kills_or_forgets_a_session() {
         h.cli(&["new", "-d", "-s", &name]).await;
         h.cli(&["save-session", "-t", &name]).await;
         let before = shutdowns();
+        let sent = Instant::now();
         h.cli(&["send-keys", "-t", &name, "exit", "Enter"]).await;
         h.wait_for_cli("it ended", &["has-session", "-t", &name], |code, _| code == 1).await;
+        // On a machine so busy that seeing it end took a good part of the
+        // 10 s, the save may be forgotten by now, as it should: such an
+        // attempt does not count (2026-11-23: the end seen late, the check
+        // below failed once in a full run, never alone).
+        if sent.elapsed() > Duration::from_secs(5) {
+            continue;
+        }
         // Not at once (a shutdown may be what ended it): still there 3 s later.
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert!(names(&saved().await).contains(&name), "not at once: a shutdown may be what ended it");
@@ -2075,7 +2102,7 @@ async fn choose_tree_kills_or_forgets_a_session() {
         }
         assert_ne!(shutdowns(), before, "the save of a session that ended stayed: {}", saved().await);
     }
-    assert!(forgotten, "a shutdown came in every attempt");
+    assert!(forgotten, "a shutdown came, or the end was seen late, in every attempt");
     // kill-server keeps every save: here comes back at the next start;
     // keepme, killed by hand, is put aside (resume brings it back); gone is
     // nowhere.
@@ -5191,8 +5218,10 @@ async fn a_real_tmux_conf_loads_with_the_rest_skipped() {
     )
     .unwrap();
     // Started by hand with the config given directly: the other tests run
-    // in this same process, so nothing may go through the environment.
-    keep_history_out();
+    // in this same process, so nothing may go through the environment; what
+    // every test server must see (a temporary sessions directory above all:
+    // started first, this one wrote to the real one), as the others.
+    test_process_env();
     let socket = format!("test-tmuxconf-{}", std::process::id());
     let s = socket.clone();
     let options = keepane::server::RunOptions { force_restore: false, config: Some(conf.clone()) };
@@ -15778,5 +15807,124 @@ async fn a_member_named_is_told_with_keepanes_lines_cut_to_fit() {
         assert!(Instant::now() < deadline, "never told");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    h.cli(&["kill-server"]).await;
+}
+
+/// A shutdown that ends the panes' programs before it tells keepane (the
+/// order went that way on 2026-11-23, by 80 ms; the other way the night
+/// before): a pane whose program the system ended (DBG_TERMINATE_PROCESS)
+/// stays in its window, so the save made when the shutdown is told still
+/// has it. With no shutdown, it goes after a while; a program that ends by
+/// itself goes at once, as ever.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_the_system_ends_before_a_shutdown_is_told_are_saved() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_QUERYENDSESSION};
+    let h = Harness::start("systemend").await;
+    h.cli(&["new", "-d", "-s", "late"]).await;
+    h.wait_capture("late:0", "prompt", |t| t.contains("keepane>")).await;
+    let windows = async || h.cli(&["list-windows", "-t", "late"]).await.1.lines().count();
+    let ends = |code: &str| format!("Start-Sleep -Milliseconds 300; exit {code}");
+    // Its own end: gone at once.
+    h.cli(&["new-window", "-d", "-t", "late", "pwsh", "-NoProfile", "-Command", &ends("3")]).await;
+    h.wait_for_cli("its own end: gone", &["list-windows", "-t", "late"], |_, out| out.lines().count() == 1).await;
+    // Ended by the system, no shutdown after: kept a while, then gone.
+    h.cli(&["new-window", "-d", "-t", "late", "pwsh", "-NoProfile", "-Command", &ends("1073807364")]).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(windows().await, 2, "kept for a shutdown to be told");
+    h.wait_for_cli("no shutdown came: gone", &["list-windows", "-t", "late"], |_, out| out.lines().count() == 1).await;
+    // Ended by the system, then the shutdown told: the save has it.
+    h.cli(&["new-window", "-d", "-t", "late", "pwsh", "-NoProfile", "-Command", &ends("1073807364")]).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let hwnd = loop {
+        if let Some(w) = keepane::shutdown::window(&h.socket) {
+            break w as usize;
+        }
+        assert!(Instant::now() < deadline, "the server's shutdown window never came up");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let allowed = tokio::task::spawn_blocking(move || unsafe { SendMessageW(hwnd as _, WM_QUERYENDSESSION, 0, 0) })
+        .await
+        .unwrap();
+    assert_eq!(allowed, 1);
+    let saved = std::fs::read_dir(&h.sessions_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .find(|t| t.contains("\"name\": \"late\""))
+        .expect("late saved");
+    let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(v["session"]["windows"].as_array().unwrap().len(), 2, "both windows saved: {saved}");
+    // The shutdown under way: it stays past its while (the server ends with it).
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    assert_eq!(windows().await, 2, "kept while the shutdown goes on");
+    h.cli(&["kill-server"]).await;
+}
+
+/// The save before the last change of its windows or panes is kept, and
+/// `resume --prev` brings it back: two windows saved, one closed (the save
+/// now has one); the session closed; resumed from before, both windows. Not
+/// while it runs; none kept, said so.
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_prev_brings_back_the_save_before_a_window_went() {
+    let h = Harness::start("resumeprev").await;
+    // Another session, so the server stays when `two` is closed.
+    h.cli(&["new", "-d", "-s", "stay"]).await;
+    h.cli(&["new", "-d", "-s", "two"]).await;
+    h.cli(&["new-window", "-d", "-t", "two", "-n", "second"]).await;
+    h.cli(&["save-session", "-t", "two"]).await;
+    let saved_windows = || {
+        let p = std::fs::read_dir(&h.sessions_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+            p.extension().is_some_and(|x| x == "json")
+                && std::fs::read_to_string(p).unwrap_or_default().contains("\"name\": \"two\"")
+        });
+        p.map(|p| {
+            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            v["session"]["windows"].as_array().map_or(0, |w| w.len())
+        })
+    };
+    assert_eq!(saved_windows(), Some(2));
+    h.cli(&["kill-window", "-t", "two:second"]).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while saved_windows() != Some(1) {
+        assert!(Instant::now() < deadline, "the closed window never reached the save");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (code, _, err) = h.cli(&["resume", "--prev", "two"]).await;
+    assert!(code != 0 && err.contains("is running"), "{err}");
+    h.cli(&["kill-session", "-t", "two"]).await;
+    let (code, out, err) = h.cli(&["restore-session", "--prev", "two"]).await;
+    assert_eq!(code, 0, "{out}{err}");
+    let (_, windows, _) = h.cli(&["list-windows", "-t", "two"]).await;
+    assert_eq!(windows.lines().count(), 2, "both windows back: {windows}");
+    let (code, _, err) = h.cli(&["resume", "--prev", "nosuch"]).await;
+    assert!(code != 0 && err.contains("no earlier save of nosuch"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
+/// A save an older keepane wrote here of another machine's session (named
+/// `work@host:port`, as a mirror names it) is put aside once, to `killed`,
+/// not warned of as a bad name at every start.
+#[tokio::test(flavor = "multi_thread")]
+async fn another_machines_old_save_is_put_aside_not_warned_of() {
+    let h = Harness::start("remotesave").await;
+    h.cli(&["new", "-d", "-s", "stay"]).await;
+    h.cli(&["save-session", "-t", "stay"]).await;
+    let mine = std::fs::read_dir(&h.sessions_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| std::fs::read_to_string(p).unwrap_or_default().contains("\"name\": \"stay\""))
+        .expect("stay saved");
+    let theirs = h.sessions_dir.join("work_10.0.0.2_7681-12345678.json");
+    let text =
+        std::fs::read_to_string(&mine).unwrap().replace("\"name\": \"stay\"", "\"name\": \"work@10.0.0.2:7681\"");
+    std::fs::write(&theirs, text).unwrap();
+    let (_, out, err) = h.cli(&["resume"]).await;
+    assert!(!format!("{out}{err}").contains("bad session name"), "{out}{err}");
+    assert!(!theirs.exists(), "not where a start reads saves");
+    assert!(h.sessions_dir.join("killed").join("work_10.0.0.2_7681-12345678.json").exists(), "put aside");
+    assert!(!h.cli(&["list-sessions"]).await.1.contains("work@"), "and not made a session here");
     h.cli(&["kill-server"]).await;
 }

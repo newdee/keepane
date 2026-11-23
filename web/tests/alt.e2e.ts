@@ -80,6 +80,9 @@ test("a shell at its prompt is not called full screen", async ({ app, browser })
 
 test("the mouse wheel over a full-screen program", async ({ app, browser }) => {
   await app.open(page(portOf(app.baseUrl), paneNumber("work:full")));
+  // The page knows it is a full-screen program before a wheel is its: a
+  // wheel before that scrolled nothing (2026-11-23: 0 of 3 steps, once).
+  await expect.poll(() => pageText(browser)).toContain("全屏程序");
   const b = await browser.locator("#main").boundingBox();
   await browser.mouse.move(b!.x + b!.width / 2, b!.y + b!.height / 2);
   const u0 = ups();

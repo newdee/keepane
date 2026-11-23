@@ -253,7 +253,12 @@ a new or renamed session may not take a saved name that is not running,
 which `new -A` resumes instead). `kill-session` puts a session's save aside
 (`killed/` there): not back at the next start nor with a bare `keepane`,
 `resume` or `resume NAME` brings it back, `list-saved` marks it
-killed. `resume`, `list-saved`, `save-session`, `restore-session`,
+killed. A pane whose program Windows ended (DBG_TERMINATE_PROCESS, as a
+shutdown does, sometimes before it tells keepane) stays in its window for
+10 seconds, so the shutdown's save has it. Before a save whose windows or
+panes differ from the last one's, that one is kept as `.json.prev`;
+`resume --prev NAME` (`restore-session --prev`) brings it back, the session
+not running. `resume`, `list-saved`, `save-session`, `restore-session`,
 `delete-saved`, `set-cwd`. Sessions, windows and panes come back with
 their numbers; the counter is kept in `next-id` there, so no number is
 given out twice.
