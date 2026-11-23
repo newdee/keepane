@@ -6723,3 +6723,7 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 11 | 机制通路存活（第 10 轮两处的复查）+ 全量 + web e2e（依次跑） | `alt.e2e.ts` 的滚轮测试在全量里过（单跑 5/5）；`keep_prev` 拷贝失败只记 warn、照常存档（正常存档的路径不变，单元 `the_save_before_a_window_went_is_kept` 过）。fmt 干净、`clippy exit 0`；Windows 733 / 11 / 186（65 秒），Linux 717 / 181（clippy exit 0），web e2e 44/44。 | 干净（1/3） |
 | 12 | 边界与退化输入（读代码）+ 全量 + web e2e（依次跑） | `.prev` 损坏：`restore_session_file` 读不出来，返回原因，不会恢复半个 session；正式存档已被 kill 挪到 `killed/`、只剩 `.prev`：`--prev` 两处都找（`dir` 和 `killed_dir`）；被系统结束的 pane 是最后一个 session 的最后一个：留 10 秒后删掉，session 随之结束，server 照常退出（和普通退出一样走 `pane_gone`）；关机宣布后又取消：`ending_holds` 60 秒过期后删。fmt 干净、`clippy exit 0`；Windows 733 / 11 / 186（60 秒），Linux 717 / 181（clippy exit 0），web e2e 44/44。 | 干净（2/3） |
 | 13 | 静态一致性（第 10 轮改动后的文档）+ 全量 + web e2e（依次跑） | 第 10 轮两处改动不改行为说明（测试的等待、拷贝失败的日志），README en/zh、man 无需改；第 4 轮测试加固的说明写在测试注释里。fmt 干净、`clippy exit 0`；Windows 733 / 11 / 186（59 秒），Linux 717 / 181（clippy exit 0），web e2e 44/44。 | 干净（3/3），验收通过 |
+
+0.89.1（关机时被系统先结束的 pane 留 10 秒、存档留上一份 `resume --prev`、别的机器的旧存档挪开、测试不再写真目录）：第 224 条。
+
+0.89.1 发布：CI 45120414292（5b8eb91）四个 job 通过（含 macOS）；tag v0.89.1；Release 45121084882 四个平台通过；manifests da6c268；winget PR #486847；Homebrew formula 45122088150 通过，三个 tar.gz 的 sha256 与 release 一致。
