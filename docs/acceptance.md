@@ -6693,3 +6693,7 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 8 | 代码正确性（第 7 轮 share 修改复查）+ 全量 + web e2e（依次跑） | `write_zip`：文件先打开再从句柄取大小时间，打不开照旧记"留下没放"；链接仍按列表里的类型判断、不跟随，行为不变；文件夹取 `fs::metadata(路径)`。fmt 干净、`clippy exit 0`；Windows 732 / 11 / 183，Linux 716 / 179（clippy exit 0），web e2e 44/44。 | 干净（1/3） |
 | 9 | 可复现性（同样输入连跑）+ 全量 + web e2e（依次跑） | 单元测试连跑 3 次都是 732 过；`a_scheduled_message_goes…`、`a_scheduled_message_is_kept_over…`（两 server 重启）、`a_folder_is_a_zip…`（偶发过的那个）各连跑 3 次 3/3。fmt 干净、`clippy exit 0`；Windows 732 / 11 / 183，Linux 716 / 179（clippy exit 0），web e2e 44/44。 | 干净（2/3） |
 | 10 | 机制通路存活（最终版的真命令）+ 全量 + web e2e（依次跑） | 临时 server 跑 sched-smoke：3 秒后的到点进收件箱、`--at 23:59`、1 天后的取消、`trace-message` 先 "scheduled 23:54:07 for %builder at 23:54" 再 "sent"、4 种错误输入各有原因、重启后未到点的还在（`-a`）、文件在 `sessions\scheduled\`。fmt 干净、`clippy exit 0`；Windows 732 / 11 / 183，Linux 716 / 179（clippy exit 0），web e2e 44/44。 | 干净（3/3），验收通过 |
+
+0.89.0（定时消息 `send-message --in/--at`；群聊通知里 keepane 自己加的字截到上限；分享文件夹 zip 的大小时间取自文件本身）：第 223 条。
+
+0.89.0 发布：CI 45041473670（2fc9697）四个 job 通过（含 macOS）；tag v0.89.0；Release 45042094913 四个平台通过（等它的那一步随上一个会话结束被打断，这次查到已成功、13 个文件）；manifests 7f19fbb；winget PR #486772；Homebrew formula 45103964244 通过，三个 tar.gz 的 sha256 与 release 一致。
