@@ -568,6 +568,8 @@ source <(keepane completion zsh)                                 # ~/.zshrc，�
 keepane completion fish > ~/.config/fish/completions/keepane.fish
 ```
 
+`keepane opencli` 把所有命令、每条命令的 flag 和一句"它做什么"按 OpenCLI 格式（JSON，github.com/spectreconsole/open-cli）打印出来，给边输入边提示、解释命令的终端用。`keepane opencli --install` 把它交给 UnifyTerm（`ut program add -`，要有 `ut program` 的 UnifyTerm）：打 `keepane sp` 时列表里出现 `split-window` 和说明，命令打错、运行失败后给出改好的命令，Ctrl-Shift-E 不用模型就解释每个词。server 启动时，UnifyTerm 里的清单和自己版本不同就换成自己这一版的，所以不管用什么方式升级，清单都跟着更新。
+
 keepane 里面 `:` 命令行按 Tab 也能补：命令名、输到 `-` 时这条命令的 flag（别名和前缀按它代表的命令算，已经写过的不再列）、`-t` 后面的目标、`set` / `show` 后面的选项名（缩写也行：`sync`、`mon-act`），以及只有几个取值的选项的值（`on`/`off`、`top`/`bottom`）；多个候选时补到相同的部分为止，候选列在提示符里。
 
 PowerShell 默认不给 Ctrl+D 绑任何功能（bash 里是退出），所以它也关不掉 pane。想让它在空行上退出，在 `$PROFILE` 里加一行：

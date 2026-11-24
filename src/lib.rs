@@ -19,6 +19,7 @@ pub mod link_watch;
 pub mod logger;
 pub mod man;
 pub mod mcp;
+pub mod opencli;
 pub mod pager;
 pub mod platform;
 pub mod resurrect;

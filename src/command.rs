@@ -3240,7 +3240,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("clock-mode", &["-t"]),
     ("choose-tree", &["-s", "-w", "-Z"]),
     ("choose-window", &["-s", "-w", "-Z"]),
-    ("clear-history", &["-t"]),
+    ("clear-history", &[]),
     ("clear-prompt-history", &["-T"]),
     ("command-prompt", &["-p", "-I"]),
     ("copy-mode", &["-u", "-t"]),
@@ -6118,10 +6118,12 @@ mod tests {
                 assert!(f.len() == 2 || (f.starts_with("--") && f.len() > 3), "{cmd}: flag {f}");
                 assert!(f.starts_with('-'), "{cmd}: flag {f}");
                 let words: Vec<String> = [cmd, f, "1", "x"].iter().map(|s| s.to_string()).collect();
+                // Refused as a flag, or as a word too many (a command
+                // that takes none).
                 if let Err(e) = parse(&words)
-                    && e.contains("unknown flag")
+                    && (e.contains("unknown flag") || e.contains(&format!("unexpected argument '{f}'")))
                 {
-                    bad.push(format!("{cmd} {f}"));
+                    bad.push(format!("{cmd} {f}: {e}"));
                 }
             }
         }

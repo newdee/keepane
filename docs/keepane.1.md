@@ -287,7 +287,7 @@ programs runs, a copy outside Scoop's folder saves the sessions, stops the
 server, runs Scoop and starts the server again with them, and says what it
 did in `update.log`), `restart-server` (sessions move to a server of
 this version), `import-config` (bring what keepane can use from a tmux
-config), `completion` (a Tab completer for PowerShell, bash, zsh or fish), `man`
+config), `completion` (a Tab completer for PowerShell, bash, zsh or fish), `opencli` (every command, its flags and what each does as OpenCLI JSON; `--install` gives it to UnifyTerm's `ut program add -`, and a server that starts replaces a list there of another version with its own), `man`
 (this page),
 `web` (the panes on a phone), `link` (panes on other machines), `show-keys`
 (what the terminal sends for each key), `startup` (`on`, `off`, `status`:

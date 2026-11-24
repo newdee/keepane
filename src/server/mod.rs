@@ -1492,6 +1492,8 @@ pub async fn run_with(socket: String, options: RunOptions) -> Result<()> {
     srv.mail_start();
     srv.chat_start();
     srv.newer_start();
+    // UnifyTerm's list of the commands, when it has another version's.
+    crate::opencli::refresh_in_background();
     // A persistent interval: a fresh `sleep` per iteration would never fire
     // while events keep arriving, and autosave / idle-exit hang off the tick.
     let mut tick = tokio::time::interval(Duration::from_millis(1000));

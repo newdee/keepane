@@ -1246,6 +1246,16 @@ source <(keepane completion zsh)                                 # ~/.zshrc, aft
 keepane completion fish > ~/.config/fish/completions/keepane.fish
 ```
 
+`keepane opencli` prints every command, its flags and a line on what each
+does as OpenCLI JSON (github.com/spectreconsole/open-cli), for a terminal
+that offers and explains commands as they are typed. `keepane opencli
+--install` gives it to UnifyTerm (`ut program add -`, in a UnifyTerm that
+has `ut program`): typing `keepane sp` lists `split-window` with what it
+does, a mistyped command is corrected after it fails, and Ctrl-Shift-E
+explains each word without a model. A server that starts brings that list
+to its own version when UnifyTerm holds another version's, so an update in
+any way keeps it current.
+
 Inside keepane, Tab at the `:` prompt completes the command name, its flags
 once a `-` is typed (an alias or a prefix counts as its command; a flag
 already given is not offered again), a target after `-t`, and after

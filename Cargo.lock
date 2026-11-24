@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "keepane"
-version = "0.89.2"
+version = "0.90.0"
 dependencies = [
  "anyhow",
  "bincode",

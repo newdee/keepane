@@ -98,6 +98,7 @@ Config: ~/.keepane.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, 
   import-config [-n] [-o file] [file]   (bring what keepane can use from ~/.tmux.conf or any config into it;
   the rest goes in commented out, with why; -n shows it and writes nothing; tmux.conf is never read on its own)
 Tab completion:  completion powershell|bash|zsh|fish   (prints the completer to load; see README)
+  opencli [--install]   (the commands, their flags and what each does as OpenCLI JSON; --install gives them to UnifyTerm's ut)
 The manual:  man   (every command, key, option and file, as Markdown; man --roff gives it to man(1))
 Any unambiguous prefix of a command name works: `keepane att`, `keepane lsp`, `keepane splitw -h`.
 Option names too (`set sync`, `set mon-act on`); an on/off option with no value flips it.
@@ -225,7 +226,7 @@ fn main() {
     // full path: after an update into a folder of its own, this newer one
     // takes them over (keepane::takeover). Not in the server,
     // not on every Tab, not in the commands that set these themselves.
-    if !matches!(args[0].as_str(), "__server" | "__complete" | "startup" | "windows-terminal" | "wt") {
+    if !matches!(args[0].as_str(), "__server" | "__complete" | "opencli" | "startup" | "windows-terminal" | "wt") {
         for line in keepane::startup::refresh_registrations(&socket) {
             eprintln!("keepane: {line}");
         }
@@ -282,6 +283,8 @@ fn main() {
         },
         // What the bash / zsh / fish completers ask, on every Tab.
         "__complete" => Some(keepane::completion::run_complete(&args[1..])),
+        // The commands as OpenCLI JSON, for a terminal that offers them.
+        "opencli" => Some(keepane::opencli::run(&args[1..])),
         "setup" => Some(keepane::setup::run(&args[1..])),
         // A file of ours from a file of someone else's: no server needed.
         "import-config" => Some(rt.block_on(async { keepane::server::import::run(&args[1..]) })),

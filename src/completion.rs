@@ -11,12 +11,14 @@ use anyhow::{Result, bail};
 
 /// Commands the client handles itself, which `list-commands` does not show.
 pub(crate) const LOCAL: &[&str] = &[
+    "chat",
     "completion",
     "feishu",
     "import-config",
     "link",
     "man",
     "mcp",
+    "opencli",
     "restart-server",
     "setup",
     "show-keys",
@@ -28,11 +30,12 @@ pub(crate) const LOCAL: &[&str] = &[
 ];
 
 /// The flags of the commands the client handles itself.
-const LOCAL_FLAGS: &[(&str, &[&str])] = &[
+pub(crate) const LOCAL_FLAGS: &[(&str, &[&str])] = &[
     ("feishu", &["--no-screen", "--no-shell", "--screen", "--shell"]),
     ("import-config", &["-n", "-o"]),
     ("link", &["--all", "--full", "--lan", "--none", "--tell", "-l"]),
     ("man", &["--roff"]),
+    ("opencli", &["--install"]),
     ("setup", &["--install"]),
     ("update", &["--check"]),
     ("web", &["--bind", "--keep-key", "--port", "--read-only"]),

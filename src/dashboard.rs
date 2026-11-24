@@ -26,7 +26,7 @@ mod files;
 mod gitview;
 mod machine;
 mod shares;
-mod ut;
+pub(crate) mod ut;
 
 /// The only server commands the dashboard sends to look.
 pub const QUERIES: &[&str] = &[
