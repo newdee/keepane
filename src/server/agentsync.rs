@@ -32,6 +32,7 @@ pub enum Agent {
     Claude,
     Codex,
     Pi,
+    Codewhale,
 }
 
 impl Agent {
@@ -40,6 +41,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Pi => "pi",
+            Agent::Codewhale => "codewhale",
         }
     }
 
@@ -49,6 +51,7 @@ impl Agent {
             Agent::Claude => format!("claude --resume {id}"),
             Agent::Codex => format!("codex resume {id}"),
             Agent::Pi => format!("pi --session {id}"),
+            Agent::Codewhale => format!("codewhale resume {id}"),
         }
     }
 }
@@ -62,6 +65,8 @@ pub struct Places {
     pub codex: PathBuf,
     /// pi's sessions (`~/.pi/agent/sessions`).
     pub pi: PathBuf,
+    /// codewhale's directory (`CODEWHALE_CONFIG_DIR`, else `~/.codewhale`).
+    pub codewhale: PathBuf,
 }
 
 impl Places {
@@ -71,6 +76,7 @@ impl Places {
             claude: set("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
             codex: set("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
             pi: home.join(".pi").join("agent").join("sessions"),
+            codewhale: set("CODEWHALE_CONFIG_DIR").unwrap_or_else(|| home.join(".codewhale")),
         }
     }
 
@@ -81,6 +87,7 @@ impl Places {
             Agent::Claude => self.claude.join("projects").join(super::agents::claude_folder(cwd)),
             Agent::Codex => self.codex.join("sessions"),
             Agent::Pi => self.pi.join(super::agents::pi_folder(cwd)),
+            Agent::Codewhale => self.codewhale.join("sessions"),
         }
     }
 }
@@ -196,6 +203,19 @@ pub fn chats_of(cwd: &str, places: &Places) -> Vec<ChatFile> {
             out.push(ChatFile { agent: Agent::Pi, id, rel: name, path: p, transcript: true });
         }
     }
+    // codewhale's sessions: one JSON file each, named by its id, beside the
+    // others (not under the folder's name); its workspace says which is it.
+    if let Ok(rd) = std::fs::read_dir(places.codewhale.join("sessions")) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if !name.ends_with(".json") || !super::agents::codewhale_workspace(&p).is_some_and(|c| super::agents::dir_key(&c) == want) {
+                continue;
+            }
+            let id = name.trim_end_matches(".json").to_string();
+            out.push(ChatFile { agent: Agent::Codewhale, id, rel: name, path: p, transcript: true });
+        }
+    }
     out
 }
 
@@ -266,11 +286,15 @@ pub fn rewrite_line(line: &str, from: &str, to: &str) -> String {
 
 /// A chat file's bytes as they are to be there: complete lines only (one
 /// being written stops at its last line break), each transcript line's
-/// `cwd` moved; other files as they are.
+/// `cwd` moved; codewhale's one JSON object has its `metadata.workspace`
+/// moved; other files as they are.
 pub fn as_there(f: &ChatFile, from: &str, to: &str) -> std::io::Result<Vec<u8>> {
     let bytes = std::fs::read(&f.path)?;
     if !f.transcript {
         return Ok(bytes);
+    }
+    if f.agent == Agent::Codewhale {
+        return Ok(rewrite_codewhale(&bytes, from, to));
     }
     let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
     let text = String::from_utf8_lossy(&bytes[..end]);
@@ -281,6 +305,19 @@ pub fn as_there(f: &ChatFile, from: &str, to: &str) -> std::io::Result<Vec<u8>> 
         out.extend_from_slice(nl.as_bytes());
     }
     Ok(out)
+}
+
+/// codewhale's session file as it is to be there: its `metadata.workspace`
+/// moved from `from` to `to`; everything else as it was. A file that is not
+/// JSON is sent as it is.
+fn rewrite_codewhale(bytes: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(bytes) else { return bytes.to_vec() };
+    if let Some(ws) = v["metadata"]["workspace"].as_str()
+        && let Some(m) = moved(ws, from, to)
+    {
+        v["metadata"]["workspace"] = serde_json::Value::String(m);
+    }
+    serde_json::to_vec(&v).unwrap_or_else(|_| bytes.to_vec())
 }
 
 pub fn sha256(bytes: &[u8]) -> String {

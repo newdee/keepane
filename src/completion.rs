@@ -352,7 +352,7 @@ Register-ArgumentCompleter -Native -CommandName keepane,tmux -ScriptBlock {{
   }} elseif ($canon -eq 'feishu' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('allow', 'remove', 'status')
   }} elseif ($canon -eq 'setup' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
-    $out = @('claude', 'codex', 'cursor', 'gemini', 'opencode')
+    $out = @('claude', 'codex', 'codewhale', 'cursor', 'gemini', 'opencode', 'pi')
   }} elseif ($canon -in @('set-option','show-options') -and $prev -ne '-t' -and $wordToComplete -notlike '-*') {{
     # After set / show: the option's name, then its value when it is one
     # of a few. Flags are skipped, and so is the word after -t.
@@ -470,7 +470,7 @@ mod tests {
         assert!(offer(&["web", "status"], "").is_empty());
         assert_eq!(offer(&["web"], "--r"), ["--read-only"]);
         assert_eq!(offer(&["link"], "a"), ["add", "allow", "attach"]);
-        assert_eq!(offer(&["setup"], "c"), ["claude", "codex", "cursor"]);
+        assert_eq!(offer(&["setup"], "c"), ["claude", "codex", "cursor", "codewhale"]);
         assert_eq!(offer(&["setup", "codex"], "--"), ["--install"]);
         assert_eq!(offer(&["link", "allow", "10.0.0.1:7681"], "--f"), ["--full"]);
         assert_eq!(offer(&["link"], "s"), ["send-agents", "share", "start"]);

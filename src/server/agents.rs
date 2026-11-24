@@ -33,6 +33,7 @@ pub enum Kind {
     Claude,
     Codex,
     Pi,
+    Codewhale,
     /// Cursor CLI: known by its process only. Its chats are not read: no
     /// tokens, cost or trace, its CPU and memory only.
     Cursor,
@@ -45,6 +46,7 @@ impl Kind {
             Kind::Claude => "claude",
             Kind::Codex => "codex",
             Kind::Pi => "pi",
+            Kind::Codewhale => "codewhale",
             Kind::Cursor => "cursor",
         }
     }
@@ -62,13 +64,18 @@ impl Kind {
     /// (`cursor-agent`), as does the node that runs its script.
     pub fn of(name: &str, command_line: impl FnOnce() -> Option<String>) -> Option<Kind> {
         let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
-        let stem = base.strip_suffix(".exe").unwrap_or(&base);
+        // The stem without its extension: `codewhale.cmd` is `codewhale`,
+        // as `codewhale.exe` is.
+        let stem = std::path::Path::new(&base).file_stem().and_then(|s| s.to_str()).unwrap_or(&base);
         match stem {
             "claude" => return Some(Kind::Claude),
             "codex" => return Some(Kind::Codex),
             "pi" => return Some(Kind::Pi),
             "cursor-agent" => return Some(Kind::Cursor),
-            "node" | "bun" | "deno" | "agent" => {}
+            "codewhale" | "codew" => return Some(Kind::Codewhale),
+            // `cmd.exe /c …codewhale.cmd` and `node …/codewhale.js` name it
+            // in the command line, looked at below.
+            "node" | "bun" | "deno" | "agent" | "cmd" => {}
             _ => return None,
         }
         let line = command_line()?.to_ascii_lowercase().replace('\\', "/");
@@ -80,6 +87,8 @@ impl Kind {
             Some(Kind::Pi)
         } else if line.contains("cursor-agent") {
             Some(Kind::Cursor)
+        } else if line.contains("codewhale") {
+            Some(Kind::Codewhale)
         } else {
             None
         }
@@ -312,7 +321,7 @@ pub fn feed(kind: Kind, line: &str, u: &mut Usage, seen: &mut HashSet<String>) {
         Kind::Claude => claude(&v, u, seen),
         Kind::Codex => codex(&v, u),
         Kind::Pi => pi(&v, u),
-        Kind::Cursor => {}
+        Kind::Codewhale | Kind::Cursor => {}
     }
 }
 
@@ -535,6 +544,41 @@ fn pi(v: &Value, u: &mut Usage) {
     u.turns += 1;
 }
 
+/// codewhale's session file (`~/.codewhale/sessions/<id>.json`): one JSON
+/// object whose `metadata` carries the running totals — the model, the
+/// tokens used, and the session's cost (its own figure, like pi's, so no
+/// price list). Its totals are cumulative, read as Codex's running totals
+/// are: what each adds since the last read goes to the model of that moment.
+/// `messages` is walked for the tools called and the replies made.
+fn codewhale(bytes: &[u8], u: &mut Usage) {
+    let Ok(v) = serde_json::from_slice::<Value>(bytes) else { return };
+    let m = &v["metadata"];
+    if let Some(model) = m["model"].as_str().filter(|m| !m.is_empty()) {
+        u.model = model.to_string();
+    }
+    let now = Tokens { input: m["total_tokens"].as_u64().unwrap_or(0), ..Tokens::default() };
+    let added = u.running.since(&now);
+    u.running = now;
+    u.tokens = now;
+    u.by_model.entry(u.model.clone()).or_default().add(&added);
+    if let Some(cost) = m["cost"]["session_cost_usd"].as_f64() {
+        u.cost = Some(cost);
+    }
+    let (mut tools, mut turns) = (0u64, 0u64);
+    if let Some(msgs) = v["messages"].as_array() {
+        for msg in msgs {
+            if msg["role"] == "assistant" {
+                turns += 1;
+            }
+            if let Some(blocks) = msg["content"].as_array() {
+                tools += blocks.iter().filter(|b| b["type"] == "tool_use").count() as u64;
+            }
+        }
+    }
+    u.tools = tools;
+    u.turns = turns;
+}
+
 /// One transcript, read as it grows.
 pub struct Tail {
     kind: Kind,
@@ -567,6 +611,13 @@ impl Tail {
     /// What was written since the last read, whole lines only. A file that
     /// got shorter was written anew: read from the start.
     pub fn read(&mut self) {
+        if self.kind == Kind::Codewhale {
+            // One JSON object rewritten whole: its metadata is the running
+            // totals, read straight from the file.
+            let Ok(bytes) = std::fs::read(&self.path) else { return };
+            codewhale(&bytes, &mut self.usage);
+            return;
+        }
         let Ok(mut f) = std::fs::File::open(&self.path) else { return };
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);
         if len < self.offset {
@@ -655,6 +706,19 @@ pub fn transcripts(
         }
         Kind::Pi => jsonl_in(&home.join(".pi").join("agent").join("sessions").join(pi_folder(cwd)), Some(since)),
         Kind::Cursor => Vec::new(),
+        Kind::Codewhale => {
+            let dir = set("CODEWHALE_CONFIG_DIR").unwrap_or_else(|| home.join(".codewhale")).join("sessions");
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                    .filter(|p| modified(p).is_some_and(|m| m >= since))
+                    .filter(|p| codewhale_workspace(&p).is_some_and(|c| dir_key(&c) == dir_key(cwd)))
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        }
         Kind::Codex => {
             // A folder a day (local dates): the days since `since`, a week
             // at most; each session says its directory on its first line.
@@ -688,6 +752,13 @@ pub(super) fn codex_cwd(path: &Path) -> Option<String> {
     std::io::BufRead::read_line(&mut std::io::BufReader::new(f), &mut first).ok()?;
     let v: Value = serde_json::from_str(first.trim()).ok()?;
     v["payload"]["cwd"].as_str().map(str::to_string)
+}
+
+/// The workspace a codewhale session file worked in: its `metadata.workspace`.
+pub(super) fn codewhale_workspace(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let v: Value = serde_json::from_slice(&bytes).ok()?;
+    v["metadata"]["workspace"].as_str().map(str::to_string)
 }
 
 /// The transcripts of a Claude session's helpers (its subagents): beside
@@ -881,6 +952,10 @@ pub fn transcript_of_session(
                     .map(|e| e.path())
                     .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&end)))
             })
+        }
+        Kind::Codewhale => {
+            let dir = set("CODEWHALE_CONFIG_DIR").unwrap_or_else(|| home.join(".codewhale"));
+            Some(dir.join("sessions").join(format!("{id}.json"))).filter(|p| p.is_file())
         }
         _ => None,
     }
@@ -1797,6 +1872,54 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
+    /// codewhale's session file is one JSON object (not JSONL): its metadata
+    /// gives the model, the running tokens and the cost; `transcripts` finds
+    /// it by its workspace, `transcript_of_session` by its id.
+    #[test]
+    fn codewhale_reads_its_session_file() {
+        let home = std::env::temp_dir().join(format!("keepane-agents-codewhale-{}", std::process::id()));
+        let cwd = if cfg!(windows) { r"C:\work\codew" } else { "/work/codew" };
+        let sessions = home.join(".codewhale").join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let session = serde_json::json!({
+            "schema_version": 2,
+            "metadata": {
+                "id": "abcd-1234",
+                "model": "deepseek-v4-pro",
+                "workspace": cwd,
+                "total_tokens": 7189,
+                "cost": { "session_cost_usd": 0.17 },
+            },
+            "messages": [
+                { "role": "user", "content": [{ "type": "text" }] },
+                { "role": "assistant", "content": [{ "type": "thinking" }, { "type": "tool_use" }] },
+                { "role": "assistant", "content": [{ "type": "text" }] },
+            ],
+        });
+        std::fs::write(sessions.join("abcd-1234.json"), session.to_string()).unwrap();
+        std::fs::write(sessions.join("other.json"), r#"{"metadata":{"workspace":"/elsewhere"}}"#).unwrap();
+        std::fs::write(sessions.join("session_boot_owners.json"), "{}").unwrap();
+        let none = |_: &str| None;
+        let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+        assert_eq!(
+            transcripts(Kind::Codewhale, cwd, hour_ago, &home, &none),
+            [sessions.join("abcd-1234.json")],
+            "by its workspace"
+        );
+        assert_eq!(
+            transcript_of_session(Kind::Codewhale, cwd, "abcd-1234", &home, &none),
+            Some(sessions.join("abcd-1234.json"))
+        );
+        let mut u = Usage::default();
+        codewhale(&std::fs::read(sessions.join("abcd-1234.json")).unwrap(), &mut u);
+        assert_eq!(u.model, "deepseek-v4-pro");
+        assert_eq!(u.tokens.total(), 7189);
+        assert_eq!(u.cost, Some(0.17));
+        assert_eq!(u.tools, 1, "one tool_use");
+        assert_eq!(u.turns, 2, "two assistant replies");
+        std::fs::remove_dir_all(&home).ok();
+    }
+
     /// Two agents of a kind in one directory: a transcript begun after both
     /// started is the one started last's (the one started first had begun
     /// its own before).
@@ -2034,6 +2157,19 @@ mod tests {
         assert_eq!(Kind::of("agent.exe", cl(win)), Some(Kind::Cursor));
         assert_eq!(Kind::of("agent", cl("agent --serve")), None, "another program called agent");
         assert_eq!(Kind::of("agent", none), None);
+        // codewhale: by its name, its `.cmd` shim, and the `cmd.exe /c` or
+        // `node` that runs it.
+        assert_eq!(Kind::of("codewhale", none), Some(Kind::Codewhale));
+        assert_eq!(Kind::of("codew", none), Some(Kind::Codewhale));
+        assert_eq!(Kind::of(r"C:\Users\me\AppData\Roaming\npm\codewhale.cmd", none), Some(Kind::Codewhale));
+        assert_eq!(
+            Kind::of("cmd", cl(r#"cmd.exe /c "C:\Users\me\AppData\Roaming\npm\codewhale.cmd""#)),
+            Some(Kind::Codewhale)
+        );
+        assert_eq!(
+            Kind::of("node", cl(r"node C:\npm\node_modules\codewhale\bin\codewhale.js")),
+            Some(Kind::Codewhale)
+        );
         assert_eq!(Kind::Cursor.word(), "cursor");
         // Its transcripts are not read: its counts are not known, not 0.
         let cursor = Stats { kind: Kind::Cursor, ..Stats::default() };

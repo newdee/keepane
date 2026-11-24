@@ -54,9 +54,11 @@ pub enum Agent {
     Cursor,
     Opencode,
     Pi,
+    Codewhale,
 }
 
-pub const AGENTS: [Agent; 6] = [Agent::Claude, Agent::Codex, Agent::Gemini, Agent::Cursor, Agent::Opencode, Agent::Pi];
+pub const AGENTS: [Agent; 7] =
+    [Agent::Claude, Agent::Codex, Agent::Gemini, Agent::Cursor, Agent::Opencode, Agent::Pi, Agent::Codewhale];
 
 impl Agent {
     /// The word `keepane setup` takes.
@@ -68,6 +70,7 @@ impl Agent {
             Agent::Cursor => "cursor",
             Agent::Opencode => "opencode",
             Agent::Pi => "pi",
+            Agent::Codewhale => "codewhale",
         }
     }
 
@@ -84,6 +87,7 @@ impl Agent {
             Agent::Cursor => "Cursor CLI",
             Agent::Opencode => "opencode",
             Agent::Pi => "pi",
+            Agent::Codewhale => "Codewhale",
         }
     }
 
@@ -102,11 +106,17 @@ impl Agent {
     /// The agent a program is, by its name (`codex`, `codex.exe`, a path).
     /// Either separator, on any system: a Windows path read on Linux (or a
     /// name from the other machine) is still split. Cursor CLI goes by
-    /// `agent` too, its new name.
+    /// `agent` too (its new name), and codewhale by `codew`.
     pub fn of_program(program: &str) -> Option<Agent> {
         let name = program.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
-        let stem = name.strip_suffix(".exe").unwrap_or(&name);
-        AGENTS.into_iter().find(|a| a.program() == stem).or((stem == "agent").then_some(Agent::Cursor))
+        // The stem without its extension: `codewhale.cmd` is `codewhale`,
+        // as `codewhale.exe` is.
+        let stem = std::path::Path::new(&name).file_stem().and_then(|s| s.to_str()).unwrap_or(&name);
+        AGENTS.into_iter().find(|a| a.program() == stem).or_else(|| match stem {
+            "agent" => Some(Agent::Cursor),
+            "codew" => Some(Agent::Codewhale),
+            _ => None,
+        })
     }
 }
 
@@ -164,6 +174,11 @@ fn places(agent: Agent, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Pl
             let file = dir.join("extensions").join("keepane.ts");
             Places { hooks: file.clone(), mcp: file, cli_env: None }
         }
+        Agent::Codewhale => {
+            // Hooks and MCP servers live in two files (config.toml, mcp.json).
+            let dir = set("CODEWHALE_CONFIG_DIR").unwrap_or_else(|| home.join(".codewhale"));
+            Places { hooks: dir.join("config.toml"), mcp: dir.join("mcp.json"), cli_env: None }
+        }
     }
 }
 
@@ -176,6 +191,7 @@ fn events(agent: Agent) -> [&'static str; 2] {
         Agent::Cursor => ["sessionStart", "stop"],
         Agent::Opencode => ["plugin start", "session.idle"],
         Agent::Pi => ["session_start", "agent_end"],
+        Agent::Codewhale => ["session_start", "session_idle"],
     }
 }
 
@@ -187,6 +203,7 @@ fn wait_event(agent: Agent) -> Option<(&'static str, Option<&'static str>)> {
         Agent::Codex => Some(("PermissionRequest", None)),
         Agent::Gemini => Some(("Notification", None)),
         Agent::Cursor | Agent::Opencode | Agent::Pi => None,
+        Agent::Codewhale => Some(("waiting_for_user", None)),
     }
 }
 
@@ -354,6 +371,32 @@ fn own_file(agent: Agent) -> Option<&'static str> {
     }
 }
 
+/// codewhale's hook entries in its `config.toml` (its `[[hooks.hooks]]`
+/// list; the `[hooks] enabled = true` switch is added separately). Its hooks
+/// run through `sh -c` / `cmd /C`, and observer events discard stdout, so
+/// `-q` (quiet) is right.
+const CODEWHALE_HOOK_ENTRIES: &str = "\
+[[hooks.hooks]]
+name = \"keepane-ready\"
+event = \"session_start\"
+command = \"keepane pane-ready -q\"
+
+[[hooks.hooks]]
+name = \"keepane-ready\"
+event = \"session_idle\"
+command = \"keepane pane-ready -q\"
+
+[[hooks.hooks]]
+name = \"keepane-wait\"
+event = \"waiting_for_user\"
+command = \"keepane pane-wait -q\"
+";
+
+/// codewhale's hooks as a whole: the switch on, then the entries.
+fn codewhale_hooks() -> String {
+    format!("[hooks]\nenabled = true\n\n{CODEWHALE_HOOK_ENTRIES}")
+}
+
 fn obj<'a>(v: &'a mut Value, what: &str) -> Result<&'a mut serde_json::Map<String, Value>> {
     v.as_object_mut().with_context(|| format!("{what} is not a JSON object"))
 }
@@ -416,6 +459,8 @@ pub fn with_cursor_hooks(mut file: Value) -> Result<(Value, bool)> {
 fn mcp_entry(agent: Agent) -> (&'static str, Value) {
     match agent {
         Agent::Opencode => ("mcp", json!({ "type": "local", "command": ["keepane", "mcp"], "enabled": true })),
+        // codewhale lists servers under `servers` (its `mcp.json`).
+        Agent::Codewhale => ("servers", json!({ "command": "keepane", "args": ["mcp"] })),
         _ => ("mcpServers", json!({ "command": "keepane", "args": ["mcp"] })),
     }
 }
@@ -482,11 +527,33 @@ fn edit_json(path: &Path, f: impl FnOnce(Value) -> Result<(Value, bool)>) -> Res
     Ok(changed)
 }
 
+/// codewhale's hooks are TOML (`config.toml`), not JSON. keepane appends its
+/// entries and, when there is no `[hooks]` section yet, writes the whole
+/// block with `enabled = true`; it never parses the file, so an existing
+/// `[hooks]` (and its `enabled`) is left as the user has it. Idempotent by
+/// text: keepane's entries are recognised by their commands.
+fn edit_codewhale_toml(path: &Path) -> Result<bool> {
+    let old = read(path)?;
+    let mut text = old.clone().unwrap_or_default();
+    if text.contains(HOOK_MARK) && text.contains(WAIT_MARK) {
+        return Ok(false);
+    }
+    let append = if text.contains("[hooks]") { CODEWHALE_HOOK_ENTRIES.trim_end().to_string() } else { codewhale_hooks() };
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&append);
+    text.push('\n');
+    write_backed_up(path, old.as_deref(), &text)?;
+    Ok(true)
+}
+
 /// Whether a file is there and holds keepane's hook.
 fn hooked(agent: Agent, p: &Places) -> bool {
     let Ok(Some(t)) = read(&p.hooks) else { return false };
     match agent {
         Agent::Opencode | Agent::Pi => t.contains(HOOK_MARK) || t.contains("\"pane-ready\""),
+        Agent::Codewhale => t.contains(HOOK_MARK) && t.contains(WAIT_MARK),
         Agent::Cursor => {
             serde_json::from_str(&t).ok().and_then(|v| with_cursor_hooks(v).ok()).is_some_and(|(_, changed)| !changed)
         }
@@ -561,6 +628,7 @@ fn hooks_snippet(agent: Agent) -> String {
     }
     let v = match agent {
         Agent::Cursor => with_cursor_hooks(json!({})).map(|(v, _)| v),
+        Agent::Codewhale => return codewhale_hooks(),
         _ => with_hooks(json!({}), agent).map(|(v, _)| v),
     };
     v.map(|v| serde_json::to_string_pretty(&v).unwrap_or_default()).unwrap_or_default()
@@ -610,6 +678,8 @@ fn install(agent: Agent, p: &Places) -> Result<()> {
         }
         None => match agent {
             Agent::Cursor => edit_json(&p.hooks, with_cursor_hooks)?,
+            // TOML: appended, never parsed.
+            Agent::Codewhale => edit_codewhale_toml(&p.hooks)?,
             // Hooks and MCP servers in one file (Gemini CLI): one edit, one
             // backup of the file as the user had it.
             _ if p.hooks == p.mcp => {
@@ -797,13 +867,19 @@ mod tests {
         assert_eq!(files(Agent::Gemini, &no_env).0, home.join(".gemini/settings.json"));
         assert_eq!(files(Agent::Cursor, &no_env), (home.join(".cursor/hooks.json"), home.join(".cursor/mcp.json")));
         assert_eq!(files(Agent::Opencode, &no_env).0, home.join(".config/opencode/plugins/keepane.js"));
+        assert_eq!(files(Agent::Codewhale, &no_env), (home.join(".codewhale/config.toml"), home.join(".codewhale/mcp.json")));
         assert_eq!(events(Agent::Codex), ["SessionStart", "Stop"]);
         assert_eq!(events(Agent::Gemini), ["SessionStart", "AfterAgent"]);
         assert_eq!(events(Agent::Cursor), ["sessionStart", "stop"]);
+        assert_eq!(events(Agent::Codewhale), ["session_start", "session_idle"]);
+        assert_eq!(wait_event(Agent::Codewhale), Some(("waiting_for_user", None)));
         // The programs, and the words for them.
         assert_eq!(Agent::of_program("C:\\x\\codex.exe"), Some(Agent::Codex));
         assert_eq!(Agent::of_program("cursor-agent"), Some(Agent::Cursor));
         assert_eq!(Agent::of_program(r"C:\Users\me\AppData\Local\cursor-agent\agent.exe"), Some(Agent::Cursor));
+        assert_eq!(Agent::of_program("codewhale"), Some(Agent::Codewhale));
+        assert_eq!(Agent::of_program("C:\\x\\codewhale.exe"), Some(Agent::Codewhale));
+        assert_eq!(Agent::of_program("codew"), Some(Agent::Codewhale));
         assert_eq!(Agent::of_program("pwsh"), None);
         assert_eq!(Agent::parse("cursor"), Some(Agent::Cursor));
         assert_eq!(Agent::parse("cursor-agent"), Some(Agent::Cursor));
@@ -892,6 +968,30 @@ mod tests {
         assert_eq!(gemini["theme"], "dark");
         assert_eq!(gemini["hooks"]["AfterAgent"][0]["hooks"][0]["command"], HOOK_COMMAND);
         assert_eq!(gemini["mcpServers"]["keepane"]["args"], json!(["mcp"]));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// codewhale's hooks are TOML in `config.toml` and its MCP servers in
+    /// `mcp.json`: installed into an empty home, found set up; a second
+    /// install changes nothing.
+    #[test]
+    fn install_sets_up_codewhale() {
+        let home = temp("codewhale");
+        let p = places(Agent::Codewhale, &home, &no_env);
+        assert!(!hooked(Agent::Codewhale, &p) && !registered(Agent::Codewhale, &p), "starts bare");
+        install(Agent::Codewhale, &p).unwrap();
+        assert!(hooked(Agent::Codewhale, &p), "hook");
+        assert!(registered(Agent::Codewhale, &p), "MCP");
+        let config = std::fs::read_to_string(&p.hooks).unwrap();
+        assert!(config.contains("[hooks]") && config.contains("enabled = true"), "{config}");
+        assert!(config.contains("session_idle") && config.contains("waiting_for_user"), "{config}");
+        assert!(config.contains(HOOK_COMMAND) && config.contains(WAIT_COMMAND), "{config}");
+        let mcp: Value = serde_json::from_str(&std::fs::read_to_string(&p.mcp).unwrap()).unwrap();
+        assert_eq!(mcp["servers"]["keepane"], json!({ "command": "keepane", "args": ["mcp"] }));
+        // A second run changes nothing.
+        let before = std::fs::read_to_string(&p.hooks).unwrap();
+        install(Agent::Codewhale, &p).unwrap();
+        assert_eq!(std::fs::read_to_string(&p.hooks).unwrap(), before, "a second run changes nothing");
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -149,7 +149,7 @@ pub fn with_shell_integration(argv: &[String]) -> Vec<String> {
         return run;
     }
     if !matches!(stem.as_str(), "pwsh" | "powershell") {
-        return argv.to_vec();
+        return resolve_program(argv);
     }
     // PowerShell takes any unambiguous prefix of a parameter name.
     let runs_its_own = argv[1..].iter().any(|a| {
@@ -169,6 +169,20 @@ pub fn with_shell_integration(argv: &[String]) -> Vec<String> {
     run.push("-NoExit".into());
     run.push("-Command".into());
     run.push(POWERSHELL_PROMPT_HOOK.into());
+    run
+}
+
+/// `argv` with its program resolved for ConPTY: a `.cmd` or `.bat` (an
+/// npm-style shim, which CreateProcessW cannot start on its own) runs
+/// through `cmd.exe /c`; anything else is left as it was.
+fn resolve_program(argv: &[String]) -> Vec<String> {
+    let Some(exe) = which(&argv[0]) else { return argv.to_vec() };
+    let script = exe.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    if !script {
+        return argv.to_vec();
+    }
+    let mut run = vec!["cmd.exe".into(), "/c".into(), exe.to_string_lossy().into_owned()];
+    run.extend(argv[1..].iter().cloned());
     run
 }
 
@@ -275,5 +289,29 @@ mod tests {
         assert!(which("cmd.exe").is_some());
         assert!(which("cmd").is_some());
         assert!(which("definitely-not-a-real-binary-xyz").is_none());
+    }
+
+    /// A `.cmd` or `.bat` (npm's shim) runs through `cmd.exe /c`:
+    /// CreateProcessW cannot start it, and would otherwise pick the
+    /// extensionless shim beside it.
+    #[test]
+    fn a_cmd_shim_runs_through_cmd_exe() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let dir = std::env::temp_dir().join(format!("keepane-shell-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cmd = dir.join("tool.cmd");
+        std::fs::write(&cmd, "@echo off\r\n").unwrap();
+        let argv = s(&[cmd.to_str().unwrap(), "--help"]);
+        assert_eq!(
+            with_shell_integration(&argv),
+            s(&["cmd.exe", "/c", cmd.to_str().unwrap(), "--help"]),
+            "a .cmd is started through cmd.exe"
+        );
+        // An .exe is left as it was.
+        let exe = dir.join("tool.exe");
+        std::fs::write(&exe, b"not a real exe").unwrap();
+        let argv = s(&[exe.to_str().unwrap()]);
+        assert_eq!(with_shell_integration(&argv), argv, "an .exe is untouched");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -60,11 +60,13 @@ pub(super) fn unheard_advice(pid: PaneId, program: Option<&str>) -> String {
         Some(a) => format!("keepane setup {} --install", a.word()),
         None => "keepane setup (it shows which agents lack it)".to_string(),
     };
-    // Claude Code's, Codex's and pi's transcripts say when a turn is over:
-    // free then, the hook only sooner. The others' are not read: without
-    // the hook, they wait.
-    let read =
-        matches!(agent, Some(crate::setup::Agent::Claude | crate::setup::Agent::Codex | crate::setup::Agent::Pi));
+    // Claude Code's, Codex's, pi's and codewhale's transcripts say when a
+    // turn is over: free then, the hook only sooner. The others' are not
+    // read: without the hook, they wait.
+    let read = matches!(
+        agent,
+        Some(crate::setup::Agent::Claude | crate::setup::Agent::Codex | crate::setup::Agent::Pi | crate::setup::Agent::Codewhale)
+    );
     let without = if read {
         "without one keepane goes by its transcript, about 3 s late at the most, once its first turn is over"
     } else {

@@ -160,7 +160,7 @@ fn status_paths_read_renames_right() {
 
 /// Places for a test: everything under `d`.
 fn places_in(d: &Path) -> Places {
-    Places { claude: d.join("claude"), codex: d.join("codex"), pi: d.join("pi") }
+    Places { claude: d.join("claude"), codex: d.join("codex"), pi: d.join("pi"), codewhale: d.join("codewhale") }
 }
 
 fn write(p: &Path, text: &str) {
@@ -214,6 +214,36 @@ fn a_folders_chats_are_found() {
     assert_eq!(chat_target(&pl, folder, &deep, &BTreeMap::new()), None, "Codex: by its date");
     let out = ChatAsk { agent: Some(Agent::Claude), id: ID.into(), rel: format!("../{ID}.jsonl") };
     assert_eq!(chat_target(&pl, folder, &out, &BTreeMap::new()), None, "not out of its folder");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// codewhale's session file (one JSON object, not JSONL) is found by its
+/// workspace, and its `metadata.workspace` moves with the folder.
+#[test]
+fn codewhale_chats_move_with_the_folder() {
+    let d = temp("codewhale");
+    let pl = places_in(&d);
+    let folder = if cfg!(windows) { r"C:\w\cw" } else { "/w/cw" };
+    let cw = "55555555-5555-4555-8555-555555555555";
+    let session = format!(
+        r#"{{"metadata":{{"id":"{cw}","workspace":{},"model":"deepseek-v4-pro","total_tokens":7}},"messages":[]}}"#,
+        serde_json::to_string(folder).unwrap()
+    );
+    write(&pl.dir(Agent::Codewhale, folder).join(format!("{cw}.json")), &session);
+    let got: Vec<(Agent, String, bool)> =
+        chats_of(folder, &pl).into_iter().map(|c| (c.agent, c.rel, c.transcript)).collect();
+    assert_eq!(got, vec![(Agent::Codewhale, format!("{cw}.json"), true)]);
+    // Its workspace moves there.
+    let f = ChatFile {
+        agent: Agent::Codewhale,
+        id: cw.into(),
+        rel: format!("{cw}.json"),
+        path: pl.dir(Agent::Codewhale, folder).join(format!("{cw}.json")),
+        transcript: true,
+    };
+    let there = if cfg!(windows) { r"D:\dest\cw" } else { "/dest/cw" };
+    let v: serde_json::Value = serde_json::from_slice(&as_there(&f, folder, there).unwrap()).unwrap();
+    assert_eq!(v["metadata"]["workspace"].as_str(), Some(there));
     let _ = std::fs::remove_dir_all(&d);
 }
 
