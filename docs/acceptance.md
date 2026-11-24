@@ -6770,3 +6770,7 @@ UnifyTerm 维护者 2026-11-24 在 #unifyterm-keepane 请求（用户让做的�
 | 9 | 机制通路存活（第 8 轮的修复：改回去、改过来看输出）+ 全量 + web e2e（依次跑） | 修复前（第 8 轮实测）：`opencli --install` 对 ut 0.2.4 只说 `管道已结束 (os error 109)`；修复后：`ut: unknown command 'program'…` 加 "a ut older than `ut program`?"，exit 2——同一个输入，输出变了，路径是活的；有 `program` 的 ut 照常写完再读（写入成功时走原路）。fmt 干净、`clippy exit 0`；Windows `cargo test exit: 0` 740 / 11 / 186（85 秒），Linux 724 / 181，web e2e 45/45；C 盘 258.8 GB。 | 干净（1/3） |
 | 10 | 静态一致性（第 5、8 轮改动后的文档与代码）+ 全量 + web e2e（依次跑） | `opencli` 在 `--help`（main.rs 1 处用法 + 分派）、README en/zh、man、`completion::LOCAL`/`LOCAL_FLAGS` 都在；文档说"版本不同就换"，代码 `v != this`，一致；README 说 `--install` 需要"有 `ut program` 的 UnifyTerm"，与旧 ut 的报错提示一致；`HIDDEN` 9 个都是命令（单元）；没有声明了没人读的常量（clippy 无 dead_code）。fmt 干净、`clippy exit 0`；Windows `cargo test exit: 0` 740 / 11 / 186（71 秒），Linux 724 / 181，web e2e 45/45。 | 干净（2/3） |
 | 11 | 代码正确性（并发与资源：server 启动的后台线程）+ 全量 + web e2e（依次跑） | `refresh_in_background` 在自己的线程里跑，不碰 server 的状态（只读 `document()`，那是常量表生成的）；开线程失败写 warn、server 照常；子进程的 stdin 写完即关（`take()` 后 drop），`wait_with_output` 读完 stdout/stderr，不会因管道满卡住；ut 卡住只卡这个线程，不影响 server。fmt 干净、`clippy exit 0`；Windows `cargo test exit: 0` 740 / 11 / 186（73 秒），Linux 724 / 181，web e2e 45/45；C 盘 258.6 GB。 | 干净（3/3），验收通过 |
+
+0.90.0（`keepane opencli`：命令清单交给 UnifyTerm，server 启动时更新它；`clear-history -t` 不再提示）：第 226 条。
+
+0.90.0 发布：CI 45338966129（41771e0）四个 job 通过（含 macOS）；tag v0.90.0；Release 45339643244 四个平台通过；manifests 8f7adec；winget PR #487803（第一次建 PR 时 GraphQL 断开、分支没建成，重跑脚本后建好）；Homebrew formula 45340596630 通过，三个 tar.gz 的 sha256 与 release 一致。
