@@ -2,6 +2,7 @@ import { Button } from "@heroui/react";
 import { ArrowLeft, AtSign, Hash, MessagesSquare, Paperclip, Reply, SendHorizontal, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getJson, post, q, saveFile } from "../api";
+import { store, stored } from "../format";
 import { useVisible } from "../hooks";
 import { t } from "../i18n";
 
@@ -176,6 +177,9 @@ export function useChatUnread(enabled: boolean) {
   return n;
 }
 
+/** The channel picked last on this device, opened first on a wide screen. */
+const KEPT = "keepane-chat-channel";
+
 export function ChatView({ wide, readOnly, onClose }: { wide: boolean; readOnly: boolean; onClose: () => void }) {
   const { channels: listed, error, reload } = useChannels(true);
   // As a chat app lists them: the one last said in first, those where
@@ -193,10 +197,18 @@ export function ChatView({ wide, readOnly, onClose }: { wide: boolean; readOnly:
   );
   const [open, setOpen] = useState<string | null>(null);
   const picked = channels?.find((c) => c.id === open) || null;
-  // On a wide screen a channel is always open: the first, until one is picked.
+  // On a wide screen a channel is always open: the one picked last time on
+  // this device, while it is there, else the first, until one is picked.
   useEffect(() => {
-    if (wide && !open && channels && channels.length) setOpen(channels[0].id);
+    if (!wide || open || !channels || !channels.length) return;
+    const kept = stored<string | null>(KEPT, null);
+    setOpen((channels.find((c) => c.id === kept) || channels[0]).id);
   }, [wide, open, channels]);
+  // Only what the person picks is kept: not the first, opened for them.
+  const pick = (id: string) => {
+    store(KEPT, id);
+    setOpen(id);
+  };
   const showList = wide || !picked;
   return (
     <div className="flex min-h-0 flex-1">
@@ -221,7 +233,7 @@ export function ChatView({ wide, readOnly, onClose }: { wide: boolean; readOnly:
           ) : null}
           <ul className="flex flex-col gap-0.5 px-2 pb-3">
             {(channels || []).map((c) => (
-              <ChannelRow key={c.id} c={c} active={c.id === open} onOpen={() => setOpen(c.id)} />
+              <ChannelRow key={c.id} c={c} active={c.id === open} onOpen={() => pick(c.id)} />
             ))}
           </ul>
         </aside>

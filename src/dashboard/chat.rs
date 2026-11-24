@@ -133,6 +133,37 @@ pub struct ChatPage {
     pub divider: Option<(String, u64)>,
     /// The member picked in the list a `@` being typed opens.
     pub at_pick: usize,
+    /// The channel `board.json` names (`kept_path`): the one picked when
+    /// the board was last open; after that, the one last written there.
+    pub kept: Option<String>,
+    /// That channel, to be picked as soon as a list has it (another
+    /// machine's comes a moment later than this one's), unless the person
+    /// picks another first (`pick_at`). Nothing is written meanwhile.
+    pub wanted: Option<String>,
+}
+
+/// Where the board keeps which channel it had picked, so the next one
+/// opened picks it again: beside the chat's files, one per server.
+pub(super) fn kept_path(socket: &str) -> std::path::PathBuf {
+    crate::histlog::chat_dir().join(crate::histlog::safe_name(socket)).join("board.json")
+}
+
+/// The channel `board.json` names; none when it is missing or not read.
+pub(super) fn load_kept(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v["channel"].as_str().filter(|c| !c.is_empty()).map(String::from)
+}
+
+/// `channel` written to `board.json`, whole or not at all: through a file
+/// of this process's own, as two boards may be open at once.
+pub(super) fn save_kept(path: &std::path::Path, channel: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!("json.{}.new", std::process::id()));
+    std::fs::write(&tmp, serde_json::json!({ "channel": channel }).to_string())?;
+    std::fs::rename(&tmp, path)
 }
 
 /// The handle being typed: what follows the `@` of the text's last word,
@@ -162,7 +193,25 @@ impl ChatPage {
         shown.get(self.pick.min(shown.len().saturating_sub(1))).copied()
     }
 
-    /// `chat-list -J`; the channel picked stays picked (by its id).
+    /// The channel picked, when `board.json` does not name it yet; none
+    /// while the one it names may still come.
+    pub(super) fn to_keep(&self) -> Option<String> {
+        if self.wanted.is_some() {
+            return None;
+        }
+        self.picked().map(|c| c.id.clone()).filter(|id| self.kept.as_ref() != Some(id))
+    }
+
+    /// The person picks the `i`th channel shown: the one the board had
+    /// picked last time is no longer waited for.
+    pub(super) fn pick_at(&mut self, i: usize) {
+        self.pick = i;
+        self.wanted = None;
+    }
+
+    /// `chat-list -J`; the channel picked stays picked (by its id). Until
+    /// a list has it, the one the board had picked when it was last open
+    /// is picked as soon as one does (`wanted`).
     pub(super) fn set_channels(&mut self, json: &str) {
         let was = self.picked().map(|c| c.id.clone());
         let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap_or_default();
@@ -191,11 +240,15 @@ impl ChatPage {
                     .collect()
             })
             .unwrap_or_default();
-        let (at, n) = {
+        let (wanted, at, n) = {
             let shown = self.shown();
-            (was.and_then(|id| shown.iter().position(|c| c.id == id)), shown.len())
+            let find = |id: &String| shown.iter().position(|c| &c.id == id);
+            (self.wanted.as_ref().and_then(find), was.as_ref().and_then(find), shown.len())
         };
-        self.pick = at.unwrap_or(self.pick).min(n.saturating_sub(1));
+        if wanted.is_some() {
+            self.wanted = None;
+        }
+        self.pick = wanted.or(at).unwrap_or(self.pick).min(n.saturating_sub(1));
     }
 
     /// `chat-who -J`.
@@ -649,10 +702,10 @@ impl Board {
     pub(super) fn channel_key(&mut self, code: KeyCode) -> Action {
         let n = self.chat.shown().len();
         match code {
-            KeyCode::Down | KeyCode::Char('j') => self.chat.pick = (self.chat.pick + 1).min(n.saturating_sub(1)),
-            KeyCode::Up | KeyCode::Char('k') => self.chat.pick = self.chat.pick.saturating_sub(1),
-            KeyCode::Home | KeyCode::Char('g') => self.chat.pick = 0,
-            KeyCode::End | KeyCode::Char('G') => self.chat.pick = n.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.chat.pick_at((self.chat.pick + 1).min(n.saturating_sub(1))),
+            KeyCode::Up | KeyCode::Char('k') => self.chat.pick_at(self.chat.pick.saturating_sub(1)),
+            KeyCode::Home | KeyCode::Char('g') => self.chat.pick_at(0),
+            KeyCode::End | KeyCode::Char('G') => self.chat.pick_at(n.saturating_sub(1)),
             KeyCode::Enter => self.focus_on(Panel::Main),
             KeyCode::Char('n') => self.input = Some((Input::ChatNew, String::new())),
             KeyCode::Char(c @ ('s' | 't' | '#')) => {

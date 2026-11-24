@@ -6727,3 +6727,19 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 0.89.1（关机时被系统先结束的 pane 留 10 秒、存档留上一份 `resume --prev`、别的机器的旧存档挪开、测试不再写真目录）：第 224 条。
 
 0.89.1 发布：CI 45120414292（5b8eb91）四个 job 通过（含 macOS）；tag v0.89.1；Release 45121084882 四个平台通过；manifests da6c268；winget PR #486847；Homebrew formula 45122088150 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 225. 群聊选中的频道下次打开时还选中它（看板与网页）
+
+用户 2026-11-24：群聊的高亮选中框每次打开都从第一个开始，应该是上次看的那个。
+
+- 原因：`C-b v` 每次起一个新的看板进程，`ChatPage.pick` 只在内存里，从 0 开始；网页宽屏每次加载打开 `channels[0]`。
+- 改动：看板把选中的频道 id 写到 `chat\<socket>\board.json`（`chat::kept_path`/`load_kept`/`save_kept`，经本进程自己的临时文件改名，两个看板同时开也不写坏），打开时读回来；别的机器的频道晚一步列出，所以记住的频道在列表里出现之前一直等它（`wanted`），等的时候不写文件，你自己选了（`pick_at`：j/k/g/G、点击、筛选）就不再等；没找到时跟着当前选中的 id 走，不按位置。只在换了频道时写；退出时也写（选了马上退出的同一批按键）；写不了在底部说一次。网页宽屏：打开这台设备上次选的（localStorage `keepane-chat-channel`，经 `stored`/`store`），不在了打开第一个；只记你点的，自动打开的第一个不记。存储位置按 0.69.0 "每一端各看各的"：看板和网页各记各的，不经服务端；不引入 SQLite（只存一个值）。
+- 定性：共性——看板和网页两处都是"打开时从第一个开始"，一起改；属于状态只在内存、没跨进程保留的边界遗漏，不是结构缺陷。看板别的列表（收件箱、任务、分享、文件、成员）不跟着改：收件箱/任务/分享按时间排，最上面是最新的；文件跟着 pane；成员跟着频道，都不该记旧位置。
+- 评估：没有 `board.json` 时行为同前（选第一个，单元测试覆盖）；`set_channels` 原来按 id 保持选中，现在同样，只在开头多了"等记住的那个"；服务端不改，不读这个文件（聊天目录里只扫 `*.jsonl` 和日期文件夹，已查 `read_dir` 三处）；网页窄屏（手机）不变，仍先列表。
+- 测试：单元 `the_channel_picked_last_time_is_picked_again`（没记过、记着本机的、记着别的机器的且晚到、等的时候自己选了、记着的已删、文件读写/损坏/不留临时文件）；web e2e `the channel picked last opens again on a wide screen; gone, the first does`。变异 4 个全抓：网页改回 `channels[0]`、`to_keep` 不等、忽略 `wanted`、`pick_at` 不停止等。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路存活（改输入看输出）+ 全量 + web e2e（依次跑） | 4 个变异全抓（网页改回 `channels[0]`：web e2e 1/4 失败；`to_keep` 不等、忽略 `wanted`、`pick_at` 不停止等：单元各失败）。fmt 干净、`clippy exit 0`；Windows 734 / 11 / 186（99 秒），Linux 718 / 181（clippy exit 0），web e2e 45/45。 | 干净（1/3） |
+| 2 | 代码正确性（错误路径、并发）+ 全量 + web e2e（依次跑） | 读代码 6 处：两个看板同时写——各用 `board.json.<pid>.new` 再改名（Windows 的 rename 覆盖已有文件），不会互相写坏，单元断言目录里不留临时文件；写失败——底部说一次，记成已写，不每秒重试刷屏；选了马上 `q`——`Action::Quit` 前也写；网页"返回"只在窄屏有（`!wide`），宽屏不会把记住的又自动打开成别的；窄屏点的也记，转成宽屏打开它；服务端不读 `board.json`。fmt 干净、`clippy exit 0`；Windows 734 / 11 / 186（69 秒），Linux 718 / 181（clippy exit 0），web e2e 45/45。 | 干净（2/3） |
+| 3 | 边界与退化输入（读代码）+ 全量 + web e2e（依次跑） | `board.json` 缺失、不是 JSON、`channel` 为空串或不是字符串：`load_kept` 都给 none，选第一个（缺失与损坏有单元断言）；一个频道都没有、筛选到一个不剩：`picked()` 为 none，不写；socket 名有 Windows 不收的字符：`histlog::safe_name`，与服务端的聊天目录同一个；记着的频道已删：选第一个，不写，等你自己选（单元断言）；网页 localStorage 不可用（隐私窗口）：`stored`/`store` 吞掉异常，退回第一个。fmt 干净、`clippy exit 0`；Windows 734 / 11 / 186（69 秒），Linux 718 / 181（clippy exit 0），web e2e 45/45。 | 干净（3/3），验收通过 |

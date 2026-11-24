@@ -367,7 +367,8 @@ first.
 Page 2 is the group chat (above): `[1]` the channels, with how many are
 in each, how many lines you have not read, the tags and how long ago the
 last line was, and under each that line (`/` filters them by a name or
-a tag); `[2]` the picked one's members, each in its colour, with its
+a tag; the one picked is picked again when the board opens next, also on
+the page, on a wide screen, by the browser); `[2]` the picked one's members, each in its colour, with its
 role, where it is and whether its pane is busy; `[4]` what was said
 there, the latest at the bottom: each one's lines in a bubble in its
 colour (the first six to join a channel never share one; one member's

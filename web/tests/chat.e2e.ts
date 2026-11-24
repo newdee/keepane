@@ -181,3 +181,27 @@ test("a line is replied to from the page: the reply is in its thread and quotes 
   // And the page quotes the line it answers above it.
   await expect(talk.getByText(`↩ #${asked.seq} ${bot}: an older line`)).toBeVisible();
 });
+
+test("the channel picked last opens again on a wide screen; gone, the first does", async ({ app, screen, browser }) => {
+  await app.open(page(portOf(app.baseUrl)));
+  await screen.getByRole("button", "群聊").click();
+  const list = screen.getByRole("complementary", "频道");
+  // Opened by itself: the one said in last.
+  await expect(screen.getByRole("region", `#${newer}`)).toBeVisible();
+  // Picked by the person: the other.
+  await list.getByRole("button", `#${older}`).click();
+  await expect(screen.getByRole("region", `#${older}`)).toBeVisible();
+
+  // The page again (it stays on the chat): the one picked opens, not the
+  // one said in last.
+  await browser.reload();
+  await expect(screen.getByRole("region", `#${older}`)).toBeVisible();
+  await expect(screen.getByRole("region", `#${newer}`)).toBeHidden();
+
+  // That channel gone (on the server): the first opens again.
+  kp("chat-delete", older);
+  older = "";
+  await browser.reload();
+  await expect(screen.getByRole("region", `#${newer}`)).toBeVisible();
+  await screen.getByRole("button", "回到 pane 列表").first().click();
+});
