@@ -6743,3 +6743,7 @@ v0.23.0 的 tag 推送后，CI 在 **macOS 上失败**（两个新 e2e：`list-d
 | 1 | 机制通路存活（改输入看输出）+ 全量 + web e2e（依次跑） | 4 个变异全抓（网页改回 `channels[0]`：web e2e 1/4 失败；`to_keep` 不等、忽略 `wanted`、`pick_at` 不停止等：单元各失败）。fmt 干净、`clippy exit 0`；Windows 734 / 11 / 186（99 秒），Linux 718 / 181（clippy exit 0），web e2e 45/45。 | 干净（1/3） |
 | 2 | 代码正确性（错误路径、并发）+ 全量 + web e2e（依次跑） | 读代码 6 处：两个看板同时写——各用 `board.json.<pid>.new` 再改名（Windows 的 rename 覆盖已有文件），不会互相写坏，单元断言目录里不留临时文件；写失败——底部说一次，记成已写，不每秒重试刷屏；选了马上 `q`——`Action::Quit` 前也写；网页"返回"只在窄屏有（`!wide`），宽屏不会把记住的又自动打开成别的；窄屏点的也记，转成宽屏打开它；服务端不读 `board.json`。fmt 干净、`clippy exit 0`；Windows 734 / 11 / 186（69 秒），Linux 718 / 181（clippy exit 0），web e2e 45/45。 | 干净（2/3） |
 | 3 | 边界与退化输入（读代码）+ 全量 + web e2e（依次跑） | `board.json` 缺失、不是 JSON、`channel` 为空串或不是字符串：`load_kept` 都给 none，选第一个（缺失与损坏有单元断言）；一个频道都没有、筛选到一个不剩：`picked()` 为 none，不写；socket 名有 Windows 不收的字符：`histlog::safe_name`，与服务端的聊天目录同一个；记着的频道已删：选第一个，不写，等你自己选（单元断言）；网页 localStorage 不可用（隐私窗口）：`stored`/`store` 吞掉异常，退回第一个。fmt 干净、`clippy exit 0`；Windows 734 / 11 / 186（69 秒），Linux 718 / 181（clippy exit 0），web e2e 45/45。 | 干净（3/3），验收通过 |
+
+0.89.2（群聊选中的频道下次打开还选中它：看板 `board.json`，网页宽屏 localStorage）：第 225 条。
+
+0.89.2 发布：CI 45313291329（1ae35b6）四个 job 通过（含 macOS）；tag v0.89.2；Release 45314129553 四个平台通过；manifests 4425a5a；winget PR #487686；Homebrew formula 45315122499 通过，三个 tar.gz 的 sha256 与 release 一致。
