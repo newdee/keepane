@@ -33,8 +33,9 @@ pub(super) struct LinkHost {
     /// Messages handed to another machine, and how they are known there.
     pub(super) sent: HashMap<MsgId, super::link_out::SentThere>,
     /// The panes another machine started here (`link-start`), by the key of
-    /// that machine: the ones it may close, and what counts toward its
-    /// `agent-pane-limit`. Not kept past this server.
+    /// that machine: what counts toward its `agent-pane-limit`. Not kept
+    /// past this server. (Who may close a pane is `Pane::made_by`, which
+    /// is saved, and covers the panes it made in a session here too.)
     pub(super) made: HashMap<super::PaneId, String>,
     /// Bundles of commits arriving from other machines (`link_git`), by
     /// their transfer's name.

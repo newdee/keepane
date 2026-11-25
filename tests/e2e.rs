@@ -7260,7 +7260,18 @@ async fn a_machine_allowed_to_starts_panes_on_another_and_closes_only_those() {
     assert!(code != 0 && err.contains("agent-pane-limit 1 reached"), "{err}");
     // It closes the pane it started, and no other.
     let (code, _, err) = a.cli(&["link-kill", &format!("{addr_b}/%{own}")]).await;
-    assert!(code != 0 && err.contains("may close only the panes it started"), "{err}");
+    assert!(code != 0 && err.contains("may close only the panes it made"), "{err}");
+    // Started again there (`respawn-pane -k`), it is the same pane: still
+    // that machine's. Who made it is saved with it: its session put away
+    // and resumed there, it is still the one that may close it.
+    assert_eq!(b.cli(&["respawn-pane", "-k", "-t", &format!("%{pid}")]).await.0, 0);
+    let session = session.trim().to_string();
+    assert_eq!(b.cli(&["save-session", "-t", &session]).await.0, 0);
+    assert_eq!(b.cli(&["kill-session", "-t", &session]).await.0, 0);
+    let (code, _, err) = b.cli(&["resume", &session]).await;
+    assert_eq!(code, 0, "{err}");
+    let pid = pane_id(&b, &format!("{session}:0.0")).await;
+    let address = format!("{addr_b}/%{pid}");
     let (code, out, err) = a.cli(&["link-kill", &address]).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.starts_with("closed "), "{out}");
@@ -8192,6 +8203,26 @@ async fn a_copy_of_another_machine_follows_it_over_an_encrypted_stream() {
         out.lines().count() == 1
     })
     .await;
+    // Only the machine a pane runs on and the one that made it close it:
+    // that machine's own pane, its window and its session are not this
+    // one's to close; nothing goes.
+    let host_b = keepane::sysinfo::hostname();
+    for (cmd, t) in
+        [("kill-pane", there.clone()), ("kill-window", there.clone()), ("kill-session", format!("{addr_b}/wb"))]
+    {
+        let (code, _, err) = a.cli(&[cmd, "-t", &t]).await;
+        assert!(code != 0 && err.contains(&format!("was made by {host_b} itself: only the machine")), "{cmd}: {err}");
+    }
+    assert_eq!(panes_b().await, 1, "nothing closed");
+    // One this machine made there: that machine closes it too.
+    assert_eq!(a.cli(&["split-window", "-t", &format!("{addr_b}/wb")]).await.0, 0);
+    let made_by_a = pane_id(&b, "wb:0.1").await;
+    assert_eq!(b.cli(&["kill-pane", "-t", &format!("%{made_by_a}")]).await.0, 0, "closed where it runs");
+    assert_eq!(panes_b().await, 1);
+    a.wait_for_cli("the copy back to one pane again", &["list-panes", "-t", &format!("{addr_b}/wb")], |_, out| {
+        out.lines().count() == 1
+    })
+    .await;
     // Failed there: said here. What would be this machine's doing stays
     // refused, as does moving a pane between machines.
     let (code, _, err) = a.cli(&["kill-pane", "-t", &format!("{addr_b}/%999")]).await;
@@ -8427,13 +8458,23 @@ async fn another_machines_sessions_are_under_it_and_it_is_disconnected_and_conne
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(here(c.screen.screen()), "this machine has one session: it stays");
 
-    // A session killed from here is killed there, but its save is not put
-    // aside there: the next start of that server brings it back.
+    // That machine's own session is not this one's to kill: only the
+    // machine a pane runs on and the one that made it close it.
     let (code, _, err) = a.cli(&["kill-session", "-t", &there("second")]).await;
+    assert!(code != 0 && err.contains("only the machine it runs on"), "{err}");
+    assert_eq!(b.cli(&["has-session", "-t", "second"]).await.0, 0, "not killed");
+    assert_eq!(b.cli(&["kill-session", "-t", "second"]).await.0, 0);
+    // One this machine made there (`link start`) is killed from here, but
+    // its save is not put aside there: the next start brings it back.
+    let (code, _, err) = a.cli(&[&["link-start", &addr_b, "-s", "mine", "--"], HOOKED_SHELL].concat()).await;
     assert_eq!(code, 0, "{err}");
-    b.wait_for_cli("killed there", &["has-session", "-t", "second"], |code, _| code != 0).await;
-    assert!(keepane::resurrect::find(&b.sessions_dir, "second").is_some(), "its save where it was");
-    assert!(keepane::resurrect::find(&b.sessions_dir.join("killed"), "second").is_none(), "not put aside");
+    assert_eq!(b.cli(&["save-session", "-t", "mine"]).await.0, 0);
+    a.wait_for_cli("its session here", &["has-session", "-t", &there("mine")], |code, _| code == 0).await;
+    let (code, _, err) = a.cli(&["kill-session", "-t", &there("mine")]).await;
+    assert_eq!(code, 0, "{err}");
+    b.wait_for_cli("killed there", &["has-session", "-t", "mine"], |code, _| code != 0).await;
+    assert!(keepane::resurrect::find(&b.sessions_dir, "mine").is_some(), "its save where it was");
+    assert!(keepane::resurrect::find(&b.sessions_dir.join("killed"), "mine").is_none(), "not put aside");
     // One killed there by hand is put aside, as before.
     b.cli(&["new", "-d", "-s", "byhand"]).await;
     b.wait_for_cli("saved", &["has-session", "-t", "byhand"], |code, _| code == 0).await;
@@ -8655,6 +8696,16 @@ async fn a_session_of_another_machine_is_attached_with_full_and_its_keys_are_its
     }
     assert_eq!(windows.lines().count(), 2, "prefix c there made a window there: {windows}");
     assert_eq!(a.cli(&["list-windows", "-t", "wa"]).await.1.lines().count(), 1, "and none here");
+    // What it closes there must be its: the pane its prefix c made goes
+    // (prefix x, y), that machine's own pane does not, and it is told why.
+    let close = serde_json::Value::from(vec![key(2), key(u16::from(b'x')), key(u16::from(b'y'))]).to_string();
+    assert_eq!(a.cli(&["link-keys", &addr_b, "-c", &client, &close]).await.0, 0);
+    b.wait_for_cli("its window closed", &["list-windows", "-t", "wb"], |_, out| out.lines().count() == 1).await;
+    assert_eq!(a.cli(&["link-keys", &addr_b, "-c", &client, &close]).await.0, 0);
+    // Told why: the client's message, which `show-messages` keeps (on the
+    // status line it stands `display-time`, 1.5 s, and a look can miss it).
+    b.wait_for_cli("told why", &["show-messages"], |_, out| out.contains("was made by")).await;
+    assert_eq!(b.cli(&["list-panes", "-t", "wb"]).await.1.lines().count(), 1, "that machine's own pane stays");
 
     // The terminal here resized: the client there takes the size.
     let v = view(("80", "20"), None).await;
@@ -11743,6 +11794,70 @@ async fn the_channel_picked_is_kept_by_the_server_and_only_the_person_moves_it()
         assert!(Instant::now() < deadline, "the board's pick never reached the server");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    h.cli(&["kill-server"]).await;
+}
+
+/// A dashboard opens where the last one was left (`board-pick`): the page
+/// and the pane picked there, which the server keeps. A pane gone by then
+/// leaves the one it was asked from; an agent's pane may read the place,
+/// not move it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dashboard_opens_on_the_page_and_pane_the_last_was_left_on() {
+    let h = Harness::start("boardpick").await;
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    assert_eq!(h.cli(&["split-window", "-d", "-t", "s:0"]).await.0, 0);
+    let (a, b) = (pane_id(&h, "s:0.0").await, pane_id(&h, "s:0.1").await);
+    assert_eq!(h.cli(&["board-pick"]).await, (0, String::new(), String::new()), "none kept yet");
+
+    // An agent's pane: reads it, does not move it.
+    assert_eq!(h.cli(&["board-pick", "1", &format!("%{b}")]).await.0, 0);
+    assert_eq!(h.cli(&["set-work-mode", "-t", &format!("%{a}"), "ai"]).await.0, 0);
+    assert_eq!(h.cli_in(Some(a), &["board-pick"]).await.1.trim(), format!("1 %{b}"));
+    let (code, _, err) = h.cli_in(Some(a), &["board-pick", "2"]).await;
+    assert!(code != 0 && err.contains("theirs to change"), "{code} {err}");
+    assert_eq!(h.cli(&["set-work-mode", "-t", &format!("%{a}"), "normal"]).await.0, 0);
+    assert_eq!(h.cli(&["board-pick"]).await.1.trim(), format!("1 %{b}"), "not moved");
+
+    let exe = env!("CARGO_BIN_EXE_keepane");
+    let open = async || {
+        let (code, _, err) = h.cli(&["new", "-d", "-s", "board", "-x", "160", "-y", "40", exe, "dashboard"]).await;
+        assert_eq!(code, 0, "{err}");
+    };
+    let kept_is = async |want: String| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let kept = h.cli(&["board-pick"]).await.1.trim().to_string();
+            if kept == want {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the server keeps {kept:?}, not {want:?}");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    // Opens on the pane kept, not the first; where it goes is kept.
+    open().await;
+    h.wait_capture("board:0", "the pane kept", |t| t.contains(&format!("[4] %{b} "))).await;
+    h.cli(&["send-keys", "-t", "board:0", ">"]).await;
+    h.wait_capture("board:0", "the chat's page", |t| t.contains("[1] Channels")).await;
+    kept_is("2".into()).await;
+    h.cli(&["kill-session", "-t", "board"]).await;
+    open().await;
+    h.wait_capture("board:0", "the chat's page again", |t| t.contains("[1] Channels")).await;
+    h.cli(&["send-keys", "-t", "board:0", "<"]).await;
+    h.wait_capture("board:0", "back on the panes", |t| t.contains("[1] Panes")).await;
+    h.cli(&["send-keys", "-t", "board:0", "g"]).await;
+    h.wait_capture("board:0", "the first pane", |t| t.contains(&format!("[4] %{a} "))).await;
+    kept_is(format!("1 %{a}")).await;
+    h.cli(&["kill-session", "-t", "board"]).await;
+
+    // The pane kept, gone: the one it was asked from (a board run in a pane:
+    // its own).
+    assert_eq!(h.cli(&["board-pick", "1", &format!("%{b}")]).await.0, 0);
+    assert_eq!(h.cli(&["kill-pane", "-t", &format!("%{b}")]).await.0, 0);
+    open().await;
+    let own = pane_id(&h, "board:0.0").await;
+    h.wait_capture("board:0", "its own, the one kept gone", |t| t.contains(&format!("[4] %{own} "))).await;
+    kept_is(format!("1 %{own}")).await;
     h.cli(&["kill-server"]).await;
 }
 

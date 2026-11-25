@@ -37,8 +37,9 @@ const MAX_ROWS: u16 = 200;
 
 /// A client attached here for another machine.
 pub(super) struct RemoteClient {
-    /// The machine it is for: only that machine may ask for it or type in it.
-    key: String,
+    /// The machine it is for: only that machine may ask for it or type in it
+    /// (and what it closes is checked as that machine's, `may_close`).
+    pub(super) key: String,
     addr: String,
     /// What the server sends the client, and the screen it is drawn into.
     rx: mpsc::Receiver<ServerMsg>,
@@ -242,9 +243,13 @@ impl Server {
             Ok(id) => id,
             Err(out) => return out,
         };
+        // A pane its keys make is that machine's (closing one is checked by
+        // the client, `machine_acting`).
+        self.acting = Some(peer.key.clone());
         for k in keys {
             self.handle_key(id, k);
         }
+        self.acting = None;
         self.link_answer(nonce, 200, String::new())
     }
 

@@ -138,7 +138,7 @@ $1:@3.%7  work:2.1  builder  ai
 | `message-inbox-limit` | 100 | 1–10000 |
 | `message-max-size` | 64 KB | 1 KB–1 MB |
 | `message-wait-max` | 600 秒 | 1–86400（超时由每秒一次的定时检查判定，实际多等不到 1 秒） |
-| `agent-pane-limit` | 8 | 0–256（0 = 禁止 agent 创建窗格） |
+| `agent-pane-limit` | 32（0.92.0 及以前是 8；2026-11-25 用户要求调大） | 0–256（0 = 禁止 agent 创建窗格） |
 | `agent-commands` | Windows `pwsh powershell claude codex`，其他系统 `bash zsh sh claude codex` | 程序名列表 |
 | `event-log` | on | on / off |
 | `event-log-days` | 30 | 1–3650 |

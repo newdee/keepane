@@ -622,7 +622,8 @@ fn show_keys_reports_the_prefix_and_quits_on_q() {
 }
 
 /// prefix v opens the dashboard on the pane it was pressed in, not on the
-/// first pane of the list.
+/// first pane of the list, the first time; then on the pane the last
+/// dashboard was left on (`board-pick`), also one run in a pane.
 #[test]
 fn prefix_v_opens_the_dashboard_on_the_current_pane() {
     let socket = format!("dash-{}", std::process::id());
@@ -643,24 +644,29 @@ fn prefix_v_opens_the_dashboard_on_the_current_pane() {
             .find(|&y| (0..cols).any(|x| s.cell(y, x).is_some_and(|c| c.inverse())))
             .map(|y| (0..cols).filter_map(|x| s.cell(y, x)).filter(|c| c.inverse()).map(|c| c.contents()).collect())
     };
-    for (pane, name) in [("t:0.1", "beta"), ("t:0.0", "alpha")] {
-        kp(&["select-pane", "-t", pane]);
-        t.pump(Duration::from_millis(300));
-        t.send("\x02v");
-        t.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"));
-        t.wait_for(name, |s| picked(s).is_some_and(|r| r.contains(name)));
-        let row = picked(t.parser.screen()).unwrap();
-        let other = if name == "beta" { "alpha" } else { "beta" };
-        assert!(!row.contains(other), "{pane}: {row:?}");
-        t.send("q");
-        t.wait_for("the dashboard gone", |s| !s.contents().contains("[1] Panes"));
-    }
-    // Run in a pane, it opens on that pane (its KEEPANE_PANE).
-    kp(&["select-pane", "-t", "t:0.1"]);
+    let only =
+        |s: &vt100::Screen, name: &str, other: &str| picked(s).is_some_and(|r| r.contains(name) && !r.contains(other));
+    // Nothing kept yet: the pane it was pressed in (beta); then alpha picked.
+    t.pump(Duration::from_millis(300));
+    t.send("\x02v");
+    t.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"));
+    t.wait_for("beta, pressed in", |s| only(s, "beta", "alpha"));
+    t.send("k");
+    t.wait_for("alpha picked", |s| only(s, "alpha", "beta"));
+    t.send("q");
+    t.wait_for("the dashboard gone", |s| !s.contents().contains("[1] Panes"));
+    // Pressed in beta again: alpha, where the last was left.
+    t.pump(Duration::from_millis(300));
+    t.send("\x02v");
+    t.wait_for("the dashboard again", |s| s.contents().contains("[1] Panes"));
+    t.wait_for("alpha, where it was left", |s| only(s, "alpha", "beta"));
+    t.send("q");
+    t.wait_for("the dashboard gone", |s| !s.contents().contains("[1] Panes"));
+    // Run in a pane (beta): the same.
     t.pump(Duration::from_millis(300));
     t.send("keepane dashboard\r");
     t.wait_for("the dashboard in beta", |s| s.contents().contains("[1] Panes"));
-    t.wait_for("beta chosen", |s| picked(s).is_some_and(|r| r.contains("beta")));
+    t.wait_for("alpha, where it was left", |s| only(s, "alpha", "beta"));
     t.send("q");
     t.wait_for("the dashboard gone", |s| !s.contents().contains("[1] Panes"));
 

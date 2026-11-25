@@ -643,6 +643,10 @@ pub struct Pane {
     pub command: String,
     /// The command line this pane was started with (for save/restore).
     pub argv: Vec<String>,
+    /// The paired machine that made it, by its key (`link start`, or a
+    /// command of its in a session here); None: this machine. Only this
+    /// machine and that one may close it.
+    pub made_by: Option<String>,
     pub cwd: Option<String>,
     /// `cwd` came from the shell itself (OSC 7 / 9;9), not from where the
     /// pane was started; from then on the shell's word is final.
@@ -1044,6 +1048,7 @@ impl Pane {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| argv[0].clone()),
             argv: argv.to_vec(),
+            made_by: None,
             cwd: cwd.map(str::to_string),
             announced: false,
             replay_done: false,
@@ -1124,6 +1129,7 @@ impl Pane {
             program_title: None,
             command: String::new(),
             argv: Vec::new(),
+            made_by: None,
             cwd: None,
             announced: false,
             replay_done: false,
@@ -1410,8 +1416,10 @@ impl Pane {
         // Putting the new pane in place drops the old one, whose Drop closes
         // the job object and takes the old process tree with it.
         let mut old = std::mem::replace(self, fresh);
-        // The same shell history file, name, mode and inbox: it is the same pane.
+        // The same shell history file, name, mode, inbox and maker: it is
+        // the same pane.
         self.shell_history = old.shell_history.clone();
+        self.made_by = old.made_by.take();
         self.actor = std::mem::take(&mut old.actor);
         let unfinished = self.actor.restarted();
         drop(old);

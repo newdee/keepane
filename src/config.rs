@@ -158,7 +158,9 @@ pub struct Options {
     pub message_max_size: usize,
     /// The longest `-w` waits, in seconds.
     pub message_wait_max: u64,
-    /// The most panes one pane and the panes it created may create.
+    /// The most panes one pane and the panes it created may create, and the
+    /// most a paired machine may start here (`link start`), each counted
+    /// alone. 32 (8 until 0.92.0); `set -g agent-pane-limit N`, 0 to 256.
     pub agent_pane_limit: u32,
     /// The programs a pane may start in a pane it creates.
     pub agent_commands: String,
@@ -630,7 +632,7 @@ impl Default for Options {
             message_inbox_limit: 100,
             message_max_size: 64 * 1024,
             message_wait_max: 600,
-            agent_pane_limit: 8,
+            agent_pane_limit: 32,
             agent_commands: crate::platform::shell::DEFAULT_AGENT_COMMANDS.into(),
             done_events: "command agent wait".into(),
             done_after: 30,
@@ -1511,6 +1513,19 @@ mod tests {
         assert!(o.restore_on_start);
         o.set("restore-on-start", "off").unwrap();
         assert!(!o.restore_on_start);
+    }
+
+    /// How many panes an agent (and those it made) may make, and a paired
+    /// machine may start here: 32 unless set (8 until 0.92.0), 0 to 256.
+    #[test]
+    fn agents_and_machines_may_make_32_panes_unless_set() {
+        let mut o = Options::default();
+        assert_eq!(o.get("agent-pane-limit").as_deref(), Some("32"));
+        o.set("agent-pane-limit", "256").unwrap();
+        assert_eq!(o.agent_pane_limit, 256);
+        o.set("agent-pane-limit", "0").unwrap();
+        assert_eq!(o.agent_pane_limit, 0);
+        assert!(o.set("agent-pane-limit", "257").is_err());
     }
 
     /// Everything `show-options` lists has a value, and that value is

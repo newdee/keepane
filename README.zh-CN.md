@@ -155,7 +155,7 @@ keepane chat read DFINE/#review
 
 按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组（这里有别的机器的 session 时，先按机器分组：每台机器一行，写它的名字和地址，下面是它的 session），列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序（跑 agent 的写 agent 的花费和上下文，标题里是总花费）。每列上方写着列名；颜色各表达一个意思（空闲绿、忙黄、有消息排队蓝、上下文越满越红）；窗口窄时，最不要紧的列先让位；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[4]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件、agent 的 trace、它所在目录的 git 情况（Git 标签页：分支和上游、改了哪些文件、最近的提交和分支；不在仓库里的目录，显示两层文件树），或光标所在的消息、任务：在 `[2]`、`[3]` 里移到哪一条，右边立刻排好版显示它（状态用颜色标出，谁发给谁，每一步的时间，然后是正文和执行输出；任务则把每条消息按时间连成一列）。Tab、`0 1 2 3 4`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`g`/`G`（或 Home/End）跳到第一行 / 最后一行（右边是到顶 / 到底），`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。窗口宽 150 列以上时，最左边多一列：上面是 `[0]` 所选 pane 的目录，下面每秒显示本机的状态：CPU（总占用、最近 24 秒的曲线、每个核）、内存、交换区、每秒磁盘和网络流量、温度、功率、电池、进程数，系统给得出哪些就显示哪些。在 `[0]` 里像 mini.files 那样走：`j`/`k` 移动，`h` 回上级目录，`l` 进入目录；光标所在的东西显示在右边（目录列出内容，文件显示带行号的文本，最多前 256 KiB；二进制文件只显示大小；这台机器上有 [UnifyTerm](https://github.com/newdee/unifyterm) 的 `ut` 时，图片（PNG、JPEG、GIF、WebP、BMP）用 `ut view` 画成彩色半格方块，Markdown 用 `ut md` 显示成带样式的文字），在文件上按 `l` 可以滚动它；`.` 显示或隐藏隐藏文件，`-` 回到 pane 的目录。换了所选 pane、或这个 pane 换了目录，`[0]` 跟着走。每个条目前面有表示类型的 emoji：📁 文件夹（内容正显示在右边的那个是 📂），🐍 Python，🦀 Rust，📄 不认识的文件；Git 标签页的文件树也一样（下面列出了内容的文件夹是 📂）；终端用的是 Nerd Font 时，`set -g dashboard-icons nerd` 换成 Nerd Font 的图标。窗口更窄时，按 `0` 让 `[0]` 临时占据左边那一栏。（0.60 及以前右边是 `[0]`，现在是 `[4]`。）
 
-按 `>` 翻到下一页，`<` 翻回上一页（底栏写着 `page 2/3` 这样的页码，窗口窄得放不下所有按键时也保留它）。第 3 页：`[0]` 和系统信息不变，`[1]` 列出这台机器分享出去的东西（`keepane share`，见下文），每个标出 `active`、`missing`（文件暂时不在）、`stopped`、`expired` 或 `used`（一次性，已被下载），还有剩余时间和下载次数；`[2]` 是这些分享经历的事，最新的在前；`[4]` 是所选的那个：链接、谁打开过、经历的事、扫码用的二维码。在 `[0]` 按 `S` 分享光标所在的东西（选时长、是否一次性，要确认）；在 `[1]` 上 `x` 停止一个（`X` 全部）、`e` 延长（链接不变）、`r` 换新链接重新分享、`y` 复制链接、`a` 显示或隐藏已结束的。分享、停止、重新分享都要先确认。
+按 `>` 翻到下一页，`<` 翻回上一页（底栏写着 `page 2/3` 这样的页码，窗口窄得放不下所有按键时也保留它）。打开 dashboard 时，回到上次离开时的那一页和选中的那一行（pane 按编号、分享按序号记；server 记着，`board-pick`，重启 server 后从第 1 页开始）；记住的 pane 已经不在了，就选打开它的那个 pane。第 3 页：`[0]` 和系统信息不变，`[1]` 列出这台机器分享出去的东西（`keepane share`，见下文），每个标出 `active`、`missing`（文件暂时不在）、`stopped`、`expired` 或 `used`（一次性，已被下载），还有剩余时间和下载次数；`[2]` 是这些分享经历的事，最新的在前；`[4]` 是所选的那个：链接、谁打开过、经历的事、扫码用的二维码。在 `[0]` 按 `S` 分享光标所在的东西（选时长、是否一次性，要确认）；在 `[1]` 上 `x` 停止一个（`X` 全部）、`e` 延长（链接不变）、`r` 换新链接重新分享、`y` 复制链接、`a` 显示或隐藏已结束的。分享、停止、重新分享都要先确认。
 
 第 2 页是群聊（见上文）：`[1]` 频道，写着成员数、你没读的条数、tags 和最后一句是多久以前，下面一行是那一句（`/` 按名字或 tag 筛选；下次打开 dashboard 时选中上次选的那个，网页宽屏时也一样；它记在服务端（`chat-pick`），所以在手机上选的，电脑上打开也是它）；`[2]` 所选频道的成员，每个用自己的颜色，写着角色、在哪、pane 忙不忙；`[4]` 频道里说的话，最新的在底部：每人说的话放在自己颜色的气泡里（同一频道最先加入的 6 个人颜色互不相同；同一人 5 分钟内连说的放在一个气泡里；你说的靠右；点名 `@you` 的气泡左边是粗线），每个 `@称呼` 用那个人的颜色，每到新的一天和你没读的开始处各有一条分隔线。`[2]` 里离线的成员是灰色的 `○`，写着 `offline` 和最后在哪。`[4]` 底部是输入行：在 `[1]`、`[2]` 或 `[4]` 上按 `s`（在 `[4]` 上也可以按 `i`）开始输入；打 `@` 时上方列出可以点名的成员（在线的在前），`↑`/`↓` 选，`Tab` 或 `Enter` 填入，列表关着时 `Enter` 发送。在 `[1]` 上 `s` 以你的身份发言，`n` 新建频道（先名字，后面是 topic），`t` 改 topic，`#` 改 tags（`+a -b`）；在 `[2]` 上 `o` 跳到成员的 pane，`s` 对它说话。显示着的频道里你没读的，算作读过。
 
@@ -641,7 +641,7 @@ Codex（0.160 起）和 pi（1.0 起）默认在备用屏幕里画界面，和 v
 | `wait_output` | 等某个 pane 打出含某段文字的一行（服务器就绪、构建报错），拿到这一行 |
 | `list_links`、`link_info`、`read_screen`、`create_remote_pane`、`push_repo` | 配过对的机器、某台机器的信息、某个 pane（本机或另一台）的屏幕、在另一台机器上开 pane（用 `kill_pane` 关），以及把当前分支的提交送过去 |
 
-通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini`、`cursor-agent`、`opencode` 的是 `ai` 模式，跑 `pwsh`、`powershell`、`bash`、`zsh` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（Windows 上是 `pwsh powershell claude codex`，其他系统是 `bash zsh sh claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（8）限制。Claude Code 调用你没放行过的 MCP 工具前会先问你。
+通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini`、`cursor-agent`、`opencode` 的是 `ai` 模式，跑 `pwsh`、`powershell`、`bash`、`zsh` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（Windows 上是 `pwsh powershell claude codex`，其他系统是 `bash zsh sh claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（32；`set -g agent-pane-limit N` 可改，0 到 256）限制。Claude Code 调用你没放行过的 MCP 工具前会先问你。
 
 ## 在手机上用
 
@@ -865,10 +865,12 @@ keepane link list -J                                  # 配对的机器，JSON�
 ```powershell
 keepane link start 100.64.0.3:7681 -n helper -- claude   # 返回它在那边的地址
 keepane send-message --to 100.64.0.3:7681/%helper "look at the failing test"
-keepane link kill 100.64.0.3:7681/%helper               # 只能关这台机器在那边开的 pane
+keepane link kill 100.64.0.3:7681/%helper               # 只能关这台机器在那边开的 pane（包括在它的 session 里开的）
 ```
 
-程序必须在对方的 `agent-commands` 白名单里，参数不限。数量受对方的 `agent-pane-limit` 限制（按这台机器单独计数）。开出来的 pane 放在以这台机器命名的 session 里（`-s` 可以指定别的），工作模式和 agent 开的 pane 一样按程序自动定（`-m` 可以指定）。对方只在它的 server 运行期间记得哪些 pane 是这台机器开的。agent 也能通过 MCP 做同样的事：`create_remote_pane`，以及用地址调用 `kill_pane`。
+程序必须在对方的 `agent-commands` 白名单里，参数不限。数量受对方的 `agent-pane-limit` 限制（默认 32，按这台机器单独计数）。开出来的 pane 放在以这台机器命名的 session 里（`-s` 可以指定别的），工作模式和 agent 开的 pane 一样按程序自动定（`-m` 可以指定）。agent 也能通过 MCP 做同样的事：`create_remote_pane`，以及用地址调用 `kill_pane`。
+
+一个 pane 只能由它所在的机器和开它的机器关掉。每台机器都记下自己的每个 pane 是哪台机器开的：用 `link start` 开的，以及别的机器在它的 session 里用命令或按键开的（在 session 的副本里操作，或 attach 进来后按 `C-b c`）。这份记录随 session 一起保存，`resume` 以后还在。别的机器想关掉不是它开的 pane（`kill-pane`、`kill-window`、`kill-session`、`kill-server`，attach 进来后按 `C-b x`），会被拒绝，并说明这个 pane 是哪台机器开的。这条规则防的是误操作，不是攻击：有 `--full` 的机器可以在那边的 shell 里输入 `keepane kill-pane`，这条命令按那台机器自己的命令执行。
 
 发给没共享的 pane 的消息，回答和“没有这个 pane”一样，并告诉发送方怎么共享，所以从名字上看不出没共享的部分。`keepane web --read-only` 的机器也不收别的机器的消息。对方连不上时立刻报错，不会在本机排队等以后再发；加 `-w` 时由对方等到投递为止，时间到了还在排队就算超时（和发给本机 pane 一样，退出码非 0）。配对和解除配对会在状态栏提示并记进事件日志；被拒的请求也一样，但同一个地址一分钟只记一次，有人大量乱发时不会刷屏，也不会把事件日志写满。设计和每条决定见 [docs/design/link.md](docs/design/link.md)。
 

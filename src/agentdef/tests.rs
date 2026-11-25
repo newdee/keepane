@@ -40,7 +40,8 @@ fn the_shipped_definitions_load() {
     let cw = r.get("codewhale").expect("codewhale is shipped");
     assert_eq!((cw.title(), cw.from.as_str()), ("CodeWhale", "agents/codewhale.toml"));
     assert_eq!(cw.events.ready, ["session_start", "session_idle"]);
-    assert_eq!(cw.resume.as_deref(), Some("codewhale resume {id}"));
+    // Its hooks' session id is not the one it resumes by: the latest instead.
+    assert_eq!(cw.resume.as_deref(), Some("codewhale --continue"));
     let hooks = &cw.setup.files[0];
     let text = cw.text_of(hooks);
     assert!(text.contains("command = \"keepane pane-ready -q --agent codewhale\""), "{text}");
@@ -142,7 +143,8 @@ fn a_definition_that_breaks_a_rule_is_refused_saying_why() {
         ("busy = [\"busy\"]", "busy = [\"busy\"]\nnope = [\"x\"]", "unknown field"),
         ("[setup]", "[hook_input]\nsession = \"session_id\"\n\n[setup]", "hook_input.session"),
         ("[setup]", "[hook_input]\nmodel = \"env:A-B\"\n\n[setup]", "hook_input.model"),
-        ("format = 1", "format = 1\nresume = \"toy --resume\"", "{id}"),
+        ("format = 1", "format = 1\nresume = \"  \"", "resume"),
+        ("format = 1", "format = 1\nresume = \"toy\\nrm\"", "one line"),
         ("path = \"hooks.toml\"", "path = \"../hooks.toml\"", "no .."),
         ("path = \"hooks.toml\"", "path = \"/etc/hooks.toml\"", "no .."),
         ("path = \"hooks.toml\"", "path = \"C:/hooks.toml\"", "no .."),
@@ -161,6 +163,12 @@ fn a_definition_that_breaks_a_rule_is_refused_saying_why() {
             Ok(_) => panic!("taken, but should be refused for {why:?}:\n{text}"),
             Err(e) => assert!(e.contains(why), "refused for {e:?}, not {why:?}"),
         }
+    }
+    // resume names the conversation by {id}, or is run as it is.
+    for resume in ["toy --resume {id}", "toy --continue"] {
+        let text = base_with("format = 1", &format!("format = 1\nresume = \"{resume}\""));
+        let def = parse(&text, "t").unwrap_or_else(|e| panic!("{resume}: {e}"));
+        assert_eq!(def.resume.as_deref(), Some(resume));
     }
     // json-merge: a place and a value, the place a pointer.
     let merge = "[[setup.files]]\npath = \"mcp.json\"\nhow = \"json-merge\"\n";

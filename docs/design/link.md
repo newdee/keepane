@@ -39,6 +39,11 @@
     4. **`c` 不再先问。** 连接不再放谁进来，`x` 就能撤回，所以 dashboard 里 `c` 直接运行；仍只能在 pane 之外运行（本机跟谁来往是人的决定）。`R` 和 `D` 撤回要的不止一个键，所以先问。
     5. **没有授权时对方还能做的**（2026-11-19 逐条核对 `link_in`）：`/link/info`（主机名、系统、CPU、内存、`0 panes`）；`/link/access`（它在本机的级别）；回本机 pane 发给它的消息（不进 `shell` 模式的 pane）；查它自己发来的消息的去向；`link remove`。`/link/capture`、`view`、`keys`、`panes`、`send` 都只到分享给它的 pane；`attach`、`pane`、`kill`、`git`、`agents`、复制流都要 `--full`。复制流上发来的键和命令（`stream_input`、`stream_command`）每次都当场用 `may_stream` 判（`fed_addr`）：收回 `--full` 后，同一批事件里后到的输入也不进来；流本身在这一批之后由 `stream_push` 断开。
     6. **升级的影响**：0.79 及以前靠断开挡住对方的，升级后对方按原来的授权又能进来；升级说明写明改用 `R`（`link allow --none`）。
+22. （2026-11-25，用户说"改吧……本机的也确认"）**pane 只能由它所在的机器和开它的机器关掉。** 目的是回收资源：远程主机开的 pane，它自己能关。原来只记 `link start` 开的（`link.made`，只在内存里，server 重启就没了），远程主机在 session 里开的（经 session 的副本发命令，或 attach 进来按键）不记；而有 `--full` 的任何一台都能关任何 pane。
+    1. 每个 pane 记下开它的配对机器的公钥（`Pane::made_by`，本机开的为空）。记的来源：`link start`（`link_pane_in`）、副本发来的命令（`stream_command`）、attach 进来的客户端的按键（`link_client_keys`）；这三处执行时 `Server::acting` 是那台机器，`spawn_pane_replaying` 照它填。`respawn-pane` 保留原值，undo 找回的是同一个 pane。随 session 保存（`SavedPane::made_by`），`resume` 时恢复。
+    2. 别的机器的 `kill-pane`、`kill-window`、`kill-session`、`kill-server`：要关的每个 pane 都是它开的才执行，否则整条拒绝，原因写出 pane 和开它的机器（本机写主机名加 `itself`，因为这句话显示在对方那边）。判谁在操作用 `machine_acting`：attach 进来的客户端按它的公钥，否则看 `acting`。本机的人和 agent 不受限（用户确认：本机开的 pane，有 `--full` 的远程主机也不能再用 `C-b x` 关）。`link kill` 改为同样按 `made_by` 判，所以也能关它在 session 里开的 pane，server 重启后也能关。
+    3. `agent-pane-limit` 的计数仍用 `link.made`（只算 `link start` 开的），行为不变：如果按 `made_by` 算，远程用户在 session 里手动分屏也会占用这个名额。
+    4. 这条防误操作，不是安全边界：`--full` 的机器能在 shell 里输入 `keepane kill-pane`，那是本机的命令。`respawn-pane -k` 不算关 pane，不受这条限制。
 9. 密钥和授权表按服务端（`-L` socket）分开：一个服务端就是网络上的一个端点（它有自己的 web 端口），同一台电脑上的两个服务端也能互相配对。
 
 ## 1. 目标与非目标
@@ -134,7 +139,7 @@ keepane link remove <主机:端口>              # 删本机这一条，并通�
 - 被拒的请求（未配对、签名不对、时钟差、重放、未授权的 shell）在状态栏提示并记入事件日志，同一地址 60 秒内只记一次：否则局域网上有人大量乱发，会刷屏，还会写满当天的事件日志配额（`event-log-max`），挤掉真正的消息事件。
 - `link allow --shell` 与 `set-work-mode` 同一条规则：在窗格里运行时拒绝，只能在 keepane 之外的终端或 `C-b :` 里运行。否则窗格里的 agent 可以自己给远程机器开执行权限。（0.54 修正：`keepane link ...` 客户端以前发命令时不带所在的窗格，所以在窗格里敲 `keepane link allow` 会被当成窗格外而放行；现在和其他命令一样带上窗格，同样被拒。）
 - 投递时已有的规则照旧：写给 agent 的消息不会因为窗格中途改成 `shell` 而被执行。
-- 开窗格（`/link/pane`）要 `--panes`；程序取 `agent-commands` 白名单（与本机 agent 开窗格同一份），数量按发起机器单独计 `agent-pane-limit`；关窗格（`/link/kill`）只认发起机器自己开的（`made` 表，按公钥，只在内存里）。未授权 403，并告诉对方怎么授权。
+- 开窗格（`/link/pane`）要 `--panes`；程序取 `agent-commands` 白名单（与本机 agent 开窗格同一份），数量按发起机器单独计 `agent-pane-limit`；关窗格（`/link/kill`）只认发起机器自己开的（0.93.0 起按 `Pane::made_by`，随 session 保存，见第 22 条；原来是只在内存里的 `made` 表）。未授权 403，并告诉对方怎么授权。
 
 ## 6. 信封、编号与回信
 

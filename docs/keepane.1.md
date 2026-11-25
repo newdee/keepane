@@ -119,7 +119,8 @@ what is under the cursor on the right (a picture drawn by `ut view` and
 markdown by `ut md` where UnifyTerm's `ut` is on the PATH, in
 `UNIFYTERM_COMMANDS` or in `%LOCALAPPDATA%\unifyterm\bin`),
 over the machine's CPU, memory, disk and network; `>` and `<` turn to
-page 2, the group chat, and page 3, what is shared), `list-agents` (the
+page 2, the group chat, and page 3, what is shared; it opens on the page
+and row the last one was left on, `board-pick` below), `list-agents` (the
 Claude Code, Codex, pi
 and Cursor CLI the panes run: model, cost, tokens, context, CPU, memory;
 Cursor's CPU and memory only; `-J` as JSON),
@@ -254,7 +255,13 @@ the channel the person picked last on the board or the web page (its id,
 keeps that one: every board, and the page on a wide screen, opens on it,
 on any device. It is kept in `picked.json` under `chat`; an agent's pane
 (`ai`, or made by another pane) may read it but not change it, and a
-read-only page changes nothing. Each channel keeps a file a day under `chat` in
+read-only page changes nothing. `board-pick` prints the page the last
+dashboard was left on and the row picked there (`1 %7`: page 1, pane %7;
+`3 12`: page 3, share 12; `2`: page 2, whose channel is `chat-pick`'s;
+nothing when none), and `board-pick PAGE [ROW]` keeps those: the next
+dashboard opens there, on the pane it was asked from when that pane is
+gone. The server keeps it until it restarts; an agent's pane may read it
+but not change it. Each channel keeps a file a day under `chat` in
 the data directory, for `chat-days` days (30; 0 keeps all); its last 1000
 lines are in memory. `keepane chat <what> ...` runs `chat-<what> ...`.
 
@@ -543,8 +550,15 @@ any arguments), within
 its `agent-pane-limit` counted for this machine alone, in a session named
 after this machine unless `-s` names one; its address there comes back.
 `keepane link kill <host:port/pane>` (`link-kill`) closes a pane this
-machine started there, and no other (that machine knows which only while
-its server runs). A message for a pane that is not shared with the sender
+machine made there, and no other. A pane is closed only by the machine it
+runs on and the one that made it: each machine records which paired
+machine made a pane (`link start`, or a command or key of that machine's
+in a session here: a session's copy, a client attached with `link
+attach`), saved with the session; another machine's `kill-pane`,
+`kill-window`, `kill-session` or `kill-server` that takes a pane it did
+not make is refused, naming the machine that made it. (It guards against
+mistakes: a machine with `--full` can still type `keepane kill-pane` into
+a shell here, which runs as this machine's.) A message for a pane that is not shared with the sender
 is answered as one for a pane that is not there, and the sender told how
 it could be shared. A message from another machine reads
 `from=host:port/…` in its
@@ -937,7 +951,7 @@ Set with `set -g` (`set -gu` back to the default), read with
 | `message-inbox-limit` | `100` | The most messages one inbox holds. |
 | `message-max-size` | `64K` | The most bytes one message holds. |
 | `message-wait-max` | `600` | The longest `-w`, in seconds. |
-| `agent-pane-limit` | `8` | The most panes a pane (and those it made) may make. |
+| `agent-pane-limit` | `32` | The most panes a pane (and those it made) may make, and a paired machine may start here (`link start`), each counted alone; 0 to 256. |
 | `agent-commands` | `pwsh powershell claude codex` on Windows, else `bash zsh sh claude codex` | What `create-pane` may start. |
 | `done-events` | `command agent wait` | What counts as done: `command`, `agent`, `wait`, `task`, `exit`, `bell`. |
 | `done-after` | `30` | Seconds a command must run to count. |

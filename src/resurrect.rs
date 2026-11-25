@@ -35,6 +35,10 @@ pub struct SavedPane {
     /// The paired machines it is shared with (`link-share`), by key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared: Vec<String>,
+    /// The paired machine that made it, by key (`Pane::made_by`): still
+    /// the one besides this machine that may close it after a resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
     /// Its id (`%N`), taken back on resume when this server has not used
     /// it yet, so a pane keeps its number across a reboot. Older files
     /// have none: a new number then.

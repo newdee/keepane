@@ -911,6 +911,12 @@ pub enum Cmd {
     Share(ShareWhat),
     /// `chat-*`: the group chat (docs/design/chat.md).
     Chat(ChatCmd),
+    /// `board-pick [PAGE [ROW]]`: the dashboard's page and the row picked
+    /// on it when it was last left, printed (`PAGE ROW`, nothing when none),
+    /// or kept, for the next dashboard to open on (the server's memory only).
+    BoardPick {
+        place: Option<(u8, String)>,
+    },
     /// `web-share-open token peer`: what a link shares, asked by the phones'
     /// page when the link is opened.
     ShareOpen {
@@ -2086,6 +2092,9 @@ impl fmt::Display for Cmd {
                 Ok(())
             }
             Cmd::WebStatus => f.write_str("web-status"),
+            Cmd::BoardPick { place: None } => f.write_str("board-pick"),
+            Cmd::BoardPick { place: Some((page, row)) } if row.is_empty() => write!(f, "board-pick {page}"),
+            Cmd::BoardPick { place: Some((page, row)) } => write!(f, "board-pick {page} {}", quote(row)),
             Cmd::WebStop => f.write_str("web-stop"),
             Cmd::WebResume => f.write_str("web-resume"),
             Cmd::Share(ShareWhat::List { json }) => f.write_str(if *json { "share -l -J" } else { "share -l" }),
@@ -3049,6 +3058,13 @@ fn key_table(name: &str, table: &str) -> Result<KeyTable, String> {
 /// The most lines `web-tails` gives of each pane.
 pub const MAX_TAILS: usize = 8;
 
+/// The highest page `board-pick` keeps: room for pages the dashboard may
+/// add; one it does not have opens its first.
+pub const BOARD_PAGES_MOST: u8 = 9;
+/// The longest row `board-pick` keeps: a pane of another machine
+/// (`host:port/%N`) or a share's number fits.
+pub const BOARD_ROW_MOST: usize = 300;
+
 /// Why `new` is refused inside a pane, as tmux words it. `KEEPANE_PANE`
 /// alone makes a client nested (by the client for another server's pane,
 /// by the server for its own); unsetting `KEEPANE` instead only changes
@@ -3244,6 +3260,7 @@ pub const COMMANDS: &[&str] = &[
     "chat-delete",
     "chat-dir",
     "chat-pick",
+    "board-pick",
     "web-share-open",
     "web-share-sent",
     "web-uploaded",
@@ -3410,6 +3427,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("chat-delete", &[]),
     ("chat-dir", &[]),
     ("chat-pick", &[]),
+    ("board-pick", &[]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
     ("web-uploaded", &[]),
@@ -5063,6 +5081,23 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             let bytes = bytes.parse().map_err(|_| format!("{n}: '{bytes}' is not a size in bytes"))?;
             Cmd::WebUploaded { pane: pane.into(), path: path.into(), bytes, peer: peer.into() }
         }
+        "board-pick" => {
+            let page = match a.next() {
+                None => None,
+                Some(p) => Some(
+                    p.parse::<u8>()
+                        .ok()
+                        .filter(|p| (1..=BOARD_PAGES_MOST).contains(p))
+                        .ok_or_else(|| format!("{n}: '{p}' is not a page (1 to {BOARD_PAGES_MOST})"))?,
+                ),
+            };
+            let row = a.next().map(String::from).unwrap_or_default();
+            a.none_left(n)?;
+            if row.len() > BOARD_ROW_MOST || row.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return Err(format!("{n}: a row is one word of at most {BOARD_ROW_MOST} bytes"));
+            }
+            Cmd::BoardPick { place: page.map(|p| (p, row)) }
+        }
         "web-status" | "web-stop" | "web-resume" => {
             a.none_left(n)?;
             match n {
@@ -6459,6 +6494,11 @@ mod tests {
             "chat-pick",
             "chat-pick review",
             "chat-pick 100.1.2.3:7681/0190a-1",
+            "board-pick",
+            "board-pick 2",
+            "board-pick 1 %15",
+            "board-pick 1 100.1.2.3:7681/%4",
+            "board-pick 3 12",
             "chat-say review --re 42 sounds good",
             "chat-say review --file a.png --re 7",
             "chat-read review --thread 42 -J",
@@ -6813,5 +6853,33 @@ mod tests {
         assert!(parse_line("link-unshare 10.0.0.1:7681").unwrap_err().contains("or --all"));
         assert!(parse_line("link-unshare 10.0.0.1:7681 work --all").unwrap_err().contains("or --all"));
         assert!(parse_line("link-share 10.0.0.1:7681 10.0.0.2:7681/%7").unwrap_err().contains("another machine"));
+    }
+
+    /// `board-pick`: a page from 1 to 9 and one word for the row; nothing
+    /// else is taken.
+    #[test]
+    fn board_pick_takes_a_page_and_one_row() {
+        let place = |line: &str| match parse_line(line).unwrap().unwrap() {
+            Cmd::BoardPick { place } => place,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(place("board-pick"), None);
+        assert_eq!(place("board-pick 3"), Some((3, String::new())));
+        assert_eq!(place("board-pick 1 %7"), Some((1, "%7".into())));
+        assert_eq!(place("board-pick 9 x"), Some((9, "x".into())));
+        let long = "x".repeat(BOARD_ROW_MOST);
+        assert_eq!(place(&format!("board-pick 1 {long}")), Some((1, long.clone())));
+        for (line, why) in [
+            ("board-pick 0", "not a page"),
+            ("board-pick 10", "not a page"),
+            ("board-pick one", "not a page"),
+            ("board-pick -1", "not a page"),
+            ("board-pick 1 %7 more", "unexpected argument"),
+            ("board-pick 1 \"a b\"", "one word"),
+            (&format!("board-pick 1 {long}x"), "one word"),
+        ] {
+            let e = parse_line(line).unwrap_err();
+            assert!(e.contains(why), "{line}: {e}");
+        }
     }
 }

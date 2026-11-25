@@ -77,6 +77,9 @@ pub struct Def {
     #[serde(default)]
     pub screen: Screen,
     /// The command that takes a conversation up again: `{id}` is its id.
+    /// Without `{id}` it is run as it is, for an agent whose hooks are not
+    /// given the id it resumes by (`codewhale --continue`: the latest in the
+    /// pane's folder).
     pub resume: Option<String>,
     #[serde(default)]
     pub setup: Setup,
@@ -353,9 +356,6 @@ impl Def {
         list("screen.working", &self.screen.working)?;
         if let Some(r) = &self.resume {
             word("resume", r)?;
-            if !r.contains("{id}") {
-                return Err(format!("resume '{r}': {{id}} stands for the conversation"));
-            }
         }
         let s = &self.setup;
         if let Some(v) = &s.dir_env

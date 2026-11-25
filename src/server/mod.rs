@@ -4,6 +4,7 @@
 pub mod actor;
 mod agents;
 mod agentsync;
+mod board;
 mod chat;
 /// Where the copy of a file sent in the chat is (the web page saves it).
 pub use chat::copy_path;
@@ -1363,6 +1364,14 @@ pub struct Server {
     /// The next id for one of those: from 2^31 on, out of the way of the
     /// connections' ids, which count up from 1.
     next_remote_client: ClientId,
+    /// The dashboard's page and the row picked on it when it was last left
+    /// (`board-pick`): the next one opens there. Not saved: a restarted
+    /// server's dashboard opens on its first page.
+    board_place: Option<(u8, String)>,
+    /// The paired machine whose command runs now, by its key (one it sends
+    /// about a session here, a pane it starts, keys typed into its client
+    /// attached here): a pane made meanwhile is its (`Pane::made_by`).
+    acting: Option<String>,
     /// Every change, numbered, for copies on other machines (decision 17).
     journal: journal::Journal,
     /// The machines that copy this one's sessions now (`link_feed`).
@@ -1829,6 +1838,8 @@ impl Server {
             machine_names: HashMap::new(),
             remote_clients: HashMap::new(),
             next_remote_client: link_attach::FIRST_ID,
+            board_place: None,
+            acting: None,
             journal: journal::Journal::default(),
             feeds: Vec::new(),
             mirrors: HashMap::new(),
@@ -1982,6 +1993,7 @@ impl Server {
                                 .then(|| p.actor.mode.as_str().to_string()),
                             shell_history: p.shell_history.clone(),
                             shared: self.shared_keys(link_share::Spot::Pane(id)),
+                            made_by: p.made_by.clone(),
                             id: Some(id),
                         })
                     };
@@ -2330,6 +2342,7 @@ impl Server {
                 }
             }
             self.restore_shared(link_share::Spot::Pane(pane.id), &saved.shared);
+            pane.made_by = saved.made_by.clone();
             panes.push(pane);
         }
         let mut ids = panes.iter().map(|p| p.id);
@@ -3850,7 +3863,43 @@ impl Server {
         )
         .map_err(|e| format!("{e:#}"))?;
         pane.shell_history = name;
+        // Made for another machine's command: that machine's to close too.
+        pane.made_by = self.acting.clone();
         Ok(pane)
+    }
+
+    /// The paired machine whose command this is: its client attached here
+    /// (`cid`), else the one `acting` names. None: this machine's.
+    fn machine_acting(&self, cid: Option<ClientId>) -> Option<String> {
+        cid.and_then(|c| self.remote_clients.get(&c)).map(|r| r.key.clone()).or_else(|| self.acting.clone())
+    }
+
+    /// Only this machine and the one that made a pane close it: another
+    /// machine's command is refused for a pane it did not make. A copy of
+    /// a third machine's pane is not checked here (closing it is asked
+    /// there, which checks).
+    fn may_close(&self, cid: Option<ClientId>, panes: &[PaneId]) -> Result<(), String> {
+        let Some(machine) = self.machine_acting(cid) else { return Ok(()) };
+        for &id in panes {
+            let Some(p) = self.pane_ref(id).filter(|p| p.remote.is_none()) else { continue };
+            if p.made_by.as_deref() == Some(machine.as_str()) {
+                continue;
+            }
+            // Said on the other machine: this one by its name, not "this".
+            let by = match &p.made_by {
+                None => format!("{} itself", crate::sysinfo::hostname()),
+                Some(k) => self
+                    .link
+                    .as_ref()
+                    .and_then(|l| l.peer_by_key(k))
+                    .map_or_else(|| "another machine".to_string(), |peer| peer.addr.clone()),
+            };
+            let at = self.address_of(id);
+            return Err(format!(
+                "{at} was made by {by}: only the machine it runs on and the one that made it may close it"
+            ));
+        }
+        Ok(())
     }
 
     /// A pane's PowerShell history file, by name.
@@ -4710,6 +4759,14 @@ impl Server {
                         .map(|s| s.id)
                         .filter(|id| (*id == sid) != all_but)
                         .collect();
+                    let panes: Vec<PaneId> = victims
+                        .iter()
+                        .filter_map(|v| self.session(*v))
+                        .flat_map(|s| s.windows.iter().flat_map(|w| w.panes.iter().map(|p| p.id)))
+                        .collect();
+                    if let Err(e) = self.may_close(cid, &panes) {
+                        return Outcome::Error(e);
+                    }
                     for v in victims {
                         let name = self.session(v).map(|s| s.name.clone());
                         self.kill_session(v, "session killed");
@@ -4724,6 +4781,10 @@ impl Server {
                 Err(e) => Outcome::Error(e),
             },
             Cmd::KillServer { restarting } => {
+                // From another machine: only when every pane here is its.
+                if let Err(e) = self.may_close(cid, &self.all_panes().into_iter().collect::<Vec<_>>()) {
+                    return Outcome::Error(e);
+                }
                 // Last chance to save before the tree is gone.
                 self.autosave_changed();
                 // Restarting: clients are told so, and attach to the new
@@ -5116,6 +5177,15 @@ impl Server {
                 let s = self.session(sid).unwrap();
                 let wids: Vec<WindowId> =
                     s.windows.iter().enumerate().filter(|(i, _)| (*i == widx) != all_but).map(|(_, w)| w.id).collect();
+                let panes: Vec<PaneId> = s
+                    .windows
+                    .iter()
+                    .filter(|w| wids.contains(&w.id))
+                    .flat_map(|w| w.panes.iter().map(|p| p.id))
+                    .collect();
+                if let Err(e) = self.may_close(cid, &panes) {
+                    return Outcome::Error(e);
+                }
                 let mut kept = 0;
                 for wid in wids {
                     // Looked up again each time: taking one renumbers the rest.
@@ -5375,6 +5445,9 @@ impl Server {
                     .map(|p| p.id)
                     .filter(|id| (*id == pid) != all_but)
                     .collect();
+                if let Err(e) = self.may_close(cid, &ids) {
+                    return Outcome::Error(e);
+                }
                 let mut kept = 0;
                 for id in ids {
                     if self.opts.undo_kill_time > 0 && self.keep_killed_pane(id) {
@@ -6726,6 +6799,7 @@ impl Server {
             Cmd::WebResume => self.web_resume(),
             Cmd::Share(what) => self.exec_share(what, cid),
             Cmd::Chat(c) => self.exec_chat(c, cid),
+            Cmd::BoardPick { place } => self.board_pick(cid, place),
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
             Cmd::ShareSent { token, peer, note } => self.share_sent(&token, &peer, &note),
             Cmd::WebUploaded { pane, path, bytes, peer } => self.web_uploaded(&pane, &path, bytes, &peer),

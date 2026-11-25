@@ -718,6 +718,7 @@ const DOCS: &[Doc] = &[
     d("chat-delete", "Delete a channel; its lines put aside.", &[]),
     d("chat-dir", "Print the folder a channel's files go in.", &[]),
     d("chat-pick", "Print or set the channel boards and pages open on.", &[]),
+    d("board-pick", "Print or set the dashboard's page and row it opens on.", &[]),
     d("web-share-open", "A share's link was opened (the page's).", &[]),
     d("web-share-sent", "A share was downloaded (the page's).", &[]),
     d("web-uploaded", "A file came from the phone (the page's).", &[]),

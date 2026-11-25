@@ -52,6 +52,8 @@ pub const QUERIES: &[&str] = &[
     "chat-read",
     // `chat-pick`: the channel the person picked last, on a board or a page.
     "chat-pick",
+    // `board-pick`: the page and row the last board was left on.
+    "board-pick",
 ];
 /// The only ones it sends to change anything.
 pub const ACTIONS: &[&str] = &[
@@ -72,6 +74,8 @@ pub const ACTIONS: &[&str] = &[
     "chat-tag",
     // `chat-pick CHAN`: the channel picked, for the next board or page.
     "chat-pick",
+    // `board-pick PAGE ROW`: where this board is, for the next one.
+    "board-pick",
     // `L`: a paired machine asked again, no longer, given nothing here
     // (`link-allow --none`), or forgotten.
     "link-connect",
@@ -667,6 +671,16 @@ pub struct Board {
     pub machines: Vec<MachineRow>,
     /// The chat's page: the group chat.
     pub chat: chat::ChatPage,
+    /// Where the last board was left, as the server keeps it (`board-pick`),
+    /// read at the start or told since: told again only when it moves.
+    place_kept: Option<(u8, String)>,
+    /// Whether the server keeps it: an older one does not, and is not told.
+    pub keeps_place: bool,
+    /// Opened where the last board was left: the pane it was asked from,
+    /// chosen when the pane kept is gone; the share kept, picked when the
+    /// shares are first read.
+    fallback: Option<String>,
+    share_wanted: Option<u32>,
 }
 
 /// The board's pages: the panes, the group chat, the shares (the chat
@@ -906,6 +920,49 @@ impl Board {
             share_pick: 0,
             shares_ended: true,
             activity_top: 0,
+            place_kept: None,
+            keeps_place: false,
+            fallback: None,
+            share_wanted: None,
+        }
+    }
+
+    /// Where the board is: its page and the row picked there (a pane by its
+    /// id, a share by its number; the chat's channel is `chat-pick`'s).
+    pub fn place(&self) -> (u8, String) {
+        let row = match self.page {
+            1 => self.chosen_id().unwrap_or_default(),
+            SHARES_PAGE => self.share_picked().map(|s| s.id.to_string()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        (self.page, row)
+    }
+
+    /// Opened where the last board was left: `kept` as `board-pick` printed
+    /// it (`PAGE ROW`), `here` the pane it was asked from. That pane is
+    /// chosen when the last was left on another page, or on a pane that is
+    /// gone by now; a page this board does not have opens the first.
+    pub fn open_at(&mut self, kept: &str, here: Option<String>) {
+        self.chosen = here.clone();
+        let mut words = kept.split_whitespace();
+        let Some(page) = words.next().and_then(|p| p.parse::<u8>().ok()) else { return };
+        let row = words.next().unwrap_or_default().to_string();
+        self.place_kept = Some((page, row.clone()));
+        if !(1..=PAGES).contains(&page) {
+            return;
+        }
+        self.page = page;
+        match page {
+            1 if !row.is_empty() => {
+                self.chosen = Some(row);
+                self.fallback = here;
+            }
+            SHARES_PAGE => {
+                self.share_wanted = row.parse().ok();
+                self.focus_on(Panel::Shares);
+            }
+            CHAT_PAGE => self.focus_on(Panel::Channels),
+            _ => {}
         }
     }
 
@@ -986,6 +1043,13 @@ impl Board {
         }
         rows.sort_by_key(|r| machines.iter().position(|m| *m == r.machine));
         self.rows = rows;
+        // Opened on the pane the last board was left on: gone by now, the
+        // pane it was asked from instead (first rows only).
+        if let Some(here) = self.fallback.take()
+            && !self.rows.iter().any(|r| self.chosen.as_ref() == Some(&r.id))
+        {
+            self.chosen = Some(here);
+        }
         self.chosen = self.chosen_id();
     }
 
@@ -1046,7 +1110,8 @@ impl Board {
     /// Page 2's list, as `share -l -J` gave it; the share picked stays
     /// picked (by its number) when others come and go.
     pub fn set_shares(&mut self, json: &str) {
-        let picked = self.share_picked().map(|s| s.id);
+        // The first read, opened where the last board was left: its share.
+        let picked = self.share_wanted.take().or_else(|| self.share_picked().map(|s| s.id));
         self.shares = shares::parse(json);
         let shown = self.shares_shown();
         self.share_pick = picked
@@ -3446,6 +3511,29 @@ fn keep_pick(board: &mut Board, ask: impl Fn(&[String]) -> (i32, String, String)
     board.chat.kept = Some(id);
 }
 
+/// Where the board is, told to the server (`board-pick`) when it moved, so
+/// the next board opens there. Not to a server that keeps none (an older
+/// one); refused, said once and not told again.
+fn keep_place(board: &mut Board, ask: impl Fn(&[String]) -> (i32, String, String)) {
+    if !board.keeps_place {
+        return;
+    }
+    let (page, row) = board.place();
+    if board.place_kept.as_ref().is_some_and(|(p, r)| *p == page && *r == row) {
+        return;
+    }
+    let mut argv = vec!["board-pick".to_string(), page.to_string()];
+    if !row.is_empty() {
+        argv.push(row.clone());
+    }
+    let (code, _, err) = ask(&argv);
+    if code != 0 {
+        board.keeps_place = false;
+        board.note = Some(format!("where the board is is not kept for next time: {}", err.trim()));
+    }
+    board.place_kept = Some((page, row));
+}
+
 /// `keepane dashboard [--popup -t %N]` (`--popup`: opened by prefix v, so
 /// going to a pane closes it). Pane `here` is chosen first.
 pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option<u32>) -> anyhow::Result<i32> {
@@ -3477,7 +3565,11 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
     };
     let (cols, rows) = console.size();
     let mut board = Board::new(cols, rows);
-    board.chosen = here.map(|n| format!("%{n}"));
+    // Where the last board was left (an older server keeps none: the pane
+    // it was asked from, page 1).
+    let (code, kept, _) = ask(&owned(&["board-pick"]));
+    board.keeps_place = code == 0;
+    board.open_at(if code == 0 { &kept } else { "" }, here.map(|n| format!("%{n}")));
     // The chat's channel the person picked last, on a board or a page,
     // picked again.
     board.chat.kept = chat::parse_kept(&ask(&owned(&["chat-pick"])).1);
@@ -3546,6 +3638,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                     (None, None) => board.set_main(Vec::new()),
                 }
             }
+            keep_place(&mut board, ask);
             console.write_str(&board.frame());
             // A key, or a second without one: then the board is read again.
             let first = match rx.recv_timeout(Duration::from_secs(1)) {
@@ -3576,6 +3669,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                     Action::Quit => {
                         // A pick and a quit read together: the pick is kept too.
                         keep_pick(&mut board, ask);
+                        keep_place(&mut board, ask);
                         return Ok(());
                     }
                     Action::Run(argv) | Action::Go(argv) if !popup || argv[0] != "focus-pane" => {
@@ -3595,6 +3689,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                         // From the popup: go there, and out of the way.
                         let (code, _, err) = ask(&argv);
                         if code == 0 {
+                            keep_place(&mut board, ask);
                             return Ok(());
                         }
                         board.note = Some(err.trim().to_string());
@@ -4704,6 +4799,109 @@ mod tests {
             Action::Run(argv) => assert_eq!(argv, owned(&["chat-say", "10.0.0.2:7681/0190a-33333333", "--", "hi"])),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A board opens where the last was left (`board-pick`): its page and the
+    /// pane or share picked there. The pane it was asked from instead when
+    /// that pane is gone, when the last was left on another page, or when
+    /// nothing (or nothing readable) is kept.
+    #[test]
+    fn a_board_opens_on_the_page_and_row_the_last_was_left_on() {
+        let rows = || {
+            vec![
+                row("%1", "work", "lead", "ai", false, 0),
+                row("%2", "work", "tester", "ai", true, 2),
+                row("%3", "ops", "", "normal", false, 0),
+            ]
+        };
+        let open = |kept: &str| {
+            let mut b = Board::new(120, 32);
+            b.open_at(kept, Some("%2".into()));
+            b.set_rows(rows());
+            b
+        };
+        let at = |b: &Board| (b.page, b.focus, b.chosen.clone().unwrap_or_default());
+        assert_eq!(at(&open("1 %3")), (1, Panel::Panes, "%3".into()), "the pane kept");
+        assert_eq!(at(&open("1 %9")), (1, Panel::Panes, "%2".into()), "gone: the one asked from");
+        assert_eq!(at(&open("1")), (1, Panel::Panes, "%2".into()), "no row kept");
+        assert_eq!(at(&open("")), (1, Panel::Panes, "%2".into()), "nothing kept");
+        assert_eq!(at(&open("7 x")), (1, Panel::Panes, "%2".into()), "a page this board has not");
+        assert_eq!(at(&open("2")), (2, Panel::Channels, "%2".into()), "the chat's page");
+        // Gone later, while open: the first, as before (the one asked from
+        // was for opening only).
+        let mut b = open("1 %3");
+        b.set_rows(rows().into_iter().filter(|r| r.id != "%3").collect());
+        assert_eq!(b.chosen.as_deref(), Some("%1"));
+
+        // The shares' page: the share kept, picked when they are read.
+        let json = r#"{"served":true,"shares":[
+            {"id":3,"state":"active","kind":"file","name":"a","path":"/a","created":1,"until":9,"once":false,"sent":0,
+             "seen":[],"from":null,"links":[],"port":0,"port_moved":false,"ended":null,"events":[]},
+            {"id":5,"state":"active","kind":"file","name":"b","path":"/b","created":2,"until":9,"once":false,"sent":0,
+             "seen":[],"from":null,"links":[],"port":0,"port_moved":false,"ended":null,"events":[]}]}"#;
+        let mut b = open("3 5");
+        assert_eq!((b.page, b.focus), (3, Panel::Shares));
+        b.set_shares(json);
+        assert_eq!(b.place(), (3, "5".into()));
+        b.key(Key::ch('k'));
+        b.set_shares(json);
+        assert_eq!(b.place(), (3, "3".into()), "the person's pick stays after the first read");
+        let mut b = open("3 8");
+        b.set_shares(json);
+        assert_eq!(b.place(), (3, "3".into()), "a share gone: the first");
+
+        // Where it is: the page and the pane by its id; the chat's page has
+        // no row here (its channel is chat-pick's).
+        let mut b = open("1 %3");
+        assert_eq!(b.place(), (1, "%3".into()));
+        b.key(Key::ch('k'));
+        assert_eq!(b.place(), (1, "%2".into()));
+        b.key(Key::ch('>'));
+        assert_eq!(b.place(), (2, String::new()));
+    }
+
+    /// Where the board is goes to the server only when it moved, and not at
+    /// all to one that keeps none; refused, it is said once and not told
+    /// again.
+    #[test]
+    fn where_the_board_is_is_told_when_it_moves() {
+        let told = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let answer = std::cell::Cell::new(0);
+        let ask = |argv: &[String]| {
+            told.borrow_mut().push(argv.to_vec());
+            let code = answer.get();
+            (code, String::new(), if code == 0 { String::new() } else { "board-pick: no\n".into() })
+        };
+        let mut b = Board::new(120, 32);
+        b.keeps_place = true;
+        b.open_at("1 %1", None);
+        b.set_rows(board().rows);
+        keep_place(&mut b, ask);
+        assert!(told.borrow().is_empty(), "where the server has it already");
+        b.key(Key::ch('j'));
+        keep_place(&mut b, ask);
+        keep_place(&mut b, ask);
+        assert_eq!(*told.borrow(), vec![owned(&["board-pick", "1", "%2"])], "once per move");
+        b.key(Key::ch('>'));
+        keep_place(&mut b, ask);
+        assert_eq!(told.borrow().last(), Some(&owned(&["board-pick", "2"])), "no row on the chat's page");
+
+        // Refused: said, and not asked again.
+        answer.set(1);
+        b.key(Key::ch('<'));
+        keep_place(&mut b, ask);
+        assert_eq!(b.note.as_deref(), Some("where the board is is not kept for next time: board-pick: no"));
+        let n = told.borrow().len();
+        b.key(Key::ch('j'));
+        keep_place(&mut b, ask);
+        assert_eq!(told.borrow().len(), n);
+
+        // A server that keeps none: never told.
+        told.borrow_mut().clear();
+        let mut b = board();
+        b.key(Key::ch('j'));
+        keep_place(&mut b, ask);
+        assert!(told.borrow().is_empty());
     }
 
     /// The channel the server says was picked last is picked again, also

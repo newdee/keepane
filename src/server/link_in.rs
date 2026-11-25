@@ -567,7 +567,10 @@ impl Server {
             message: None,
             argv,
         };
-        let made_text = match self.create_pane(None, c) {
+        self.acting = Some(peer.key.clone());
+        let made = self.create_pane(None, c);
+        self.acting = None;
+        let made_text = match made {
             Outcome::Text(t) => t,
             Outcome::Error(e) => return self.link_answer(nonce, 400, e),
             _ => return self.link_answer(nonce, 500, "no pane".into()),
@@ -610,9 +613,10 @@ impl Server {
             Ok((_, _, p)) => p,
             Err(e) => return self.link_answer(nonce, 404, e),
         };
-        let theirs = self.link.as_ref().is_some_and(|l| l.made.get(&pid) == Some(&peer.key));
+        // Its own: one it started (`link start`) or made in a session here.
+        let theirs = self.pane_ref(pid).is_some_and(|p| p.made_by.as_deref() == Some(peer.key.as_str()));
         if !theirs {
-            let why = format!("%{pid} was not started by {}: it may close only the panes it started here", peer.addr);
+            let why = format!("%{pid} was not made by {}: it may close only the panes it made here", peer.addr);
             return self.link_answer(nonce, 403, why);
         }
         let address = self.address_of(pid);

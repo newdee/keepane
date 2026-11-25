@@ -5,7 +5,11 @@
 name = "codewhale"
 title = "CodeWhale"
 format = 1
-resume = "codewhale resume {id}"
+# Not `codewhale resume {id}`: the id its hooks get (DEEPSEEK_SESSION_ID,
+# sess_ce940047) is not the one it saves the conversation under (a UUID,
+# 0dca967a-...), and no hook is given that one (0.10.4, measured 2026-11-25).
+# `--continue` takes up the latest conversation in the pane's folder.
+resume = "codewhale --continue"
 
 [detect]
 # `codew` is its short alias: the same program under another name.

@@ -60,7 +60,7 @@ codewhale 的例子（事件名、格式、环境变量、`resume`、`codew` 别
 name = "codewhale"              # the word for `keepane setup codewhale`
 title = "CodeWhale"             # shown in `keepane setup` and the board
 format = 1                      # this file's format version
-resume = "codewhale resume {id}"   # top-level keys go before the first [table]
+resume = "codewhale --continue"   # top-level keys go before the first [table]
 
 [detect]
 programs = ["codewhale", "codew"]   # process names, any case, .exe/.cmd dropped; codew is its short alias
@@ -137,7 +137,7 @@ value = { command = "keepane", args = ["mcp"] }
 | `events.*` | 至少 `ready` | 这家的事件名。安装文本里的 `{ready}` 等换成对应的命令 |
 | `hook_input.*` | 否 | 取值的位置：`/a/b` 是 hook 标准输入 JSON 里的路径，`env:NAME` 是 hook 的环境变量。没写的项照现在的规则猜（`session_id` 等） |
 | `screen.waiting` / `screen.working` | 否 | 屏幕最后几行里的文字片段，不分大小写（和现在 Codex、Cursor 的规则同一种判断，不用正则） |
-| `resume` | 否 | 恢复对话的命令，`{id}` 换成会话 id |
+| `resume` | 否 | 恢复对话的命令，`{id}` 换成会话 id；没有 `{id}` 时照原样运行 |
 | `setup.dir` / `setup.dir_env` | 否 | agent 的配置目录。`~` 是用户目录。环境变量有值时用它 |
 | `setup.files` | 否 | 安装要改的文件，见 4.2。没有它，`setup` 只显示"手动加这几条 hook" |
 
@@ -202,7 +202,7 @@ value = { command = "keepane", args = ["mcp"] }
 
 改成：
 1. 保存 session 时，每个认出了 agent 的 pane 多记两项：agent 的名字、它当前的会话 id（hook 交来的，或从会话记录认出的）。
-2. 恢复时，pane 原来的命令就是这个 agent，并且它有 `resume` 模板：运行 `resume`（`{id}` 换成记下的 id），不运行原来的命令。
+2. 恢复时，pane 原来的命令就是这个 agent，并且它有 `resume` 模板：运行 `resume`（`{id}` 换成记下的 id），不运行原来的命令。模板里没有 `{id}` 时（codewhale 的 `codewhale --continue`），照原样运行，不用记下的 id：接上 pane 所在目录里最近的一次对话。同一个目录开了两个这样的 agent 时，两个接的是同一次对话。
 3. 内置的模板：`claude --resume {id}`、`codex resume {id}`、`pi --session {id}`。Gemini、Cursor、opencode 先不写，等核对了它们的命令再加。
 4. 新选项 `restore-agents on|off`，默认 `on`。`off`：照旧运行原来的命令。
 5. 同一个会话 id 只恢复一次：两个 pane 记着同一个 id 时，只有第一个用 `resume`，第二个照旧启动全新的。
@@ -260,6 +260,12 @@ value = { command = "keepane", args = ["mcp"] }
 ## 12. 待定的问题
 
 1. codewhale 的格式已按官方文档核过（`codew` 是官方别名，两个程序逐字节相同；`codewhale resume <id>`；`mcp.json` 的 `servers`/`mcpServers`；配置目录 `CODEWHALE_HOME`，不是 PR #1 用的 `CODEWHALE_CONFIG_DIR`；会话在 `sessions/<id>/` 目录里，不是 PR #1 读的 `sessions/<id>.json`）。hook 的值：每个事件都有 `DEEPSEEK_*` 环境变量，`session_idle`、`waiting_for_user`、`session_busy` 等另有标准输入的 JSON，`session_start` 没有。实际传了什么，用 0.10.4 实测确认（记录每个事件的环境变量和标准输入）。
+   实测结果（2026-11-25，真实 DeepSeek 会话，33 次 hook）：
+   - `session_start`、`session_idle`、`session_busy`、`waiting_for_user`、`tool_call_before`、`tool_call_after` 都触发。
+   - `DEEPSEEK_SESSION_ID`、`DEEPSEEK_MODEL`、`DEEPSEEK_TOOL_NAME` 都有值。
+   - 有标准输入 JSON 的：`session_busy`、`session_idle`、`waiting_for_user`（`{"from":…,"to":…}`，等批准时带 `"reason":"approval"`）、`message_submit`、`turn_end`。没有的：`session_start`、工具调用前后、`mode_change`。
+   - hook 拿到的会话 id（`sess_ce940047`）不是保存对话用的 id（UUID `0dca967a-…`，`codewhale sessions` 和退出时的提示都用它），任何 hook 都拿不到后者。所以 `codewhale resume {id}` 接不上，`resume` 改为 `codewhale --continue`，`resume` 不再要求含 `{id}`（第 7 节第 2 条）。
+   - 工具要批准时，`tool_call_before` 先触发，`waiting_for_user` 后触发。第 3 步做 `pane-step` 时，等批准的时间不能算成工具在运行。
 2. `restore-agents` 的默认值：本稿用 `on`。
 3. 用户定义的 agent 能不能覆盖内置的：本稿第 1 步不允许，第 4 步再定。
 

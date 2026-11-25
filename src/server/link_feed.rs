@@ -333,8 +333,11 @@ impl Server {
                 // was. The pane the command put the eye on is the reply's,
                 // for that machine's eye to go to.
                 let view = View::of(self);
+                // A pane it makes is its; one it closes must be its.
                 self.by_machine = true;
+                self.acting = Some(key.to_string());
                 let out = self.exec(cmd, None);
+                self.acting = None;
                 self.by_machine = false;
                 let (ok, text) = match out {
                     super::Outcome::Error(e) => (false, e),

@@ -361,7 +361,10 @@ connects it, `x` disconnects it, `R` takes back what it has here and `D`
 forgets its pairing (`keepane link`, below; `R` and `D` ask first).
 
 `>` turns to the next page, `<` the one before (the bottom line says
-`page 2/3`, and keeps it when too narrow for every key). On page 3,
+`page 2/3`, and keeps it when too narrow for every key). A board opens on
+the page and the row the last one was left on (the pane by its id, a
+share by its number; the server keeps them, `board-pick`, until it
+restarts); the pane it was asked from instead when that pane is gone. On page 3,
 `[0]` and the
 machine stay, `[1]` lists what this machine shares (`keepane share`,
 below), each `active`, `missing` (its file gone for now), `stopped`,
@@ -1439,7 +1442,8 @@ A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`,
 `zsh`, and in `normal` mode otherwise, unless a mode is given. What an
 agent may start is limited to `agent-commands` (`pwsh powershell claude
 codex` on Windows, `bash zsh sh claude codex` elsewhere), and how many
-panes it and the panes it made may make to `agent-pane-limit` (8). Claude
+panes it and the panes it made may make to `agent-pane-limit` (32;
+`set -g agent-pane-limit N` changes it, 0 to 256). Claude
 Code asks you before each MCP call you have not allowed.
 
 ## On your phone
@@ -2032,16 +2036,26 @@ A machine that gave this one `--full` runs panes for it:
 ```powershell
 keepane link start 100.64.0.3:7681 -n helper -- claude   # its address there comes back
 keepane send-message --to 100.64.0.3:7681/%helper "look at the failing test"
-keepane link kill 100.64.0.3:7681/%helper               # only a pane this machine started there
+keepane link kill 100.64.0.3:7681/%helper               # only a pane this machine made there
 ```
 
 The program must be one of that machine's `agent-commands`, with any
 arguments. A pane counts toward that machine's
-`agent-pane-limit`, for this machine alone. The pane goes in a
+`agent-pane-limit` (32), for this machine alone. The pane goes in a
 session named after this machine (`-s` names another), with its work mode
-from its program as for a pane an agent makes (`-m` gives one). That machine
-keeps which panes this one started only while its server runs. Agents do the
+from its program as for a pane an agent makes (`-m` gives one). Agents do the
 same through MCP: `create_remote_pane`, and `kill_pane` with the address.
+
+A pane is closed only by the machine it runs on and by the machine that
+made it. That machine records which machine made each pane: one started
+with `link start`, and one made with a command or a key in one of its
+sessions (a copy of the session, `C-b c` while attached). The record is
+saved with the session, so it comes back with `resume`. A command from
+another machine that would close a pane it did not make (`kill-pane`,
+`kill-window`, `kill-session`, `kill-server`, `C-b x` while attached)
+is refused, and says which machine made the pane. This guards against
+mistakes, not attacks: a machine with `--full` can type
+`keepane kill-pane` into a shell there, which runs as that machine's own.
 
 A message for a pane not shared with the sender is answered as one for a
 pane that is not there, and the sender told how it could be shared, so a
