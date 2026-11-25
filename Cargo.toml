@@ -1,6 +1,6 @@
 [package]
 name = "keepane"
-version = "0.90.1"
+version = "0.91.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A terminal workspace for AI agents: persistent panes, an inbox for each, and what every agent is doing; tmux's keys and commands."
@@ -40,6 +40,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 prost = { version = "0.13", default-features = false, features = ["derive", "std"] }
 snow = "0.9"
+# Agent definition files (docs/design/agent-defs.md): written by hand, with
+# comments and multi-line hook text, which JSON has neither of. Read only.
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 
 [target.'cfg(windows)'.dependencies]
 # WinRT toasts (the notification with a "Go to pane" button) and WMI (the

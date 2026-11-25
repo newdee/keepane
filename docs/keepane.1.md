@@ -151,13 +151,18 @@ mode), `send-message` (`--to` a pane, `--re` a message,
 it is due, its sender told when no pane is there; kept over a restart, one
 due meanwhile sent at once saying how late; 30 days ahead at most, 100 bytes short of `message-max-size` (room to say it is late), 1000 at
 once), `read-message`, `list-messages`, `trace-message` (`-J`: as JSON), `drop-message`,
-`move-message`, `pane-ready`, `pane-status`, `list-tasks`, `show-task` (`-J`),
+`move-message`, `pane-ready`, `pane-busy` (the agent began a turn of its
+own: no message goes in until its next `pane-ready`), `agent-defs` (the
+agent definition files the server has, and those it skipped; `-r` reads
+them again), `pane-status`, `list-tasks`, `show-task` (`-J`),
 `list-events`, `create-pane`, `mcp` (MCP for an agent in a pane), `setup`
 (`setup` alone lists the agents and what each lacks; `setup claude`, `codex`,
 `gemini`, `cursor`, `opencode` or `pi` (an extension; pi takes no MCP
 server) with `--install` adds the hook that says when
 the agent is free, the one that says when it waits for you (Claude Code,
-Codex, Gemini CLI: `pane-wait`), and keepane's MCP server). Claude
+Codex, Gemini CLI: `pane-wait`), and keepane's MCP server; an agent of a
+definition file, such as the shipped `codewhale`, or one of yours in
+`~/.keepane/agents/*.toml`, the same way: what its file says). Claude
 Code's, Codex's and pi's transcripts say it too, about 3 seconds late at
 the most, with no hook. Run by a hook, `pane-ready` reads the hook's JSON
 on standard input and passes on its session, transcript and model
@@ -1040,6 +1045,10 @@ flags are `1` or `0`. `#{?name,yes,no}` chooses, `#{=N:name}` cuts,
 
 `KEEPANE_EVENTS_DIR`
 : Where the event log goes.
+
+`KEEPANE_AGENTS_DIR`
+: Where your agent definition files are (`*.toml`), instead of
+  `~/.keepane/agents`.
 
 `KEEPANE_LINK_DIR`
 : Where the link keys, the paired machines and the Feishu accounts are

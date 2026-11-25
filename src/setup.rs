@@ -29,6 +29,7 @@
 //! on standard input, which `pane-wait` reads (`waiting_for`). Cursor CLI
 //! and opencode have no such hook.
 
+use crate::agentdef::{self, Def};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -244,12 +245,46 @@ fn hook_input(wait: std::time::Duration) -> Option<String> {
 /// (docs/design/agent-accuracy.md). Read for a second at most: the hook
 /// runs at the end of every turn, and an agent waits for it.
 pub fn pane_ready_args(args: &mut Vec<String>) {
-    if args.iter().skip(1).any(|a| a != "-q") {
-        return;
+    let Some(agent) = run_by_hook(args) else { return };
+    let input = hook_input(std::time::Duration::from_secs(1));
+    let reg = agentdef::current();
+    let def = agent.as_deref().and_then(|n| reg.get(n));
+    args.extend(hook_said_by(def, input.as_deref(), &|k| std::env::var(k).ok()));
+}
+
+/// A hook's command line: nothing but `-q` and `--agent NAME`; the name, if
+/// any. None when it says anything else (run by hand, or with `-t`).
+fn run_by_hook(args: &[String]) -> Option<Option<String>> {
+    let mut agent = None;
+    let mut words = args.iter().skip(1);
+    while let Some(w) = words.next() {
+        match w.as_str() {
+            "-q" => {}
+            "--agent" => agent = Some(words.next()?.clone()),
+            _ => return None,
+        }
     }
-    if let Some(input) = hook_input(std::time::Duration::from_secs(1)) {
-        args.extend(hook_said(&input));
+    Some(agent)
+}
+
+/// What a hook says of its session, the way its agent's definition reads
+/// its input (`hook_input`: a JSON pointer, or `env:NAME`); what it does
+/// not say where, by the usual names (`hook_said`).
+pub fn hook_said_by(def: Option<&Def>, input: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut out = input.map(hook_said).unwrap_or_default();
+    let Some(def) = def else { return out };
+    let json: Option<Value> = input.and_then(|i| serde_json::from_str(i.trim()).ok());
+    let h = &def.hook_input;
+    for (flag, spec) in [("--session", &h.session), ("--transcript", &h.transcript), ("--model", &h.model)] {
+        let Some(spec) = spec else { continue };
+        if let Some(i) = out.iter().position(|w| w == flag) {
+            out.drain(i..i + 2);
+        }
+        if let Some(v) = Def::take(spec, json.as_ref(), env) {
+            out.extend([flag.to_string(), v]);
+        }
     }
+    out
 }
 
 /// The flags for what a hook's JSON says of its agent's session: its id
@@ -294,7 +329,7 @@ pub fn pane_wait_args(args: &mut Vec<String>) {
     while let Some(w) = words.next() {
         match w.as_str() {
             "-q" => {}
-            "-t" => {
+            "-t" | "--agent" => {
                 words.next();
             }
             "--" => said = words.next().is_some(),
@@ -675,6 +710,172 @@ fn install(agent: Agent, p: &Places) -> Result<()> {
     Ok(())
 }
 
+/// The files a definition's `setup` changes, each with where it is.
+fn def_files<'a>(
+    def: &'a Def,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Vec<(&'a agentdef::SetupFile, PathBuf)> {
+    let Some(dir) = def.dir(home, env) else { return Vec::new() };
+    def.setup.files.iter().map(|f| (f, dir.join(&f.path))).collect()
+}
+
+/// A JSON pointer's parts, `~1` and `~0` read back.
+fn pointer_parts(at: &str) -> Vec<String> {
+    at.trim_start_matches('/').split('/').map(|p| p.replace("~1", "/").replace("~0", "~")).collect()
+}
+
+/// `value` put at the first of `at` whose object above is there, else at
+/// the first, the objects on the way made; nothing changed when any of `at`
+/// holds something already (it is left as the user has it).
+pub fn json_merge(mut v: Value, at: &[&str], value: Value) -> Result<(Value, bool)> {
+    if at.iter().any(|a| v.pointer(a).is_some()) {
+        return Ok((v, false));
+    }
+    let above = |a: &str| a.rsplit_once('/').map_or("", |(up, _)| up).to_string();
+    let chosen = at.iter().find(|a| v.pointer(&above(a)).is_some_and(Value::is_object)).unwrap_or(&at[0]);
+    let parts = pointer_parts(chosen);
+    let (last, path) = parts.split_last().context("an empty place")?;
+    let mut here = obj(&mut v, "the file")?;
+    for p in path {
+        let next = here.entry(p.clone()).or_insert_with(|| json!({}));
+        here = obj(next, &format!("\"{p}\""))?;
+    }
+    here.insert(last.clone(), value);
+    Ok((v, true))
+}
+
+/// Whether one of a definition's files holds what `setup` puts there.
+fn def_file_done(f: &agentdef::SetupFile, path: &Path) -> bool {
+    let Ok(Some(t)) = read(path) else { return false };
+    match f.how {
+        agentdef::How::Append | agentdef::How::OwnFile => f.mark.as_deref().is_some_and(|m| t.contains(m)),
+        agentdef::How::JsonMerge => {
+            let at = f.at.as_ref().map(|a| a.all()).unwrap_or_default();
+            serde_json::from_str::<Value>(&t).is_ok_and(|v| at.iter().any(|a| v.pointer(a).is_some()))
+        }
+    }
+}
+
+/// The word of `off_when` a file holds: its agent's hooks may be off.
+fn def_file_off<'a>(f: &'a agentdef::SetupFile, path: &Path) -> Option<&'a str> {
+    let Ok(Some(t)) = read(path) else { return None };
+    f.off_when.iter().find(|w| t.contains(w.as_str())).map(String::as_str)
+}
+
+/// One of a definition's files with what `setup` puts there, backed up
+/// first; whether it changed.
+fn def_apply(def: &Def, f: &agentdef::SetupFile, path: &Path) -> Result<bool> {
+    if def_file_done(f, path) {
+        return Ok(false);
+    }
+    match f.how {
+        agentdef::How::Append => {
+            let old = read(path)?;
+            let mut text = old.clone().unwrap_or_default();
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            let has_head = |t: &str, mark: &str| t.lines().any(|l| l.trim() == mark.trim());
+            if let (Some(head), Some(mark)) = (def.head_of(f), f.head_mark.as_deref())
+                && !has_head(&text, mark)
+            {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(head.trim_end_matches('\n'));
+                text.push('\n');
+            }
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(def.text_of(f).trim_end_matches('\n'));
+            text.push('\n');
+            write_backed_up(path, old.as_deref(), &text)?;
+        }
+        agentdef::How::OwnFile => {
+            let old = read(path)?;
+            write_backed_up(path, old.as_deref(), &def.text_of(f))?;
+        }
+        agentdef::How::JsonMerge => {
+            let at = f.at.as_ref().map(|a| a.all()).unwrap_or_default();
+            let value = serde_json::to_value(f.value.as_ref().context("json-merge without a value")?)?;
+            edit_json(path, |v| json_merge(v, &at, value))?;
+        }
+    }
+    Ok(true)
+}
+
+/// What `setup NAME` prints for a defined agent, without `--install`.
+fn print_def_plan(def: &Def, home: &Path, env: &dyn Fn(&str) -> Option<String>) {
+    println!("{} in a keepane pane (work mode ai) needs (defined in {}):", def.title(), def.from);
+    let e = &def.events;
+    let mut said = vec![format!("free on {}", e.ready.join(", "))];
+    if !e.busy.is_empty() {
+        said.push(format!("busy on {}", e.busy.join(", ")));
+    }
+    if !e.wait.is_empty() {
+        said.push(format!("waiting for you on {}", e.wait.join(", ")));
+    }
+    println!("its hooks say it is {}.", said.join("; "));
+    let files = def_files(def, home, env);
+    if files.is_empty() {
+        println!();
+        println!("Add the hooks by hand: each runs the command for its event:");
+        for (kind, events) in [("ready", &e.ready), ("busy", &e.busy), ("wait", &e.wait)] {
+            for ev in events {
+                println!("   {ev}: {}", agentdef::hook_command(kind, &def.name));
+            }
+        }
+        return;
+    }
+    for (i, (f, path)) in files.iter().enumerate() {
+        println!();
+        match f.how {
+            agentdef::How::Append => println!("{}. Appended to {}:", i + 1, path.display()),
+            agentdef::How::OwnFile => println!("{}. The file {}:", i + 1, path.display()),
+            agentdef::How::JsonMerge => {
+                let at = f.at.as_ref().map(|a| a.all().join(" or ")).unwrap_or_default();
+                println!("{}. In {}, at {at}:", i + 1, path.display());
+            }
+        }
+        match f.how {
+            agentdef::How::JsonMerge => {
+                let v = f.value.as_ref().map(|v| serde_json::to_value(v).unwrap_or_default()).unwrap_or_default();
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+            }
+            _ => {
+                if let (Some(head), Some(mark)) = (def.head_of(f), &f.head_mark) {
+                    println!("(when it has no {mark} line yet)\n{}", head.trim_end());
+                }
+                println!("{}", def.text_of(f).trim_end());
+            }
+        }
+    }
+    println!();
+    println!("`keepane setup {} --install` does it (each file is backed up first).", def.name);
+}
+
+fn install_def(def: &Def, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
+    let files = def_files(def, home, env);
+    if files.is_empty() {
+        println!("{} says no files to change: add its hooks by hand (`keepane setup {}`).", def.title(), def.name);
+        return Ok(());
+    }
+    for (f, path) in &files {
+        match def_apply(def, f, path) {
+            Ok(true) => println!("added keepane's part to {}", path.display()),
+            Ok(false) => println!("keepane's part is already in {}", path.display()),
+            // A file with comments, or of another shape, is theirs to edit.
+            Err(e) => println!("{e:#}; add it yourself (`keepane setup {}` shows it)", def.name),
+        }
+        if let Some(w) = def_file_off(f, path) {
+            println!("{} has '{w}': {}'s hooks may be switched off there", path.display(), def.title());
+        }
+    }
+    Ok(())
+}
+
 /// `keepane setup`: each agent, whether it is here and set up.
 fn print_status(home: &Path, env: &dyn Fn(&str) -> Option<String>) {
     let yes = |b: bool| if b { "yes" } else { "no" };
@@ -687,7 +888,20 @@ fn print_status(home: &Path, env: &dyn Fn(&str) -> Option<String>) {
         let mcp = if a.has_mcp() { yes(m) } else { "-" };
         println!("{:<12} {:<13} {:<6} {:<5}", a.label(), if here { a.program() } else { "-" }, yes(h), mcp);
         if (here || h || m) && !(h && (m || !a.has_mcp())) {
-            missing.push(a);
+            missing.push((a.label().to_string(), a.word().to_string()));
+        }
+    }
+    // Defined agents: set up when every file `setup` changes holds its part.
+    let reg = agentdef::current();
+    for d in &reg.defs {
+        let program = d.detect.programs.iter().find(|p| crate::config::which(p).is_some());
+        let files = def_files(d, home, env);
+        let done = !files.is_empty() && files.iter().all(|(f, p)| def_file_done(f, p));
+        let off = files.iter().any(|(f, p)| def_file_off(f, p).is_some());
+        let hook = if off && done { "off?" } else { yes(done) };
+        println!("{:<12} {:<13} {:<6} {:<5}", d.title(), program.map_or("-", String::as_str), hook, "-");
+        if (program.is_some() || done) && (!done || off) {
+            missing.push((d.title().to_string(), d.name.clone()));
         }
     }
     println!();
@@ -696,10 +910,18 @@ fn print_status(home: &Path, env: &dyn Fn(&str) -> Option<String>) {
             "An agent in a pane in work mode ai says when it is free through its hook; `keepane setup <agent>` shows what it adds."
         );
     }
-    for a in missing {
-        println!("{} is not set up: keepane setup {} --install", a.label(), a.word());
+    for (label, word) in missing {
+        println!("{label} is not set up: keepane setup {word} --install");
     }
-    println!("agents: {}", AGENTS.map(Agent::word).join(" "));
+    for e in &reg.errors {
+        println!("skipped: {e}");
+    }
+    println!("agents: {}", agent_words(&reg).join(" "));
+}
+
+/// Every word `setup` takes: keepane's agents, then the defined ones.
+pub(crate) fn agent_words(reg: &agentdef::Registry) -> Vec<String> {
+    AGENTS.iter().map(|a| a.word().to_string()).chain(reg.defs.iter().map(|d| d.name.clone())).collect()
 }
 
 fn home() -> Option<PathBuf> {
@@ -710,14 +932,23 @@ pub fn run(args: &[String]) -> Result<i32> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let Some(home) = home() else { bail!("no home directory") };
     let env = |k: &str| std::env::var(k).ok();
-    let usage = || format!("usage: keepane setup [{}] [--install]", AGENTS.map(Agent::word).join("|"));
+    let usage = || format!("usage: keepane setup [{}] [--install]", agent_words(&agentdef::current()).join("|"));
     match words.as_slice() {
         [] => {
             print_status(&home, &env);
             Ok(0)
         }
         [word] | [word, "--install"] => {
-            let Some(agent) = Agent::parse(word) else { bail!("{}", usage()) };
+            let Some(agent) = Agent::parse(word) else {
+                let reg = agentdef::current();
+                let Some(def) = reg.get(word) else { bail!("{}", usage()) };
+                if words.len() == 2 {
+                    install_def(def, &home, &env)?;
+                } else {
+                    print_def_plan(def, &home, &env);
+                }
+                return Ok(0);
+            };
             let p = places(agent, &home, &env);
             if words.len() == 2 {
                 install(agent, &p)?;
@@ -752,6 +983,102 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains(".bak-keepane-"))
             .map(|e| e.path())
             .collect()
+    }
+
+    /// A defined agent (the shipped codewhale): its hooks appended with the
+    /// [hooks] header only when the file has none, its MCP server merged
+    /// under whichever key the file has; a second run changes nothing; a
+    /// file with comments is left alone; `enabled = false` is noticed.
+    #[test]
+    fn a_defined_agent_is_set_up_from_its_file() {
+        let reg = agentdef::Registry::load(&[]);
+        let def = reg.get("codewhale").expect("shipped");
+        let home = temp("def");
+        let cw = home.join("cw");
+        let env = |k: &str| (k == "CODEWHALE_HOME").then(|| cw.display().to_string());
+        let files = def_files(def, &home, &env);
+        assert_eq!(
+            files.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(),
+            [cw.join("config.toml"), cw.join("mcp.json")]
+        );
+        let (hooks, mcp) = (&files[0], &files[1]);
+        // Empty: the header, then the entries; MCP under `servers`.
+        assert!(def_apply(def, hooks.0, &hooks.1).unwrap());
+        assert!(def_apply(def, mcp.0, &mcp.1).unwrap());
+        let t = std::fs::read_to_string(&hooks.1).unwrap();
+        assert!(t.starts_with("[hooks]\nenabled = true\n\n[[hooks.hooks]]"), "{t}");
+        assert_eq!(t.matches("command = \"keepane pane-").count(), 4, "{t}");
+        let m: Value = serde_json::from_str(&std::fs::read_to_string(&mcp.1).unwrap()).unwrap();
+        assert_eq!(m, json!({ "servers": { "keepane": { "command": "keepane", "args": ["mcp"] } } }));
+        // A second run: nothing changes, no backup.
+        assert!(!def_apply(def, hooks.0, &hooks.1).unwrap() && !def_apply(def, mcp.0, &mcp.1).unwrap());
+        assert_eq!(std::fs::read_to_string(&hooks.1).unwrap(), t);
+        assert!(backups(&cw).is_empty(), "{:?}", backups(&cw));
+        // Their own [hooks] (switched off) and mcpServers: no second header,
+        // the entries after theirs, the server under their key; noticed off.
+        let theirs = "model = \"x\"\n\n[hooks]\nenabled = false\n\n[[hooks.hooks]]\nevent = \"session_end\"\ncommand = \"notify\"";
+        std::fs::write(&hooks.1, theirs).unwrap();
+        std::fs::write(&mcp.1, r#"{"mcpServers": {"other": {"command": "x"}}}"#).unwrap();
+        assert!(def_apply(def, hooks.0, &hooks.1).unwrap() && def_apply(def, mcp.0, &mcp.1).unwrap());
+        let t = std::fs::read_to_string(&hooks.1).unwrap();
+        assert_eq!(t.matches("[hooks]").count(), 1, "one header: {t}");
+        assert!(t.starts_with(theirs) && t.contains("command = \"keepane pane-wait -q --agent codewhale\""), "{t}");
+        assert_eq!(def_file_off(hooks.0, &hooks.1), Some("enabled = false"));
+        let m: Value = serde_json::from_str(&std::fs::read_to_string(&mcp.1).unwrap()).unwrap();
+        assert_eq!(m["mcpServers"]["keepane"]["args"], json!(["mcp"]));
+        assert!(m.get("servers").is_none(), "never both keys: {m}");
+        assert_eq!(backups(&cw).len(), 2, "each file backed up once");
+        // Comments: not JSON, left alone.
+        let commented = "// mine\n{\"servers\": {}}";
+        std::fs::write(&mcp.1, commented).unwrap();
+        assert!(def_apply(def, mcp.0, &mcp.1).is_err());
+        assert_eq!(std::fs::read_to_string(&mcp.1).unwrap(), commented);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A hook run with `--agent`: its definition says where the session and
+    /// model are (codewhale: its environment); what it does not say is read
+    /// by the usual names; an unknown agent reads all by the usual names.
+    #[test]
+    fn a_hooks_input_is_read_the_way_its_agent_is_defined() {
+        let reg = agentdef::Registry::load(&[]);
+        let cw = reg.get("codewhale");
+        let env = |k: &str| match k {
+            "DEEPSEEK_SESSION_ID" => Some("sess_ab12".to_string()),
+            "DEEPSEEK_MODEL" => Some("deepseek-v4-pro".to_string()),
+            _ => None,
+        };
+        let stdin = r#"{"session_id":"from-json","transcript_path":"/t.jsonl","model":"json-model"}"#;
+        let got = hook_said_by(cw, Some(stdin), &env);
+        assert_eq!(
+            got,
+            ["--transcript", "/t.jsonl", "--session", "sess_ab12", "--model", "deepseek-v4-pro"],
+            "its places win; the transcript by the usual name"
+        );
+        assert_eq!(hook_said_by(cw, None, &env), ["--session", "sess_ab12", "--model", "deepseek-v4-pro"], "no stdin");
+        assert_eq!(hook_said_by(cw, None, &|_| None), Vec::<String>::new(), "nothing anywhere");
+        assert_eq!(hook_said_by(None, Some(stdin), &env), hook_said(stdin), "no definition: as before");
+        // The command line a hook runs it with.
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(run_by_hook(&args(&["pane-ready", "-q"])), Some(None));
+        assert_eq!(run_by_hook(&args(&["pane-ready", "-q", "--agent", "codewhale"])), Some(Some("codewhale".into())));
+        assert_eq!(run_by_hook(&args(&["pane-ready", "-t", "%1"])), None, "by hand");
+        assert_eq!(run_by_hook(&args(&["pane-ready", "--agent"])), None, "no name");
+    }
+
+    #[test]
+    fn json_merge_puts_a_value_where_the_file_says() {
+        let v = json!({"mcpServers": {}});
+        let (got, changed) = json_merge(v, &["/servers/keepane", "/mcpServers/keepane"], json!(1)).unwrap();
+        assert!(changed);
+        assert_eq!(got, json!({"mcpServers": {"keepane": 1}}), "the second place: its object is there");
+        let (got, _) = json_merge(json!({}), &["/a/b/c"], json!(2)).unwrap();
+        assert_eq!(got, json!({"a": {"b": {"c": 2}}}), "the objects on the way made");
+        let (got, changed) = json_merge(json!({"a": {"b": 0}}), &["/a/b"], json!(3)).unwrap();
+        assert!(!changed && got == json!({"a": {"b": 0}}), "there already: left as it is");
+        assert!(json_merge(json!({"a": 5}), &["/a/b"], json!(4)).is_err(), "a number on the way");
+        let (got, _) = json_merge(json!({}), &["/x~1y/z~0"], json!(5)).unwrap();
+        assert_eq!(got, json!({"x/y": {"z~": 5}}), "~1 and ~0 read back");
     }
 
     #[test]

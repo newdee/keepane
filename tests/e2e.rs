@@ -177,6 +177,35 @@ impl Harness {
     }
 }
 
+/// The agent definition every test server reads: a program called
+/// `toyagent` (a copy of cmd.exe or bash, `toy_agent`), free on `idle`,
+/// busy on `busy`, waiting for you when its screen says "toy asks".
+const TOY_AGENT: &str = "name = \"toy\"\nformat = 1\n\n[detect]\nprograms = [\"toyagent\"]\n\n\
+                         [events]\nready = [\"idle\"]\nbusy = [\"busy\"]\n\n[screen]\nwaiting = [\"toy asks\"]\n";
+
+/// A program named `toyagent`: a copy of the system's shell under that name,
+/// in this process's temporary directory.
+fn toy_agent() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("keepane-test-toy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (from, to) = if cfg!(windows) {
+        (
+            std::path::PathBuf::from(
+                std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into()),
+            ),
+            dir.join("toyagent.exe"),
+        )
+    } else {
+        // bash, not sh: macOS's sh starts bash, dash or zsh in its place, and
+        // the process would be named that.
+        (std::path::PathBuf::from("/bin/bash"), dir.join("toyagent"))
+    };
+    if !to.exists() {
+        std::fs::copy(&from, &to).unwrap();
+    }
+    to
+}
+
 /// What every server a test starts in this process must see, before it
 /// starts: no toasts, no update check, the sessions directory a temporary
 /// one (never the real one, which a server writes to as it starts, before a
@@ -212,6 +241,12 @@ fn test_process_env() {
         unsafe { std::env::set_var("KEEPANE_SESSIONS_DIR", fallback) };
         // The replay helper is keepane.exe; this test binary is not it.
         unsafe { std::env::set_var("KEEPANE_EXE", env!("CARGO_BIN_EXE_keepane")) };
+        // Agent definitions: the test's own (`toy`), never the developer's
+        // ~/.keepane/agents. Every server here reads the same directory.
+        let agents = std::env::temp_dir().join(format!("keepane-test-agents-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&agents);
+        let _ = std::fs::write(agents.join("toy.toml"), TOY_AGENT);
+        unsafe { std::env::set_var("KEEPANE_AGENTS_DIR", agents) };
         keep_history_out();
         // `PROMPT_SHELL`'s prompt, and none of the user's start-up file.
         #[cfg(unix)]
@@ -12742,6 +12777,57 @@ async fn queued_messages_go_with_the_pane_between_a_person_and_an_agent() {
         assert!(log.contains(&want), "{want} not in the event log:\n{log}");
     }
     assert!(!log.contains(&format!(r#""ev":"via","id":{shell},"#)), "the shell's stayed:\n{log}");
+    h.cli(&["kill-server"]).await;
+}
+
+/// An agent keepane has no code for, from a definition file (`toy`): its
+/// process is known by name, its hooks' `pane-busy` keeps a message out
+/// until its `pane-ready`, its screen's words make it wait for you, and
+/// `agent-defs` lists the definitions (docs/design/agent-defs.md).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_from_a_definition_file_is_known_busy_free_and_waiting() {
+    let h = Harness::start("agent-def").await;
+    h.cli(&["new", "-d", "-s", "d"]).await;
+    let p = pane_id(&h, "d:0.0").await;
+    let t = format!("%{p}");
+    // Named: a pane's waits are told (`done-panes named`).
+    h.cli(&["rename-pane", "-t", &t, "toyp"]).await;
+    let (_, defs, _) = h.cli(&["agent-defs"]).await;
+    assert!(defs.lines().any(|l| l.starts_with("toy ") && l.contains("toyagent") && l.ends_with("toy.toml")), "{defs}");
+    assert!(defs.lines().any(|l| l.starts_with("codewhale ")), "the shipped one: {defs}");
+    // Started in the pane: known by its program's name.
+    let toy = toy_agent();
+    h.cli(&["send-keys", "-t", &t, &toy.display().to_string(), "Enter"]).await;
+    h.wait_for_cli("the toy agent seen", &["list-agents"], |_, out| out.contains(&format!("%{p} d:0.0 toy "))).await;
+    h.cli(&["set-work-mode", "-t", &t, "ai"]).await;
+    // Its screen says it asks: a wait, told. (First: a pane's notices come
+    // a few seconds apart at the closest, and its turn's end below is one.)
+    h.cli(&["send-keys", "-t", &t, "echo toy asks now", "Enter"]).await;
+    h.wait_for_cli("the screen's wait told", &["list-done"], |_, out| {
+        out.lines().any(|l| l.contains("toyp") && l.contains("waits for you") && l.to_lowercase().contains("toy asks"))
+    })
+    .await;
+    // Its hooks: free, then busy (a turn of its own), a message waits, free
+    // again and the message goes in.
+    assert_eq!(h.cli_in(Some(p), &["pane-ready", "-q", "--agent", "toy"]).await.0, 0);
+    assert_eq!(ask_pane(&h, p, "#{pane_state}").await, "idle");
+    assert_eq!(h.cli_in(Some(p), &["pane-busy", "-q", "--agent", "toy"]).await.0, 0);
+    assert_eq!(ask_pane(&h, p, "#{pane_state}").await, "busy");
+    let (_, sent, _) = h.cli(&["send-message", "-t", &t, "hello toy"]).await;
+    assert!(sent.contains("queued") && sent.contains("busy"), "{sent}");
+    let id = msg_id(&sent);
+    assert_eq!(h.cli_in(Some(p), &["pane-ready", "-q", "--agent", "toy"]).await.0, 0);
+    let (_, trace, _) = h.cli(&["trace-message", &id]).await;
+    assert!(trace.starts_with(&format!("#{id} delivered")), "{trace}");
+    // Outside a pane, -q says nothing; without, it says why.
+    assert_eq!(h.cli(&["pane-busy", "-q"]).await.0, 0);
+    let (code, _, err) = h.cli(&["pane-busy"]).await;
+    assert!(code != 0 && err.contains("not run inside"), "{err}");
+    keepane::histlog::flush(Duration::from_secs(5));
+    let dir = keepane::histlog::events_dir().join(keepane::histlog::safe_name(&h.socket));
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let log = std::fs::read_to_string(dir.join(format!("{day}.jsonl"))).unwrap_or_default();
+    assert!(log.contains(r#""what":"busy","by":"hook""#), "the hook's busy in the event log:\n{log}");
     h.cli(&["kill-server"]).await;
 }
 

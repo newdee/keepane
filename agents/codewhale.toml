@@ -1,0 +1,72 @@
+# CodeWhale (https://github.com/codewhale-hq/CodeWhale), checked against its
+# README, docs/HOOKS.md, docs/MCP.md and docs/CONFIGURATION.md and against
+# codewhale 0.10.4 itself (2026-11-25). Contributed by robotcc in PR #1, as
+# code; kept as this file (docs/design/agent-defs.md).
+name = "codewhale"
+title = "CodeWhale"
+format = 1
+resume = "codewhale resume {id}"
+
+[detect]
+# `codew` is its short alias: the same program under another name.
+programs = ["codewhale", "codew"]
+command_line = ["codewhale"]
+
+[events]
+ready = ["session_start", "session_idle"]
+busy = ["session_busy"]
+wait = ["waiting_for_user"]
+step_start = ["tool_call_before"]
+step_end = ["tool_call_after"]
+
+[hook_input]
+# Every hook has DEEPSEEK_* in its environment (the names from its days as
+# deepseek-tui); only some get JSON on standard input.
+session = "env:DEEPSEEK_SESSION_ID"
+model = "env:DEEPSEEK_MODEL"
+tool = "env:DEEPSEEK_TOOL_NAME"
+
+[setup]
+dir = "~/.codewhale"
+dir_env = "CODEWHALE_HOME"
+
+# Its hooks: a [hooks] table switched on, and an entry per event. A TOML
+# file holds [hooks] once, so the header goes in only when it is not there.
+[[setup.files]]
+path = "config.toml"
+how = "append"
+mark = "keepane pane-ready"
+off_when = ["enabled = false"]
+head_mark = "[hooks]"
+head = '''
+[hooks]
+enabled = true
+'''
+text = '''
+[[hooks.hooks]]
+name = "keepane-ready"
+event = "session_start"
+command = "{ready}"
+
+[[hooks.hooks]]
+name = "keepane-ready"
+event = "session_idle"
+command = "{ready}"
+
+[[hooks.hooks]]
+name = "keepane-busy"
+event = "session_busy"
+command = "{busy}"
+
+[[hooks.hooks]]
+name = "keepane-wait"
+event = "waiting_for_user"
+command = "{wait}"
+'''
+
+# Its MCP servers: `servers` or `mcpServers`, never both (it fails to parse).
+[[setup.files]]
+path = "mcp.json"
+how = "json-merge"
+at = ["/servers/keepane", "/mcpServers/keepane"]
+value = { command = "keepane", args = ["mcp"] }

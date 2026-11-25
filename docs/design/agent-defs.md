@@ -1,6 +1,6 @@
 # agent 定义文件：不改代码也能接入新的 agent（设计稿）
 
-状态：设计稿，未实现。2026-11-25，robotcc 提交 PR #1，用代码加入 codewhale。讨论这个 PR 时，用户问能不能"让用户自己写插件或者配置，来兼容不同的 agent hook"。讨论之后用户说："改吧，先写设计文档"。
+状态：第 1 步已实现（0.91.0，验收第 228 条），插件目录带 `agent.toml` 这一来源留到之后；第 2 步起未实现。2026-11-25，robotcc 提交 PR #1，用代码加入 codewhale。讨论这个 PR 时，用户问能不能"让用户自己写插件或者配置，来兼容不同的 agent hook"。讨论之后用户说："改吧，先写设计文档"。
 
 ## 1. 目标与非目标
 
@@ -38,8 +38,8 @@
 1. 一种定义文件，格式是 TOML，一个 agent 一个文件。
 2. 定义从 3 个地方来，后面的不能覆盖前面的：
    1. 内置：仓库里的 `agents/*.toml`，编译进 keepane（`include_str!`）。贡献者加 agent 就是往这里交一个文件，经过审查后随版本发出。
-   2. 用户自己的：`~/.keepane/agents/*.toml`（Windows 是 `%USERPROFILE%\.keepane\agents`，和 `~/.keepane/plugins` 放在一起）。
-   3. 插件带的：插件目录里的 `agent.toml`，随 `set -g @plugin` 加载。
+   2. 用户自己的：`~/.keepane/agents/*.toml`（Windows 是 `%USERPROFILE%\.keepane\agents`，和 `~/.keepane/plugins` 放在一起；`KEEPANE_AGENTS_DIR` 可以改，测试用它指向自己的定义）。
+   3. 插件带的：插件目录里的 `agent.toml`，随 `set -g @plugin` 加载（第 1 步没有做，之后再加）。
 3. agent 的 hook 调用 keepane 的 4 条命令。3 条已有、1 条新增：
 
    | 命令 | 意思 | 何时调用 |
@@ -53,16 +53,17 @@
 
 ## 4. 定义文件
 
-codewhale 的例子（事件名和格式来自 CodeWhale 的 `docs/HOOKS.md`；标了"待核"的来自 PR #1，官方文档里没有）：
+codewhale 的例子（事件名、格式、环境变量、`resume`、`codew` 别名、`mcp.json` 的键都按 CodeWhale 官方的 `README.md`、`docs/HOOKS.md`、`docs/MCP.md`、`docs/CONFIGURATION.md` 核过，2026-11-25，codewhale 0.10.4）：
 
 ```toml
 # agents/codewhale.toml
 name = "codewhale"              # the word for `keepane setup codewhale`
 title = "CodeWhale"             # shown in `keepane setup` and the board
 format = 1                      # this file's format version
+resume = "codewhale resume {id}"   # top-level keys go before the first [table]
 
 [detect]
-programs = ["codewhale", "codew"]   # process names, any case, .exe/.cmd dropped ("codew": to be checked)
+programs = ["codewhale", "codew"]   # process names, any case, .exe/.cmd dropped; codew is its short alias
 command_line = ["codewhale"]        # when the process is node, bun, deno or cmd
 
 [events]                        # the agent's event names, for each keepane command
@@ -73,29 +74,29 @@ step_start = ["tool_call_before"]   # step 2
 step_end = ["tool_call_after"]      # step 2
 
 [hook_input]                    # where a hook's input says what; JSON pointer, or env:NAME
-session = "env:DEEPSEEK_SESSION_ID"
-model = "/model"
+session = "env:DEEPSEEK_SESSION_ID"   # every event has it; stdin JSON only on some
+model = "env:DEEPSEEK_MODEL"
 tool = "/tool_name"             # step 2
 
 [screen]                        # optional; text in the last lines, any case
 waiting = []
 working = []
 
-resume = "codewhale resume {id}"    # to be checked
-
 [setup]
 dir = "~/.codewhale"            # or the environment variable below when set
-dir_env = "CODEWHALE_CONFIG_DIR"
+dir_env = "CODEWHALE_HOME"
 
 [[setup.files]]                 # the hooks
 path = "config.toml"            # under dir
 how = "append"
 mark = "keepane pane-ready"     # there already: installed
 off_when = ["enabled = false"]  # there: say the hooks may be off
-text = '''
+head_mark = "[hooks]"           # the head goes in only when no line is this
+head = '''
 [hooks]
 enabled = true
-
+'''
+text = '''
 [[hooks.hooks]]
 name = "keepane-ready"
 event = "session_start"
@@ -120,7 +121,7 @@ command = "{wait}"
 [[setup.files]]                 # the MCP server
 path = "mcp.json"
 how = "json-merge"
-at = "/servers/keepane"         # to be checked
+at = ["/servers/keepane", "/mcpServers/keepane"]   # whichever the file has (both: it fails to parse)
 value = { command = "keepane", args = ["mcp"] }
 ```
 
@@ -128,11 +129,11 @@ value = { command = "keepane", args = ["mcp"] }
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `name` | 是 | 字母、数字、`-`。`keepane setup` 用的词，也是 `pane-*` 命令 `--agent` 的值 |
+| `name` | 是 | 小写字母开头，只用小写字母、数字、`-`，最多 32 个字符。`keepane setup` 用的词，也是 `pane-*` 命令 `--agent` 的值 |
 | `title` | 否 | 显示用的名字，默认同 `name` |
 | `format` | 是 | 定义文件格式的版本，现在是 1。keepane 不认识的版本：跳过这个文件，并说明原因 |
-| `detect.programs` | 是 | 进程名。比较时不分大小写，去掉路径和 `.exe`/`.cmd`/`.bat` |
-| `detect.command_line` | 否 | 进程是 `node`、`bun`、`deno`、`cmd` 时，命令行里包含其中一段就算 |
+| `detect.programs` | 是 | 进程名。比较时不分大小写，去掉路径和 `.exe`/`.cmd`/`.bat`。不能是启动器（node、bun、deno、cmd、python）、shell（pwsh、bash、zsh、fish、sh、wsl……）或 keepane 有代码支持的 agent 的程序：否则所有这类进程都会被认成它（一个 PowerShell pane 会被当成 agent，`create-pane` 默认给它 `ai` 模式） |
+| `detect.command_line` | 否 | 进程是 `node`、`bun`、`deno`、`cmd` 时，命令行里包含其中一段就算；每段至少 3 个字符 |
 | `events.*` | 至少 `ready` | 这家的事件名。安装文本里的 `{ready}` 等换成对应的命令 |
 | `hook_input.*` | 否 | 取值的位置：`/a/b` 是 hook 标准输入 JSON 里的路径，`env:NAME` 是 hook 的环境变量。没写的项照现在的规则猜（`session_id` 等） |
 | `screen.waiting` / `screen.working` | 否 | 屏幕最后几行里的文字片段，不分大小写（和现在 Codex、Cursor 的规则同一种判断，不用正则） |
@@ -146,8 +147,8 @@ value = { command = "keepane", args = ["mcp"] }
 
 | `how` | 做什么 | 判断装过没有 |
 |---|---|---|
-| `append` | 文件末尾追加 `text`；文件没有就新建 | 文件里已有 `mark` |
-| `json-merge` | 在 JSON 的 `at` 位置放 `value`；中间缺的对象补上；其他内容和顺序不动 | `at` 位置已有值 |
+| `append` | 文件末尾追加 `text`；文件没有就新建。有 `head` 时，文件里没有一行等于 `head_mark`，就先追加 `head`（TOML 的 `[hooks]` 这种表头在一个文件里只能出现一次，重复会让 agent 读不了配置） | 文件里已有 `mark` |
+| `json-merge` | 在 JSON 的 `at` 位置放 `value`；中间缺的对象补上；其他内容和顺序不动。`at` 可以是一个列表：用第一个"上一层对象已经存在"的位置，都不存在就用第一个（codewhale 的 `mcp.json` 用 `servers` 或 `mcpServers`，两个都有会解析失败） | 列表里任一位置已有值 |
 | `own-file` | 整个文件写成 `text`（opencode 的插件、pi 的扩展属于这种） | 文件已存在且含 `mark` |
 
 规则沿用现在的 `setup`：
@@ -166,13 +167,13 @@ value = { command = "keepane", args = ["mcp"] }
 定义文件装的每条 hook 都带 `--agent NAME`。客户端（hook 运行的那个 `keepane` 进程）按这个名字找到定义，再按 `hook_input` 从标准输入或环境变量里取会话、模型、工具名，交给 server。
 
 - 取值的限制沿用 `hook_said`：去掉首尾空白，超过 4096 字节、含控制字符的不取。
-- 标准输入最多读 64 KB；`pane-ready`、`pane-busy` 最多等 1 秒，`pane-wait` 最多等 2 秒（同现在）。
+- 标准输入最多读 64 KB；`pane-ready` 最多等 1 秒，`pane-wait` 最多等 2 秒（同现在）。`pane-busy` 不读：它只说"开始干活了"。
 - 不带 `--agent` 的（内置 agent 现在装的 hook）照现在的规则取，行为不变。
 - `--agent` 的名字找不到定义：照现在的规则取，不报错（hook 失败会打扰 agent）。
 
 ### 5.2 `pane-busy -q`（新命令）
 
-- 在 `ai` 模式的 pane 里：pane 记为忙（`Actor::turn_began`，和会话记录说"一轮开始了"的效果相同），事件日志记一条 `busy`。
+- 在 `ai` 模式的 pane 里：pane 记为忙（`Actor::turn_began`，和会话记录说"一轮开始了"的效果相同）；从空闲变忙时，事件日志记一条 `busy`（`"by":"hook"`）。
 - 其他模式：忽略，和 `pane-ready` 一样。
 - `-q`：不在 keepane 的 pane 里运行时，什么也不说、成功退出。
 - 收到 `pane-busy` 也说明这个 agent 装了 hook：pane 不再算"没听到过"（`unheard`）。
@@ -187,7 +188,7 @@ value = { command = "keepane", args = ["mcp"] }
 ## 6. 认出 agent 与屏幕规则
 
 - 认出：watcher 现在每秒看一次每个 pane 的进程树，用 `Kind::of` 判断。改成先查内置的 4 家，再查定义文件里的 `detect`。认出后：
-  - pane 的 agent 栏、C-b v、手机页显示 `title`。
+  - pane 的 agent 栏、C-b v、`list-agents` 显示它的 `name`（和内置 agent 显示 `claude` 这类词一样）；`title` 用在 `keepane setup` 里。
   - `create-pane` 启动它时，默认进入 `ai` 模式。
   - `unheard` 的提示（"装 hook：`keepane setup codewhale --install`"）和按 agent 种类统计的地方（C-b v 的 agent 栏、时钟）都算它。
 - `agent-commands`（agent 能启动哪些程序）不自动加入定义里的程序。它是安全设置，由用户自己改。
@@ -233,8 +234,8 @@ value = { command = "keepane", args = ["mcp"] }
 
 ### 10.1 加载与错误
 
-- server 启动时加载；新命令 `agent-defs` 列出所有定义（内置、用户的、插件的）和加载错误；`agent-defs -r` 重新加载。（现有的 `list-agents` 列的是正在运行的 agent，这个名字已被占用。）
-- 一个文件出错只跳过这一个，其他照常；错误写进日志和 `show-messages`，`keepane setup` 也会列出。
+- 第一次用到时加载（server 里是第一次认进程时，`keepane setup` 每次运行都读）；新命令 `agent-defs` 列出 server 手里的定义（内置的、用户的）和加载错误；`agent-defs -r` 重新加载。（现有的 `list-agents` 列的是正在运行的 agent，这个名字已被占用。）
+- 一个文件出错只跳过这一个，其他照常；错误由 `agent-defs` 和 `keepane setup` 列出（每条带文件名和原因）。
 - 名字和内置的重复：跳过用户的，说明原因（第 1 步不允许覆盖内置的，避免装错 hook）。
 - 文件大小上限 64 KB，`programs`、事件名、文字片段各最多 32 项、每项最多 200 字节。
 
@@ -256,7 +257,7 @@ value = { command = "keepane", args = ["mcp"] }
 
 ## 12. 待定的问题
 
-1. codewhale 例子里标了"待核"的 3 项（`codew` 这个别名、`codewhale resume {id}`、`mcp.json` 用 `servers` 这个键），以及它的 hook 是否通过标准输入传 JSON：要作者给出处，或者装上真的 codewhale 核对。
+1. codewhale 的格式已按官方文档核过（`codew` 是官方别名，两个程序逐字节相同；`codewhale resume <id>`；`mcp.json` 的 `servers`/`mcpServers`；配置目录 `CODEWHALE_HOME`，不是 PR #1 用的 `CODEWHALE_CONFIG_DIR`；会话在 `sessions/<id>/` 目录里，不是 PR #1 读的 `sessions/<id>.json`）。hook 的值：每个事件都有 `DEEPSEEK_*` 环境变量，`session_idle`、`waiting_for_user`、`session_busy` 等另有标准输入的 JSON，`session_start` 没有。实际传了什么，用 0.10.4 实测确认（记录每个事件的环境变量和标准输入）。
 2. `restore-agents` 的默认值：本稿用 `on`。
 3. 用户定义的 agent 能不能覆盖内置的：本稿第 1 步不允许，第 4 步再定。
 

@@ -427,7 +427,7 @@ impl Steps {
             super::agents::Kind::Claude => self.claude(&v, t),
             super::agents::Kind::Codex => self.codex(&v, t),
             super::agents::Kind::Pi => self.pi(&v, t),
-            super::agents::Kind::Cursor => {}
+            super::agents::Kind::Cursor | super::agents::Kind::Defined(_) => {}
         }
     }
 

@@ -515,6 +515,16 @@ pub enum Cmd {
         target: Option<Target>,
         said: HookSaid,
     },
+    /// `pane-busy [-q]`: the agent in the calling pane began a turn of its
+    /// own (its hook, docs/design/agent-defs.md): no message goes in now.
+    PaneBusy {
+        quiet: bool,
+    },
+    /// `agent-defs [-r]`: the agent definitions the server has, and the
+    /// files it skipped; `-r` reads them again first.
+    AgentDefs {
+        reload: bool,
+    },
     /// `pane-wait [-q] [-t pane] [text]`: the program in the pane (an
     /// agent, through its hook) waits for the person: a permission, a
     /// question. Told as `done-events` `wait`.
@@ -1546,6 +1556,8 @@ impl fmt::Display for Cmd {
                 }
                 Ok(())
             }
+            Cmd::PaneBusy { quiet } => f.write_str(if *quiet { "pane-busy -q" } else { "pane-busy" }),
+            Cmd::AgentDefs { reload } => f.write_str(if *reload { "agent-defs -r" } else { "agent-defs" }),
             Cmd::PaneWait { quiet, target, text } => {
                 f.write_str("pane-wait")?;
                 if *quiet {
@@ -3125,6 +3137,8 @@ pub const COMMANDS: &[&str] = &[
     "drop-message",
     "move-message",
     "pane-ready",
+    "pane-busy",
+    "agent-defs",
     "pane-wait",
     "pane-status",
     "set-work-mode",
@@ -3287,8 +3301,10 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("trace-message", &["-w", "-J"]),
     ("drop-message", &["-u"]),
     ("move-message", &[]),
-    ("pane-ready", &["-q", "-t", "--session", "--transcript", "--model", "--status"]),
-    ("pane-wait", &["-q", "-t"]),
+    ("pane-ready", &["-q", "-t", "--session", "--transcript", "--model", "--status", "--agent"]),
+    ("pane-busy", &["-q", "--agent"]),
+    ("agent-defs", &["-r"]),
+    ("pane-wait", &["-q", "-t", "--agent"]),
     ("pane-status", &[]),
     ("set-work-mode", &["-t"]),
     ("rename-pane", &["-t"]),
@@ -4030,6 +4046,9 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                     "--transcript" => said.transcript = Some(a.value("--transcript")?.to_string()),
                     "--model" => said.model = Some(a.value("--model")?.to_string()),
                     "--status" => said.status = Some(a.value("--status")?.to_string()),
+                    // Which definition reads the hook's input: the client's
+                    // business (setup::pane_ready_args), nothing for here.
+                    "--agent" => drop(a.value("--agent")?),
                     f => return Err(bad_flag(n, f)),
                 }
             }
@@ -4041,12 +4060,36 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             Cmd::PaneReady { quiet, target, said }
         }
+        "pane-busy" => {
+            let mut quiet = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-q" => quiet = true,
+                    "--agent" => drop(a.value("--agent")?),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::PaneBusy { quiet }
+        }
+        "agent-defs" => {
+            let mut reload = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-r" => reload = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::AgentDefs { reload }
+        }
         "pane-wait" => {
             let (mut quiet, mut target) = (false, None);
             while a.is_flag() {
                 match a.next().unwrap() {
                     "-q" => quiet = true,
                     "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    "--agent" => drop(a.value("--agent")?),
                     f => return Err(bad_flag(n, f)),
                 }
             }

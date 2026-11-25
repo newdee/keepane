@@ -1,5 +1,6 @@
 //! keepane: persistent terminal panes, each with its own inbox (a terminal multiplexer).
 
+pub mod agentdef;
 pub mod client;
 pub mod command;
 pub mod completion;

@@ -53,12 +53,14 @@ pub(super) struct Dropped {
 /// hook it lacks, and the `setup` that adds it.
 pub(super) fn unheard_advice(pid: PaneId, program: Option<&str>) -> String {
     let agent = program.and_then(crate::setup::Agent::of_program);
-    let fix = match agent {
-        Some(crate::setup::Agent::Codex) => {
+    let defined = program.and_then(|p| crate::agentdef::current().of_process(p, || None).map(|d| d.name.clone()));
+    let fix = match (agent, defined) {
+        (Some(crate::setup::Agent::Codex), _) => {
             "keepane setup codex --install, then trust it in Codex (/hooks)".to_string()
         }
-        Some(a) => format!("keepane setup {} --install", a.word()),
-        None => "keepane setup (it shows which agents lack it)".to_string(),
+        (Some(a), _) => format!("keepane setup {} --install", a.word()),
+        (None, Some(name)) => format!("keepane setup {name} --install"),
+        (None, None) => "keepane setup (it shows which agents lack it)".to_string(),
     };
     // Claude Code's, Codex's and pi's transcripts say when a turn is over:
     // free then, the hook only sooner. The others' are not read: without
@@ -691,6 +693,22 @@ impl Server {
         Outcome::Ok
     }
 
+    /// `pane-busy`: the agent in the calling pane began a turn (its hook).
+    /// Busy until its next `pane-ready`; told in the event log when it was
+    /// free. Ignored in a pane not in `ai` mode, as `pane-ready` is.
+    pub(super) fn pane_busy(&mut self, cid: Option<ClientId>, quiet: bool) -> Outcome {
+        let Some(me) = self.caller_pane(cid) else {
+            return if quiet { Outcome::Ok } else { Outcome::Error("pane-busy: not run inside a keepane pane".into()) };
+        };
+        let Some(p) = self.find_pane_mut(me) else { return Outcome::Ok };
+        let was_free = p.actor.idle();
+        if p.actor.busy_said() && was_free {
+            let addr = self.address_of(me);
+            self.observe.pane(&addr, "busy", ",\"by\":\"hook\"");
+        }
+        Outcome::Ok
+    }
+
     /// The agent in pane `me` is free: its hook said so (`pane-ready`), or
     /// its transcript says its turn is over (`turns_seen`; `broken_off`:
     /// the person broke it off). `turn`: a turn ended (told, unless broken
@@ -1097,7 +1115,11 @@ impl Server {
             Some(m) => WorkMode::parse(m).unwrap_or_default(),
             // An agent takes prompts; a shell made for an agent takes commands.
             None => match stem.as_str() {
-                s if crate::setup::Agent::of_program(s).is_some() => WorkMode::Ai,
+                s if crate::setup::Agent::of_program(s).is_some()
+                    || crate::agentdef::current().of_process(s, || None).is_some() =>
+                {
+                    WorkMode::Ai
+                }
                 s if crate::platform::shell::takes_commands(s) => WorkMode::Shell,
                 _ => WorkMode::Normal,
             },

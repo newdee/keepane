@@ -36,6 +36,10 @@ pub enum Kind {
     /// Cursor CLI: known by its process only. Its chats are not read: no
     /// tokens, cost or trace, its CPU and memory only.
     Cursor,
+    /// An agent of a definition file (docs/design/agent-defs.md), by its
+    /// number (`agentdef::intern`): known by its process and its hooks;
+    /// no transcript is read, as for Cursor.
+    Defined(u16),
 }
 
 impl Kind {
@@ -46,42 +50,60 @@ impl Kind {
             Kind::Codex => "codex",
             Kind::Pi => "pi",
             Kind::Cursor => "cursor",
+            Kind::Defined(i) => crate::agentdef::interned(i),
         }
     }
 
     /// Whether keepane reads its transcripts: its tokens, cost, tools,
-    /// turns and trace are known. Cursor's are not; unknown, not none.
+    /// turns and trace are known. Cursor's and a defined agent's are not;
+    /// unknown, not none.
     pub fn read(self) -> bool {
-        self != Kind::Cursor
+        matches!(self, Kind::Claude | Kind::Codex | Kind::Pi)
+    }
+
+    /// Its definition, for a defined agent (as loaded now).
+    pub fn def(self) -> Option<crate::agentdef::Def> {
+        let Kind::Defined(i) = self else { return None };
+        crate::agentdef::current().get(crate::agentdef::interned(i)).cloned()
     }
 
     /// The agent a process is: by its program's name, or, for one a script
     /// runner runs (node, bun), by what its command line runs. Either path
     /// separator, on any system. Cursor CLI's new name, `agent`, is too
     /// common a word to go by alone: it runs from Cursor's own folder
-    /// (`cursor-agent`), as does the node that runs its script.
+    /// (`cursor-agent`), as does the node that runs its script. Then the
+    /// agents of definition files, by their programs and command lines.
     pub fn of(name: &str, command_line: impl FnOnce() -> Option<String>) -> Option<Kind> {
         let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
         let stem = base.strip_suffix(".exe").unwrap_or(&base);
+        let defined = |line: Option<String>| {
+            let reg = crate::agentdef::current();
+            reg.of_process(name, || line).map(|d| Kind::Defined(crate::agentdef::intern(&d.name)))
+        };
         match stem {
             "claude" => return Some(Kind::Claude),
             "codex" => return Some(Kind::Codex),
             "pi" => return Some(Kind::Pi),
             "cursor-agent" => return Some(Kind::Cursor),
-            "node" | "bun" | "deno" | "agent" => {}
-            _ => return None,
+            "node" | "bun" | "deno" | "agent" | "cmd" => {}
+            _ => return defined(None),
         }
-        let line = command_line()?.to_ascii_lowercase().replace('\\', "/");
-        if line.contains("@anthropic-ai/claude-code") || line.contains("/claude-code/") {
+        let line = command_line()?;
+        let lower = line.to_ascii_lowercase().replace('\\', "/");
+        if stem == "cmd" {
+            // Only a defined agent's shim runs through cmd.exe.
+            return defined(Some(line));
+        }
+        if lower.contains("@anthropic-ai/claude-code") || lower.contains("/claude-code/") {
             Some(Kind::Claude)
-        } else if line.contains("@openai/codex") {
+        } else if lower.contains("@openai/codex") {
             Some(Kind::Codex)
-        } else if line.contains("pi-coding-agent") {
+        } else if lower.contains("pi-coding-agent") {
             Some(Kind::Pi)
-        } else if line.contains("cursor-agent") {
+        } else if lower.contains("cursor-agent") {
             Some(Kind::Cursor)
         } else {
-            None
+            defined(Some(line))
         }
     }
 }
@@ -312,7 +334,7 @@ pub fn feed(kind: Kind, line: &str, u: &mut Usage, seen: &mut HashSet<String>) {
         Kind::Claude => claude(&v, u, seen),
         Kind::Codex => codex(&v, u),
         Kind::Pi => pi(&v, u),
-        Kind::Cursor => {}
+        Kind::Cursor | Kind::Defined(_) => {}
     }
 }
 
@@ -654,7 +676,7 @@ pub fn transcripts(
             jsonl_in(&dir.join("projects").join(claude_folder(cwd)), Some(since))
         }
         Kind::Pi => jsonl_in(&home.join(".pi").join("agent").join("sessions").join(pi_folder(cwd)), Some(since)),
-        Kind::Cursor => Vec::new(),
+        Kind::Cursor | Kind::Defined(_) => Vec::new(),
         Kind::Codex => {
             // A folder a day (local dates): the days since `since`, a week
             // at most; each session says its directory on its first line.
@@ -1115,9 +1137,9 @@ impl Watcher {
                 owner.insert(f.clone(), *id);
             }
         }
-        let mut groups: BTreeMap<(u8, String), Vec<PaneId>> = BTreeMap::new();
+        let mut groups: BTreeMap<(&'static str, String), Vec<PaneId>> = BTreeMap::new();
         for (id, t) in self.tracks.iter().filter(|(_, t)| t.bound.is_empty()) {
-            groups.entry((t.kind as u8, dir_key(&t.cwd))).or_default().push(*id);
+            groups.entry((t.kind.word(), dir_key(&t.cwd))).or_default().push(*id);
         }
         for ids in groups.values_mut() {
             ids.sort_by_key(|id| (self.tracks[id].started, *id));
@@ -2035,6 +2057,16 @@ mod tests {
         assert_eq!(Kind::of("agent", cl("agent --serve")), None, "another program called agent");
         assert_eq!(Kind::of("agent", none), None);
         assert_eq!(Kind::Cursor.word(), "cursor");
+        // An agent of a definition file (the shipped codewhale): by its
+        // programs, its .cmd shim run by cmd.exe, the node that runs it.
+        let cw = Kind::of("codew.exe", none).expect("codewhale is defined");
+        assert!(matches!(cw, Kind::Defined(_)) && cw.word() == "codewhale" && !cw.read(), "{cw:?}");
+        assert_eq!(Kind::of(r"C:\npm\codewhale.exe", none), Some(cw));
+        assert_eq!(Kind::of("cmd.exe", cl(r#"cmd.exe /c "C:\npm\codewhale.cmd""#)), Some(cw));
+        assert_eq!(Kind::of("node", cl("node /npm/node_modules/codewhale/bin/codewhale.js")), Some(cw));
+        assert_eq!(Kind::of("cmd.exe", cl("cmd.exe /c dir")), None, "another cmd");
+        assert_eq!(Kind::of("cmd.exe", none), None);
+        assert_eq!(cw.def().map(|d| d.title().to_string()).as_deref(), Some("CodeWhale"));
         // Its transcripts are not read: its counts are not known, not 0.
         let cursor = Stats { kind: Kind::Cursor, ..Stats::default() };
         assert_eq!(cursor.counts(), [String::new(), String::new(), String::new()]);

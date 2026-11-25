@@ -334,10 +334,19 @@ const DOCS: &[Doc] = &[
         ("--transcript", "path", "The agent's transcript file."),
         ("--model", "name", "The agent's model."),
         ("--status", "status", "How its turn ended (aborted)."),
+        ("--agent", "name", "The definition that reads the hook's input."),
+    ]),
+    d("pane-busy", "Say the pane's agent began a turn.", &[
+        ("-q", "", "Say nothing outside a pane."),
+        ("--agent", "name", "The definition that reads the hook's input."),
+    ]),
+    d("agent-defs", "List the agent definition files.", &[
+        ("-r", "", "Read them again first."),
     ]),
     d("pane-wait", "Say the pane waits for you.", &[
         ("-q", "", "Say nothing outside a pane."),
         ("-t", "pane", "The pane."),
+        ("--agent", "name", "The definition that reads the hook's input."),
     ]),
     d("pane-status", "Set the pane's status text.", &[]),
     d("set-work-mode", "Set a pane's work mode.", &[
@@ -880,7 +889,9 @@ fn command(typed: &str, d: &Doc, hidden: bool) -> Value {
         c["arguments"] = json!([{ "name": name, "acceptedValues": accepted }]);
     }
     if d.name == "setup" {
-        let agents: Vec<&str> = crate::setup::AGENTS.iter().map(|a| a.word()).collect();
+        // keepane's agents and the shipped definitions, not this machine's
+        // own: the list is the same wherever it is made.
+        let agents = crate::setup::agent_words(&crate::agentdef::Registry::load(&[]));
         c["arguments"] =
             json!([{ "name": "agent", "acceptedValues": agents, "arity": { "minimum": 0, "maximum": 1 } }]);
     }
@@ -1127,6 +1138,11 @@ mod tests {
         assert_eq!(
             find(commands, "completion")["arguments"][0]["acceptedValues"],
             json!(["bash", "fish", "powershell", "zsh"])
+        );
+        // `setup`'s agents: keepane's and the shipped definitions.
+        assert_eq!(
+            find(commands, "setup")["arguments"][0]["acceptedValues"],
+            json!(["claude", "codex", "gemini", "cursor", "opencode", "pi", "codewhale"])
         );
         let chat = find(commands, "chat");
         let say = find(chat["commands"].as_array().unwrap(), "say");

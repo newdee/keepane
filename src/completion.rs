@@ -117,7 +117,7 @@ pub fn complete(
         } else if canon == "feishu" && rest.len() == 1 && !current.starts_with('-') {
             owned(&["allow", "remove", "status"])
         } else if canon == "setup" && rest.len() == 1 && !current.starts_with('-') {
-            owned(&crate::setup::AGENTS.map(crate::setup::Agent::word))
+            crate::setup::agent_words(&crate::agentdef::current())
         } else if (canon == "set-option" || canon == "show-options") && prev != "-t" && !current.starts_with('-') {
             // The option's name, then its value when it is one of a few;
             // flags are skipped, and so is the word after -t.
@@ -286,6 +286,12 @@ pub fn powershell() -> String {
         .join("\n");
     let option_list = quoted(crate::config::KNOWN);
     let shells = quoted(SHELLS);
+    // keepane's agents and the defined ones: the list setup takes.
+    let setup_words = crate::setup::agent_words(&crate::agentdef::current())
+        .iter()
+        .map(|w| format!("'{w}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let value_table = crate::config::KNOWN
         .iter()
         .filter(|o| !crate::config::option_values(o).is_empty())
@@ -355,7 +361,7 @@ Register-ArgumentCompleter -Native -CommandName keepane,tmux -ScriptBlock {{
   }} elseif ($canon -eq 'feishu' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
     $out = @('allow', 'remove', 'status')
   }} elseif ($canon -eq 'setup' -and $rest.Count -eq 1 -and $wordToComplete -notlike '-*') {{
-    $out = @('claude', 'codex', 'cursor', 'gemini', 'opencode')
+    $out = @({setup_words})
   }} elseif ($canon -in @('set-option','show-options') -and $prev -ne '-t' -and $wordToComplete -notlike '-*') {{
     # After set / show: the option's name, then its value when it is one
     # of a few. Flags are skipped, and so is the word after -t.
@@ -473,7 +479,13 @@ mod tests {
         assert!(offer(&["web", "status"], "").is_empty());
         assert_eq!(offer(&["web"], "--r"), ["--read-only"]);
         assert_eq!(offer(&["link"], "a"), ["add", "allow", "attach"]);
-        assert_eq!(offer(&["setup"], "c"), ["claude", "codex", "cursor"]);
+        // keepane's agents, then the defined ones (the shipped codewhale);
+        // PowerShell's script offers the same list (it once lacked pi).
+        assert_eq!(offer(&["setup"], "c"), ["claude", "codex", "cursor", "codewhale"]);
+        assert!(offer(&["setup"], "").contains(&"pi".to_string()));
+        let words = crate::setup::agent_words(&crate::agentdef::current());
+        let quoted = words.iter().map(|w| format!("'{w}'")).collect::<Vec<_>>().join(", ");
+        assert!(powershell().contains(&format!("$out = @({quoted})")), "PowerShell's setup words: {quoted}");
         assert_eq!(offer(&["setup", "codex"], "--"), ["--install"]);
         assert_eq!(offer(&["link", "allow", "10.0.0.1:7681"], "--f"), ["--full"]);
         assert_eq!(offer(&["link"], "s"), ["send-agents", "share", "start"]);

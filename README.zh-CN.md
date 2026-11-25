@@ -610,12 +610,19 @@ pane 里的 agent 收发的是和别人一样的消息。要让它顺畅，需�
 | Cursor CLI | `cursor` | `~/.cursor/hooks.json` 里的 `sessionStart`、`stop` | 没有 | `~/.cursor/mcp.json` |
 | opencode | `opencode` | 一个插件 `~/.config/opencode/plugins/keepane.js`，启动时和 `session.idle` 时运行 | 没有 | `opencode.json` 的 `mcp` |
 | pi | `pi` | 一个扩展 `~/.pi/agent/extensions/keepane.ts`，在 `session_start` 和 `agent_end` 时运行 | 没有 | 没有（pi 不接 MCP 服务端；它在自己的 shell 里用 `keepane` 发消息） |
+| CodeWhale（定义文件，见下文） | `codewhale` | 追加到 `~/.codewhale/config.toml`：`session_start`、`session_idle`；`session_busy` 运行 `pane-busy` | `waiting_for_user` | `~/.codewhale/mcp.json` 的 `servers`（或 `mcpServers`） |
 
 hook 运行的都是 `keepane pane-ready -q`：在 keepane 之外什么也不做，在不是 `ai` 模式的 pane 里被忽略。Cursor 的 stop hook 说回合是被人打断的（`status` 为 `aborted`）时，它正在处理的消息记为没做完，和 Codex 会话记录里说的一样。它读 hook 在标准输入上给的内容（最多 1 秒，手工运行时什么都不读）：会话、会话记录的路径、模型。这份会话记录就算这个 pane 的 agent 的，放在哪里都读（比如几周前的 Codex 会话被续上），同一目录里别的文件不会被算进来（比如别的程序的会话）；模型从一开始就显示，不用等会话记录写出来。没有 hook 时照旧去猜：这个目录里最后启动的那个同类 agent。
 
 Codex 和 Cursor 问你问题时，会话记录里一个字也不写，所以 keepane 按 herdr 的规则读它们的屏幕：Codex 的标题出现 "Action Required"，或最后几行出现 "press enter to confirm or esc to cancel"、"enter to submit answer"、"allow command?"；Cursor 的 "waiting for approval"、"run this command?"。这和等待 hook 报的等待一样（Trace、时钟、`done-events`），屏幕不再显示时结束。Cursor 最后几行出现 "ctrl+c to stop" 表示它在干活，这行消失 2 秒后 pane 回到空闲，不需要 hook；但最后一次看到它在干活之后有人按了键或送进了消息，就不算（那是 stop hook 已经结束的回合，下一个还没画出来）。设计稿：[docs/design/agent-accuracy.md](docs/design/agent-accuracy.md)。
 
-等待 hook 在 agent 问你问题时运行 `keepane pane-wait -q`：要权限，或者提了一个问题（Claude Code 在问题等了约 6 秒没人回答时才触发）。它按 `done-events` 的 `wait` 通知你（见下文）。0.52.0 之前装过的，再运行一次 `setup <agent> --install`，它只补缺的。Codex 的 `notify` 只能填一个程序，keepane 不碰它；Codex 的新 hook 要你在 Codex 里用 `/hooks` 确认信任一次才会运行。不是纯 JSON 的文件（比如带注释）不会被改，`setup` 会告诉你手工加什么。这些都按各家的文档写，端到端实测过的只有 Claude Code。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 agent 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。别的 agent 只要能在每轮结束时运行一条命令、能用 stdio 上的 MCP 服务端，也一样能接；启动它之前在它的 pane 里运行 `keepane set-work-mode ai`。
+等待 hook 在 agent 问你问题时运行 `keepane pane-wait -q`：要权限，或者提了一个问题（Claude Code 在问题等了约 6 秒没人回答时才触发）。它按 `done-events` 的 `wait` 通知你（见下文）。0.52.0 之前装过的，再运行一次 `setup <agent> --install`，它只补缺的。Codex 的 `notify` 只能填一个程序，keepane 不碰它；Codex 的新 hook 要你在 Codex 里用 `/hooks` 确认信任一次才会运行。不是纯 JSON 的文件（比如带注释）不会被改，`setup` 会告诉你手工加什么。这些都按各家的文档写，端到端实测过的只有 Claude Code。自己手写 hook 时，程序路径不要加引号（或者写成 `& "C:\路径\keepane.exe" pane-ready -q`）：Windows 上 agent 可能用 PowerShell 执行 hook，在 PowerShell 里"带引号的路径后面跟参数"是语法错误。别的 agent 只要能在每轮结束时运行一条命令、能用 stdio 上的 MCP 服务端，也一样能接；启动它之前在它的 pane 里运行 `keepane set-work-mode ai`，或者给它写一个定义文件（见下文）。
+
+#### keepane 没有代码支持的 agent
+
+有 hook 的 agent（能在自己的事件发生时运行命令）不用改 keepane：写一个定义文件，说明怎么认出它的进程、它的哪些事件表示空闲、忙、在等你、hook 的输入里哪里是会话和模型、`keepane setup` 往哪写什么、它的屏幕上会出现哪些文字、怎么接着原来的对话。keepane 自带 CodeWhale 的定义（仓库里的 `agents/codewhale.toml`，所以 `keepane setup codewhale` 能直接用）；你自己写的放在 `~/.keepane/agents/*.toml`（或 `KEEPANE_AGENTS_DIR` 指定的目录）。`keepane agent-defs` 列出所有定义，以及被跳过的文件和原因；改了文件后用 `agent-defs -r` 重新读（`keepane setup` 每次都会读）。定义文件不能占用 keepane 有代码支持的 agent 的名字，也不能和已有的定义重名。格式见 [docs/design/agent-defs.md](docs/design/agent-defs.md)，里面以 CodeWhale 的文件为例。
+
+它装的 hook 在每轮结束时运行 `keepane pane-ready -q --agent 名字`，每轮开始时运行 `keepane pane-busy -q --agent 名字`，问你问题时运行 `keepane pane-wait -q --agent 名字`；`--agent` 指定用哪个文件来读 hook 的输入。`pane-busy` 是给 agent 自己开始的一轮用的（定时任务、自动续跑）：这时没人按键，也没有消息送进去，没有它，keepane 会把 pane 当成空闲，可能在它干活中途贴进一条消息。定义的 agent 不读会话记录：它的 token、花费和 Trace 未知，和 Cursor 一样。
 
 Codex（0.160 起）和 pi（1.0 起）默认在备用屏幕里画界面，和 vim 一样：它们输出的内容不会进滚动历史，在 keepane、tmux 或任何终端里都一样，所以往上翻不到历史。滚轮（以及手机上的滑动）仍然能翻，翻的是它们自己的界面。想让历史留在 pane 里，就让它们用内联模式：Codex 在 `~/.codex/config.toml` 的 `[tui]` 下写 `alternate_screen = "never"`（或者用 `codex --no-alt-screen` 启动）；pi 在 `~/.pi/agent/settings.json` 里写 `"tuiMode": "regular"`。
 

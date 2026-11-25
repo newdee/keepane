@@ -4365,6 +4365,11 @@ impl Server {
             | Cmd::ListEvents { .. }
             | Cmd::CreatePane(_)) => self.exec_mail(c, cid),
             Cmd::PaneWait { quiet, target, text } => self.pane_wait(cid, quiet, target.as_ref(), &text),
+            Cmd::PaneBusy { quiet } => self.pane_busy(cid, quiet),
+            Cmd::AgentDefs { reload } => {
+                let reg = if reload { crate::agentdef::reload() } else { crate::agentdef::current() };
+                Outcome::Text(crate::agentdef::listing(&reg))
+            }
             Cmd::NewSession { name, window_name, cwd, detached, argv, attach_existing, size } => {
                 let client = cid.and_then(|c| self.clients.get(&c));
                 let interactive = client.is_some_and(|c| c.interactive);

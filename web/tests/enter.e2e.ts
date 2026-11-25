@@ -32,6 +32,18 @@ test("Enter types, or runs; ^C and ⏎ always in view", async ({ app, browser, s
     return null;
   });
   await expect.poll(pinned).toBe(true);
+  // The header button shows the pane's name (the fixture's "builder") and
+  // its program once its details are in; before that it is a one-line
+  // "%4", 28 px tall, and was measured so twice (2026-11-24 and 11-25).
+  await expect
+    .poll(
+      () => browser.evaluate((id) => {
+        const bs = [...document.querySelectorAll("button")].map((b) => b.textContent!.trim());
+        return !bs.includes(id) && bs.some((t) => t.startsWith("builder"));
+      }, B()),
+      { message: "the header shows the pane's name, not its id" },
+    )
+    .toBe(true);
   const small = await browser.evaluate(() =>
     [...document.querySelectorAll<HTMLElement>("button, [role=button]")]
       .filter((e) => e.offsetParent && e.getBoundingClientRect().right > 0 && e.getBoundingClientRect().left < innerWidth)

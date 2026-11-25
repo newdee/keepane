@@ -551,6 +551,18 @@ impl Actor {
         (true, self.current.take().map(|m| (m, End::Done)))
     }
 
+    /// The agent's hook said it began a turn (`pane-busy`): busy, as when its
+    /// transcript says so; and a hook speaks for it, so it is heard from.
+    /// Only an agent's word counts. Returns whether it was taken.
+    pub fn busy_said(&mut self) -> bool {
+        if self.mode != WorkMode::Ai {
+            return false;
+        }
+        self.heard = true;
+        self.turn_began();
+        true
+    }
+
     /// The agent's transcript says it began a turn of its own while it was
     /// free (nothing typed since): it is busy.
     pub fn turn_began(&mut self) {
@@ -1204,6 +1216,30 @@ mod tests {
         a.prompt();
         a.mode = WorkMode::Shell;
         assert!(a.idle());
+    }
+
+    /// `pane-busy`: an agent's hook says it began a turn. Busy until its
+    /// next ready, and heard from; a pane not in `ai` takes no such word.
+    #[test]
+    fn an_agents_busy_hook_makes_it_busy_and_heard() {
+        let mut a = actor(WorkMode::Ai);
+        a.ready();
+        assert!(a.idle());
+        assert!(a.busy_said());
+        assert!(!a.idle() && a.state(false) == "busy");
+        let mut fresh = actor(WorkMode::Ai);
+        assert!(fresh.unheard());
+        fresh.busy_said();
+        assert!(!fresh.unheard(), "a hook spoke for it");
+        a.enqueue(msg(1, WorkMode::Ai), 10).unwrap();
+        assert_eq!(a.next_delivery(), None, "busy: nothing goes in");
+        a.ready();
+        assert_eq!(a.next_delivery().map(|m| m.id), Some(1));
+        let mut n = actor(WorkMode::Normal);
+        assert!(!n.busy_said() && n.state(false) == "-");
+        let mut sh = actor(WorkMode::Shell);
+        sh.prompt_seen();
+        assert!(!sh.busy_said() && sh.idle(), "a shell's free is its prompt's to say");
     }
 
     #[test]

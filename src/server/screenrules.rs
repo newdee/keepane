@@ -34,31 +34,47 @@ pub enum Seen {
     Nothing,
 }
 
-/// The words that mean the agent asks the person, in its last lines,
-/// lower case.
-fn asks(kind: Kind) -> &'static [&'static str] {
+/// The words that mean the agent asks the person, in its last lines, and
+/// those that mean it is at work, lower case: keepane's own for Codex and
+/// Cursor, a definition's `screen` for a defined agent.
+fn words(kind: Kind, def: Option<&crate::agentdef::Def>) -> (Vec<String>, Vec<String>) {
+    let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match kind {
-        Kind::Codex => &["press enter to confirm or esc to cancel", "enter to submit answer", "allow command?"],
-        Kind::Cursor => &["waiting for approval", "run this command?"],
-        _ => &[],
+        Kind::Codex => {
+            (own(&["press enter to confirm or esc to cancel", "enter to submit answer", "allow command?"]), vec![])
+        }
+        Kind::Cursor => (own(&["waiting for approval", "run this command?"]), own(&["ctrl+c to stop"])),
+        Kind::Defined(_) => def.map_or_else(Default::default, |d| {
+            let low = |v: &[String]| v.iter().map(|w| w.to_lowercase()).collect();
+            (low(&d.screen.waiting), low(&d.screen.working))
+        }),
+        _ => (vec![], vec![]),
     }
 }
 
 /// What `kind`'s screen says: its title and its rows, top to bottom.
 pub fn look(kind: Kind, title: &str, rows: &[String]) -> Seen {
+    look_by(kind, kind.def().as_ref(), title, rows)
+}
+
+/// `look`, with a defined agent's definition given.
+fn look_by(kind: Kind, def: Option<&crate::agentdef::Def>, title: &str, rows: &[String]) -> Seen {
     let last: Vec<&str> = rows.iter().map(|r| r.trim()).filter(|r| !r.is_empty()).collect();
     let bottom = |n: usize| &last[last.len().saturating_sub(n)..];
     if kind == Kind::Codex && title.contains("Action Required") {
         return Seen::Waiting("approve in Codex".into());
     }
-    let words = asks(kind);
+    let (asks, working) = words(kind, def);
     if let Some(line) = bottom(BOTTOM).iter().find(|l| {
         let l = l.to_lowercase();
-        words.iter().any(|w| l.contains(w))
+        asks.iter().any(|w| l.contains(w.as_str()))
     }) {
         return Seen::Waiting(line.chars().take(200).collect());
     }
-    if kind == Kind::Cursor && bottom(BUSY_BOTTOM).iter().any(|l| l.to_lowercase().contains("ctrl+c to stop")) {
+    if bottom(BUSY_BOTTOM).iter().any(|l| {
+        let l = l.to_lowercase();
+        working.iter().any(|w| l.contains(w.as_str()))
+    }) {
         return Seen::Busy;
     }
     Seen::Nothing
@@ -80,13 +96,20 @@ pub struct Watch {
 }
 
 impl Server {
-    /// Each second: the screens of the panes running Codex or Cursor.
+    /// Each second: the screens of the panes running Codex, Cursor or a
+    /// defined agent whose definition gives screen words.
     pub(super) fn screen_tick(&mut self) {
         let panes: Vec<(PaneId, Kind)> = self
             .agents
             .stats
             .iter()
-            .filter(|(_, s)| matches!(s.kind, Kind::Codex | Kind::Cursor))
+            .filter(|(_, s)| match s.kind {
+                Kind::Codex | Kind::Cursor => true,
+                Kind::Defined(_) => {
+                    s.kind.def().is_some_and(|d| !d.screen.waiting.is_empty() || !d.screen.working.is_empty())
+                }
+                _ => false,
+            })
             .map(|(id, s)| (*id, s.kind))
             .collect();
         self.screen_watch.retain(|id, _| panes.iter().any(|(p, _)| p == id));
@@ -195,5 +218,26 @@ mod tests {
         assert_eq!(look(Kind::Cursor, "", &rows(&["› type a message"])), Seen::Nothing);
         // Only these two agents.
         assert_eq!(look(Kind::Claude, "Action Required", &rows(&["Run this command?"])), Seen::Nothing);
+    }
+
+    /// A defined agent's screen words, any case: waiting in the last lines,
+    /// at work in the last few; none given, nothing read.
+    #[test]
+    fn a_defined_agent_waits_or_works_by_its_definitions_words() {
+        let def = crate::agentdef::parse(
+            "name = \"toy\"\nformat = 1\n[detect]\nprograms = [\"toy\"]\n[events]\nready = [\"idle\"]\n\
+             [screen]\nwaiting = [\"Approve This?\"]\nworking = [\"esc to stop\"]\n",
+            "t",
+        )
+        .unwrap();
+        let toy = Kind::Defined(crate::agentdef::intern("toy"));
+        let seen = |r: &[&str]| look_by(toy, Some(&def), "", &rows(r));
+        assert_eq!(seen(&["rm -rf build", "approve this? [y/n]"]), Seen::Waiting("approve this? [y/n]".into()));
+        assert_eq!(seen(&["thinking…", "ESC TO STOP"]), Seen::Busy);
+        assert_eq!(seen(&["> "]), Seen::Nothing);
+        let mut far = rows(&["esc to stop"]);
+        far.extend((0..BUSY_BOTTOM).map(|i| format!("line {i}")));
+        assert_eq!(look_by(toy, Some(&def), "", &far), Seen::Nothing, "at work only in the last few");
+        assert_eq!(look_by(toy, None, "", &rows(&["approve this?"])), Seen::Nothing, "no definition: nothing");
     }
 }

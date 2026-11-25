@@ -1333,6 +1333,7 @@ each file backed up first and only keepane's entries added:
 | Cursor CLI | `cursor` | `sessionStart`, `stop` in `~/.cursor/hooks.json` | none | `~/.cursor/mcp.json` |
 | opencode | `opencode` | a plugin, `~/.config/opencode/plugins/keepane.js`, on start and `session.idle` | none | `mcp` in `opencode.json` |
 | pi | `pi` | an extension, `~/.pi/agent/extensions/keepane.ts`, on `session_start` and `agent_end` | none | none (pi takes no MCP server; it sends with `keepane` in its shell) |
+| CodeWhale (a definition file, below) | `codewhale` | appended to `~/.codewhale/config.toml`: `session_start`, `session_idle`; `session_busy` runs `pane-busy` | `waiting_for_user` | `servers` (or `mcpServers`) in `~/.codewhale/mcp.json` |
 
 Each runs `keepane pane-ready -q`, which is quiet outside keepane and
 ignored in panes not in `ai` mode. When Cursor's stop hook says the
@@ -1373,7 +1374,34 @@ the program path unquoted (or write `& "C:\path\keepane.exe" pane-ready
 -q`): an agent on Windows may run hooks in PowerShell, where a quoted path
 followed by arguments is a syntax error. Any other agent works the same way
 if it can run a command at the end of each turn and use an MCP server over
-stdio; run `keepane set-work-mode ai` in its pane before starting it.
+stdio; run `keepane set-work-mode ai` in its pane before starting it, or
+give it a definition file (below).
+
+#### Agents keepane has no code for
+
+An agent with hooks (commands it runs at its own events) needs no new
+keepane: a definition file says how to know its process, which of its
+events mean it is free, busy or waiting for you, where its hooks' input
+gives its session and model, what `keepane setup` writes where, the words
+its screen shows, and how to take a conversation up again. keepane ships
+one for CodeWhale (`agents/codewhale.toml` in the repository, so
+`keepane setup codewhale` works); yours go in `~/.keepane/agents/*.toml`
+(or the directory `KEEPANE_AGENTS_DIR` names). `keepane agent-defs` lists
+them and any file it skipped, with why; `agent-defs -r` reads them again
+after you change one (`keepane setup` reads them each time). A file cannot
+take the name of an agent keepane has code for, or one already defined.
+The format, with CodeWhale's file as the example:
+[docs/design/agent-defs.md](docs/design/agent-defs.md).
+
+What it installs runs `keepane pane-ready -q --agent NAME` at a turn's end,
+`keepane pane-busy -q --agent NAME` when a turn begins, and `keepane
+pane-wait -q --agent NAME` when the agent asks you something; `--agent`
+says which file reads the hook's input. `pane-busy` matters for a turn the
+agent begins by itself (a scheduled one, one it carries on): no key was
+typed and no message went in, so without it keepane would take the pane
+for free and could paste a message in the middle. A defined agent's
+transcripts are not read: its tokens, cost and Trace are not known, as for
+Cursor.
 
 Codex (0.160 and later) and pi (1.0 and later) draw in the alternate screen by
 default, as vim does: what they print never reaches the scrollback, in
