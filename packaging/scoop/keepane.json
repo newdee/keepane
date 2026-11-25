@@ -1,11 +1,11 @@
 {
-  "version": "0.90.0",
+  "version": "0.90.1",
   "description": "Persistent terminal panes, each with its own inbox: a terminal multiplexer with tmux's keys and commands.",
   "homepage": "https://github.com/newdee/keepane",
   "license": "MIT",
-  "url": "https://github.com/newdee/keepane/releases/download/v0.90.0/keepane-v0.90.0-windows-x86_64.zip",
-  "hash": "5ba2d05c7006ac7558797b7ac85949f61a0ea4429287f57d8f9e984d372e0b7c",
-  "extract_dir": "keepane-v0.90.0-windows-x86_64",
+  "url": "https://github.com/newdee/keepane/releases/download/v0.90.1/keepane-v0.90.1-windows-x86_64.zip",
+  "hash": "6a5f571a2766fd5b9c5602aff006b80fe1952d1aa0ec504d853ef4a2bbc0b38b",
+  "extract_dir": "keepane-v0.90.1-windows-x86_64",
   "bin": "keepane.exe",
   "checkver": "github",
   "autoupdate": {
