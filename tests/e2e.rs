@@ -11682,6 +11682,70 @@ async fn take_request(listener: &tokio::net::TcpListener, answer: &str) -> Strin
     String::from_utf8_lossy(&buf[body_at..body_at + len]).into_owned()
 }
 
+/// The channel the person picks on a board or a page is the server's
+/// (`chat-pick`), so every board and page opens on the same one: kept by
+/// its id, another machine's as it is named; an agent's pane may read it
+/// but not move it, a person's shell pane may.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_channel_picked_is_kept_by_the_server_and_only_the_person_moves_it() {
+    let h = Harness::start("chatpick").await;
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    let p = pane_id(&h, "s:0.0").await;
+    h.cli(&["chat-new", "ops"]).await;
+    let id_of = |list: &str, name: &str| -> String {
+        let v: serde_json::Value = serde_json::from_str(list.trim()).unwrap();
+        v.as_array().unwrap().iter().find(|c| c["name"] == name).unwrap()["id"].as_str().unwrap().to_string()
+    };
+    let list = h.cli(&["chat-list", "-J"]).await.1;
+    let (ops, general) = (id_of(&list, "ops"), id_of(&list, "general"));
+
+    assert_eq!(h.cli(&["chat-pick"]).await, (0, String::new(), String::new()), "none picked yet");
+    assert_eq!(h.cli(&["chat-pick", "ops"]).await.0, 0, "by its name");
+    assert_eq!(h.cli(&["chat-pick"]).await.1.trim(), ops, "kept by its id");
+
+    // An agent's pane: reads it, does not move it.
+    assert_eq!(h.cli(&["set-work-mode", "-t", &format!("%{p}"), "ai"]).await.0, 0);
+    assert_eq!(h.cli_in(Some(p), &["chat-pick"]).await.1.trim(), ops);
+    let (code, _, err) = h.cli_in(Some(p), &["chat-pick", "general"]).await;
+    assert!(code != 0 && err.contains("not an agent's"), "{code} {err}");
+    assert_eq!(h.cli(&["chat-pick"]).await.1.trim(), ops, "not moved");
+    // The person's own shell pane: a board run there picks.
+    assert_eq!(h.cli(&["set-work-mode", "-t", &format!("%{p}"), "normal"]).await.0, 0);
+    assert_eq!(h.cli_in(Some(p), &["chat-pick", &general]).await.0, 0, "by its id");
+    assert_eq!(h.cli(&["chat-pick"]).await.1.trim(), general);
+
+    // Another machine's, as `chat-list --machines` names it: kept as it is
+    // (that machine may be away); a name that is no channel here is refused.
+    let there = "10.0.0.9:7681/0190a-33333333";
+    assert_eq!(h.cli(&["chat-pick", there]).await.0, 0);
+    assert_eq!(h.cli(&["chat-pick"]).await.1.trim(), there);
+    for bad in ["nosuch", "/x", "x/"] {
+        let (code, _, err) = h.cli(&["chat-pick", bad]).await;
+        assert!(code != 0 && err.starts_with("chat-pick:"), "{bad}: {code} {err}");
+    }
+    assert_eq!(h.cli(&["chat-pick"]).await.1.trim(), there, "a refused one moves nothing");
+    let (code, _, err) = h.cli(&["chat-pick", "ops", "more"]).await;
+    assert!(code != 0 && err.contains("unexpected argument"), "{err}");
+
+    // The board: opens on the one the server names (not the first listed),
+    // and what the person picks there is the server's.
+    assert_eq!(h.cli(&["chat-pick", "ops"]).await.0, 0);
+    let exe = env!("CARGO_BIN_EXE_keepane");
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "board", "-x", "160", "-y", "40", exe, "dashboard"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("board:0", "the board", |t| t.contains("[1] Panes")).await;
+    h.cli(&["send-keys", "-t", "board:0", ">"]).await;
+    h.wait_capture("board:0", "ops, picked elsewhere", |t| t.contains("[4] #ops")).await;
+    h.cli(&["send-keys", "-t", "board:0", "g"]).await;
+    h.wait_capture("board:0", "general, picked on the board", |t| t.contains("[4] #general")).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while h.cli(&["chat-pick"]).await.1.trim() != general {
+        assert!(Instant::now() < deadline, "the board's pick never reached the server");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    h.cli(&["kill-server"]).await;
+}
+
 /// A member that names the person in a channel (`@you`) reaches them as a
 /// pane done does: the webhook, in its shape, with the channel, who and
 /// what. The person naming `@you` calls no one.

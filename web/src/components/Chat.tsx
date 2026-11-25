@@ -2,7 +2,6 @@ import { Button } from "@heroui/react";
 import { ArrowLeft, AtSign, Hash, MessagesSquare, Paperclip, Reply, SendHorizontal, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getJson, post, q, saveFile } from "../api";
-import { store, stored } from "../format";
 import { useVisible } from "../hooks";
 import { t } from "../i18n";
 
@@ -177,8 +176,9 @@ export function useChatUnread(enabled: boolean) {
   return n;
 }
 
-/** The channel picked last on this device, opened first on a wide screen. */
-const KEPT = "keepane-chat-channel";
+/** Where 0.89.2 kept the channel picked, each browser its own: the server
+ *  keeps it now (`chat-pick`), the same for every board and page. */
+const OLD_KEPT = "keepane-chat-channel";
 
 export function ChatView({ wide, readOnly, onClose }: { wide: boolean; readOnly: boolean; onClose: () => void }) {
   const { channels: listed, error, reload } = useChannels(true);
@@ -197,16 +197,37 @@ export function ChatView({ wide, readOnly, onClose }: { wide: boolean; readOnly:
   );
   const [open, setOpen] = useState<string | null>(null);
   const picked = channels?.find((c) => c.id === open) || null;
-  // On a wide screen a channel is always open: the one picked last time on
-  // this device, while it is there, else the first, until one is picked.
+  // The channel the person picked last, on any board or page (the server
+  // keeps it): undefined until it says, null when none.
+  const [kept, setKept] = useState<string | null | undefined>(undefined);
   useEffect(() => {
-    if (!wide || open || !channels || !channels.length) return;
-    const kept = stored<string | null>(KEPT, null);
+    let stop = false;
+    getJson<{ channel: string | null }>("/api/chat/picked")
+      .then((r) => !stop && setKept(r.channel ?? null))
+      // An older server keeps none: the first.
+      .catch(() => !stop && setKept(null));
+    try {
+      localStorage.removeItem(OLD_KEPT);
+    } catch {
+      // No storage here: nothing was kept in it either.
+    }
+    return () => {
+      stop = true;
+    };
+  }, []);
+  // On a wide screen a channel is always open: the one picked last, while
+  // it is there, else the first, until one is picked.
+  useEffect(() => {
+    if (!wide || open || !channels || !channels.length || kept === undefined) return;
     setOpen((channels.find((c) => c.id === kept) || channels[0]).id);
-  }, [wide, open, channels]);
-  // Only what the person picks is kept: not the first, opened for them.
+  }, [wide, open, channels, kept]);
+  // Only what the person picks is kept: not the first, opened for them, and
+  // nothing from a read-only page.
   const pick = (id: string) => {
-    store(KEPT, id);
+    if (!readOnly && id !== kept) {
+      setKept(id);
+      post(`/api/chat/pick?c=${q(id)}`).catch(() => {});
+    }
     setOpen(id);
   };
   const showList = wide || !picked;

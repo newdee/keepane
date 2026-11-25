@@ -380,6 +380,28 @@ pub struct Chat {
     /// A line added since `channels.json` was written: its `last` is
     /// written at the next tick (the day files have the line itself).
     dirty: bool,
+    /// The channel the person picked last, in a board or on a page
+    /// (`chat-pick`), kept in `picked.json`: its id, `host:port/id` for
+    /// another machine's.
+    pub picked: Option<String>,
+}
+
+/// The file `chat-pick` keeps the channel picked in, in the chat's folder.
+const PICKED_FILE: &str = "picked.json";
+/// Where 0.89.2's boards kept it, each machine's own; read once and removed.
+const BOARD_FILE: &str = "board.json";
+/// The longest channel id `chat-pick` keeps (`host:port/` and a UUID fit).
+const PICKED_MOST: usize = 300;
+
+/// The channel a `picked.json` (or an old `board.json`) names.
+fn read_picked(path: &Path) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    v["channel"].as_str().filter(|c| picked_shape(c)).map(String::from)
+}
+
+/// Whether `id` may be a channel's id as `chat-list --machines` gives it.
+fn picked_shape(id: &str) -> bool {
+    !id.is_empty() && id.len() <= PICKED_MOST && !id.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 pub(super) fn now() -> String {
@@ -701,6 +723,63 @@ impl Server {
             self.chat_line(at, "new", None, format!("{GENERAL} made"), Vec::new());
             self.chat_save();
         }
+        self.chat.picked = read_picked(&dir.join(PICKED_FILE));
+        // A board of 0.89.2 kept its pick beside these files: it is the
+        // server's now, so every board and page has the same one.
+        let board = dir.join(BOARD_FILE);
+        if board.exists() {
+            if self.chat.picked.is_none()
+                && let Some(c) = read_picked(&board)
+            {
+                self.chat.picked = Some(c);
+                self.chat_save_picked();
+            }
+            if let Err(e) = std::fs::remove_file(&board) {
+                log::warn!("chat: {}: {e}", board.display());
+            }
+        }
+    }
+
+    /// `picked.json` written again; not written, said in the log (the pick
+    /// still holds until the server stops).
+    fn chat_save_picked(&self) {
+        let Some(dir) = &self.chat.dir else { return };
+        let text = serde_json::json!({ "channel": self.chat.picked }).to_string();
+        if let Err(e) = write_whole(&dir.join(PICKED_FILE), &text) {
+            log::warn!("chat: {e}");
+        }
+    }
+
+    /// `chat-pick`: the channel picked last, printed (nothing when none);
+    /// `chat-pick CHAN`, that one kept. Only the person picks: a pane's
+    /// agent does not move what the person's board and page open on.
+    fn chat_pick(&mut self, cid: Option<ClientId>, channel: Option<String>) -> Outcome {
+        let Some(word) = channel else {
+            return Outcome::Text(self.chat.picked.clone().unwrap_or_default());
+        };
+        if self.agent_caller(cid).is_some() {
+            return Outcome::Error(
+                "chat-pick: the channel the person picked is theirs to change, not an agent's".into(),
+            );
+        }
+        // Another machine's channel, as `chat-list --machines` names it:
+        // kept as it is, for that machine may be away now.
+        let id = if word.contains('/') {
+            if !picked_shape(&word) || !word.split_once('/').is_some_and(|(m, c)| !m.is_empty() && !c.is_empty()) {
+                return Outcome::Error(format!("chat-pick: '{word}' is no channel (MACHINE/ID for another machine's)"));
+            }
+            word
+        } else {
+            match self.chat_find(&word) {
+                Ok(at) => self.chat.channels[at].id.clone(),
+                Err(e) => return Outcome::Error(format!("chat-pick: {e}")),
+            }
+        };
+        if self.chat.picked.as_ref() != Some(&id) {
+            self.chat.picked = Some(id);
+            self.chat_save_picked();
+        }
+        Outcome::Ok
     }
 
     /// What waits for the tick written now: the server is going.
@@ -944,6 +1023,7 @@ impl Server {
                 },
                 Err(e) => Outcome::Error(format!("chat-dir: {e}")),
             },
+            ChatCmd::Pick { channel } => self.chat_pick(cid, channel),
         }
     }
 
@@ -2062,6 +2142,12 @@ impl Server {
             let _ = std::fs::rename(dir.join(&c.id), aside.join(&c.id));
         }
         self.chat_save();
+        // The channel picked, gone: none is picked (boards and pages open
+        // the first).
+        if self.chat.picked.as_ref() == Some(&c.id) {
+            self.chat.picked = None;
+            self.chat_save_picked();
+        }
         self.chat_wake();
         Outcome::Text(format!("deleted #{} ({}); its lines are in chat/deleted", c.name, c.id))
     }
@@ -2582,6 +2668,80 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("channels.json.bad")).unwrap(), "{ not a list");
         assert_eq!(a.chat.channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), [GENERAL]);
         assert!(std::fs::read_to_string(dir.join("channels.json")).unwrap().contains("\"general\""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The channel picked (`chat-pick`) is kept in `picked.json` through a
+    /// restart. A `board.json` of 0.89.2 is taken over when nothing is
+    /// picked yet, and removed either way; one not read is none.
+    #[test]
+    fn the_channel_picked_is_kept_and_a_board_s_is_taken_over() {
+        let dir = std::env::temp_dir().join(format!("keepane-chat-picked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pick =
+            |a: &mut Server, c: Option<&str>| text(a.exec_chat(ChatCmd::Pick { channel: c.map(String::from) }, None));
+        let mut a = server(&dir);
+        assert_eq!(pick(&mut a, None), "", "none yet");
+        let general = a.chat.channels[0].id.clone();
+        assert_eq!(pick(&mut a, Some(GENERAL)), "ok");
+        assert_eq!(pick(&mut a, None), general);
+        drop(a);
+        let mut a = server(&dir);
+        assert_eq!(pick(&mut a, None), general, "kept through a restart");
+        assert_eq!(
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "new"))
+                .count(),
+            0
+        );
+        drop(a);
+
+        // A board of 0.89.2's, with nothing picked: taken over, removed.
+        std::fs::remove_file(dir.join(PICKED_FILE)).unwrap();
+        std::fs::write(dir.join(BOARD_FILE), r#"{"channel":"10.0.0.2:7681/0190a-3"}"#).unwrap();
+        let mut a = server(&dir);
+        assert_eq!(pick(&mut a, None), "10.0.0.2:7681/0190a-3");
+        assert!(!dir.join(BOARD_FILE).exists());
+        assert_eq!(
+            read_picked(&dir.join(PICKED_FILE)).as_deref(),
+            Some("10.0.0.2:7681/0190a-3"),
+            "written as the server's"
+        );
+        drop(a);
+
+        // One picked already: the board's is not, and still removed.
+        std::fs::write(dir.join(BOARD_FILE), r#"{"channel":"0190a-old"}"#).unwrap();
+        let mut a = server(&dir);
+        assert_eq!(pick(&mut a, None), "10.0.0.2:7681/0190a-3");
+        assert!(!dir.join(BOARD_FILE).exists());
+        drop(a);
+
+        // The channel picked, deleted: none is picked, also after a restart;
+        // another deleted moves nothing.
+        let mut a = server(&dir);
+        let new = |a: &mut Server, n: &str| {
+            text(a.exec_chat(ChatCmd::New { name: n.into(), topic: String::new(), tags: Vec::new() }, None))
+        };
+        new(&mut a, "ops");
+        new(&mut a, "misc");
+        assert_eq!(pick(&mut a, Some("ops")), "ok");
+        let ops = pick(&mut a, None);
+        assert!(text(a.exec_chat(ChatCmd::Delete { channel: "misc".into() }, None)).starts_with("deleted"));
+        assert_eq!(pick(&mut a, None), ops, "another deleted");
+        assert!(text(a.exec_chat(ChatCmd::Delete { channel: "ops".into() }, None)).starts_with("deleted"));
+        assert_eq!(pick(&mut a, None), "", "the one picked deleted");
+        drop(a);
+        let mut a = server(&dir);
+        assert_eq!(pick(&mut a, None), "", "nor after a restart");
+        drop(a);
+
+        // Not JSON, or not a channel's id: none.
+        for bad in ["{ not json", r#"{"channel":"a b"}"#, r#"{"channel":""}"#, r#"{"channel":7}"#] {
+            std::fs::write(dir.join(PICKED_FILE), bad).unwrap();
+            let mut a = server(&dir);
+            assert_eq!(pick(&mut a, None), "", "{bad}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

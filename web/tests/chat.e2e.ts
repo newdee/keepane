@@ -182,26 +182,33 @@ test("a line is replied to from the page: the reply is in its thread and quotes 
   await expect(talk.getByText(`↩ #${asked.seq} ${bot}: an older line`)).toBeVisible();
 });
 
-test("the channel picked last opens again on a wide screen; gone, the first does", async ({ app, screen, browser }) => {
+test("the channel picked last, on a board or a page, opens on a wide screen; gone, the first does", async ({ app, screen, browser }) => {
+  // Picked elsewhere (a board in the terminal: `chat-pick`): not the one
+  // said in last, so only the server's pick can open it.
+  const idOf = (name: string) => (JSON.parse(kp("chat-list", "-J")) as { name: string; id: string }[]).find((c) => c.name === name)!.id;
+  kp("chat-pick", older);
   await app.open(page(portOf(app.baseUrl)));
   await screen.getByRole("button", "群聊").click();
   const list = screen.getByRole("complementary", "频道");
-  // Opened by itself: the one said in last.
-  await expect(screen.getByRole("region", `#${newer}`)).toBeVisible();
-  // Picked by the person: the other.
-  await list.getByRole("button", `#${older}`).click();
-  await expect(screen.getByRole("region", `#${older}`)).toBeVisible();
-
-  // The page again (it stays on the chat): the one picked opens, not the
-  // one said in last.
-  await browser.reload();
   await expect(screen.getByRole("region", `#${older}`)).toBeVisible();
   await expect(screen.getByRole("region", `#${newer}`)).toBeHidden();
 
-  // That channel gone (on the server): the first opens again.
+  // Picked on the page: the server has it, for every board and page.
+  await list.getByRole("button", `#${newer}`).click();
+  await expect(screen.getByRole("region", `#${newer}`)).toBeVisible();
+  await expect.poll(() => kp("chat-pick").trim(), { message: "kept by the server" }).toBe(idOf(newer));
+
+  // Picked elsewhere again, then the page again (it stays on the chat):
+  // that one opens.
+  kp("chat-pick", older);
+  await browser.reload();
+  await expect(screen.getByRole("region", `#${older}`)).toBeVisible();
+
+  // That channel gone (on the server): the first opens, and is not kept.
   kp("chat-delete", older);
   older = "";
   await browser.reload();
   await expect(screen.getByRole("region", `#${newer}`)).toBeVisible();
+  expect(kp("chat-pick").trim()).not.toBe(idOf(newer));
   await screen.getByRole("button", "回到 pane 列表").first().click();
 });

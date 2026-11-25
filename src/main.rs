@@ -256,7 +256,7 @@ fn main() {
             }
             _ => {
                 eprintln!(
-                    "usage: keepane chat new|list|join|leave|say|read|who|topic|tag|rename|delete ... (docs/design/chat.md)"
+                    "usage: keepane chat new|list|join|leave|say|read|who|topic|tag|rename|delete|dir|pick ... (docs/design/chat.md)"
                 );
                 std::process::exit(2);
             }

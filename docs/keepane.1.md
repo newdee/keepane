@@ -192,7 +192,7 @@ as the pane it serves): `list_panes`, `read_screen`, `send_message`,
 Channels where panes talk together (docs/design/chat.md): `chat-new`,
 `chat-list`, `chat-join`, `chat-leave`, `chat-say`, `chat-read`,
 `chat-who`, `chat-topic`, `chat-tag`, `chat-rename`, `chat-delete`,
-`chat-dir`.
+`chat-dir`, `chat-pick`.
 `chat-new NAME
 [--topic TEXT] [--tag T]...` makes one and answers its id, a UUID that
 never changes; `general` is always there. `chat-list [MACHINE] [--tag T]... [-J]`
@@ -248,7 +248,13 @@ pane is there. Its person looks and says things as `you@thatmachine`;
 changing a channel is its own machine's person's. `chat-list --machines`
 lists these channels and then the other machines' (`MACHINE/ID`), and
 `--cached` answers with what was last heard of another machine, asking
-again behind it (the board's page 2 shows them both). Each channel keeps a file a day under `chat` in
+again behind it (the board's page 2 shows them both). `chat-pick` prints
+the channel the person picked last on the board or the web page (its id,
+`MACHINE/ID` for another machine's; nothing when none), and `chat-pick CHAN`
+keeps that one: every board, and the page on a wide screen, opens on it,
+on any device. It is kept in `picked.json` under `chat`; an agent's pane
+(`ai`, or made by another pane) may read it but not change it, and a
+read-only page changes nothing. Each channel keeps a file a day under `chat` in
 the data directory, for `chat-days` days (30; 0 keeps all); its last 1000
 lines are in memory. `keepane chat <what> ...` runs `chat-<what> ...`.
 

@@ -1036,7 +1036,13 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
     if get
         && matches!(
             req.path.as_str(),
-            "/api/send" | "/api/action" | "/api/fit" | "/api/message" | "/api/chat/say" | "/api/chat/seen"
+            "/api/send"
+                | "/api/action"
+                | "/api/fit"
+                | "/api/message"
+                | "/api/chat/say"
+                | "/api/chat/seen"
+                | "/api/chat/pick"
         )
     {
         return Response::text(405, "POST");
@@ -1172,6 +1178,16 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             Ok((_, _, err)) => Response::text(500, err.trim()),
             Err(e) => Response::text(500, &format!("{e:#}")),
         },
+        // The channel the person picked last, on any board or page
+        // (`chat-pick`): the one a wide page opens on.
+        (true, "/api/chat/picked") => match q(vec!["chat-pick".into()]).await {
+            Ok((0, out, _)) => {
+                let id = out.trim();
+                Response::json(format!("{{\"channel\":{}}}", if id.is_empty() { "null".into() } else { json_str(id) }))
+            }
+            Ok((_, _, err)) => Response::text(500, err.trim()),
+            Err(e) => Response::text(500, &format!("{e:#}")),
+        },
         (true, "/api/chat/who") | (true, "/api/chat/lines") => {
             let Some(c) = req.param("c").filter(|c| is_channel_id(c)) else {
                 return Response::text(400, "c: a channel's id");
@@ -1224,6 +1240,7 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
         | (false, "/api/theme")
         | (false, "/api/chat/say")
         | (false, "/api/chat/seen")
+        | (false, "/api/chat/pick")
             if state.read_only =>
         {
             Response::text(403, "read-only")
@@ -1328,6 +1345,17 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             };
             match q(argv).await {
                 Ok((0, out, _)) => Response::text(200, out.trim().lines().next().unwrap_or("")),
+                Ok((_, _, err)) => Response::text(400, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
+        // The channel the person picks, for the next board or page opened.
+        (false, "/api/chat/pick") => {
+            let Some(c) = req.param("c").filter(|c| is_channel_id(c)) else {
+                return Response::text(400, "c: a channel's id");
+            };
+            match q(vec!["chat-pick".into(), c.into()]).await {
+                Ok((0, _, _)) => Response::text(200, "kept"),
                 Ok((_, _, err)) => Response::text(400, err.trim()),
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
@@ -2210,14 +2238,19 @@ mod tests {
         assert!(String::from_utf8_lossy(&info.body).contains("\"readOnly\":true"));
         // The chat: the key guards it; saying and reading to the end are
         // POSTs, refused read-only; a channel is named by its id only.
-        for path in ["/api/chat/channels", "/api/chat/lines", "/api/chat/say"] {
+        for path in ["/api/chat/channels", "/api/chat/lines", "/api/chat/say", "/api/chat/picked", "/api/chat/pick"] {
             assert_eq!(handle(&req("GET", path, None), ip, &s).await.status, 401, "{path} without a key");
         }
-        for path in ["/api/chat/say", "/api/chat/seen"] {
+        for path in ["/api/chat/say", "/api/chat/seen", "/api/chat/pick"] {
             assert_eq!(handle(&req("GET", path, Some("sekrit")), ip, &s).await.status, 405, "{path}");
             assert_eq!(handle(&req("POST", path, Some("sekrit")), ip, &ro).await.status, 403, "{path} read-only");
         }
-        for (method, path) in [("GET", "/api/chat/lines"), ("GET", "/api/chat/who"), ("POST", "/api/chat/say")] {
+        for (method, path) in [
+            ("GET", "/api/chat/lines"),
+            ("GET", "/api/chat/who"),
+            ("POST", "/api/chat/say"),
+            ("POST", "/api/chat/pick"),
+        ] {
             let mut odd = req(method, path, Some("sekrit"));
             odd.query = vec![("c".into(), "../x y".into())];
             assert_eq!(handle(&odd, ip, &s).await.status, 400, "{path}: not an id");

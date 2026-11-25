@@ -120,7 +120,7 @@ impl Server {
     /// The caller, when it is an agent's pane: one in `ai` work mode, or one
     /// another pane made (`create-pane`). What a person types in a shell
     /// pane of their own is a person's command.
-    fn agent_caller(&self, cid: Option<ClientId>) -> Option<PaneId> {
+    pub(super) fn agent_caller(&self, cid: Option<ClientId>) -> Option<PaneId> {
         let me = self.caller_pane(cid)?;
         let p = self.pane_ref(me)?;
         (p.actor.mode == WorkMode::Ai || p.actor.creator.is_some()).then_some(me)

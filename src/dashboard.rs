@@ -50,6 +50,8 @@ pub const QUERIES: &[&str] = &[
     "chat-list",
     "chat-who",
     "chat-read",
+    // `chat-pick`: the channel the person picked last, on a board or a page.
+    "chat-pick",
 ];
 /// The only ones it sends to change anything.
 pub const ACTIONS: &[&str] = &[
@@ -68,6 +70,8 @@ pub const ACTIONS: &[&str] = &[
     "chat-new",
     "chat-topic",
     "chat-tag",
+    // `chat-pick CHAN`: the channel picked, for the next board or page.
+    "chat-pick",
     // `L`: a paired machine asked again, no longer, given nothing here
     // (`link-allow --none`), or forgotten.
     "link-connect",
@@ -3430,19 +3434,20 @@ pub fn event_line(json: &str) -> String {
     format!("{at}  {colour}{ev:<9}{reset} {gist}")
 }
 
-/// `keepane dashboard [--popup -t %N]` (`--popup`: opened by prefix v, so
-/// going to a pane closes it). Pane `here` is chosen first.
-/// The chat channel picked written to `board.json` when it changed, so the
-/// next board opened picks it; not written, said once (it is not tried
-/// again until another is picked).
-fn keep_pick(board: &mut Board, path: &std::path::Path) {
+/// The chat channel picked, told to the server (`chat-pick`) when it
+/// changed, so the next board or page opened picks it; not taken, said
+/// once (it is not tried again until another is picked).
+fn keep_pick(board: &mut Board, ask: impl Fn(&[String]) -> (i32, String, String)) {
     let Some(id) = board.chat.to_keep() else { return };
-    if let Err(e) = chat::save_kept(path, &id) {
-        board.note = Some(format!("the channel picked is not kept for next time: {e}"));
+    let (code, _, err) = ask(&owned(&["chat-pick", &id]));
+    if code != 0 {
+        board.note = Some(format!("the channel picked is not kept for next time: {}", err.trim()));
     }
     board.chat.kept = Some(id);
 }
 
+/// `keepane dashboard [--popup -t %N]` (`--popup`: opened by prefix v, so
+/// going to a pane closes it). Pane `here` is chosen first.
 pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option<u32>) -> anyhow::Result<i32> {
     use crate::console::{Console, InputEvent};
     let mut console = Console::open()?;
@@ -3473,9 +3478,9 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
     let (cols, rows) = console.size();
     let mut board = Board::new(cols, rows);
     board.chosen = here.map(|n| format!("%{n}"));
-    // The chat's channel picked when a board was last open, picked again.
-    let kept = chat::kept_path(socket);
-    board.chat.kept = chat::load_kept(&kept);
+    // The chat's channel the person picked last, on a board or a page,
+    // picked again.
+    board.chat.kept = chat::parse_kept(&ask(&owned(&["chat-pick"])).1);
     board.chat.wanted = board.chat.kept.clone();
     // UnifyTerm's `ut`, when this machine has it: pictures and markdown in
     // the preview.
@@ -3514,7 +3519,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                 if let Some(seen) = board.chat_seen() {
                     ask(&seen);
                 }
-                keep_pick(&mut board, &kept);
+                keep_pick(&mut board, ask);
             }
             // Asked each time, so a `set` while the board is open shows.
             board.files.icons = files::Icons::parse(&ask(&owned(&["show-options", "-gv", "dashboard-icons"])).1);
@@ -3570,7 +3575,7 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                 match action {
                     Action::Quit => {
                         // A pick and a quit read together: the pick is kept too.
-                        keep_pick(&mut board, &kept);
+                        keep_pick(&mut board, ask);
                         return Ok(());
                     }
                     Action::Run(argv) | Action::Go(argv) if !popup || argv[0] != "focus-pane" => {
@@ -4701,9 +4706,9 @@ mod tests {
         }
     }
 
-    /// The channel picked when a board was last open is picked again, also
-    /// another machine's that comes a list later; nothing is written while
-    /// it is waited for, and a pick of the person's ends the wait.
+    /// The channel the server says was picked last is picked again, also
+    /// another machine's that comes a list later; nothing is told while it
+    /// is waited for, and a pick of the person's ends the wait.
     #[test]
     fn the_channel_picked_last_time_is_picked_again() {
         let here = r#"{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0,"unread":0},
@@ -4756,19 +4761,37 @@ mod tests {
         assert_eq!(picked(&b).as_deref(), Some("0190a-11111111"));
         assert_eq!(b.chat.to_keep(), None, "still waited for: it may be another machine's not heard yet");
 
-        // The file: written whole, read back; missing or not JSON is none.
-        let dir = std::env::temp_dir().join(format!("keepane-board-kept-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("chat").join("board.json");
-        assert_eq!(chat::load_kept(&path), None);
-        chat::save_kept(&path, &remote).unwrap();
-        assert_eq!(chat::load_kept(&path), Some(remote.clone()));
-        chat::save_kept(&path, "0190a-22222222").unwrap();
-        assert_eq!(chat::load_kept(&path).as_deref(), Some("0190a-22222222"));
-        assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 1, "no file of its own left");
-        std::fs::write(&path, "{ not json").unwrap();
-        assert_eq!(chat::load_kept(&path), None);
-        let _ = std::fs::remove_dir_all(&dir);
+        // The server: what `chat-pick` printed is the one kept; empty or
+        // not one word, none.
+        assert_eq!(chat::parse_kept(&format!("{remote}\n")), Some(remote.clone()));
+        assert_eq!(chat::parse_kept(" \n"), None);
+        assert_eq!(chat::parse_kept("not one"), None);
+
+        // Told once a pick changes, not again for the same one; refused,
+        // said once on the board.
+        let told = std::cell::RefCell::new(Vec::new());
+        let ask = |code: i32| {
+            let told = &told;
+            move |argv: &[String]| {
+                told.borrow_mut().push(argv.to_vec());
+                (code, String::new(), if code == 0 { String::new() } else { "chat-pick: no channel x\n".into() })
+            }
+        };
+        let mut b = open(Some("0190a-22222222"));
+        b.chat.set_channels(&format!("[{here}]"));
+        keep_pick(&mut b, ask(0));
+        assert!(told.borrow().is_empty(), "the one the server named: nothing to tell");
+        b.key(Key::ch('k'));
+        keep_pick(&mut b, ask(0));
+        keep_pick(&mut b, ask(0));
+        assert_eq!(*told.borrow(), vec![owned(&["chat-pick", "0190a-11111111"])]);
+        assert_eq!(b.note, None);
+        b.key(Key::ch('j'));
+        keep_pick(&mut b, ask(1));
+        assert_eq!(b.note.as_deref(), Some("the channel picked is not kept for next time: chat-pick: no channel x"));
+        assert_eq!(told.borrow().len(), 2);
+        keep_pick(&mut b, ask(1));
+        assert_eq!(told.borrow().len(), 2, "not tried again until another is picked");
     }
 
     /// s, n, t and # ask for text and run the chat command; o goes to a

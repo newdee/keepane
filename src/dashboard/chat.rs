@@ -133,37 +133,19 @@ pub struct ChatPage {
     pub divider: Option<(String, u64)>,
     /// The member picked in the list a `@` being typed opens.
     pub at_pick: usize,
-    /// The channel `board.json` names (`kept_path`): the one picked when
-    /// the board was last open; after that, the one last written there.
+    /// The channel the server says the person picked last (`chat-pick`),
+    /// on any board or page, when this board opened; after that, the one
+    /// this board last told it.
     pub kept: Option<String>,
     /// That channel, to be picked as soon as a list has it (another
     /// machine's comes a moment later than this one's), unless the person
-    /// picks another first (`pick_at`). Nothing is written meanwhile.
+    /// picks another first (`pick_at`). Nothing is told meanwhile.
     pub wanted: Option<String>,
 }
 
-/// Where the board keeps which channel it had picked, so the next one
-/// opened picks it again: beside the chat's files, one per server.
-pub(super) fn kept_path(socket: &str) -> std::path::PathBuf {
-    crate::histlog::chat_dir().join(crate::histlog::safe_name(socket)).join("board.json")
-}
-
-/// The channel `board.json` names; none when it is missing or not read.
-pub(super) fn load_kept(path: &std::path::Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v["channel"].as_str().filter(|c| !c.is_empty()).map(String::from)
-}
-
-/// `channel` written to `board.json`, whole or not at all: through a file
-/// of this process's own, as two boards may be open at once.
-pub(super) fn save_kept(path: &std::path::Path, channel: &str) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension(format!("json.{}.new", std::process::id()));
-    std::fs::write(&tmp, serde_json::json!({ "channel": channel }).to_string())?;
-    std::fs::rename(&tmp, path)
+/// What `chat-pick` printed: the channel picked last, none when empty.
+pub(super) fn parse_kept(out: &str) -> Option<String> {
+    Some(out.trim()).filter(|c| !c.is_empty() && !c.contains(char::is_whitespace)).map(String::from)
 }
 
 /// The handle being typed: what follows the `@` of the text's last word,
@@ -193,8 +175,8 @@ impl ChatPage {
         shown.get(self.pick.min(shown.len().saturating_sub(1))).copied()
     }
 
-    /// The channel picked, when `board.json` does not name it yet; none
-    /// while the one it names may still come.
+    /// The channel picked, when the server was not told it yet; none
+    /// while the one it named may still come.
     pub(super) fn to_keep(&self) -> Option<String> {
         if self.wanted.is_some() {
             return None;

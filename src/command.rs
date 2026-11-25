@@ -253,6 +253,12 @@ pub enum ChatCmd {
     Dir {
         channel: String,
     },
+    /// `chat-pick [CHAN]`: the channel the person picked last in the
+    /// board or on the page (printed), or that one now (kept), so every
+    /// board and page opens on it.
+    Pick {
+        channel: Option<String>,
+    },
 }
 
 /// When a scheduled message goes (`send-message --in` / `--at`).
@@ -2209,6 +2215,8 @@ impl fmt::Display for Cmd {
                     ChatCmd::Rename { channel, name } => write!(f, "chat-rename {} {}", q(channel), q(name)),
                     ChatCmd::Delete { channel } => write!(f, "chat-delete {}", q(channel)),
                     ChatCmd::Dir { channel } => write!(f, "chat-dir {}", q(channel)),
+                    ChatCmd::Pick { channel: None } => write!(f, "chat-pick"),
+                    ChatCmd::Pick { channel: Some(c) } => write!(f, "chat-pick {}", q(c)),
                 }
             }
             Cmd::Share(ShareWhat::Add { path, for_secs, once }) => {
@@ -2840,6 +2848,11 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
             a.none_left(n)?;
             ChatCmd::Dir { channel }
         }
+        "chat-pick" => {
+            let channel = if a.peek().is_some() { Some(channel(a)?) } else { None };
+            a.none_left(n)?;
+            ChatCmd::Pick { channel }
+        }
         "chat-say" | "chat-topic" => {
             let channel = channel(a)?;
             // `--file PATH`, as many as sent, and `--re N`, before the text.
@@ -3230,6 +3243,7 @@ pub const COMMANDS: &[&str] = &[
     "chat-rename",
     "chat-delete",
     "chat-dir",
+    "chat-pick",
     "web-share-open",
     "web-share-sent",
     "web-uploaded",
@@ -3395,6 +3409,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("chat-rename", &[]),
     ("chat-delete", &[]),
     ("chat-dir", &[]),
+    ("chat-pick", &[]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
     ("web-uploaded", &[]),
@@ -6441,6 +6456,9 @@ mod tests {
             "chat-say review --file only.pdf",
             "chat-say review -- --flag-like text",
             "chat-dir review",
+            "chat-pick",
+            "chat-pick review",
+            "chat-pick 100.1.2.3:7681/0190a-1",
             "chat-say review --re 42 sounds good",
             "chat-say review --file a.png --re 7",
             "chat-read review --thread 42 -J",
