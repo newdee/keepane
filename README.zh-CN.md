@@ -69,7 +69,7 @@ pane 根据工作模式处理消息：
 
 pane 当前的状态用一个词表示（`#{pane_state}`，dashboard 和手机页也显示）：`idle`（空闲，可以接收下一条消息）、`busy`（程序在干活）、`typing`（输入中：有按键但还没按回车，说明有人在输入，消息会等着）、`no-agent`（`ai` 模式的 pane 回到了 shell 提示符，agent 已经退出）、`unknown`（`shell` 模式的 pane 从没发出过提示符标记，例如 cmd）、`exited`（程序已退出）；`normal` 模式的 pane 既不算空闲也不算忙（`-`）。`#{pane_idle}` 在 `idle` 时为 1。
 
-`ai` 模式下，如果 agent 已退出并重新出现 shell 提示符，消息不会投递。投递方式以发送时接收方的模式为准：发给 agent 的文本即使遇到模式切换，也不会作为 shell 命令执行。
+`ai` 模式下，如果 agent 已退出并重新出现 shell 提示符，消息不会投递。消息只在它等的那个模式下投递：发给 agent 的文本即使遇到模式切换，也不会作为 shell 命令执行（在 `normal` 和 `ai` 之间怎么跟着走，见本节后面 `set-work-mode` 那段之后）。
 
 每条消息都带一个字段固定的信封头，写明来源和路由：
 
@@ -93,6 +93,8 @@ keepane send-message --to %builder --in 30m "构建过了吗？"           # 到
 `--in 30m`（或 `90s`、`2h`、`1d`）或 `--at 14:30`（下一个 14:30；也可以写 `--at "2026-11-23 09:00"`，按这台机器的时间）让消息到时间再发，比如 agent 给自己留一句"半小时后再看一眼"。它列在目标 pane 下面（`list-messages`），`drop-message 编号` 取消，`trace-message` 写着什么时候定的、什么时候发的。到时间才按地址找 pane（`%builder` 找那时叫 builder 的 pane）；找不到时，发送方的 pane 会收到"没发出去"的通知。定时消息重启后还在：keepane 没运行期间到了时间的，启动后立刻发出，并写明晚了多久。
 
 在 pane 内运行 `set-work-mode`，只能修改当前 pane；从外部终端、快捷键或 `C-b :` 命令行运行时，可以修改任意 pane。这样，pane 内的程序不能直接把别的 pane 切成自动执行消息的 `shell` 模式。改名、管理收件箱和关闭 pane 不受这条限制；关闭操作可在 10 秒内用 `C-b u` 撤销。此规则用于减少误操作，并非针对同一用户进程的安全隔离。
+
+消息在收件箱里等的是发出时 pane 所在的模式。pane 在 `normal` 和 `ai` 之间切换时，等人看的消息改为送给 agent，反过来也一样：agent 退出期间收到的消息，在 pane 切回 `ai` 后会送进去。和 `shell` 有关的不跟着改：给人或 agent 的文字不会被当成命令执行，命令也不会送给 agent。还在等别的模式的消息，状态栏会提示（`list-messages` 里标 `[sent for shell]`）。
 
 ### 群聊
 

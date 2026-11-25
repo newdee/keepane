@@ -186,16 +186,27 @@ test("phone: the long press, the edge swipe, reloads", async ({ app, browser, sc
     addEventListener("click", () => (w.clicked = performance.now()), true);
     return null;
   });
-  await finger.longPress(card(browser, "builder"));
-  await cardMenu(screen);
-  await browser.keyboard.press("Escape");
-  await card(browser, "builder").tap();
-  await expect(browser.locator("#screen")).toBeVisible();
-  const soon = await browser.evaluate(() => {
-    const w = window as unknown as { lift: number; clicked: number };
-    return w.clicked - w.lift;
-  });
-  expect(soon, "the click came within 400 ms of the long press").toBeLessThan(400);
+  // The menu, Escape and the click take their time: on a busy machine the
+  // click can come after the 400 ms, and the case is not tried. Back to
+  // the list and again, three times at most.
+  const tries: number[] = [];
+  for (;;) {
+    await finger.longPress(card(browser, "builder"));
+    await cardMenu(screen);
+    await browser.keyboard.press("Escape");
+    await card(browser, "builder").tap();
+    await expect(browser.locator("#screen")).toBeVisible();
+    tries.push(
+      await browser.evaluate(() => {
+        const w = window as unknown as { lift: number; clicked: number };
+        return w.clicked - w.lift;
+      }),
+    );
+    if (tries[tries.length - 1] < 400 || tries.length === 3) break;
+    await finger.swipe({ x: 8, y: 400 }, { x: 260, y: 402 });
+    await expect.poll(() => onList(browser), { message: "back to the list for another try" }).toBe(true);
+  }
+  expect(Math.min(...tries), `the click came within 400 ms of the long press (ms after it: ${tries.join(", ")}; the machine too busy?)`).toBeLessThan(400);
 
   // An edge swipe goes back, never to the pane before: no screen asked for it.
   const prev = paneNumber("work:0.0");

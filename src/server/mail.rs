@@ -461,10 +461,42 @@ impl Server {
     /// A message for a pane that takes none on its own: its window is
     /// flagged (`@` in `#F`) and the session's clients are told.
     fn mail_alert(&mut self, to: PaneId, m: &Message) {
-        let Some((sid, widx)) = self.place_of(to) else { return };
+        let Some((_, widx)) = self.place_of(to) else { return };
         let base = self.opts.base_index;
         let from = m.from.short();
-        let text = format!("Message #{} for %{to} in window {} from {from}", m.id, widx + base);
+        self.window_alert(to, &format!("Message #{} for %{to} in window {} from {from}", m.id, widx + base));
+    }
+
+    /// Pane `pid` goes into `mode` (`by` changed it): the messages queued
+    /// for a person or an agent go with it, each recorded; what it was
+    /// sent that now waits for a person (`read-message`, or another mode)
+    /// is said on the status line, as a new message for it would be.
+    pub(super) fn change_mode(&mut self, pid: PaneId, mode: WorkMode, by: &str) {
+        let Some(p) = self.find_pane_mut(pid) else { return };
+        let went = p.actor.set_mode(mode);
+        let waiting = p.actor.waiting_for_other();
+        for id in &went {
+            self.observe.via(*id, mode, by);
+        }
+        let count = |n: usize| if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
+        let mut said = Vec::new();
+        if mode == WorkMode::Normal && !went.is_empty() {
+            said.push(format!("{} for it wait for read-message", count(went.len())));
+        }
+        for (w, n) in waiting {
+            said.push(format!("{} sent for {} wait for that mode", count(n), w.as_str()));
+        }
+        if !said.is_empty() {
+            let text = format!("%{pid} is in {} mode: {} (list-messages -t %{pid})", mode.as_str(), said.join("; "));
+            self.window_alert(pid, &text);
+        }
+    }
+
+    /// Something in pane `to` waits for a person: its window is flagged
+    /// (`@` in `#F`) unless it is the one shown, and `text` is said to the
+    /// session's clients.
+    fn window_alert(&mut self, to: PaneId, text: &str) {
+        let Some((sid, widx)) = self.place_of(to) else { return };
         if let Some(s) = self.session_mut(sid)
             && s.cur != widx
         {
@@ -472,7 +504,7 @@ impl Server {
         }
         let ids: Vec<ClientId> = self.clients.values().filter(|c| c.session == Some(sid)).map(|c| c.id).collect();
         for cid in ids {
-            self.show(cid, &text);
+            self.show(cid, text);
         }
     }
 
@@ -959,14 +991,12 @@ impl Server {
         }
         let by = self.by(cid);
         let addr = self.address_of(pid);
-        if let Some(p) = self.find_pane_mut(pid) {
-            p.actor.set_mode(mode);
-        }
         self.observe.pane(
             &addr,
             "mode",
             &format!(",\"value\":\"{}\",\"by\":{}", mode.as_str(), serde_json::to_string(&by).unwrap()),
         );
+        self.change_mode(pid, mode, &by);
         self.deliver(pid);
         Outcome::Ok
     }
@@ -1102,9 +1132,9 @@ impl Server {
         if let Some(p) = self.find_pane_mut(new) {
             p.actor.creator = me;
             p.actor.name = name;
-            p.actor.set_mode(mode);
         }
         let (addr, by) = (self.address_of(new), self.by(cid));
+        self.change_mode(new, mode, &by);
         let js = |s: &str| serde_json::to_string(s).unwrap();
         self.observe.pane(
             &addr,

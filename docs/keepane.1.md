@@ -142,7 +142,10 @@ window named after it; `s` connects in a split, `y` copies the command,
 ### Panes that pass messages
 
 `rename-pane` (then `-t %name` finds it), `whoami`, `set-work-mode`
-(`normal`, `shell` or `ai`), `send-message` (`--to` a pane, `--re` a message,
+(`normal`, `shell` or `ai`; what waits in the inbox for `normal` or `ai`
+goes with the pane into the other, what waits for `shell` stays, none
+becomes a command, and the status line says what still waits for another
+mode), `send-message` (`--to` a pane, `--re` a message,
 `--task`; `--in 30m` or `--at 14:30` sends it then: listed under its pane
 (`list-messages`), cancelled with `drop-message`, found by its address when
 it is due, its sender told when no pane is there; kept over a restart, one

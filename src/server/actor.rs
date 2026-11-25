@@ -29,6 +29,8 @@ pub enum WorkMode {
 }
 
 impl WorkMode {
+    pub const ALL: [WorkMode; 3] = [WorkMode::Normal, WorkMode::Shell, WorkMode::Ai];
+
     pub fn as_str(self) -> &'static str {
         match self {
             WorkMode::Normal => "normal",
@@ -111,9 +113,11 @@ pub struct Message {
     pub from: Sender,
     /// The recipient's full address when it was sent.
     pub to: String,
-    /// The recipient's work mode when it was sent. The message is
-    /// delivered only in that mode: text written for an agent is never
-    /// run as a command because the pane was switched to `shell` meanwhile.
+    /// The work mode the message waits for: the recipient's when it was
+    /// sent, or the one its pane went into between `normal` and `ai`
+    /// (`set_mode`). The message is delivered only in that mode: text
+    /// written for an agent is never run as a command because the pane was
+    /// switched to `shell` meanwhile.
     pub via: WorkMode,
     pub hop: u32,
     /// The message this one answers.
@@ -423,11 +427,39 @@ impl Actor {
 
     /// The pane's mode changed: an agent already running says nothing new
     /// by that, so it is heard from again only at its next `pane-ready`.
-    pub fn set_mode(&mut self, mode: WorkMode) {
+    /// The messages queued for a person or an agent go with the pane into
+    /// the other of the two (`normal` <-> `ai`); none of them becomes a
+    /// shell's command, and none sent for a shell becomes text for a person
+    /// or an agent: those wait (`waiting_for_other`). Returns the ids of
+    /// those that went with it.
+    pub fn set_mode(&mut self, mode: WorkMode) -> Vec<MsgId> {
         if mode != self.mode {
             self.heard = false;
         }
         self.mode = mode;
+        if mode == WorkMode::Shell {
+            return Vec::new();
+        }
+        self.inbox
+            .iter_mut()
+            .filter(|m| m.via != mode && m.via != WorkMode::Shell)
+            .map(|m| {
+                m.via = mode;
+                m.id
+            })
+            .collect()
+    }
+
+    /// The queued messages sent for another mode than the pane's, which
+    /// are not delivered while it stays in this one: how many for each
+    /// mode, in the order of `WorkMode::ALL`.
+    pub fn waiting_for_other(&self) -> Vec<(WorkMode, usize)> {
+        WorkMode::ALL
+            .into_iter()
+            .filter(|w| *w != self.mode)
+            .map(|w| (w, self.inbox.iter().filter(|m| m.via == w).count()))
+            .filter(|(_, n)| *n > 0)
+            .collect()
     }
 
     /// What the pane is up to, in a word (`pane_state`): `idle` (free for
@@ -1131,6 +1163,37 @@ mod tests {
         a.prompt();
         assert_eq!(a.next_delivery(), None);
         assert_eq!(a.inbox.len(), 1);
+    }
+
+    /// Queued for a person, then the pane goes to `ai`: the agent gets it
+    /// when free, and back the other way; nothing becomes a shell's
+    /// command, nor a shell's command text for a person or an agent.
+    #[test]
+    fn messages_for_a_person_or_an_agent_go_with_the_pane_and_a_shells_stay() {
+        let mut a = actor(WorkMode::Normal);
+        a.enqueue(msg(1, WorkMode::Normal), 10).unwrap();
+        a.enqueue(msg(2, WorkMode::Shell), 10).unwrap();
+        a.enqueue(msg(3, WorkMode::Ai), 10).unwrap();
+        // Into a shell: none goes with it, and the shell's own is the one
+        // delivered.
+        assert_eq!(a.set_mode(WorkMode::Shell), Vec::<MsgId>::new());
+        assert_eq!(a.waiting_for_other(), vec![(WorkMode::Normal, 1), (WorkMode::Ai, 1)]);
+        // Into ai: the person's goes with it, the shell's waits.
+        assert_eq!(a.set_mode(WorkMode::Ai), vec![1]);
+        assert_eq!(a.waiting_for_other(), vec![(WorkMode::Shell, 1)]);
+        a.ready();
+        assert_eq!(a.next_delivery().map(|m| (m.id, m.via)), Some((1, WorkMode::Ai)));
+        // Back to normal: the agent's goes back to a person; nothing is
+        // delivered in normal.
+        assert_eq!(a.set_mode(WorkMode::Normal), vec![3]);
+        assert_eq!(
+            a.inbox.iter().map(|m| (m.id, m.via)).collect::<Vec<_>>(),
+            [(2, WorkMode::Shell), (3, WorkMode::Normal)]
+        );
+        a.force_idle();
+        assert_eq!(a.next_delivery(), None);
+        // The same mode again: nothing moves.
+        assert_eq!(a.set_mode(WorkMode::Normal), Vec::<MsgId>::new());
     }
 
     #[test]

@@ -346,6 +346,20 @@ impl Store {
         });
     }
 
+    /// A queued message went with its pane into another mode
+    /// (`Actor::set_mode`): it is delivered in that one now. Only one for a
+    /// person or an agent goes, into the other of the two, so `to` says
+    /// where it came from.
+    pub fn via(&mut self, id: MsgId, to: WorkMode, by: &str) {
+        let from = if to == WorkMode::Ai { WorkMode::Normal } else { WorkMode::Ai };
+        self.write(
+            now(),
+            "via",
+            &format!(",\"id\":{id},\"from\":\"{}\",\"to\":\"{}\",\"by\":{}", from.as_str(), to.as_str(), js(by)),
+        );
+        self.update(id, |r| r.msg.via = to);
+    }
+
     pub fn moved(&mut self, id: MsgId, from: usize, to: usize, by: &str) {
         self.write(now(), "moved", &format!(",\"id\":{id},\"from\":{from},\"to\":{to},\"by\":{}", js(by)));
     }
@@ -450,6 +464,11 @@ impl Store {
                     r.stage = Stage::Queued;
                     r.ended = None;
                     r.why = None;
+                }
+                "via" => {
+                    if let Some(to) = v["to"].as_str().and_then(WorkMode::parse) {
+                        r.msg.via = to;
+                    }
                 }
                 _ => {
                     if let Some(stage) = Stage::parse(ev).filter(|s| s.finished()) {
@@ -731,11 +750,22 @@ mod tests {
         s.forwarded(11, "#4 queued for $1:@0.%1 (ai, busy, 0 ahead) on 100.64.0.3:7681");
         s.sent(&msg(12, 12, "unreachable"), None);
         s.refused(12, "100.64.0.3:7681 is not reachable");
+        // Queued for a person, it went with its pane into ai, and was done
+        // there.
+        let mut person = msg(13, 13, "for a person");
+        person.via = WorkMode::Normal;
+        s.sent(&person, None);
+        s.via(13, WorkMode::Ai, "user");
+        assert_eq!(s.get(13).unwrap().msg.via, WorkMode::Ai);
+        s.delivered(13);
+        s.ended(13, End::Done, None, None);
         crate::histlog::flush(std::time::Duration::from_secs(5));
 
         let mut back = Store { dir: Some(dir.clone()), ..Default::default() };
         assert_eq!(back.load(1), 1, "the queued one is gone with the old server");
-        assert_eq!(back.last_id(), 12);
+        assert_eq!(back.last_id(), 13);
+        let r = back.get(13).unwrap();
+        assert_eq!((r.stage, r.msg.via), (Stage::Done, WorkMode::Ai), "the mode it went to reads back");
         assert_eq!(back.get(10).unwrap().msg, remote, "the remote sender reads back as it was");
         let r = back.get(11).unwrap();
         assert_eq!(r.stage, Stage::Forwarded, "handed over is done with here, not dropped at a restart");

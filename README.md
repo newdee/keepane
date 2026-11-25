@@ -110,9 +110,10 @@ heard, such as cmd's), `exited`; a `normal` pane is neither free nor busy
 (`-`). `#{pane_idle}` is 1 for `idle`.
 
 In `ai` mode, if the agent has exited and a shell prompt shows again,
-nothing is delivered. A message is delivered the way the recipient's mode
-was when it was sent: text sent to an agent is never run as a shell
-command, even if the mode changes in between.
+nothing is delivered. A message is delivered only in the mode it waits
+for: text sent to an agent is never run as a shell command, even if the
+mode changes in between (how it goes with the pane between `normal` and
+`ai` is below, after `set-work-mode`).
 
 Every message carries a header of fixed fields, with its source and route:
 
@@ -167,6 +168,15 @@ which runs its messages by itself. Renaming, managing inboxes and closing
 panes are not limited by this; a close can be undone with `C-b u` within
 10 seconds. The rule is there to cut down on mistakes, not to isolate
 processes of the same user from each other.
+
+A message waits in the inbox for the mode the pane was in when it was
+sent. When the pane changes between `normal` and `ai`, what waits for a
+person goes to the agent and the other way round: a message that came
+while the agent was gone reaches it once the pane is back in `ai`. Nothing
+goes into or out of `shell`: text for a person or an agent never runs as a
+command, and a command never goes to an agent. What still waits for
+another mode is said on the status line (`list-messages` marks it
+`[sent for shell]`).
 
 `--in 30m` (or `90s`, `2h`, `1d`) or `--at 14:30` (the next 14:30; or
 `--at "2026-11-23 09:00"`, this machine's time) sends the message then

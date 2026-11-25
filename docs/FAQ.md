@@ -113,6 +113,12 @@ pane: `keepane set-work-mode -t %builder shell`. A command run in one pane
 cannot change another pane's mode, so nothing in one pane can turn another
 into a shell that runs what it is sent.
 
+Messages already waiting go with the pane between `normal` and `ai`: one
+that came while the agent was gone is delivered once the pane is back in
+`ai`. Those for `shell` stay for `shell`, and none becomes a command when
+the pane goes into `shell`; the status line says how many still wait for
+another mode.
+
 ## I swapped two panes: where do messages go now?
 
 A pane's id (`%7`) and name (`%builder`) go with the pane, wherever it is

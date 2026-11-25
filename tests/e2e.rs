@@ -12688,6 +12688,63 @@ async fn queued_messages_are_managed_limited_and_logged() {
     h.cli(&["kill-server"]).await;
 }
 
+/// What waits for a person goes to the agent when the pane goes into `ai`,
+/// and back the other way; a shell's command stays a shell's. What still
+/// waits for another mode is said on the status line, and each move is in
+/// the event log.
+#[tokio::test(flavor = "multi_thread")]
+async fn queued_messages_go_with_the_pane_between_a_person_and_an_agent() {
+    let h = Harness::start("mail-follow").await;
+    // A shell without keepane's prompt hook: in shell mode it is never
+    // free, so what is sent for the shell waits; and no prompt of its
+    // takes back the agent's word below.
+    h.cli(&["new", "-d", "-s", "f"]).await;
+    let p = pane_id(&h, "f:0.0").await;
+    let t = format!("%{p}");
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "f"]).await;
+    // For a person (the pane is in normal mode).
+    let person = msg_id(&h.cli(&["send-message", "-t", &t, "for a person"]).await.1);
+    // Into a shell: it does not become a command; the shell's own waits.
+    h.cli(&["set-work-mode", "-t", &t, "shell"]).await;
+    assert_eq!(ask_pane(&h, p, "#{pane_idle}").await, "0", "no prompt hook heard: never free");
+    let shell = msg_id(&h.cli(&["send-message", "-t", &t, "echo shell-one"]).await.1);
+    // Into ai: the person's goes with it, the shell's stays.
+    h.cli(&["set-work-mode", "-t", &t, "ai"]).await;
+    let (_, list, _) = h.cli(&["list-messages", "-t", &t]).await;
+    let line = |id: &str| list.lines().find(|l| l.contains(&format!("#{id} "))).unwrap_or_default().to_string();
+    assert!(!line(&person).contains("[sent for"), "{list}");
+    assert!(line(&shell).contains("[sent for shell]"), "{list}");
+    h.cli_in(Some(p), &["pane-ready"]).await;
+    let (_, trace, _) = h.cli(&["trace-message", &person]).await;
+    assert!(trace.starts_with(&format!("#{person} delivered")) && trace.contains(" via=ai "), "{trace}");
+    // Back to normal: what was queued for the agent waits for a person.
+    let agent = msg_id(&h.cli(&["send-message", "-t", &t, "for the agent"]).await.1);
+    h.cli(&["set-work-mode", "-t", &t, "normal"]).await;
+    let (_, list, _) = h.cli(&["list-messages", "-t", &t]).await;
+    assert!(list.lines().any(|l| l.contains(&format!("#{agent} ")) && !l.contains("[sent for")), "{list}");
+    let (_, said, _) = h.cli(&["show-messages"]).await;
+    for want in [
+        format!("{t} is in shell mode: 1 message sent for normal wait for that mode (list-messages -t {t})"),
+        format!("{t} is in ai mode: 1 message sent for shell wait for that mode"),
+        format!("{t} is in normal mode: 1 message for it wait for read-message; 1 message sent for shell wait"),
+    ] {
+        assert!(said.contains(&want), "{want} not said:\n{said}");
+    }
+    keepane::histlog::flush(Duration::from_secs(5));
+    let dir = keepane::histlog::events_dir().join(keepane::histlog::safe_name(&h.socket));
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let log = std::fs::read_to_string(dir.join(format!("{day}.jsonl"))).unwrap_or_default();
+    for want in [
+        format!(r#""ev":"via","id":{person},"from":"normal","to":"ai","by":"user""#),
+        format!(r#""ev":"via","id":{agent},"from":"ai","to":"normal","by":"user""#),
+    ] {
+        assert!(log.contains(&want), "{want} not in the event log:\n{log}");
+    }
+    assert!(!log.contains(&format!(r#""ev":"via","id":{shell},"#)), "the shell's stayed:\n{log}");
+    h.cli(&["kill-server"]).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pane_keeps_its_name_and_work_mode_through_save_and_restore() {
     let h = Harness::start("mail-save").await;

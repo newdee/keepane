@@ -77,6 +77,8 @@ keepane pane-ready -t %agent
 
 在那个 pane 里运行 `keepane set-work-mode ai`（或 `shell`、`normal`）。在 keepane 外面（普通终端、`C-b :` 提示符、按键绑定）可以指定 pane：`keepane set-work-mode -t %builder shell`。在一个 pane 里运行的命令改不了别的 pane 的模式，所以任何 pane 里的程序都没法把别的 pane 变成"收到什么就执行什么"的 shell。
 
+已经在排队的消息，在 `normal` 和 `ai` 之间跟着 pane 走：agent 退出期间收到的消息，pane 切回 `ai` 后会送进去。给 `shell` 的消息只等 `shell`；pane 切到 `shell` 时，任何消息都不会变成命令。还有几条在等别的模式，状态栏会提示。
+
 ## 交换了两个 pane 的位置，消息会发到哪？
 
 pane 的编号（`%7`）和名字（`%builder`）跟着 pane 走，不管它被移动还是交换（`C-b {`、`C-b }`、`swap-pane`）。发给 `%7` 或 `%builder` 的消息，还是到原来那个 pane。位置写法（`work:0.1`）指的是现在在那个位置上的 pane。完整地址（`$1:@2.%7`）还写明了 pane 在哪：pane 被挪到别的窗口后，消息会被拒收，而不是发错地方。
