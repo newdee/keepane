@@ -6796,3 +6796,5 @@ UnifyTerm 维护者 2026-11-24 在 #unifyterm-keepane 请求（用户让做的�
 | 8 | 测试本身对不对（第 4、5 轮改过的两个测试是否测到它们说的）+ 全量 + web e2e（依次跑） | e2e：先断言 `shell` 模式下 `pane_idle` 为 0（"shell 的消息排着"的前提，不成立就失败，不会悄悄通过），再断言送达、trace 的 `via=ai`、三句状态栏原文、两条 `via` 事件和 shell 那条没有；变异"不跟""shell 也跟""不说""不记"都让它失败（第 7 轮）。网页：只在前提不成立时重试，成功时 pane 开着，与原来后续步骤要的状态相同；门槛改 1 ms 时重试 3 次后失败并报出每次的毫秒数（第 5 轮），不会把没测到当成通过。fmt 干净、`clippy exit 0`；Windows `cargo test exit 0` 741 / 11 / 187（67 秒），Linux `cargo test exit: 0` 725 / 182，web e2e 45/45；C 盘 449.1 GB。 | 干净（3/3），验收通过 |
 
 0.90.1（改工作模式时，排队给人和 agent 的消息跟着走，给 shell 的不动，还在等别的模式的在状态栏说；网页 layout 测试的时序前提改为重试）：第 227 条。
+
+0.90.1 发布：CI 45527078106（e02054b）通过（含 macOS）；tag v0.90.1；Release 45528603788 四个平台通过；manifests 6f35df6；winget PR #488825；Homebrew formula 45529852549 通过，三个 tar.gz 的 sha256 与 release 一致。
