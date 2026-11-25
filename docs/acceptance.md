@@ -6823,3 +6823,14 @@ UnifyTerm 维护者 2026-11-24 在 #unifyterm-keepane 请求（用户让做的�
 0.91.0（agent 定义文件第 1 步：`agents/codewhale.toml` 内置，`~/.keepane/agents/*.toml`，`keepane setup` 认定义的 agent，`pane-busy`、`agent-defs`，hook 的 `--agent`；PowerShell 补全的 `setup` 词从同一处生成；`enter.e2e.ts` 等标题栏显示 pane 名字再量）：第 228 条。
 
 真的 codewhale 读 keepane 写的配置（验收通过后、发布前补的实机检查）：codewhale 0.10.4（npm 包，装在临时目录，`CODEWHALE_HOME` 指向临时目录，不碰 `~/.codewhale`）。空目录里 `keepane setup codewhale --install` 之后，`codewhale config list` 读出 `hooks = { enabled = true, hooks = [...] }`，里面是 keepane 的 4 条（`pane-ready` ×2、`pane-busy`、`pane-wait`，都带 `--agent codewhale`），exit 0；`codewhale mcp list` 列出 `keepane [enabled] keepane mcp`。已有 `[hooks]` 和 15 条 hook 的配置：装后仍只有 1 个 `[hooks]`，codewhale 读出原来的 15 条加 keepane 的 4 条，exit 0。hook 在真会话里触发后各自收到什么，等用户用自己的 key 跑一次再记。
+
+发布前又发现一处（推 b2ddb76 时 git 提示 `agents/codewhale.toml` 在 Windows 检出会转成 CRLF），在第 228 条里续轮：
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 9 | 跨平台一致性（检出后的文件、编进程序的字节）| **发现**：定义文件是 CRLF 时，TOML 多行字符串里带着 `\r`：本机把 codewhale 的定义存成 CRLF 再 `setup --install`，写出的 `config.toml` 里有 21 个 CR。两种后果：CI 的 Windows 检出是 CRLF（本机 `core.autocrlf=true`，但 Write 写的是 LF、git 没动过，所以本机测试没看到），编进程序的定义带 CR，单元断言"开头是 `[hooks]\nenabled = true\n`"会失败，发出去的 Windows 版也往 agent 的 LF 配置里混进 CRLF 行；用户在 Windows 编辑器里写的定义同样。定性：边界遗漏（解析前没统一换行）；同类只有 `include_str!` 的 man 页，它按行处理不受影响。修：`parse` 先把 `\r\n` 换成 `\n`；`.gitattributes` 给 `agents/**` 加 `eol=lf`（同 `packaging/**` 的理由）；单元 `crlf_reads_as_lf`（BASE 和内置定义各转成 CRLF：文本、`head` 与 LF 版逐字相同，没有 CR）。变异：去掉统一，该单元失败。有发现（被验收的代码），不计数。 | 有发现，不计数，重来 |
+| 10 | 机制通路存活（第 9 轮的修复：同一输入，修前修后）+ 全量 + web e2e（依次跑） | 同一个 CRLF 定义文件 `setup --install`：修前写出的 `config.toml` 有 21 个 CR，修后 0 个；变异（去掉统一）单元失败（第 9 轮）。fmt 干净、`clippy exit 0`；Windows `cargo test exit 0` 753 / 11 / 188（95 秒），Linux `cargo test exit: 0` 737 / 183，web e2e 45/45；C 盘 428.0 GB。 | 干净（1/3） |
+
+（第 9 轮的判断有 CI 证据：b2ddb76 的 CI 45536433112，macOS、Ubuntu、网页通过，Windows 失败的正是 `the_shipped_definitions_load` 和 `a_defined_agent_is_set_up_from_its_file` 两个断言；macOS 的 e2e 通过，也印证第 8 轮把替身换成 bash 的必要性没有出错。）
+| 11 | 静态一致性（修复后的设计稿、README、man、代码）+ 全量 + web e2e（依次跑） | 设计稿查旧说法：没有"待核"；`CODEWHALE_CONFIG_DIR` 只在"PR #1 用了不存在的变量"那句历史说明里；`list-agents` 只在"它显示 name"那句（对）；"不用正则"（对）。README、man、`src`、`agents` 里没有旧名字。`agent-defs`、`pane-busy` 在命令表、FLAGS、opencli、man、README 中英都有。设计稿 4.2 写明定义按 LF 读、`agents/**` 检出为 LF（第 9 轮的修复，随修复一起写）。fmt 干净、`clippy exit 0`；Windows `cargo test exit 0` 753 / 11 / 188（69 秒），Linux `cargo test exit: 0` 737 / 183，web e2e 45/45；C 盘 427.7 GB。 | 干净（2/3） |
+| 12 | 可复现性（同一定义的 LF 版和 CRLF 版，逐字节）+ 全量 + web e2e（依次跑） | 同一份定义分别存成 LF 和 CRLF：`setup` 的计划 SHA-256 前 16 位都是 `FAC9CEDC3D874525`，装出的两个文件都是 `EA419C6C90781E2A`（路径换成占位后比较），逐字节相同。fmt 干净、`clippy exit 0`；Windows `cargo test exit 0` 753 / 11 / 188（70 秒），Linux `cargo test exit: 0` 737 / 183，web e2e 45/45；C 盘 427.7 GB。 | 干净（3/3），验收通过 |

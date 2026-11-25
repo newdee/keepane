@@ -158,6 +158,8 @@ value = { command = "keepane", args = ["mcp"] }
 - 文件不是普通 JSON（有注释）时，`json-merge` 不动它，只显示要手动加的内容。
 - `off_when` 里的文字出现在文件里时，`setup` 提示"hook 可能被关掉了"，并且不显示"已装好"。这条用来防 PR #1 里的问题：配置里已有 `[hooks] enabled = false` 时，hook 装上了却从来不触发。
 
+定义文件里的换行一律按 LF 读（Windows 编辑器存的 CRLF、在 Windows 上检出的内置文件都一样）：`setup` 写出的内容在每个系统上逐字节相同，也不会往 agent 的 LF 文件里混进 CR。仓库的 `.gitattributes` 让 `agents/**` 检出时也是 LF。
+
 `text` 里能用的占位符：`{ready}`、`{busy}`、`{wait}`、`{step_start}`、`{step_end}`。每个都换成完整的命令，例如 `keepane pane-ready -q --agent codewhale`。命令不加引号（README 已写明原因：Windows 上的 agent 可能用 PowerShell 运行 hook，带引号的路径后面跟参数是语法错误）。
 
 ## 5. 运行时：hook 调用的命令

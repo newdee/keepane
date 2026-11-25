@@ -51,6 +51,22 @@ fn the_shipped_definitions_load() {
     assert_eq!(cw.setup.files[1].at.as_ref().unwrap().all(), ["/servers/keepane", "/mcpServers/keepane"]);
 }
 
+/// A file with CRLF line breaks (a Windows editor; the shipped file
+/// checked out on Windows) reads as the same definition: no CR in what
+/// `setup` writes.
+#[test]
+fn crlf_reads_as_lf() {
+    let crlf = BASE.replace("\r\n", "\n").replace('\n', "\r\n");
+    let (a, b) = (parse(BASE, "lf").unwrap(), parse(&crlf, "crlf").unwrap());
+    let f = (&a.setup.files[0], &b.setup.files[0]);
+    assert_eq!(b.text_of(f.1), a.text_of(f.0));
+    assert_eq!(b.head_of(f.1), a.head_of(f.0));
+    assert!(!b.text_of(f.1).contains('\r') && !b.head_of(f.1).unwrap().contains('\r'));
+    let shipped = SHIPPED[0].1.replace("\r\n", "\n").replace('\n', "\r\n");
+    let cw = parse(&shipped, "crlf codewhale").unwrap();
+    assert!(!cw.text_of(&cw.setup.files[0]).contains('\r'));
+}
+
 #[test]
 fn a_program_is_known_by_its_stem() {
     assert_eq!(program_stem(r"C:\Users\me\AppData\Roaming\npm\codew.CMD"), "codew");

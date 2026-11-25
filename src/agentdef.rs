@@ -475,7 +475,11 @@ impl Def {
 
 /// A definition from its text; `from` says where it was read.
 pub fn parse(text: &str, from: &str) -> Result<Def, String> {
-    let mut d: Def = toml::from_str(text).map_err(|e| format!("{from}: {}", e.to_string().trim_end()))?;
+    // Line breaks as LF whatever the file has (a Windows editor's CRLF, the
+    // shipped file checked out on Windows): the text `setup` writes is the
+    // same everywhere, and adds no CR to an agent's LF file.
+    let text = text.replace("\r\n", "\n");
+    let mut d: Def = toml::from_str(&text).map_err(|e| format!("{from}: {}", e.to_string().trim_end()))?;
     d.from = from.to_string();
     d.check().map_err(|e| format!("{from}: {e}"))?;
     Ok(d)
