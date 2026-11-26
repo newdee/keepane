@@ -315,8 +315,13 @@ pub const THEMES: &[(&str, &str)] = &[
     ("paper", include_str!("../themes/paper.conf")),
     ("tokyo-night", include_str!("../themes/tokyo-night.conf")),
     ("tokyo-day", include_str!("../themes/tokyo-day.conf")),
+    ("nord", include_str!("../themes/nord.conf")),
+    ("gruvbox-dark", include_str!("../themes/gruvbox-dark.conf")),
+    ("catppuccin-mocha", include_str!("../themes/catppuccin-mocha.conf")),
+    ("dracula", include_str!("../themes/dracula.conf")),
 ];
-pub const THEME_NAMES: &[&str] = &["paper-dark", "paper", "tokyo-night", "tokyo-day"];
+pub const THEME_NAMES: &[&str] =
+    &["paper-dark", "paper", "tokyo-night", "tokyo-day", "nord", "gruvbox-dark", "catppuccin-mocha", "dracula"];
 
 /// The options a theme sets (the same in each).
 pub(crate) fn theme_options() -> &'static [&'static str] {
@@ -2002,9 +2007,11 @@ mod tests {
         for (theme, _) in THEMES {
             let mut o = Options::default();
             o.set("theme", theme).unwrap();
-            if o.pane_colours.is_empty() {
-                continue; // the terminal's colours, not the theme's to choose
-            }
+            // Every built-in theme draws the panes in colours of its own.
+            assert!(
+                !o.pane_colours.is_empty() && o.window_bg != Color::Default,
+                "{theme} leaves the panes to the terminal"
+            );
             let (pane, bar) = (o.window_bg, o.status_bg);
             let text: Vec<(String, Color)> =
                 [("text".to_string(), o.window_fg), ("the bar's text".to_string(), o.status_fg)]
@@ -2045,7 +2052,19 @@ mod tests {
             checked.push((*theme, runs));
         }
         // Every coloured run of each status line checked.
-        assert_eq!(checked, [("paper-dark", 11), ("paper", 11), ("tokyo-day", 14)]);
+        assert_eq!(
+            checked,
+            [
+                ("paper-dark", 11),
+                ("paper", 11),
+                ("tokyo-night", 14),
+                ("tokyo-day", 14),
+                ("nord", 14),
+                ("gruvbox-dark", 14),
+                ("catppuccin-mocha", 14),
+                ("dracula", 14)
+            ]
+        );
     }
 
     /// The built-in themes set the same options, so one replaces another
@@ -2066,9 +2085,9 @@ mod tests {
         assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x33, 0x58, 0xb0), Color::Rgb(0xe1, 0xe2, 0xe7)));
         assert_eq!(o.pane_colours.len(), 16);
         assert_ne!(o.get("status-right"), default.get("status-right"));
-        // tokyo-night gives the panes back to the terminal.
+        // tokyo-night draws the panes too (since 0.97, like every built-in theme).
         o.set("theme", "tokyo-night").unwrap();
-        assert_eq!((o.window_bg, o.pane_colours.len()), (Color::Default, 0));
+        assert_eq!((o.window_bg, o.pane_colours.len()), (Color::Rgb(0x1a, 0x1b, 0x26), 16));
         o.set("theme", "paper").unwrap();
         assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(0x33, 0x30, 0x2a), Color::Rgb(0xf0, 0xe7, 0xd2)));
         o.set("theme", "paper-dark").unwrap();
@@ -2108,7 +2127,8 @@ mod tests {
             for (name, value) in theme_settings(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display())) {
                 o.set(&name, &value).unwrap_or_else(|e| panic!("{}: {name}: {e}", f.display()));
             }
-            let own = ["paper-dark.conf", "paper.conf", "tokyo-day.conf"].iter().any(|n| f.ends_with(n));
+            // Every built-in theme draws the panes; plain.conf (tmux's look) gives them back.
+            let own = !f.ends_with("plain.conf");
             assert_eq!(
                 o.window_bg == Color::Default && o.pane_colours.is_empty(),
                 !own,

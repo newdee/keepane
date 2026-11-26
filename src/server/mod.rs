@@ -12757,7 +12757,11 @@ mod tests {
         o.set("clock-mode-colour", "blue").unwrap();
         assert_eq!(clock_ink(&o), render::ClockInk::from(Color::Idx(4)), "one colour set: all of it");
         o.set("clock-mode-colour", "default").unwrap();
+        // A look that leaves the panes to the terminal (no built-in theme
+        // does since 0.97; plain.conf, or set by hand).
         o.set("theme", "tokyo-night").unwrap();
+        o.set("pane-colours", "").unwrap();
+        o.set("window-style", "default").unwrap();
         assert_eq!(
             clock_ink(&o),
             render::ClockInk::from(o.pane_border_active_fg),

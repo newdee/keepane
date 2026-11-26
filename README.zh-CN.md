@@ -994,13 +994,13 @@ source-file ~/.keepane/themes/dracula.conf
 source-file ~/.keepane/themes/plain.conf   # 换回 tmux 的样子
 ```
 
-内置四套主题，一个选项就能切换（手机页面上也能切）：默认的 `paper-dark` 和它的浅色版 `paper`（白纸，像 dfine.tech 白天的代码块）；0.37 及以前的默认 `tokyo-night` 和它的浅色版 `tokyo-day`。
+内置八套主题，一个选项就能切换（手机页面上也能切）：默认的 `paper-dark` 和它的浅色版 `paper`（白纸，像 dfine.tech 白天的代码块）；0.37 及以前的默认 `tokyo-night` 和它的浅色版 `tokyo-day`；还有 `nord`、`gruvbox-dark`、`catppuccin-mocha`、`dracula`。
 
 ```tmux
 set -g theme paper
 ```
 
-keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时，pane 的背景色和程序用的颜色（红、蓝等）都是终端自己的。另外三套自己画这些颜色，在哪个终端里看都一样：它们设置 `window-style`（pane 的默认文字色和背景色，和 tmux 一样）和 `pane-colours`（程序用的 16 种颜色，也就是调色板的前 16 个）。它们的文字颜色（黑色除外，程序一般把黑色用在色块上）在 pane 和状态栏上的对比度都不低于 4.5:1。主题会同时设置这些颜色和状态栏、边框，所以先设主题，自己的改动写在它后面。这些选项只要有一个用别的方式改过（加载主题文件、手动设置），外观就不再是哪套内置主题，`show -gv theme` 会显示 `custom`。想在别的主题下让 pane 用终端自己的颜色：`set -g window-style default` 加 `set -g pane-colours ""`。
+每套主题都自己画 pane 的颜色，在哪个终端里看都一样：设置 `window-style`（pane 的默认文字色和背景色，和 tmux 一样）和 `pane-colours`（程序用的 16 种颜色，也就是调色板的前 16 个）。文字颜色（黑色除外，程序一般把黑色用在色块上）在 pane 和状态栏上的对比度都不低于 4.5:1，线条不低于 3:1（WCAG AA），测试逐套主题、逐段状态栏颜色检查。原配色达不到的颜色（Nord 的红、多数主题的暗灰）只调了亮度，每个主题文件里写明调了哪些。主题会同时设置这些颜色和状态栏、边框，所以先设主题，自己的改动写在它后面。这些选项只要有一个用别的方式改过（加载主题文件、手动设置），外观就不再是哪套内置主题，`show -gv theme` 会显示 `custom`。想在别的主题下让 pane 用终端自己的颜色：`set -g window-style default` 加 `set -g pane-colours ""`。
 
 默认外观用的是 24 位真彩色。在不支持真彩色的终端上（macOS 自带的 Terminal，除非它声明了 `COLORTERM=truecolor`），keepane 会自动换成 256 色里最接近的颜色，keepane 自己的界面和 pane 里程序的输出都一样。
 

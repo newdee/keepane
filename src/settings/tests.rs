@@ -157,7 +157,7 @@ fn arrows_pick_what_can_be_picked() {
     let mut b = board(160, 45);
     assert_eq!(b.picked().unwrap().name, "theme");
     assert_eq!(b.key(k('l')), set("theme", "paper"));
-    assert_eq!(b.key(special(KeyCode::Left)), set("theme", "tokyo-day"), "back from the first goes round");
+    assert_eq!(b.key(special(KeyCode::Left)), set("theme", "dracula"), "back from the first goes round");
     go(&mut b, "pane-frames");
     assert_eq!(b.key(k(' ')), set("pane-frames", "on"));
     assert_eq!(b.key(special(KeyCode::Enter)), set("pane-frames", "on"), "Enter flips on/off too");

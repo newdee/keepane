@@ -29,6 +29,10 @@ const THEME_NAMES: Record<string, string> = {
   paper: "Paper",
   "tokyo-night": "Tokyo Night",
   "tokyo-day": "Tokyo Day",
+  nord: "Nord",
+  "gruvbox-dark": "Gruvbox Dark",
+  "catppuccin-mocha": "Catppuccin Mocha",
+  dracula: "Dracula",
 };
 /** The lines of each pane a cell of the grid shows. */
 const GRID_LINES = 4;

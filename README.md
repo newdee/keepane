@@ -2340,22 +2340,24 @@ source-file ~/.keepane/themes/dracula.conf
 source-file ~/.keepane/themes/plain.conf   # tmux's look instead
 ```
 
-Four themes are built in, to switch with one option (or from the phone's
+Eight themes are built in, to switch with one option (or from the phone's
 page): `paper-dark`, the default, and `paper`, its light one (white paper,
 as the code on dfine.tech by day); `tokyo-night`, the default up to 0.37,
-and `tokyo-day`, its light one.
+and `tokyo-day`, its light one; and `nord`, `gruvbox-dark`,
+`catppuccin-mocha` and `dracula`.
 
 ```tmux
 set -g theme paper
 ```
 
-keepane draws in the terminal it runs in, so with `tokyo-night` a pane's
-background and the colours programs use (their red, blue...) are the
-terminal's own. The other three draw them themselves, so they look the
-same in any terminal: they set `window-style` (a pane's default text and
-background, as in tmux) and `pane-colours` (the 16 colours programs use,
-the first 16 of the palette). Their text colours (all but black, which
-programs draw on colour) read at 4.5:1 or more on the panes and the bar.
+Each draws the panes itself, so it looks the same in any terminal: it sets
+`window-style` (a pane's default text and background, as in tmux) and
+`pane-colours` (the 16 colours programs use, the first 16 of the palette).
+Every text colour (all but black, which programs draw on colour) reads at
+4.5:1 or more on the panes and the bar, the lines at 3:1 (WCAG AA), and a
+test checks it for every theme and every coloured run of its status line.
+Where a palette's own colour fell short (Nord's red, the muted greys of
+most), only its lightness was moved; each theme's file says which.
 A theme sets these and the status line and borders all at once, so set
 the theme first and your own changes after it. Once one of those options
 is set some other way (a theme file, by hand), the look is no built-in

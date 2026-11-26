@@ -3611,16 +3611,31 @@ async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
         (Some("tokyo-day"), Some("#e1e2e7"), Some("#3358b0"))
     );
     assert_eq!(v["palette"][1].as_str(), Some("#b21e49"));
-    assert_eq!(v["names"], serde_json::json!(["paper-dark", "paper", "tokyo-night", "tokyo-day"]));
+    assert_eq!(
+        v["names"],
+        serde_json::json!([
+            "paper-dark",
+            "paper",
+            "tokyo-night",
+            "tokyo-day",
+            "nord",
+            "gruvbox-dark",
+            "catppuccin-mocha",
+            "dracula"
+        ])
+    );
     let (code, body) = http(addr, "POST", "/api/theme?name=solarized", "k", "").await;
     assert_eq!(code, 400, "{body}");
     let (code, body) = http(addr, "POST", "/api/theme?name=tokyo-night", "k", "").await;
     assert_eq!(code, 200, "{body}");
-    c.wait_for("the terminal's own again", |s| bg_at(s) == Some(Color::Default) && red_cell(s) == Some(Color::Idx(1)))
-        .await;
+    // Tokyo Night draws the panes too (since 0.97): its own background and red.
+    c.wait_for("Tokyo Night's own", |s| {
+        bg_at(s) == Some(Color::Rgb(0x1a, 0x1b, 0x26)) && red_cell(s) == Some(Color::Rgb(0xf7, 0x76, 0x8e))
+    })
+    .await;
     let (_, body) = http(addr, "GET", "/api/theme", "k", "").await;
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    // Left to the terminal: the page draws in Tokyo Night's own.
+    // The page draws in the same.
     assert_eq!(
         (v["name"].as_str(), v["bg"].as_str(), v["palette"][1].as_str()),
         (Some("tokyo-night"), Some("#1a1b26"), Some("#f7768e"))

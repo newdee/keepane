@@ -139,7 +139,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 
 - P1 语义色 token：主题只定义 `@paper` `@bar` `@ink` `@soft` `@muted` `@line` `@accent` `@warn` 和 16 色，格式串只写一份并引用 `#[fg=#{@accent}]`（要先让 format 在 `#[...]` 里展开 `#{@name}`）。
 - P2 界面色和 ANSI 分开：`mode-style`、`message-style`、`popup-border-style`。
-- P3 所有主题统一标准，并用测试检查 WCAG 对比度（文字 4.5:1，线条 3:1）。
+- **P3（0.97，做了）**：8 套主题都内置（新增 `nord`、`gruvbox-dark`、`catppuccin-mocha`、`dracula`），都自己画 pane（`tokyo-night` 原来交给终端，现在也画），对比度测试从 3 套查到 8 套（文字 4.5:1、线条 3:1、提示行、状态栏每段颜色）。原配色达不到的颜色只调 OKLCH 亮度，色相不变；每个主题文件写明调了哪些。
 - P4 `~/.keepane/themes/NAME.conf` 用户主题目录和实时预览的选择器。
 - ~~P5 跟随终端亮暗~~：不做（用户 2026-11-26）。
 - P6 非活动 pane 压暗、状态栏按优先级藏项、边框上显示 agent 状态。

@@ -64,7 +64,12 @@ use Kind::*;
 /// Every option, by box, in the order each box lists them.
 pub const OPTIONS: &[OptInfo] = &[
     // 1 Look
-    o("theme", 0, Choice, "The built-in theme last set: `paper`, `paper-dark`, `tokyo-night`, `tokyo-day`."),
+    o(
+        "theme",
+        0,
+        Choice,
+        "The built-in theme last set: `paper`, `paper-dark`, `tokyo-night`, `tokyo-day`, `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`.",
+    ),
     o("window-style", 0, Style, "The panes' own colours."),
     o("pane-colours", 0, List, "The 16 colours drawn for a program's first 16."),
     o("pane-border-style", 0, Style, "The lines between panes."),

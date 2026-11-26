@@ -738,11 +738,12 @@ what keepane can use from `~/.tmux.conf` (or any config), once, and writes
 the rest commented out with why. The default look is Paper Dark, ink on
 dark paper with one accent in cinnabar; the themes in the repository's
 `themes/` directory (`plain.conf` is tmux's look) are ordinary config files
-to source. Four are built in: `set -g theme paper` switches to the light
-one, `paper-dark` back; `tokyo-night` (the default up to 0.37, the panes
-in the terminal's own colours) and its light `tokyo-day`. All but
-`tokyo-night` draw the panes with `window-style` and `pane-colours`,
-whatever the terminal's colours. The lines between panes are heavy
+to source. Eight are built in: `set -g theme paper` switches to the light
+one, `paper-dark` back; `tokyo-night` (the default up to 0.37) and its
+light `tokyo-day`; `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`.
+Each draws the panes with `window-style` and `pane-colours`, whatever the
+terminal's colours, every text colour at 4.5:1 or more on the panes and
+the bar and the lines at 3:1 (a test checks each theme). The lines between panes are heavy
 (`┃` `━`); `set -g pane-border-lines single` draws tmux's thin ones,
 `double` or `simple` (ASCII) the others. `set -g pane-frames on` puts
 each pane in a rounded frame of its own instead (`╭` `╮` `╰` `╯`), the
@@ -1008,7 +1009,7 @@ Set with `set -g` (`set -gu` back to the default) or on the settings board (pref
 | `web-upload-dir` | `keepane-uploads` | Where a file sent from the phone goes (under the pane's directory). |
 | `web-upload-max` | `2G` | The largest file the phone page takes. |
 | `hint-open` | empty | What opens a path picked in `hints` (empty: VS Code, `$EDITOR`, the desktop). |
-| `theme` | `paper-dark` | The built-in theme last set: `paper`, `paper-dark`, `tokyo-night`, `tokyo-day`. |
+| `theme` | `paper-dark` | The built-in theme last set: `paper`, `paper-dark`, `tokyo-night`, `tokyo-day`, `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`. |
 | `window-style` | *(theme)* | The panes' own colours. |
 | `pane-colours` | *(theme)* | The 16 colours drawn for a program's first 16. |
 | `choose-tree-style` | `chart` | How `choose-tree` shows at first: `chart`, `tree` or `list`. |

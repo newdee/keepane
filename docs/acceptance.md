@@ -6952,3 +6952,19 @@ UnifyTerm 维护者 2026-11-24 在 #unifyterm-keepane 请求（用户让做的�
 | 7 | 静态一致性（第 4 轮改过代码之后重查）+ 范围内测试 | man、README en/zh、设计稿第 3、6、9、11 节、opencli 三条、`--help` 两行、`settings.rs` 的模块说明、板上的提示（放大后"r puts it back on X"、重载的"every option and prefix key"）都和代码一致；`show_bindings` 的注释写了重复绑定时取"不再运行它的那个键"。没有发现。fmt 干净、`clippy exit 0`；Windows lib 788 / 2 ignored、console 12 / 1 ignored、e2e 25；Linux lib 772 / 2 ignored、e2e 25；全过；C 盘 367.8 GB。 | 干净（3/3），验收通过 |
 
 0.96.0 发布：c71aa6c 的 CI 45780980403 四个 job 通过（全量，含 macOS）；Pages 45780980417 通过；tag v0.96.0（带注释）；Release 45782121387 四个平台通过；manifests 773fdbd；winget PR #489856；Homebrew formula 45783359124 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 234. P3：内置主题都自己画 pane，对比度测试查全部 8 套（0.97.0）
+
+用户 2026-11-26："其他按推荐来做就行"，后来"继续吧，把这些排好的任务都做完然后发版"。P3 是主题扩展里的一项（设计稿 settings.md 第 12 节）。
+
+- **做了什么。** `nord`、`gruvbox-dark`、`catppuccin-mocha`、`dracula` 原来只是 `themes/` 里的文件，只设状态栏和边框，pane 用终端自己的颜色；`tokyo-night` 是内置的，但 pane 也交给终端。5 个都补成和 `paper-dark` 一样的全套（`status-style`、`window-style`、`pane-colours` 16 色、两种边框、`status-left`、窗口两种格式、`status-right`），后 4 个加进 `THEMES`/`THEME_NAMES`，内置主题从 4 套变成 8 套。
+- **颜色。** 用各自的官方配色，跑原来那条对比度测试的同一套要求（文字在 pane 和状态栏上 4.5:1；提示行的白、黄、亮白在黑上 4.5:1；边框 3:1；状态栏每段颜色 4.5:1）。达不到的颜色只在 OKLCH 里调亮度、色相不变（脚本逐步调到刚好达标），每个主题文件开头写明调了哪些：nord 的红、品红、亮黑、边框、暗灰；gruvbox 的红、亮黑、边框、暗灰；catppuccin 的亮黑、边框、暗灰；dracula 的亮黑、暗灰；tokyo-night 的亮黑、边框、暗灰。状态栏的色块（pane 底色字在强调色上）不用调。
+- **测试。** 对比度测试原来跳过不画 pane 的主题，现在改成断言每套内置主题都画 pane；从查 3 套变成查 8 套，各套状态栏的颜色段数都在断言里。主题文件的测试改成只有 `plain.conf`（tmux 的样子）把 pane 交给终端。
+- 评估：用 `tokyo-night` 的人原来看到的是终端自己的 pane 颜色，现在是 Tokyo Night 的（要回到终端的颜色：`set -g window-style default`、`set -g pane-colours ""`，README 原来就写着）。这是 P3 要的统一；按"原来的写法"测这一点的两个测试跟着改（主题互相替换的测试、时钟两种颜色的测试，后者改成手动清掉 pane 颜色来模拟"交给终端"）。设置板的 `theme` 往左翻，第一个之前现在是 `dracula`（测试跟着改）。网页的主题菜单名字表加 4 个；`web/dist` 重新构建（CI 要求构建结果和提交的一致），`npm run check` 通过。
+- 测试范围：lib 全部；console 全部；e2e 12 个（两个主题的、设置板两个、状态栏 4 个、插件、缩写、补全、前缀提示面板）；Windows 和 Linux。不在范围：网页的 e2e（只改了显示名字表，主题切换的逻辑在 server，由 lib 和 e2e 覆盖）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性（man、README en/zh、设计稿、主题文件开头的说明、网页名字表、optinfo 对代码）+ 范围内测试 | 文档都和代码一致（man 的 `theme` 一行和 optinfo 一字不差，测试管着）；8 个主题文件开头写的配色和调过的颜色和文件里的值一致（同一个脚本生成）。范围内测试：fmt 干净、`clippy exit 0`；Windows lib 788 / 2 ignored、console 12 / 1 ignored、e2e 12 里 1 个失败：`a_theme_draws_the_panes_and_the_page_can_set_it` 等的是 4 个主题名、`tokyo-night` 回到终端的颜色，正是 P3 要改掉的行为；产品代码按设计工作，是测试的期望没跟着改（按规则不是代码的问题，本轮照常计数），改成 8 个名字、`tokyo-night` 用自己的底色和红，只重跑这一个：Windows、Linux 都过（Linux 的 fmt、clippy 干净，`config::` 19 个过）。Linux lib 772 / 2 ignored，其余 e2e 11 个两边都过；C 盘 364.4 GB。 | 干净（1/3） |
+| 2 | 机制通路存活（变异）+ 范围内测试 | 变异 5 个全抓（5 个文件的哈希前后相同，之后重编了真 exe）：`dracula` 不再内置（主题互相替换、对比度、选项候选三个单元都失败，e2e 也失败）、Nord 的红改回原色（对比度单元）、`tokyo-night` 又把 pane 交给终端（两个单元和 e2e）、catppuccin 的边框改回原色太淡（对比度单元）、dracula 的暗灰窗口标签改回原色（对比度单元）。范围内测试：fmt 干净、`clippy exit 0`；Windows lib 788、console 12、e2e 12；Linux lib 772、e2e 12；全过；C 盘 360.7 GB。 | 干净（2/3） |
+| 3 | 可复现性 + 范围内测试 | 调色脚本用同样的原配色跑 3 次，输出 `6A88808A4D919688` 三次逐字节相同；5 个新主题文件里的 16 色、pane 底色和字色、边框、暗灰、强调色，和脚本新跑一次的结果逐项相同（5 个文件各 5/5）。范围内测试：fmt 干净、`clippy exit 0`；Windows lib 788 / 2 ignored、console 12 / 1 ignored、e2e 12；Linux lib 772 / 2 ignored、e2e 12；全过；C 盘 360.7 GB。 | 干净（3/3），验收通过 |
