@@ -1182,10 +1182,25 @@ pub enum Cmd {
     ShowSettings {
         json: bool,
     },
-    /// `save-settings NAME...`: these options' values written to the
-    /// settings file, each on its own `set -g` line.
+    /// `save-settings [-k] NAME...`: these options' values written to the
+    /// settings file, each on its own `set -g` line; with `-k` the prefix
+    /// table's keys too, as they differ from where the config left them.
     SettingsSave {
         names: Vec<String>,
+        keys: bool,
+    },
+    /// `rebind-key [-s] FROM TO`: the prefix table's binding of FROM moved
+    /// to TO; TO bound already: refused, or with `-s` the two swapped.
+    RebindKey {
+        from: String,
+        to: String,
+        swap: bool,
+    },
+    /// `show-bindings [-J]`: the prefix table's keys, each with the key its
+    /// command had when the config file had run (where `r` on the settings
+    /// board puts it back).
+    ShowBindings {
+        json: bool,
     },
     /// `reload-settings`: every option back to its default, then the config
     /// file and the settings file run again.
@@ -2500,13 +2515,17 @@ impl fmt::Display for Cmd {
             }
             Cmd::UnsetOption { name } => write!(f, "set-option -gu {}", quote(name)),
             Cmd::ShowSettings { json } => f.write_str(if *json { "show-settings -J" } else { "show-settings" }),
-            Cmd::SettingsSave { names } => {
-                f.write_str("save-settings")?;
+            Cmd::SettingsSave { names, keys } => {
+                f.write_str(if *keys { "save-settings -k" } else { "save-settings" })?;
                 for n in names {
                     write!(f, " {}", quote(n))?;
                 }
                 Ok(())
             }
+            Cmd::RebindKey { from, to, swap } => {
+                write!(f, "rebind-key{} {} {}", if *swap { " -s" } else { "" }, quote(from), quote(to))
+            }
+            Cmd::ShowBindings { json } => f.write_str(if *json { "show-bindings -J" } else { "show-bindings" }),
             Cmd::SettingsReload => f.write_str("reload-settings"),
             Cmd::Settings => f.write_str("settings"),
             Cmd::SwitchClient { next, prev, last, target } => {
@@ -3331,6 +3350,8 @@ pub const COMMANDS: &[&str] = &[
     "show-settings",
     "save-settings",
     "reload-settings",
+    "rebind-key",
+    "show-bindings",
     "settings",
     "web-share-open",
     "web-share-sent",
@@ -3500,7 +3521,9 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("chat-pick", &[]),
     ("board-pick", &[]),
     ("show-settings", &["-J"]),
-    ("save-settings", &[]),
+    ("save-settings", &["-k"]),
+    ("rebind-key", &["-s"]),
+    ("show-bindings", &["-J"]),
     ("reload-settings", &[]),
     ("settings", &[]),
     ("web-share-open", &[]),
@@ -5185,9 +5208,16 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             Cmd::ShowSettings { json }
         }
         "save-settings" => {
+            let mut keys = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-k" => keys = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
             let names = a.rest();
-            if names.is_empty() {
-                return Err(format!("{n}: name the options to write"));
+            if names.is_empty() && !keys {
+                return Err(format!("{n}: name the options to write (or -k for the keys)"));
             }
             let mut out = Vec::new();
             for o in names {
@@ -5197,7 +5227,36 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 }
                 out.push(name);
             }
-            Cmd::SettingsSave { names: out }
+            Cmd::SettingsSave { names: out, keys }
+        }
+        "rebind-key" => {
+            let mut swap = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-s" => swap = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            let from = a.next().ok_or_else(|| format!("{n}: the key to move, then where to"))?.to_string();
+            let to = a.next().ok_or_else(|| format!("{n}: and where to move it"))?.to_string();
+            a.none_left(n)?;
+            for k in [&from, &to] {
+                if crate::keys::Key::parse(k).is_none() {
+                    return Err(format!("{n}: unknown key {k}"));
+                }
+            }
+            Cmd::RebindKey { from, to, swap }
+        }
+        "show-bindings" => {
+            let mut json = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-J" => json = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ShowBindings { json }
         }
         "reload-settings" | "settings" => {
             a.none_left(n)?;
@@ -6625,6 +6684,13 @@ mod tests {
             "show-settings",
             "show-settings -J",
             "save-settings mouse history-limit",
+            "save-settings -k",
+            "save-settings -k mouse",
+            "rebind-key c C-n",
+            "rebind-key -s c x",
+            "rebind-key % \"\\\"\"",
+            "show-bindings",
+            "show-bindings -J",
             "reload-settings",
             "settings",
             "chat-say review --re 42 sounds good",
@@ -7032,12 +7098,17 @@ mod tests {
         }
         assert_eq!(
             p("save-settings hist mouse"),
-            Cmd::SettingsSave { names: vec!["history-limit".into(), "mouse".into()] }
+            Cmd::SettingsSave { names: vec!["history-limit".into(), "mouse".into()], keys: false }
         );
+        assert_eq!(p("save-settings -k"), Cmd::SettingsSave { names: vec![], keys: true });
         assert!(parse_line("save-settings").unwrap_err().contains("name the options"));
         assert!(parse_line("save-settings no-such-option").is_err());
         assert!(parse_line("reload-settings now").is_err());
         assert!(parse_line("show-settings -x").is_err());
+        assert_eq!(p("rebind-key -s c C-n"), Cmd::RebindKey { from: "c".into(), to: "C-n".into(), swap: true });
+        for bad in ["rebind-key", "rebind-key c", "rebind-key c NoSuchKey", "rebind-key c x y", "rebind-key -x c d"] {
+            assert!(parse_line(bad).is_err(), "{bad}");
+        }
     }
 
     /// `board-pick`: a page from 1 to 9 and one word for the row; nothing

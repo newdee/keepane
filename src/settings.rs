@@ -5,6 +5,10 @@
 //! the rest typed on the bottom line; each change is set at once
 //! (`set-option`), and written to the settings file only on `w`
 //! (`save-settings`). The config file the person wrote is never written.
+//! Under its options the Keys box lists the prefix table's keys: Enter,
+//! then the key it should be on (`rebind-key`; one bound already is asked
+//! about and swapped), `r` back where the config left it; `w` writes them
+//! too (`save-settings -k`).
 //!
 //! It asks the server only what `QUERIES` holds and changes only what
 //! `ACTIONS` holds; the board is kept apart from the console, so it is
@@ -17,10 +21,31 @@ use crate::optinfo::{self, GROUPS, Kind, OPTIONS, OptInfo};
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-/// The only server command the board sends to look.
-pub const QUERIES: &[&str] = &["show-settings"];
+/// The only server commands the board sends to look.
+pub const QUERIES: &[&str] = &["show-settings", "show-bindings"];
 /// The only ones it sends to change anything.
-pub const ACTIONS: &[&str] = &["set-option", "save-settings", "reload-settings"];
+pub const ACTIONS: &[&str] = &["set-option", "save-settings", "reload-settings", "rebind-key", "bind-key"];
+
+/// The box the prefix table's keys are listed in, under its options.
+const KEYS_GROUP: usize = 2;
+
+/// A key of the prefix table as `show-bindings -J` gives it.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct BindRow {
+    /// Empty: what the config bound here runs on no key now.
+    pub key: String,
+    pub command: String,
+    pub repeat: bool,
+    /// The key its command had when the config had run (none: bound since).
+    pub base: Option<String>,
+}
+
+/// A line of a box: an option, or a key of the prefix table (`binds`).
+#[derive(Clone, Copy)]
+enum Item {
+    Opt(&'static OptInfo),
+    Bind(usize),
+}
 
 /// An option as `show-settings -J` gives it.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -48,14 +73,18 @@ enum Edit {
     Line { name: Option<String>, text: String, at: usize, secret: bool },
     /// The next key is the new prefix.
     Key,
+    /// The next key is where key `binds[i]` goes.
+    Bind(usize),
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 enum Ask {
     /// Quit with changes not written.
     Quit,
     /// Everything back to the defaults, the files run again.
     Reload,
+    /// `binds[i]` to a key bound already: swap the two?
+    Swap(usize, String),
 }
 
 /// Columns from which the boxes stand three, then two, abreast.
@@ -82,6 +111,12 @@ pub struct Board {
     pub changed_only: bool,
     /// Options changed here and not written yet (`●`).
     pub unsaved: BTreeSet<String>,
+    /// The prefix table's keys (`show-bindings -J`).
+    pub binds: Vec<BindRow>,
+    /// The commands whose keys were moved here and not written yet (`●`).
+    pub keys_unsaved: BTreeSet<String>,
+    /// The commands the change on its way moves: marked when it went well.
+    moving: Vec<String>,
     /// What the last change did, or what went wrong (true).
     note: Option<(String, bool)>,
     pub cols: u16,
@@ -121,6 +156,9 @@ impl Board {
             filter: String::new(),
             changed_only: false,
             unsaved: BTreeSet::new(),
+            binds: Vec::new(),
+            keys_unsaved: BTreeSet::new(),
+            moving: Vec::new(),
             note: None,
             cols,
             height,
@@ -156,25 +194,116 @@ impl Board {
             .unwrap_or_default();
     }
 
-    /// The options box `g` lists now: the server's (an older one may lack
-    /// some), and only those the filter keeps.
-    fn items(&self, g: usize) -> Vec<&'static OptInfo> {
+    /// `show-bindings -J`, read; an answer that does not read (an older
+    /// server) lists no keys.
+    pub fn set_bindings(&mut self, json: &str) {
+        let s = |o: &serde_json::Value, k: &str| o[k].as_str().unwrap_or_default().to_string();
+        self.binds = serde_json::from_str::<Vec<serde_json::Value>>(json)
+            .map(|rows| {
+                rows.iter()
+                    .map(|o| BindRow {
+                        key: s(o, "key"),
+                        command: s(o, "command"),
+                        repeat: o["repeat"].as_bool().unwrap_or(false),
+                        base: o["base"].as_str().map(String::from),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+
+    /// What box `g` lists now: its options the server has (an older one may
+    /// lack some), then, in the Keys box, the prefix table's keys; only
+    /// those the filter keeps.
+    fn items(&self, g: usize) -> Vec<Item> {
         let filter = self.filter.to_lowercase();
-        OPTIONS
+        let mut out: Vec<Item> = OPTIONS
             .iter()
             .filter(|o| o.group == g)
             .filter(|o| self.rows.get(o.name).is_some_and(|r| !self.changed_only || r.value != r.default))
             .filter(|o| filter.is_empty() || o.name.contains(&filter) || o.doc.to_lowercase().contains(&filter))
-            .collect()
+            .map(Item::Opt)
+            .collect();
+        if g == KEYS_GROUP {
+            out.extend(
+                self.binds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| !self.changed_only || b.base.as_deref() != Some(b.key.as_str()))
+                    .filter(|(_, b)| {
+                        filter.is_empty()
+                            || b.key.to_lowercase().contains(&filter)
+                            || b.command.to_lowercase().contains(&filter)
+                    })
+                    .map(|(i, _)| Item::Bind(i)),
+            );
+        }
+        out
     }
 
     fn pick(&self, g: usize) -> usize {
         self.picks[g].min(self.items(g).len().saturating_sub(1))
     }
 
-    /// The option the keys are on.
-    pub fn picked(&self) -> Option<&'static OptInfo> {
+    fn picked_item(&self) -> Option<Item> {
         self.items(self.group).get(self.pick(self.group)).copied()
+    }
+
+    /// The option the keys are on (none on a key of the prefix table).
+    pub fn picked(&self) -> Option<&'static OptInfo> {
+        match self.picked_item()? {
+            Item::Opt(o) => Some(o),
+            Item::Bind(_) => None,
+        }
+    }
+
+    /// The prefix key as the options say it (`C-b` until read).
+    fn prefix(&self) -> String {
+        self.rows.get("prefix").map(|r| r.value.clone()).filter(|v| !v.is_empty()).unwrap_or_else(|| "C-b".into())
+    }
+
+    /// A key of the prefix table as a line names it: the prefix, then it.
+    fn bind_name(&self, b: &BindRow) -> String {
+        if b.key.is_empty() { "(no key)".into() } else { format!("{} {}", self.prefix(), b.key) }
+    }
+
+    /// `binds[i]` to key `to`: moved there; `to` bound already: asked
+    /// first; a key the config bound that has none now: bound there.
+    fn move_bind(&mut self, i: usize, to: &str, swap: bool) -> Action {
+        let Some(b) = self.binds.get(i).cloned() else { return Action::Redraw };
+        if b.key == to {
+            return Action::Redraw;
+        }
+        let there = self.binds.iter().find(|x| x.key == to).cloned();
+        if b.key.is_empty() {
+            if let Some(there) = there {
+                self.note = Some((format!("{to} is bound to {} already", there.command), true));
+                return Action::Redraw;
+            }
+            let Ok(words) = crate::command::tokenize(&b.command) else { return Action::Redraw };
+            let mut argv = vec!["bind-key".to_string()];
+            if b.repeat {
+                argv.push("-r".into());
+            }
+            argv.push(to.to_string());
+            argv.extend(words);
+            self.moving = vec![b.command];
+            return Action::Run(argv);
+        }
+        match there {
+            Some(_) if !swap => {
+                self.ask = Some(Ask::Swap(i, to.to_string()));
+                Action::Redraw
+            }
+            Some(there) => {
+                self.moving = vec![b.command, there.command];
+                Action::Run(owned(&["rebind-key", "-s", &b.key, to]))
+            }
+            None => {
+                self.moving = vec![b.command];
+                Action::Run(owned(&["rebind-key", &b.key, to]))
+            }
+        }
     }
 
     fn row(&self, name: &str) -> Row {
@@ -209,8 +338,16 @@ impl Board {
 
     fn save(&self) -> Vec<String> {
         let mut argv = vec!["save-settings".to_string()];
+        if !self.keys_unsaved.is_empty() {
+            argv.push("-k".into());
+        }
         argv.extend(self.unsaved.iter().cloned());
         argv
+    }
+
+    /// Changes not written: options, and keys moved.
+    fn not_written(&self) -> usize {
+        self.unsaved.len() + self.keys_unsaved.len()
     }
 
     fn set_by_hand(&self) -> usize {
@@ -252,7 +389,14 @@ impl Board {
                 }
             }
             KeyCode::Enter => {
-                let Some(o) = self.picked() else { return Action::Redraw };
+                let Some(item) = self.picked_item() else { return Action::Redraw };
+                let o = match item {
+                    Item::Opt(o) => o,
+                    Item::Bind(i) => {
+                        self.edit = Some(Edit::Bind(i));
+                        return Action::Redraw;
+                    }
+                };
                 match o.kind {
                     Kind::Bool => return self.step(o, 1),
                     Kind::Key => self.edit = Some(Edit::Key),
@@ -267,11 +411,18 @@ impl Board {
                     }
                 }
             }
-            KeyCode::Char('r') if plain => {
-                if let Some(o) = self.picked() {
-                    return Action::Run(owned(&["set-option", "-gu", o.name]));
-                }
-            }
+            KeyCode::Char('r') if plain => match self.picked_item() {
+                Some(Item::Opt(o)) => return Action::Run(owned(&["set-option", "-gu", o.name])),
+                // A key: back where the config left its command (swapping
+                // with what is there).
+                Some(Item::Bind(i)) => match self.binds[i].base.clone() {
+                    Some(base) => return self.move_bind(i, &base, true),
+                    None => {
+                        self.note = Some(("bound since the config ran: no key of its own to go back to".into(), false))
+                    }
+                },
+                None => {}
+            },
             KeyCode::Char('z') if plain => self.zoom = !self.zoom,
             KeyCode::Char('/') if plain => {
                 let at = self.filter.chars().count();
@@ -279,7 +430,7 @@ impl Board {
             }
             KeyCode::Char('m') if plain => self.changed_only = !self.changed_only,
             KeyCode::Char('w') if plain => {
-                if self.unsaved.is_empty() {
+                if self.not_written() == 0 {
                     self.note = Some(("nothing to write: no change since the last".into(), false));
                 } else if self.file.is_none() {
                     self.note = Some(("no settings file: the config was named; set settings-file in it".into(), true));
@@ -294,7 +445,7 @@ impl Board {
                 self.changed_only = false;
             }
             KeyCode::Char('q') | KeyCode::Escape if plain => {
-                if self.unsaved.is_empty() {
+                if self.not_written() == 0 {
                     return Action::Quit;
                 }
                 self.ask = Some(Ask::Quit);
@@ -311,6 +462,12 @@ impl Board {
                     return Action::Redraw;
                 }
                 Board::set("prefix", &k.to_string())
+            }
+            Edit::Bind(i) => {
+                if k == Key::plain(KeyCode::Escape) {
+                    return Action::Redraw;
+                }
+                self.move_bind(i, &k.to_string(), false)
             }
             Edit::Line { name, text, mut at, secret } => {
                 let mut chars: Vec<char> = text.chars().collect();
@@ -364,6 +521,7 @@ impl Board {
             (Ask::Quit, KeyCode::Char('w')) => Action::RunThenQuit(self.save()),
             (Ask::Quit, KeyCode::Char('q')) => Action::Quit,
             (Ask::Reload, KeyCode::Char('y')) => Action::Run(owned(&["reload-settings"])),
+            (Ask::Swap(i, to), KeyCode::Enter) => self.move_bind(i, &to, true),
             _ => Action::Redraw,
         }
     }
@@ -371,12 +529,21 @@ impl Board {
     /// What a command run for the board answered: said on the bottom line;
     /// a change made marks the option not written, a write unmarks it.
     pub fn done(&mut self, argv: &[String], code: i32, out: &str, err: &str) {
+        let moving = std::mem::take(&mut self.moving);
         if code != 0 {
             self.note = Some((err.trim().lines().next().unwrap_or("failed").to_string(), true));
             return;
         }
         let said = out.trim().lines().next().unwrap_or("").to_string();
         match argv.first().map(String::as_str) {
+            Some("rebind-key" | "bind-key") => {
+                // Where it went: `rebind-key [-s] FROM TO`, `bind-key [-r] TO …`.
+                let to = if argv[0] == "bind-key" { argv.iter().skip(1).find(|a| *a != "-r") } else { argv.last() };
+                let what = moving.first().map(String::as_str).unwrap_or("it");
+                self.note =
+                    Some((format!("{what} now on {} {}", self.prefix(), to.map(String::as_str).unwrap_or("")), false));
+                self.keys_unsaved.extend(moving);
+            }
             Some("set-option") => {
                 let name = argv.get(2).cloned().unwrap_or_default();
                 let secret = optinfo::info(&name).is_some_and(|o| o.kind == Kind::Secret);
@@ -395,10 +562,14 @@ impl Board {
                 for n in &argv[1..] {
                     self.unsaved.remove(n);
                 }
+                if argv.iter().any(|a| a == "-k") {
+                    self.keys_unsaved.clear();
+                }
                 self.note = Some((said, false));
             }
             Some("reload-settings") => {
                 self.unsaved.clear();
+                self.keys_unsaved.clear();
                 self.note = Some((said, false));
             }
             _ => {}
@@ -472,6 +643,36 @@ impl Board {
         }
     }
 
+    /// A line's mark, name and value: an option's (its value as picked
+    /// lines show it), or a key's (the prefix and the key; what it runs).
+    fn cells(&self, item: Item, arrows: bool) -> (String, String, String) {
+        match item {
+            Item::Opt(o) => {
+                let row = self.row(o.name);
+                (self.mark(o.name, &row), o.name.to_string(), self.value_text(o, &row, arrows))
+            }
+            Item::Bind(i) => {
+                let b = &self.binds[i];
+                let mark = if self.keys_unsaved.contains(&b.command) {
+                    paint("1;33", "●")
+                } else if b.base.as_deref() != Some(b.key.as_str()) {
+                    paint("2", "◦")
+                } else {
+                    " ".into()
+                };
+                (mark, self.bind_name(b), inert(&b.command))
+            }
+        }
+    }
+
+    /// Whether a line is one of the two keys a swap asked about.
+    fn in_question(&self, item: Item) -> bool {
+        match (&self.ask, item) {
+            (Some(Ask::Swap(i, to)), Item::Bind(j)) => j == *i || self.binds.get(j).is_some_and(|b| &b.key == to),
+            _ => false,
+        }
+    }
+
     /// A list line: reversed when picked in the box the keys are in, bold
     /// when picked in another.
     fn picked_line(line: &str, picked: bool, here: bool, width: usize) -> String {
@@ -497,20 +698,17 @@ impl Board {
             .enumerate()
             .skip(top)
             .take(rows)
-            .map(|(i, o)| {
-                let row = self.row(o.name);
+            .map(|(i, item)| {
                 let picked = i == pick;
                 let here = g == self.group;
-                let val = self.value_text(o, &row, picked && here);
+                let (mark, name, val) = self.cells(*item, picked && here);
                 let room = width.saturating_sub(2);
                 let val_w = width_of(&val).min(room * 11 / 20);
                 let name_w = room.saturating_sub(val_w + 1);
-                let line = format!(
-                    "{}{} {}",
-                    self.mark(o.name, &row),
-                    fit(&cut(o.name, name_w), name_w),
-                    fit_right(&cut(&val, val_w), val_w)
-                );
+                let line =
+                    format!("{mark}{} {}", fit(&cut(&name, name_w), name_w), fit_right(&cut(&val, val_w), val_w));
+                // The two keys a swap asks about, in red.
+                let line = if self.in_question(*item) { paint("31", &strip(&line)) } else { line };
                 Board::picked_line(&line, picked, here, width)
             })
             .collect()
@@ -521,7 +719,7 @@ impl Board {
     fn zoom_lines(&self, g: usize, r: Rect) -> Vec<String> {
         let items = self.items(g);
         let inner = r.inner_w();
-        let name_w = items.iter().map(|o| o.name.len()).max().unwrap_or(8).clamp(8, 32) + 2;
+        let name_w = items.iter().map(|it| width_of(&self.cells(*it, false).1)).max().unwrap_or(8).clamp(8, 32) + 2;
         let (default_w, source_w) = if inner >= 70 { ((inner / 6).min(18), (inner / 5).min(28)) } else { (0, 0) };
         let value_w = inner.saturating_sub(name_w + default_w + source_w + 3);
         let cols = |a: &str, b: &str, c: &str, d: &str| {
@@ -534,16 +732,30 @@ impl Board {
         let mut out = vec![paint("2", &cols("  option", "value", "default", "set by"))];
         let (rows, top) = self.list_rows(g, r);
         let pick = self.pick(g);
-        for (i, o) in items.iter().enumerate().skip(top).take(rows) {
-            let row = self.row(o.name);
+        for (i, item) in items.iter().enumerate().skip(top).take(rows) {
             let picked = i == pick;
-            let val = cut(&self.value_text(o, &row, picked), value_w.saturating_sub(1));
-            let default = match o.kind {
-                Kind::Secret => String::new(),
-                _ => inert(&row.default),
+            let (mark, name, val) = self.cells(*item, picked);
+            let val = cut(&val, value_w.saturating_sub(1));
+            // A key's default is where the config left its command; who
+            // set it: that, moved, or bound since.
+            let (default, source) = match *item {
+                Item::Opt(o) => {
+                    let row = self.row(o.name);
+                    (if o.kind == Kind::Secret { String::new() } else { inert(&row.default) }, row.source)
+                }
+                Item::Bind(j) => {
+                    let b = &self.binds[j];
+                    let source = match &b.base {
+                        None => "bound since",
+                        Some(base) if *base == b.key => "the config",
+                        Some(_) => "moved",
+                    };
+                    (b.base.clone().unwrap_or_default(), source.to_string())
+                }
             };
-            let name = format!("{}{}", self.mark(o.name, &row), cut(o.name, name_w - 2));
-            let line = cols(&name, &val, &cut(&default, default_w.saturating_sub(1)), &cut(&row.source, source_w));
+            let name = format!("{mark}{}", cut(&name, name_w - 2));
+            let line = cols(&name, &val, &cut(&default, default_w.saturating_sub(1)), &cut(&source, source_w));
+            let line = if self.in_question(*item) { paint("31", &strip(&line)) } else { line };
             out.push(Board::picked_line(&line, picked, true, inner));
         }
         while out.len() < r.inner_h().saturating_sub(ZOOM_FOOT) {
@@ -554,13 +766,29 @@ impl Board {
             out.push(paint("2", " no match"));
             return out;
         }
-        let o = items[pick];
-        let doc = format!(" {}", o.doc);
+        let (doc, takes) = match items[pick] {
+            Item::Opt(o) => (format!(" {}", o.doc), Board::takes(o)),
+            Item::Bind(j) => {
+                let b = &self.binds[j];
+                let back = match &b.base {
+                    Some(base) if *base != b.key => format!("; r puts it back on {base}"),
+                    _ => String::new(),
+                };
+                (
+                    format!(
+                        " A key of the prefix table: {}, then this key, runs {}.",
+                        self.prefix(),
+                        inert(&b.command)
+                    ),
+                    format!("Enter, then the new key (one bound already: Enter swaps the two){back}"),
+                )
+            }
+        };
         let (first, used) = clip(&doc, inner);
         out.push(first);
         let rest = doc.chars().skip(used).collect::<String>();
         out.push(if rest.is_empty() { String::new() } else { cut(&format!(" {}", rest.trim_start()), inner) });
-        out.push(paint("2", &cut(&format!(" {}", Board::takes(o)), inner)));
+        out.push(paint("2", &cut(&format!(" {takes}"), inner)));
         out
     }
 
@@ -593,8 +821,8 @@ impl Board {
         if self.changed_only {
             s.push_str(&format!("  {}", paint("1;36", "changed only")));
         }
-        if !self.unsaved.is_empty() {
-            let n = self.unsaved.len();
+        if self.not_written() > 0 {
+            let n = self.not_written();
             let right = format!("{} {n} not written  {}", paint("1;33", "●"), key_hints("w write"));
             let w = usize::from(self.cols);
             let room = w.saturating_sub(width_of(&right) + 1);
@@ -605,9 +833,22 @@ impl Board {
 
     fn foot(&self) -> String {
         let w = usize::from(self.cols);
-        match (&self.edit, self.ask) {
+        match (&self.edit, &self.ask) {
             (Some(Edit::Key), _) => {
                 format!(" {}  {}", paint("1;33", "press the new prefix key"), key_hints("Esc cancel"))
+            }
+            (Some(Edit::Bind(i)), _) => {
+                let what = self.binds.get(*i).map(|b| inert(&b.command)).unwrap_or_default();
+                format!(" {} {what}  {}", paint("1;33", "press the new key for"), key_hints("Esc cancel"))
+            }
+            (None, Some(Ask::Swap(i, to))) => {
+                let what = self.binds.get(*i).map(|b| inert(&b.command)).unwrap_or_default();
+                let there = self.binds.iter().find(|b| &b.key == to).map(|b| inert(&b.command)).unwrap_or_default();
+                format!(
+                    " {} is bound to {there}: {}",
+                    paint("31", &format!("{} {to}", self.prefix())),
+                    key_hints(&format!("Enter swap with {what}  Esc cancel"))
+                )
             }
             (Some(Edit::Line { name, text, at, secret }), _) => {
                 let label = match name {
@@ -628,14 +869,14 @@ impl Board {
             }
             (None, Some(Ask::Quit)) => format!(
                 " {} {}  {}",
-                paint("1;33", &crate::format::count(self.unsaved.len(), "change")),
+                paint("1;33", &crate::format::count(self.not_written(), "change")),
                 "not written:",
                 key_hints("w write and quit  q quit, they last until the server restarts  Esc stay")
             ),
             (None, Some(Ask::Reload)) => format!(
-                " {} every option back to its default, then the config and settings files run; {} not written and {} set by hand are lost  {}",
+                " {} every option and prefix key back to its default, then the config and settings files run; {} not written and {} set by hand are lost  {}",
                 paint("1;33", "reload:"),
-                self.unsaved.len(),
+                self.not_written(),
                 self.set_by_hand(),
                 key_hints("y reload  Esc stay")
             ),
@@ -675,7 +916,9 @@ impl Board {
         for (g, r) in self.grid() {
             let lines = if self.zoom { self.zoom_lines(g, r) } else { self.box_lines(g, r) };
             let count = self.items(g).len();
-            let all = OPTIONS.iter().filter(|o| o.group == g && self.rows.contains_key(o.name)).count();
+            // Its options and, in the Keys box, its keys: what it lists unfiltered.
+            let all = OPTIONS.iter().filter(|o| o.group == g && self.rows.contains_key(o.name)).count()
+                + if g == KEYS_GROUP { self.binds.len() } else { 0 };
             let right = match (self.zoom, count == all) {
                 (true, _) => "z back".to_string(),
                 (false, true) => count.to_string(),
@@ -767,6 +1010,8 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime) -> anyhow::Result<i32> {
                 anyhow::bail!("{}", err.trim());
             }
             board.set_settings(&out);
+            // The prefix table's keys (an older server has none to give).
+            board.set_bindings(&ask(&owned(&["show-bindings", "-J"])).1);
             let (cols, rows) = console.size();
             if (cols, rows) != (board.cols, board.height) {
                 board.resize(cols, rows);

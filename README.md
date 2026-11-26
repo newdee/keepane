@@ -2273,6 +2273,10 @@ back; none can be moved, hidden or taken away.
   `pane-border-lines`), a number by its step, a colour. `Enter` types the
   rest on the bottom line; a secret shows as dots, and the prefix is set by
   pressing the new key. `r` puts the default back.
+- Under its options the Keys box lists every key of the prefix table
+  (`C-b c  new-window`). Enter, then press the key it should be on; a key
+  bound already turns both lines red, and Enter swaps the two. `r` puts it
+  back where your config left it.
 - A change is set at once (see it on the status line behind the popup) and
   marked `●` until `w` writes it to `~/.keepane/settings.conf`
   (`settings-file`). keepane runs that file after `~/.keepane.conf`, which

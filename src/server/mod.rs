@@ -1162,7 +1162,7 @@ impl Session {
 
 /// What a key runs, and whether it keeps running without the prefix for
 /// `repeat-time` afterwards (tmux `bind -r`).
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Binding {
     cmd: Cmd,
     repeat: bool,
@@ -1385,6 +1385,10 @@ pub struct Server {
     /// The agent's pane whose `source-file` runs now: what the file sets is
     /// that agent's (`config::PERSONS` stays the person's).
     agent_sourcing: Option<PaneId>,
+    /// The prefix table as the config file left it (before the settings
+    /// file): what `save-settings -k` writes the difference from, and
+    /// where `r` on the settings board puts a key back.
+    base_binds: HashMap<Key, Binding>,
     /// Every change, numbered, for copies on other machines (decision 17).
     journal: journal::Journal,
     /// The machines that copy this one's sessions now (`link_feed`).
@@ -1858,6 +1862,7 @@ impl Server {
             config_at: None,
             config_loaded: None,
             agent_sourcing: None,
+            base_binds: default_bindings(),
             journal: journal::Journal::default(),
             feeds: Vec::new(),
             mirrors: HashMap::new(),
@@ -2464,7 +2469,9 @@ impl Server {
             log::info!("{note}");
             self.note_message(&note);
         }
-        // The settings board's file, after the config: what it says wins.
+        // The prefix table as the config left it, then the settings board's
+        // file, after the config: what it says wins.
+        self.base_binds = self.prefix_binds.clone();
         if let Err(e) = self.source_settings_file() {
             log::error!("{e}");
             self.config_errors.get_or_insert_with(Vec::new).extend(e.lines().map(str::to_string));
@@ -6837,7 +6844,9 @@ impl Server {
             Cmd::BoardPick { place } => self.board_pick(cid, place),
             Cmd::UnsetOption { name } => self.unset_option(&name, cid),
             Cmd::ShowSettings { json } => self.show_settings(json),
-            Cmd::SettingsSave { names } => self.settings_save(&names, cid),
+            Cmd::SettingsSave { names, keys } => self.settings_save(&names, keys, cid),
+            Cmd::RebindKey { from, to, swap } => self.rebind_key(&from, &to, swap),
+            Cmd::ShowBindings { json } => self.show_bindings(json),
             Cmd::SettingsReload => self.settings_reload(cid),
             Cmd::Settings => self.settings_popup(cid),
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),

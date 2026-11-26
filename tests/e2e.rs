@@ -11868,6 +11868,74 @@ async fn an_agents_pane_reads_the_persons_options_and_does_not_change_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Keys of the prefix table moved on the settings board (`rebind-key`): a
+/// key bound already is refused unless swapped; `show-bindings` says where
+/// each was; `save-settings -k` writes the difference from where the config
+/// left them (the config's own keys not repeated); the next server has them;
+/// a reload puts back what was moved and not written.
+#[tokio::test(flavor = "multi_thread")]
+async fn keys_moved_on_the_board_are_written_and_come_back() {
+    let dir = std::env::temp_dir().join(format!("keepane-test-keys-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("settings.conf");
+    let config =
+        format!("set -g settings-file {}\nbind-key y display-message hi\n", file.to_string_lossy().replace('\\', "/"));
+    let h = Harness::start_with("keys", &config).await;
+    let has = |list: &str, key: &str, cmd: &str| {
+        list.lines().any(|l| {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            w.len() >= 5 && w[1..4] == ["-T", "prefix", key] && l.contains(cmd)
+        })
+    };
+    assert_eq!(h.cli(&["rebind-key", "c", "C-n"]).await.0, 0);
+    let list = list_keys(&h).await;
+    assert!(has(&list, "C-n", "new-window") && !has(&list, "c", "new-window"), "{list}");
+    let (code, _, err) = h.cli(&["rebind-key", "C-n", "x"]).await;
+    assert!(code != 0 && err.contains("x is bound to") && err.contains("-s swaps"), "{code} {err}");
+    assert_eq!(h.cli(&["rebind-key", "-s", "C-n", "x"]).await.0, 0);
+    let list = list_keys(&h).await;
+    assert!(has(&list, "x", "new-window") && has(&list, "C-n", "kill-pane"), "{list}");
+    // Where each was.
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&h.cli(&["show-bindings", "-J"]).await.1).unwrap();
+    let nw = rows.iter().find(|r| r["command"] == "new-window").unwrap();
+    assert_eq!((nw["key"].as_str(), nw["base"].as_str()), (Some("x"), Some("c")));
+    let y = rows.iter().find(|r| r["key"] == "y").unwrap();
+    assert_eq!(y["base"].as_str(), Some("y"), "the config's own key is where the config left it");
+    // Written: the difference, not the config's own key.
+    let (code, out, err) = h.cli(&["save-settings", "-k"]).await;
+    assert!(code == 0 && out.contains("3 key lines"), "{code} {out} {err}");
+    let written = std::fs::read_to_string(&file).unwrap();
+    let lines: Vec<&str> = written.lines().skip(1).collect();
+    assert_eq!(lines.len(), 3, "{written}");
+    assert!(lines.contains(&"unbind-key c"), "{written}");
+    assert!(lines.iter().any(|l| l.starts_with("bind-key x ") && l.ends_with("new-window")), "{written}");
+    assert!(lines.iter().any(|l| l.starts_with("bind-key C-n ") && l.contains("kill-pane")), "{written}");
+    assert!(!written.contains("display-message hi"), "{written}");
+    // Written again: the same file.
+    h.cli(&["save-settings", "-k"]).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), written);
+    // Moved and not written: a reload puts it back.
+    assert_eq!(h.cli(&["rebind-key", "v", "F5"]).await.0, 0);
+    assert_eq!(h.cli(&["reload-settings"]).await.0, 0);
+    let list = list_keys(&h).await;
+    assert!(has(&list, "v", "dashboard") && !has(&list, "F5", "dashboard"), "{list}");
+    assert!(has(&list, "x", "new-window") && has(&list, "y", "display-message"), "{list}");
+    // The next server has the keys written.
+    let h2 = Harness::start_with("keys2", &config).await;
+    let list = list_keys(&h2).await;
+    assert!(has(&list, "x", "new-window") && !has(&list, "c", "new-window"), "{list}");
+    for s in [&h, &h2] {
+        s.cli(&["kill-server"]).await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `list-keys`, as text.
+async fn list_keys(h: &Harness) -> String {
+    h.cli(&["list-keys"]).await.1
+}
+
 /// One option of `show-settings -J`: (value, source).
 async fn setting(h: &Harness, name: &str) -> (String, String) {
     let (code, out, err) = h.cli(&["show-settings", "-J"]).await;

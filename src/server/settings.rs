@@ -5,9 +5,11 @@
 //! The settings file is the board's own: the config file the person wrote
 //! is never written to, so its comments, `%if` blocks and order stay theirs.
 
+use super::Binding;
 use super::{Outcome, Server, expand_home};
 use crate::command::{Cmd, parse_line, quote};
 use crate::config::{ACCEPTED, Options, PERSONS, SHOWABLE};
+use crate::keys::Key;
 use std::path::{Path, PathBuf};
 
 /// The first line of a settings file the board starts.
@@ -72,7 +74,144 @@ pub(super) fn merge(old: &str, updates: &[(String, String)]) -> (String, Vec<(St
     (lines.join("\n") + "\n", at)
 }
 
+/// Whether a config line binds or unbinds a key of the prefix table (the
+/// keys `save-settings -k` writes are all of these the file has).
+fn prefix_key_line(line: &str) -> bool {
+    use crate::command::KeyTable::Prefix;
+    matches!(parse_line(line), Ok(Some(Cmd::BindKey { table: Prefix, .. } | Cmd::UnbindKey { table: Prefix, .. })))
+}
+
+/// `old` with every prefix-table key line taken out and `keys` added at the
+/// end (the board's keys are the file's: one written by hand is in the
+/// table, so it comes back among `keys`). Other lines stay as they were.
+pub(super) fn merge_keys(old: &str, keys: &[String]) -> String {
+    let lines: Vec<&str> = old.lines().map(|l| l.trim_end_matches('\r')).collect();
+    let mut out: Vec<String> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let continued = i > 0 && lines[i - 1].ends_with('\\');
+        if !continued && !l.ends_with('\\') && prefix_key_line(l) {
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    out.extend(keys.iter().cloned());
+    if out.iter().all(|l| l.trim().is_empty()) {
+        return String::new();
+    }
+    out.join("\n") + "\n"
+}
+
 impl Server {
+    /// The prefix table's lines that make it from where the config left it
+    /// (`base_binds`): a key the config had and the table has not unbound,
+    /// a key bound otherwise (or new) bound; by the key's name, so the same
+    /// table always writes the same lines.
+    fn key_lines(&self) -> Vec<String> {
+        use crate::command::KeyTable::Prefix;
+        let mut keys: Vec<&Key> = self.base_binds.keys().chain(self.prefix_binds.keys()).collect();
+        keys.sort_by_key(|k| k.to_string());
+        keys.dedup();
+        let mut out = Vec::new();
+        for k in keys {
+            match (self.base_binds.get(k), self.prefix_binds.get(k)) {
+                (Some(_), None) => out.push(Cmd::UnbindKey { table: Prefix, key: k.to_string() }.to_string()),
+                (was, Some(now)) if was != Some(now) => out.push(
+                    Cmd::BindKey {
+                        table: Prefix,
+                        key: k.to_string(),
+                        repeat: now.repeat,
+                        cmd: Box::new(now.cmd.clone()),
+                    }
+                    .to_string(),
+                ),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// `rebind-key [-s] FROM TO`: what FROM runs, moved to TO. TO bound
+    /// already: refused, saying to what, or with `-s` the two swapped.
+    pub(super) fn rebind_key(&mut self, from: &str, to: &str, swap: bool) -> Outcome {
+        let (Some(f), Some(t)) = (Key::parse(from), Key::parse(to)) else {
+            return Outcome::Error(format!("rebind-key: unknown key {from} or {to}"));
+        };
+        if f == t {
+            return Outcome::Ok;
+        }
+        let Some(moved) = self.prefix_binds.get(&f).cloned() else {
+            return Outcome::Error(format!("rebind-key: {from} is bound to nothing"));
+        };
+        match self.prefix_binds.get(&t).cloned() {
+            Some(there) if !swap => {
+                Outcome::Error(format!("rebind-key: {to} is bound to {}: -s swaps the two", there.cmd))
+            }
+            Some(there) => {
+                self.prefix_binds.insert(t, moved);
+                self.prefix_binds.insert(f, there);
+                Outcome::Ok
+            }
+            None => {
+                self.prefix_binds.remove(&f);
+                self.prefix_binds.insert(t, moved);
+                Outcome::Ok
+            }
+        }
+    }
+
+    /// `show-bindings [-J]`: each key of the prefix table and what it runs,
+    /// with the key that command had when the config had run (`base`; none
+    /// for one bound since); then what the config bound and nothing runs
+    /// now (no key). By the key's name.
+    pub(super) fn show_bindings(&self, json: bool) -> Outcome {
+        let base_of = |k: &Key, b: &Binding| -> Option<String> {
+            if self.base_binds.get(k) == Some(b) {
+                return Some(k.to_string());
+            }
+            // A command the config bound to more than one key (`Left` and
+            // `h`): the key that no longer runs it is the one it came from.
+            let mut found: Vec<(bool, String)> = self
+                .base_binds
+                .iter()
+                .filter(|(_, x)| x.cmd == b.cmd)
+                .map(|(k2, x)| (self.prefix_binds.get(k2) == Some(x), k2.to_string()))
+                .collect();
+            found.sort();
+            found.into_iter().next().map(|(_, k)| k)
+        };
+        let mut rows: Vec<(String, String, bool, Option<String>)> = self
+            .prefix_binds
+            .iter()
+            .map(|(k, b)| (k.to_string(), b.cmd.to_string(), b.repeat, base_of(k, b)))
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut gone: Vec<(String, String, bool, Option<String>)> = self
+            .base_binds
+            .iter()
+            .filter(|(_, b)| !self.prefix_binds.values().any(|x| x.cmd == b.cmd))
+            .map(|(k, b)| (String::new(), b.cmd.to_string(), b.repeat, Some(k.to_string())))
+            .collect();
+        gone.sort_by(|a, b| a.3.cmp(&b.3));
+        rows.extend(gone);
+        if json {
+            let v: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|(k, c, r, b)| serde_json::json!({ "key": k, "command": c, "repeat": r, "base": b }))
+                .collect();
+            return Outcome::Text(serde_json::Value::Array(v).to_string());
+        }
+        Outcome::Text(
+            rows.iter()
+                .map(|(k, c, _, b)| match b {
+                    Some(b) if b != k => format!("{:<10} {c}  # was {b}", if k.is_empty() { "-" } else { k }),
+                    Some(_) => format!("{k:<10} {c}"),
+                    None => format!("{k:<10} {c}  # new"),
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
     /// Where the settings file is: `settings-file`; else
     /// `~/.keepane/settings.conf`, unless the config was named
     /// (`KEEPANE_CONFIG`, `-f`), which keeps a test (or anyone who names
@@ -126,6 +265,9 @@ impl Server {
         let outer = self.agent_sourcing;
         self.agent_sourcing = outer.or(self.agent_caller(cid));
         let ran = self.source_file(path).map(|_| ());
+        if is_config {
+            self.base_binds = self.prefix_binds.clone();
+        }
         let then = if is_config { self.source_settings_file() } else { Ok(()) };
         self.agent_sourcing = outer;
         match (ran, then) {
@@ -205,7 +347,7 @@ impl Server {
     /// `save-settings NAME...`: each option's value on a `set -g` line of
     /// the settings file (a secret's own text: the file is kept to this
     /// user). The file and its folder are made when missing.
-    pub(super) fn settings_save(&mut self, names: &[String], cid: Option<super::ClientId>) -> Outcome {
+    pub(super) fn settings_save(&mut self, names: &[String], keys: bool, cid: Option<super::ClientId>) -> Outcome {
         if let Some(why) = self.settings_refused("save-settings", cid) {
             return Outcome::Error(why);
         }
@@ -234,6 +376,12 @@ impl Server {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Outcome::Error(format!("save-settings: {}: {e}", path.display())),
         };
+        // The keys first (their old lines out, the table's difference at the
+        // end), then the options: so each option's line number is its own.
+        let key_lines = if keys { self.key_lines() } else { Vec::new() };
+        // A new file says whose it is first, whatever goes in it.
+        let old = if old.trim().is_empty() { format!("{HEADER}\n") } else { old };
+        let old = if keys { merge_keys(&old, &key_lines) } else { old };
         let (text, at) = merge(&old, &updates);
         if let Err(e) = write_private(&path, &text) {
             return Outcome::Error(format!("save-settings: {}: {e:#}", path.display()));
@@ -242,13 +390,25 @@ impl Server {
         for (n, line) in at {
             self.option_source.insert(n, format!("{shown}:{line}"));
         }
-        Outcome::Text(format!("saved {} to {shown}", crate::format::count(names.len(), "option")))
+        let what = match (names.len(), keys) {
+            (_, false) => crate::format::count(names.len(), "option"),
+            (0, true) => crate::format::count(key_lines.len(), "key line"),
+            (n, true) => {
+                format!(
+                    "{} and {}",
+                    crate::format::count(n, "option"),
+                    crate::format::count(key_lines.len(), "key line")
+                )
+            }
+        };
+        Outcome::Text(format!("saved {what} to {shown}"))
     }
 
     /// `reload-settings`: every option back to its default, then the config
     /// file and the settings file run again, as at the start, plugins and
-    /// all. Key bindings, hooks and `@` options are not undone first: their
-    /// lines run again, as with `source-file`.
+    /// all; the prefix table back to its defaults first too. Other key
+    /// tables, hooks and `@` options are not undone first: their lines run
+    /// again, as with `source-file`.
     pub(super) fn settings_reload(&mut self, cid: Option<super::ClientId>) -> Outcome {
         if let Some(why) = self.settings_refused("reload-settings", cid) {
             return Outcome::Error(why);
@@ -277,6 +437,9 @@ impl Server {
         // `@plugin` entries come back with the lines, not twice.
         self.plugins.clear();
         self.opts.user.retain(|(k, _)| k != "@plugin");
+        // The prefix table too: the keys the board moved come back from the
+        // files, not from where they were moved to.
+        self.prefix_binds = super::default_bindings();
         let mut ran = Vec::new();
         if let Some(config) = self.config_loaded.clone().filter(|p| p.is_file()) {
             match self.source_file(&config.to_string_lossy()) {
@@ -284,6 +447,7 @@ impl Server {
                 Err(e) => errors.push(e),
             }
         }
+        self.base_binds = self.prefix_binds.clone();
         if let Some(file) = self.settings_path().filter(|p| p.is_file()) {
             match self.source_file(&file.to_string_lossy()) {
                 Ok(_) => ran.push(shown_path(&file.to_string_lossy())),
@@ -427,6 +591,75 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&ok).unwrap(), "x\n");
         assert!(!ok.with_extension("conf.new").exists());
         std::fs::remove_dir_all(ok.parent().unwrap()).unwrap();
+    }
+
+    /// The board's key lines replace every prefix-table key line of the
+    /// file; another table's keys, comments, options and continued lines
+    /// stay.
+    #[test]
+    fn key_lines_replace_the_prefix_tables_and_nothing_else() {
+        let old = "# mine\nbind-key c new-window\nunbind-key x\nbind -n C-a send-keys a\nset -g mouse off\nbind-key q \\\n  display-panes\n";
+        let text = merge_keys(old, &["bind-key C-n new-window".to_string()]);
+        assert_eq!(
+            text,
+            "# mine\nbind -n C-a send-keys a\nset -g mouse off\nbind-key q \\\n  display-panes\nbind-key C-n new-window\n"
+        );
+        assert_eq!(merge_keys("bind-key c new-window\n", &[]), "", "nothing left");
+    }
+
+    fn server() -> Server {
+        let (pane_tx, _p) = std::sync::mpsc::channel::<super::super::PaneEvent>();
+        let (events, _e) = tokio::sync::mpsc::unbounded_channel::<super::super::Event>();
+        Server::new(pane_tx, "t".into(), events)
+    }
+
+    /// A key moved, swapped, refused; the lines written for the table, run
+    /// on a fresh one, make the same table; `show-bindings` says where each
+    /// key was.
+    #[test]
+    fn moved_keys_are_written_as_lines_that_make_the_same_table() {
+        let mut s = server();
+        assert!(matches!(s.rebind_key("c", "C-n", false), Outcome::Ok));
+        match s.rebind_key("C-n", "x", false) {
+            Outcome::Error(e) => assert!(e.contains("x is bound to") && e.contains("-s swaps"), "{e}"),
+            _ => panic!("taken key not refused"),
+        }
+        assert!(matches!(s.rebind_key("C-n", "x", true), Outcome::Ok));
+        assert!(matches!(s.rebind_key("nosuch", "y", false), Outcome::Error(_)));
+        match s.rebind_key("F9", "y", false) {
+            Outcome::Error(e) => assert!(e.contains("bound to nothing"), "{e}"),
+            _ => panic!("an empty key moved"),
+        }
+        let lines = s.key_lines();
+        assert!(!lines.is_empty());
+        let mut fresh = server();
+        for l in &lines {
+            let cmd = parse_line(l).unwrap().unwrap();
+            assert!(!matches!(fresh.exec(cmd, None), Outcome::Error(_)), "{l}");
+        }
+        let table = |s: &Server| {
+            let mut v: Vec<String> =
+                s.prefix_binds.iter().map(|(k, b)| format!("{k} {} {}", b.repeat, b.cmd)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(table(&fresh), table(&s), "the lines make the same table");
+        // Where each key was: new-window now on x, was c.
+        let Outcome::Text(json) = s.show_bindings(true) else { panic!() };
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        let row = rows.iter().find(|r| r["command"] == "new-window").unwrap();
+        assert_eq!((row["key"].as_str(), row["base"].as_str()), (Some("x"), Some("c")));
+        // The same table writes the same lines.
+        assert_eq!(s.key_lines(), lines);
+        // A command the config bound to two keys (Left and h): moved off h,
+        // it came from h, not from Left, which still runs it.
+        assert!(matches!(s.rebind_key("h", "F2", false), Outcome::Ok));
+        let Outcome::Text(json) = s.show_bindings(true) else { panic!() };
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        let f2 = rows.iter().find(|r| r["key"] == "F2").unwrap();
+        assert_eq!(f2["base"].as_str(), Some("h"), "{f2}");
+        let left = rows.iter().find(|r| r["key"] == "Left").unwrap();
+        assert_eq!(left["base"].as_str(), Some("Left"));
     }
 
     /// A command a paired machine sends (refused or not) is kept in the

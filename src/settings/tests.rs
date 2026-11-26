@@ -18,10 +18,104 @@ fn json_of(opts: &Options, file: Option<&str>) -> String {
     serde_json::json!({ "file": file, "options": options }).to_string()
 }
 
+/// Some of the prefix table as `show-bindings -J` gives it: three keys where
+/// the config left them, one bound since, one the config bound that no key
+/// runs now.
+const BINDINGS: &str = r#"[
+  {"key":"c","command":"new-window","repeat":false,"base":"c"},
+  {"key":"v","command":"dashboard","repeat":false,"base":"v"},
+  {"key":"x","command":"kill-pane","repeat":false,"base":"x"},
+  {"key":"C-n","command":"next-window","repeat":true,"base":null},
+  {"key":"","command":"display-panes","repeat":false,"base":"q"}
+]"#;
+
 fn board(cols: u16, rows: u16) -> Board {
     let mut b = Board::new(cols, rows);
     b.set_settings(&json_of(&Options::default(), Some("~/.keepane/settings.conf")));
+    b.set_bindings(BINDINGS);
     b
+}
+
+/// Walk the keys to the line of the prefix table running `command`.
+fn go_key(b: &mut Board, command: &str) {
+    b.key(k(char::from(b'1' + KEYS_GROUP as u8)));
+    b.key(k('g'));
+    while !matches!(b.picked_item(), Some(Item::Bind(i)) if b.binds[i].command == command) {
+        assert_eq!(b.key(k('j')), Action::Redraw);
+        assert!(
+            b.pick(KEYS_GROUP) + 1 < b.items(KEYS_GROUP).len()
+                || matches!(b.picked_item(), Some(Item::Bind(i)) if b.binds[i].command == command),
+            "no {command}"
+        );
+    }
+}
+
+/// A key of the prefix table is moved by pressing where it goes; a key
+/// bound already is asked about (both lines red) and swapped on Enter;
+/// `r` puts it back where the config left it; a command no key runs is
+/// bound by pressing one; `w` writes the keys (`-k`); the filter and `m`
+/// find keys too.
+#[test]
+fn keys_are_pressed_where_they_go() {
+    let mut b = board(160, 45);
+    go_key(&mut b, "new-window");
+    assert!(read(&b).contains("C-b c"));
+    b.key(special(KeyCode::Enter));
+    assert!(foot(&b).contains("press the new key for new-window"));
+    let moved = b.key(k('n'));
+    assert_eq!(moved, Action::Run(owned(&["rebind-key", "c", "n"])));
+    let Action::Run(argv) = moved else { unreachable!() };
+    b.done(&argv, 0, "", "");
+    assert!(b.keys_unsaved.contains("new-window"));
+    assert!(foot(&b).contains("new-window now on C-b n"));
+    assert!(strip(&b.lines()[0]).contains("1 not written"));
+    // A key taken: asked first, the two lines red; Esc leaves it.
+    b.key(special(KeyCode::Enter));
+    assert_eq!(b.key(k('x')), Action::Redraw);
+    assert!(foot(&b).contains("C-b x is bound to kill-pane") && foot(&b).contains("swap with new-window"));
+    assert_eq!(b.lines().iter().filter(|l| l.contains("\x1b[31m")).count(), 2, "both keys in red");
+    assert_eq!(b.key(special(KeyCode::Escape)), Action::Redraw);
+    b.key(special(KeyCode::Enter));
+    b.key(k('x'));
+    assert_eq!(b.key(special(KeyCode::Enter)), Action::Run(owned(&["rebind-key", "-s", "c", "x"])));
+    // Moved (the server says so on the next read): r puts it back.
+    b.set_bindings(&BINDINGS.replace(r#""key":"c","command":"new-window""#, r#""key":"n","command":"new-window""#));
+    go_key(&mut b, "new-window");
+    assert!(read(&b).contains("◦"), "moved: marked");
+    assert_eq!(b.key(k('r')), Action::Run(owned(&["rebind-key", "n", "c"])), "c is free: no swap");
+    // Bound since the config ran: nowhere to go back to.
+    go_key(&mut b, "next-window");
+    assert_eq!(b.key(k('r')), Action::Redraw);
+    assert!(foot(&b).contains("no key of its own"));
+    // No key runs it: pressing one binds it there.
+    go_key(&mut b, "display-panes");
+    assert!(read(&b).contains("(no key)"));
+    b.key(special(KeyCode::Enter));
+    assert_eq!(b.key(k('q')), Action::Run(owned(&["bind-key", "q", "display-panes"])));
+    // Written: the keys, with -k.
+    assert_eq!(b.key(k('w')), Action::Run(owned(&["save-settings", "-k"])));
+    b.done(&owned(&["save-settings", "-k"]), 0, "saved 2 key lines to ~/.keepane/settings.conf", "");
+    assert!(b.keys_unsaved.is_empty());
+    // The box's count: its options and its keys, all of them unfiltered.
+    let all = 4 + b.binds.len();
+    assert!(
+        read(&b).contains("[3] Keys ─")
+            && read(&b).lines().any(|l| l.contains("[3] Keys") && l.contains(&format!(" {all} "))),
+        "{}",
+        read(&b)
+    );
+    // Found by the filter, and by `m` when moved or new.
+    b.key(k('/'));
+    for c in "dashb".chars() {
+        b.key(k(c));
+    }
+    b.key(special(KeyCode::Enter));
+    let names: Vec<String> = b.items(KEYS_GROUP).iter().map(|it| b.cells(*it, false).1).collect();
+    assert_eq!(names, vec!["C-b v"]);
+    b.key(special(KeyCode::Escape));
+    b.key(k('m'));
+    let names: Vec<String> = b.items(KEYS_GROUP).iter().map(|it| b.cells(*it, false).1).collect();
+    assert_eq!(names, vec!["C-b n", "C-b C-n", "(no key)"], "moved, bound since, and no key now");
 }
 
 /// The bottom line, as read.
@@ -237,6 +331,19 @@ fn only_its_own_commands_go_out() {
             }
         }
     }
+    // And on every key of the prefix table.
+    let commands: Vec<String> = board(160, 45).binds.iter().map(|b| b.command.clone()).collect();
+    for c in commands {
+        for key in &keys {
+            let mut b = board(160, 45);
+            go_key(&mut b, &c);
+            for press in [*key, *key, special(KeyCode::Enter)] {
+                if let Action::Run(argv) | Action::RunThenQuit(argv) = b.key(press) {
+                    assert!(ACTIONS.contains(&argv[0].as_str()), "{c}: {key:?} sent {argv:?}");
+                }
+            }
+        }
+    }
 }
 
 /// The boxes stand where they stand: three, two or one abreast by width,
@@ -270,7 +377,7 @@ fn the_boxes_stay_where_they_are() {
     assert_eq!(b.grid(), before, "a filter moves no box");
     let screen = read(&b);
     assert_eq!(screen.matches("no match").count(), 8, "{screen}");
-    assert_eq!(b.items(3).iter().map(|o| o.name).collect::<Vec<_>>(), vec!["mouse"]);
+    assert_eq!(b.items(3).iter().map(|it| b.cells(*it, false).1).collect::<Vec<_>>(), vec!["mouse"]);
     b.key(special(KeyCode::Escape));
     assert!(b.filter.is_empty(), "Esc clears the filter");
     // Zoom and back: the same option picked.

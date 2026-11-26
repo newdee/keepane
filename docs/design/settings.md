@@ -46,7 +46,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 |---|---|
 | 1 Look | theme、window-style、pane-colours、边框（pane-border-*、pane-active-border-style、pane-frames）、display-panes-*、clock-mode-*、choose-tree-style、dashboard-icons、animation、animation-time |
 | 2 Status line | status、status-position、status-justify、status-style、status-left/right、它们的 length、status-interval、window-status-* |
-| 3 Keys | prefix、repeat-time、prefix-hint、prefix-hint-delay（第二步加上绑定表） |
+| 3 Keys | prefix、repeat-time、prefix-hint、prefix-hint-delay；下面是 prefix 表的每个键（0.96） |
 | 4 Windows and panes | mouse、history-limit、base-index、pane-base-index、remain-on-exit、keep-zoom、undo-kill-time、window-size、pane-timestamps、default-shell、default-command、default-terminal |
 | 5 Sessions and history | autosave、restore-on-start、sessions-dir、save-history、log-history、log-history-days、log-history-dir |
 | 6 Alerts | monitor-*、visual-*、notify、display-time、done-* |
@@ -88,7 +88,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 - `w`：把改过的项写进文件（`save-settings`）。底行写"saved N options to …"。
 - `q`：有没写的改动时问："N changes not written: w write and quit · q quit, they last until the server restarts · Esc stay"。
 - `R`：重新加载。先问，写明会丢几项没写的改动、几项运行时改的。确认后服务器执行 `reload-settings`：
-  1. 每个和默认值不同的选项先回到默认（走 `set-option -gu`，和手敲一样生效）。
+  1. 每个和默认值不同的选项先回到默认（走 `set-option -gu`，和手敲一样生效）；prefix 表也回到默认（0.96）。
   2. 运行主配置文件。
   3. 运行 `settings.conf`。
 - 插件随 `@plugin` 行重新加载：插件设的选项在第 1 步回到了默认，不重新加载就丢了（第一轮验收发现）。`@plugin` 的记录不会因此重复。和手敲 `source-file` 一样，配置里的 `bind` 再跑一遍；`set-hook -a` 会再加一次。
@@ -117,7 +117,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 
 ## 9. 安全
 
-- 板只发这几条命令：看 `show-settings`；改 `set-option`、`save-settings`、`reload-settings`。和 dashboard 一样有白名单，测试逐键检查。
+- 板只发这几条命令：看 `show-settings`、`show-bindings`；改 `set-option`、`save-settings`、`reload-settings`、`rebind-key`、`bind-key`（后两个 0.96 起）。和 dashboard 一样有白名单，测试逐键检查。
 - `reload-settings` 会丢运行时的改动，要确认。
 - 密钥不显示、不进日志：`show-settings` 给 `(set)`，底行输入回显 `•`。命令行里的密钥值在事件日志、日志和 `:` 提示的历史里写成 `(set)`（`command::redact_secrets`，0.95）。
 - 人的选项（`config::PERSONS`）agent 的 pane 只能读；它也不能 `save-settings`、`reload-settings`（0.95，护栏不是墙，见 principles.md 信任边界）。
@@ -129,7 +129,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 ## 11. 分步
 
 1. **第一步（0.94）**：选项清单、`settings-file`、来源、`show-settings`、`save-settings`、`reload-settings`、`set-option -u`、`keepane settings` 和 `prefix g`，以及第 3–7 节的全部。
-2. 第二步：Keys 框加上 prefix 绑定表，选中一条按 Enter 后按新键，冲突时标红并说和谁冲突，Enter 交换。写进文件是 `unbind-key` + `bind-key`。
+2. **第二步（0.96，做了）**：Keys 框在 4 个选项下面列出 prefix 表的每个键（`C-b c  new-window`）。选中一条按 Enter 后按新键；新键已被占用时两行标红，底行写"C-b x is bound to kill-pane"，Enter 交换，Esc 取消；`r` 放回配置文件给它的位置（`base`）；配置绑过、现在没有键的命令显示 `(no key)`，按一个键就绑上。
 3. 第三步：格式串在放大的框里编辑时，下面实时显示展开的结果。
 4. ~~第四步：网页端的设置页~~：不做（用户 2026-11-26："这个不做"）。
 

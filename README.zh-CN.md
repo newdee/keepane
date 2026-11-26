@@ -1012,6 +1012,7 @@ keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时
 
 - `j`/`k` 选项，`Tab` 或 `1`-`9` 换框，`/` 筛选，`m` 只看和默认值不同的。
 - `←`/`→` 直接选：开关、枚举（`theme`、`pane-border-lines`）、按步长加减的数字、颜色。其余的按 `Enter` 在底行输入；密钥显示成圆点，前缀键直接按下新键。`r` 恢复默认。
+- Keys 框在选项下面列出 prefix 表的每个键（`C-b c  new-window`）。选中一条按 Enter，再按下它要换到的键；那个键已被占用时两行都标红，再按 Enter 交换。`r` 放回你的配置文件给它的位置。
 - 改动马上生效（弹窗后面的状态栏就能看到），标 `●`，按 `w` 才写进 `~/.keepane/settings.conf`（`settings-file`）。keepane 先运行 `~/.keepane.conf`，再运行这个文件；设置板从不改 `~/.keepane.conf`，你写的注释、`%if` 块和顺序都保持原样。这个文件也可以手改，改完按 `R`：所有选项先回到默认，再运行两个文件（会先问）。
 
 `show-settings` 列出每个选项的值和最后是谁设的（配置文件的哪一行、`theme paper`、`set`）；`set -gu 选项名` 把一个选项恢复默认。设计见 [docs/design/settings.md](docs/design/settings.md)。

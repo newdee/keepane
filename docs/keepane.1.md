@@ -281,7 +281,15 @@ first). `show-settings` (`-J`: as JSON) prints each option's value,
 default and who set it last (a config file's line, `theme NAME`, `set`);
 `save-settings` *NAME*... writes options' values to the settings file,
 each on its own `set -g` line, replacing the one there and keeping every
-other line; `reload-settings` is `R`.
+other line; `reload-settings` is `R`. Under its options the Keys box lists
+the prefix table's keys: Enter, then the key it should be on (one bound
+already turns both lines red and asks; Enter swaps the two), `r` back
+where the config left it. `rebind-key` [`-s`] *FROM* *TO* does that from
+a command line (`-s` swaps); `show-bindings` (`-J`: as JSON) prints each
+prefix key, what it runs and where the config left it; `save-settings -k`
+writes the keys as they differ from where the config left them, as
+`unbind-key` and `bind-key` lines in place of the file's own; `R` puts
+the prefix table back to its defaults before the files run again.
 
 ### Resuming after a reboot
 
