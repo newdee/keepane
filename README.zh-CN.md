@@ -1039,6 +1039,8 @@ set-environment -u NO_COLOR                   # 服务器启动时就带着的�
 
 有主题时，不是当前的 pane 背景比当前 pane 暗一点（`pane-dim`，默认开；`set -g pane-dim off` 关掉）。内置主题的状态栏只在工作模式不是 `normal` 时才显示它；终端窄时先藏不那么要紧的：不到 120 列藏 CPU、内存和电池，不到 100 列再藏目录。
 
+keepane 自己界面的颜色有单独的选项，和程序用的 16 色分开：`mode-style`（列表和菜单里选中的一行、选中的块；默认 `fg=yellow,bg=black,bold`）、`message-style`（提示和消息；默认 `fg=brightwhite,bg=black`）、`popup-border-style`（弹窗、菜单、面板的边框；默认空，各用自己的颜色）。写法和 tmux 一样（`fg=`、`bg=`、`bold`、`dim`、`italics`、`underscore`、`reverse`、`no…`、`none`、`default`）。
+
 `status-left`、`status-right`、`window-status-format`、`window-status-current-format`、`pane-border-format` 接受 tmux 的格式串：`#S` session 名，`#W` 窗口名，`#I` 窗口编号，`#P` pane 编号，`#T` pane 标题，`#H` 主机名，`#F` 标记，`#{session_name}` 这种长写法，`#{?条件,真,假}` 条件（条件可以是变量名，也可以是 `变量==值` / `变量!=值`），`%H:%M` 之类的时间字段，`#[fg=colour39,bg=black,bold]` 改样式，还有 `#(命令)`：每隔 `status-interval` 秒（默认 15）跑一次，取输出的第一行（`display-message -p`、`jobs -F` 这种一次性命令会当场跑，最多等 3 秒）。`status-left-length` / `status-right-length` 限制长度。`status-justify left|centre|right|absolute-centre` 决定窗口列表放在哪，`window-status-separator` 是窗口标签之间的分隔（默认一个空格）。窗口多到放不下时，右端保持完整，当前窗口和它周围的窗口占用剩下的位置，两端有空位时用 `<`、`>` 标出有窗口被省略（同 tmux），被省略的窗口里有提醒时，那一侧的标记反色显示；只有右端长到放不下当前窗口时，右端才让出位置，而且只让出当前窗口和标记需要的宽度，从开头截断并标上 `…`，末尾的时钟保留。
 
 ```tmux

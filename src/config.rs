@@ -90,6 +90,12 @@ pub struct Options {
     /// panes' own (`pane-dim`), so the one in use stands out; nothing when
     /// the panes are in the terminal's own colours.
     pub pane_dim: bool,
+    /// keepane's own colours (P2), apart from the 16 a program draws in:
+    /// `mode-style` (a picked line, the highlight), `message-style` (a prompt,
+    /// a message), `popup-border-style` (a frame; empty: each its own).
+    pub mode_style: String,
+    pub message_style: String,
+    pub popup_border_style: String,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
     pub status_left: String,
@@ -507,6 +513,9 @@ pub const SHOWABLE: &[&str] = &[
     "pane-border-lines",
     "pane-frames",
     "pane-dim",
+    "mode-style",
+    "message-style",
+    "popup-border-style",
     "display-panes-colour",
     "display-panes-active-colour",
     "clock-mode-style",
@@ -636,6 +645,9 @@ impl Default for Options {
             pane_border_lines: "heavy".into(),
             pane_frames: false,
             pane_dim: true,
+            mode_style: "fg=yellow,bg=black,bold".into(),
+            message_style: "fg=brightwhite,bg=black".into(),
+            popup_border_style: String::new(),
             pane_border_fg: Color::Rgb(0x66, 0x66, 0x64),
             // The session name on a cinnabar block, the one block on the bar;
             // after it, while `passthrough` gives the pane every key, a word
@@ -803,6 +815,60 @@ fn parse_style(v: &str) -> Result<(Option<Color>, Option<Color>), String> {
     Ok((fg, bg))
 }
 
+/// tmux's style attributes keepane takes but does not draw, so that a
+/// `.tmux.conf`'s style loads (each also with `no` before it).
+const UNDRAWN_ATTRIBUTES: &[&str] = &[
+    "blink",
+    "hidden",
+    "strikethrough",
+    "overline",
+    "double-underscore",
+    "curly-underscore",
+    "dotted-underscore",
+    "dashed-underscore",
+];
+
+/// A style of keepane's own (`mode-style`, `message-style`,
+/// `popup-border-style`), as tmux writes one, parted by commas or spaces:
+/// `fg=` and `bg=` colours; `bold`, `dim`, `italics`, `underscore`,
+/// `reverse` (each also with `no` before it, `none` for none of them);
+/// `default` (both colours the terminal's). tmux's other attributes are
+/// taken and not drawn. What is not given is the terminal's own, plain.
+pub(crate) fn parse_ui_style(v: &str) -> Result<crate::server::render::Style, String> {
+    let mut s = crate::server::render::Style::default();
+    for part in v.split([',', ' ', '\t', '\n']).filter(|p| !p.is_empty()) {
+        let (on, attr) = match part.strip_prefix("no") {
+            Some(rest) if rest != "ne" => (false, rest),
+            _ => (true, part),
+        };
+        if let Some(c) = part.strip_prefix("fg=") {
+            s.fg = parse_color(c)?;
+        } else if let Some(c) = part.strip_prefix("bg=") {
+            s.bg = parse_color(c)?;
+        } else if part == "default" {
+            s.fg = Color::Default;
+            s.bg = Color::Default;
+        } else if part == "none" {
+            s = crate::server::render::Style { fg: s.fg, bg: s.bg, ..Default::default() };
+        } else {
+            match attr {
+                "bold" | "bright" => s.bold = on,
+                "dim" => s.dim = on,
+                "italics" => s.italic = on,
+                "underscore" => s.underline = on,
+                "reverse" => s.inverse = on,
+                a if UNDRAWN_ATTRIBUTES.contains(&a) => {}
+                _ => {
+                    return Err(format!(
+                        "bad style '{part}' (fg=, bg=, bold, dim, italics, underscore, reverse, default)"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(s)
+}
+
 /// Every option keepane actually does something with, plus `synchronize-panes`
 /// (which the server handles itself). Used to expand an abbreviation.
 pub const KNOWN: &[&str] = &[
@@ -857,7 +923,9 @@ pub const KNOWN: &[&str] = &[
     "message-hop-limit",
     "message-inbox-limit",
     "message-max-size",
+    "message-style",
     "message-wait-max",
+    "mode-style",
     "monitor-activity",
     "monitor-bell",
     "monitor-silence",
@@ -874,6 +942,7 @@ pub const KNOWN: &[&str] = &[
     "pane-frames",
     "pane-timestamps",
     "plugin-path",
+    "popup-border-style",
     "prefix",
     "prefix-hint",
     "prefix-hint-delay",
@@ -1035,6 +1104,17 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
 }
 
 impl Options {
+    /// keepane's own colours, from `mode-style`, `message-style` and
+    /// `popup-border-style` (each checked when set).
+    pub fn ui(&self) -> crate::server::render::Ui {
+        let style = |v: &str| parse_ui_style(v).unwrap_or_default();
+        crate::server::render::Ui {
+            mode: style(&self.mode_style),
+            message: style(&self.message_style),
+            border: (!self.popup_border_style.is_empty()).then(|| style(&self.popup_border_style)),
+        }
+    }
+
     /// Set every option of built-in theme `name`. Checked first and set
     /// after, so a theme that does not read leaves the look as it was.
     fn apply_theme(&mut self, name: &str) -> Result<(), String> {
@@ -1130,6 +1210,18 @@ impl Options {
             "pane-border-lines" => self.pane_border_lines = one_of(name, value, PANE_BORDER_LINES)?,
             "pane-frames" => self.pane_frames = parse_bool(value)?,
             "pane-dim" => self.pane_dim = parse_bool(value)?,
+            "mode-style" | "message-style" | "popup-border-style" => {
+                let v = value.trim();
+                if name.as_str() != "popup-border-style" || !v.is_empty() {
+                    parse_ui_style(v)?;
+                }
+                let slot = match name.as_str() {
+                    "mode-style" => &mut self.mode_style,
+                    "message-style" => &mut self.message_style,
+                    _ => &mut self.popup_border_style,
+                };
+                *slot = v.to_string();
+            }
             "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
                 if let (Some(c), _) = parse_style(value)? {
@@ -1506,6 +1598,9 @@ impl Options {
             "pane-border-lines" => self.pane_border_lines.clone(),
             "pane-frames" => onoff(self.pane_frames),
             "pane-dim" => onoff(self.pane_dim),
+            "mode-style" => self.mode_style.clone(),
+            "message-style" => self.message_style.clone(),
+            "popup-border-style" => self.popup_border_style.clone(),
             "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
         })
@@ -1672,12 +1767,55 @@ mod tests {
         assert_eq!(o.get("feishu-notify").unwrap(), "on");
     }
 
+    /// `mode-style`, `message-style`, `popup-border-style`: their defaults
+    /// are the look keepane drew before (`Ui::default()`); a bad one is
+    /// refused and the old value stays; `popup-border-style` may be empty
+    /// (each frame its own colour) and others give `ui()` what they say.
+    #[test]
+    fn keepanes_own_colours_are_options() {
+        use crate::server::render::{Style, Ui};
+        let mut o = Options::default();
+        assert_eq!(o.ui(), Ui::default());
+        assert_eq!(o.get("mode-style").as_deref(), Some("fg=yellow,bg=black,bold"));
+        assert_eq!(o.get("popup-border-style").as_deref(), Some(""));
+        let err = o.set("mode-style", "fg=nocolour").unwrap_err();
+        assert!(err.contains("nocolour"), "{err}");
+        assert!(o.set("message-style", "underline").unwrap_err().contains("underscore"), "tmux says underscore");
+        // A .tmux.conf's styles load: tmux's attributes, the ones not drawn taken too.
+        o.set("mode-style", "bg=colour238,fg=white,reverse,blink").unwrap();
+        assert_eq!(o.ui().mode, Style { inverse: true, ..Style::colors(Color::Idx(7), Color::Idx(238)) });
+        o.set("mode-style", "fg=default bold dim italics underscore nodim").unwrap();
+        assert_eq!(o.ui().mode, Style { bold: true, italic: true, underline: true, ..Style::default() });
+        o.set("mode-style", "bold,none,fg=red").unwrap();
+        assert_eq!(o.ui().mode, Style::colors(Color::Idx(1), Color::Default), "none clears the attributes");
+        assert!(o.set("mode-style", "").is_ok(), "empty: the terminal's own, not bold");
+        assert_eq!(o.ui().mode, Style::default());
+        o.set("mode-style", "fg=#121212 bg=#dd625e bold").unwrap();
+        o.set("message-style", "fg=black,bg=yellow").unwrap();
+        o.set("popup-border-style", "fg=cyan").unwrap();
+        let ui = o.ui();
+        assert_eq!(
+            ui.mode,
+            Style { bold: true, ..Style::colors(Color::Rgb(0x12, 0x12, 0x12), Color::Rgb(0xdd, 0x62, 0x5e)) }
+        );
+        assert_eq!(ui.block(), Style::colors(Color::Rgb(0xdd, 0x62, 0x5e), Color::Rgb(0x12, 0x12, 0x12)));
+        assert_eq!(ui.message, Style::colors(Color::Idx(0), Color::Idx(3)));
+        assert_eq!(ui.border, Some(Style::colors(Color::Idx(6), Color::Default)));
+        assert_eq!(ui.frame(Color::Idx(3)), Style::colors(Color::Idx(6), Color::Default));
+        o.set("popup-border-style", "").unwrap();
+        assert_eq!(o.ui().frame(Color::Idx(3)), Style::colors(Color::Idx(3), Color::Default), "each its own");
+        assert_eq!(o.get("mode-style").as_deref(), Some("fg=#121212 bg=#dd625e bold"));
+    }
+
     /// What a Tab offers after `set`: the same names `resolve_name` picks
     /// from, and for the few-valued options values the setter takes.
     #[test]
     fn option_candidates_and_values() {
         assert_eq!(option_candidates("sync"), vec!["synchronize-panes"]);
-        assert_eq!(option_candidates("mo"), vec!["monitor-activity", "monitor-bell", "monitor-silence", "mouse"]);
+        assert_eq!(
+            option_candidates("mo"),
+            vec!["mode-style", "monitor-activity", "monitor-bell", "monitor-silence", "mouse"]
+        );
         assert_eq!(option_candidates("mon-act"), vec!["monitor-activity"]);
         assert_eq!(option_candidates("w-s-f"), vec!["window-status-format"]);
         // Compatibility names only when nothing that works matches.
@@ -1687,7 +1825,7 @@ mod tests {
         assert!(option_candidates("zzz").is_empty());
         // resolve_name still decides the same way.
         assert_eq!(resolve_name("sync").unwrap(), "synchronize-panes");
-        assert!(resolve_name("mo").unwrap_err().contains("could be monitor-activity"));
+        assert!(resolve_name("mo").unwrap_err().contains("could be mode-style, monitor-activity"));
         // Every offered value is one the option takes (synchronize-panes is
         // the server's own, not a stored option).
         for name in KNOWN.iter().filter(|n| **n != "synchronize-panes") {

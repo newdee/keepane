@@ -749,7 +749,11 @@ the panes the keys are not in sit on a background a shade darker
 is not `normal`, and on a client narrower than 120 columns leave out CPU,
 memory and the battery, under 100 the directory too; the default
 `pane-border-format` adds what an `ai` or `shell` pane, or one whose
-program has exited, is up to (`pane_state`, in the dashboard's colours). The lines between panes are heavy
+program has exited, is up to (`pane_state`, in the dashboard's colours). keepane's own colours have
+options apart from the 16: `mode-style` (a picked line, the selected
+block), `message-style` (a prompt, a message), `popup-border-style` (a
+popup's, a menu's, a panel's frame; empty: each its own), in tmux's style
+words. The lines between panes are heavy
 (`┃` `━`); `set -g pane-border-lines single` draws tmux's thin ones,
 `double` or `simple` (ASCII) the others. `set -g pane-frames on` puts
 each pane in a rounded frame of its own instead (`╭` `╮` `╰` `╯`), the
@@ -948,6 +952,9 @@ Set with `set -g` (`set -gu` back to the default) or on the settings board (pref
 | `pane-border-lines` | `heavy` | `heavy`, `single`, `double` or `simple` (ASCII). |
 | `pane-frames` | `off` | Each pane in a rounded frame of its own. |
 | `pane-dim` | `on` | The panes the keys are not in on a background a shade off the theme's. |
+| `mode-style` | `fg=yellow,bg=black,bold` | keepane's highlight: a picked line, the selected block (its colours swapped). |
+| `message-style` | `fg=brightwhite,bg=black` | A prompt or a message on the status line. |
+| `popup-border-style` | *(empty)* | The frame of a popup, a menu or a panel (empty: each its own colour). |
 | `display-panes-colour` | `blue` | `display-panes`: the other panes' numbers. |
 | `display-panes-active-colour` | `red` | `display-panes`: the active pane's number. |
 | `clock-mode-style` | `24` | `clock-mode`: hours as `12` or `24`. |

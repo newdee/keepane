@@ -10689,6 +10689,7 @@ impl Server {
         // else's) draws the whole window at the session's size and shows
         // the part its view is on; the status line is its own width.
         let viewport = sess_size != (cols, rows);
+        let ui = self.opts.ui();
         let (mut grid, mut cursor, window_hits, mut crop) = if !viewport {
             let frame = Frame {
                 cols,
@@ -10700,6 +10701,7 @@ impl Server {
                 active_border_fg: active_fg,
                 lines,
                 frames,
+                ui,
             };
             let (g, c, h) = render::compose(&frame);
             (g, c, h, None)
@@ -10714,6 +10716,7 @@ impl Server {
                 active_border_fg: active_fg,
                 lines,
                 frames,
+                ui,
             };
             let (own_grid, _, hits) = render::compose(&own);
             let whole = Frame {
@@ -10726,6 +10729,7 @@ impl Server {
                 active_border_fg: active_fg,
                 lines,
                 frames,
+                ui,
             };
             let (g, c, _) = render::compose(&whole);
             (g, c, hits, Some(own_grid))

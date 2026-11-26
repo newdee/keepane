@@ -99,11 +99,18 @@ pub struct Grid {
     pub cols: u16,
     pub rows: u16,
     cells: Vec<Cell>,
+    /// keepane's own colours for what it draws over the panes.
+    pub ui: Ui,
 }
 
 impl Grid {
     pub fn new(cols: u16, rows: u16) -> Grid {
-        Grid { cols, rows, cells: vec![Cell::blank(Style::default()); cols as usize * rows as usize] }
+        Grid {
+            cols,
+            rows,
+            cells: vec![Cell::blank(Style::default()); cols as usize * rows as usize],
+            ui: Ui::default(),
+        }
     }
 
     pub fn get(&self, x: u16, y: u16) -> &Cell {
@@ -355,6 +362,8 @@ pub struct Frame<'a> {
     /// `pane-frames`: each pane in a rounded frame of its own, in the cells
     /// around it, instead of the lines between panes.
     pub frames: bool,
+    /// `mode-style`, `message-style`, `popup-border-style`.
+    pub ui: Ui,
 }
 
 /// Where a view `len` cells long starts on one axis of a screen `len + max`
@@ -457,6 +466,7 @@ pub type Composed = (Grid, Option<(u16, u16)>, Vec<(u16, u16)>);
 /// Compose a frame.
 pub fn compose(f: &Frame) -> Composed {
     let mut g = Grid::new(f.cols, f.rows);
+    g.ui = f.ui;
     let mut cursor = None;
     let mut window_hits: Vec<(u16, u16)> = Vec::new();
     let (win_y, win_h, status_y) = if f.status.is_some() && f.rows > 1 {
@@ -523,13 +533,7 @@ pub fn compose(f: &Frame) -> Composed {
             let ind = format!("[{}/{}]", c.offset, p.screen.scrollback_rows());
             let ind_w = ind.width() as u16;
             if p.rect.w > ind_w + 1 {
-                g.put_str(
-                    p.rect.x + p.rect.w - ind_w - 1,
-                    p.rect.y,
-                    &ind,
-                    Style::colors(Color::Idx(0), Color::Idx(3)),
-                    ind_w,
-                );
+                g.put_str(p.rect.x + p.rect.w - ind_w - 1, p.rect.y, &ind, g.ui.block(), ind_w);
             }
             if p.active {
                 g.invert(p.rect.x + c.cx, p.rect.y + c.cy);
@@ -850,7 +854,7 @@ pub fn draw_key_hint(
         return;
     }
     let rect = Rect { x: area.x + (area.w - bw) / 2, y: area.y + area.h - bh, w: bw, h: bh };
-    let border = Style::colors(Color::Idx(3), Color::Default);
+    let border = g.ui.frame(Color::Idx(3));
     let plain = Style::default();
     g.fill(rect, plain);
     let (x0, y0, y1) = (rect.x, rect.y, rect.y + rect.h - 1);
@@ -903,7 +907,7 @@ pub fn draw_popup(
     if rect.w < 3 || rect.h < 3 {
         return None;
     }
-    let style = Style::colors(border, Color::Default);
+    let style = g.ui.frame(border);
     let plain = Style::default();
     g.fill(rect, plain);
     let (x0, y0, y1) = (rect.x, rect.y, rect.y + rect.h - 1);
@@ -1198,7 +1202,8 @@ fn draw_big_text_with(g: &mut Grid, rect: Rect, text: &str, style_of: impl Fn(us
 }
 
 /// The `choose-tree` picker: `lines` from `top` fill the area, line `sel` is
-/// highlighted (tmux mode-style: black on yellow), the last row is the key hint.
+/// highlighted in `mode-style` (keepane's default: bold yellow on black; tmux's
+/// is black on yellow), the last row is the key hint.
 /// `actions` is the hint's middle piece: what Enter (and any other action
 /// key) does for this kind of list. `status` (the filter, the tag count)
 /// sits at the right end of the hint row and wins over the hint when the
@@ -1323,8 +1328,9 @@ fn legible(fg: Color, bg: Color, choices: [Color; 2]) -> Color {
 }
 
 /// One `hints` pick: the thing found at `row`, `col` of the pane at `rect`
-/// (`width` cells), shown yellow and underlined, with what is left of its
-/// label over its first cells in black on yellow.
+/// (`width` cells), shown in the highlight's colour (`mode-style`, yellow)
+/// and underlined, with what is left of its label over its first cells as a
+/// block of it (black on yellow).
 pub fn draw_hint(g: &mut Grid, rect: Rect, row: u16, col: u16, width: u16, label: &str) {
     if row >= rect.h || col >= rect.w {
         return;
@@ -1333,13 +1339,13 @@ pub fn draw_hint(g: &mut Grid, rect: Rect, row: u16, col: u16, width: u16, label
     for x in rect.x + col..rect.x + col.saturating_add(width).min(rect.w) {
         if x < g.cols && y < g.rows {
             let mut cell = g.get(x, y).clone();
-            cell.style.fg = Color::Idx(3);
+            cell.style.fg = g.ui.mode.fg;
             cell.style.underline = true;
             cell.style.inverse = false;
             g.set(x, y, cell);
         }
     }
-    let style = Style { bold: true, ..Style::colors(Color::Idx(0), Color::Idx(3)) };
+    let style = Style { bold: true, ..g.ui.block() };
     g.put_str(rect.x + col, y, label, style, rect.w - col);
 }
 
@@ -1353,10 +1359,10 @@ pub fn draw_notice(
     prompt: Option<&(String, String, usize)>,
     message: Option<&str>,
 ) -> Option<(u16, u16)> {
-    // On the quiet bar: a prompt's label bold yellow, what is typed and a
-    // message bright.
-    let style = Style::colors(Color::Idx(15), Color::Idx(0));
-    let label_style = SELECTED;
+    // In `message-style` (bright on the quiet bar): a prompt's label bold,
+    // in the highlight's colour.
+    let style = g.ui.message;
+    let label_style = Style { bold: true, ..Style::colors(g.ui.mode.fg, style.bg) };
     let cols = g.cols;
     if let Some((label, input, ci)) = prompt {
         g.fill(Rect { x: 0, y, w: cols, h: 1 }, style);
@@ -1439,7 +1445,7 @@ pub fn draw_menu(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: us
         return;
     }
     let (outer, body) = menu_box(area, lines, titled);
-    let border = Style::colors(Color::Idx(3), Color::Default);
+    let border = g.ui.frame(Color::Idx(3));
     g.fill(outer, Style::default());
     draw_frame(g, outer, border);
     if titled {
@@ -1458,7 +1464,8 @@ pub fn draw_menu(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: us
         g.put_str(outer.x + outer.w - fw - 2, y1, &foot, Style::colors(Color::Idx(8), Color::Default), fw);
     }
     let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) };
-    let bright = Style { bold: true, ..Style::colors(Color::Idx(15), Color::Idx(0)) };
+    let picked_style = g.ui.mode;
+    let bright = Style { bold: true, ..Style::colors(Color::Idx(15), picked_style.bg) };
     let first = usize::from(titled).max(top);
     for (row, i) in (first..lines.len()).take(usize::from(body.h)).enumerate() {
         let y = body.y + row as u16;
@@ -1476,14 +1483,14 @@ pub fn draw_menu(g: &mut Grid, area: Rect, lines: &[String], sel: usize, top: us
             MenuLine::Item(name, k) => {
                 let picked = i == sel;
                 if picked {
-                    g.fill(Rect { x: body.x, y, w: body.w, h: 1 }, Style::colors(Color::Default, Color::Idx(0)));
-                    g.set(body.x, y, Cell::new("▌", false, SELECTED));
+                    g.fill(Rect { x: body.x, y, w: body.w, h: 1 }, Style::colors(Color::Default, picked_style.bg));
+                    g.set(body.x, y, Cell::new("▌", false, picked_style));
                 }
                 let kw = k.width() as u16;
                 let room = body.w.saturating_sub(kw + 5);
                 g.put_str(body.x + 2, y, name, if picked { bright } else { Style::default() }, room);
                 let kx = body.x + body.w.saturating_sub(kw + 2);
-                g.put_str(kx, y, k, if picked { SELECTED } else { key }, kw);
+                g.put_str(kx, y, k, if picked { picked_style } else { key }, kw);
             }
         }
     }
@@ -1596,7 +1603,7 @@ pub fn draw_ssh(
         return;
     }
     let (outer, body) = ssh_box(area, rows);
-    let border = Style::colors(Color::Idx(3), Color::Default);
+    let border = g.ui.frame(Color::Idx(3));
     let faint = Style::colors(Color::Idx(8), Color::Default);
     g.fill(outer, Style::default());
     draw_frame(g, outer, border);
@@ -1653,11 +1660,12 @@ pub fn draw_ssh(
         let r = rows[i];
         let y = body.y + row as u16;
         let picked = i == sel;
-        let bg = if picked { Color::Idx(0) } else { Color::Default };
+        let picked_style = g.ui.mode;
+        let bg = if picked { picked_style.bg } else { Color::Default };
         let on = |fg: Color| Style::colors(fg, bg);
         if picked {
             g.fill(Rect { x: body.x, y, w: body.w, h: 1 }, on(Color::Default));
-            g.set(body.x, y, Cell::new("▌", false, SELECTED));
+            g.set(body.x, y, Cell::new("▌", false, picked_style));
         }
         let live = !r.panes.is_empty();
         let (dot, dot_style) = match (live, r.count > 0) {
@@ -1726,7 +1734,7 @@ pub fn draw_chooser_tinted(
         return;
     }
     let style = Style::colors(Color::Default, Color::Default);
-    let hi = SELECTED;
+    let hi = g.ui.mode;
     let key = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) };
     let rule = Style::colors(Color::Idx(8), Color::Default);
     g.fill(area, style);
@@ -1786,7 +1794,8 @@ pub fn tree_leads(depths: &[usize]) -> Vec<String> {
 
 /// The session tree as blocks: each line its tree lines, then a block in
 /// its level's colour (the root cyan, a session blue, a window purple, a
-/// pane green, as in the chart; the selected one yellow) with its number
+/// pane green, as in the chart; the selected one a block of `mode-style`,
+/// yellow) with its number
 /// and what it is.
 /// `rows` are (tree lines, block text, depth).
 pub fn draw_tree(
@@ -1803,9 +1812,9 @@ pub fn draw_tree(
     }
     g.fill(area, Style::colors(Color::Default, Color::Default));
     let line = Style::colors(Color::Idx(8), Color::Default);
+    let hi = g.ui.block();
     let block = |depth: usize, selected: bool| {
-        let bg = if selected { Color::Idx(3) } else { chart_colour(depth) };
-        let fg = Color::Idx(0);
+        let (fg, bg) = if selected { (hi.fg, hi.bg) } else { (Color::Idx(0), chart_colour(depth)) };
         Style { bold: selected || depth < 2, ..Style::colors(fg, bg) }
     };
     let body_h = area.h.saturating_sub(1) as usize;
@@ -2203,10 +2212,12 @@ pub fn draw_chart(g: &mut Grid, area: Rect, nodes: &[ChartNode], sel: usize, all
     }
     let mid = |i: usize| xs[i] + chart_join_at(&nodes[i], ws[i], level) as i32;
     // A block's box in its kind's colour, its name in the text's (bold on the
-    // selected branch), its info faint; the selected block all yellow.
+    // selected branch), its info faint; the selected block all in the
+    // highlight's colour (`mode-style`, yellow).
+    let hi = g.ui.mode.fg;
     let edge_of = |i: usize| {
         if i == sel {
-            Style { bold: true, ..Style::colors(Color::Idx(3), Color::Default) }
+            Style { bold: true, ..Style::colors(hi, Color::Default) }
         } else {
             Style::colors(kind_colour(nodes[i].kind), Color::Default)
         }
@@ -2333,6 +2344,37 @@ fn draw_chooser_footer(g: &mut Grid, area: Rect, count: usize, sel: usize, moves
 /// colour across the screen.
 pub const SELECTED: Style = Style { bold: true, ..Style::colors(Color::Idx(3), Color::Idx(0)) };
 
+/// keepane's own colours, apart from the 16 a program draws in (P2):
+/// `mode-style` (a picked line, the highlight; as a block, its colours
+/// swapped), `message-style` (a prompt, a message), `popup-border-style`
+/// (the frame of a popup, a menu, a panel; None: each its own, the active
+/// border's colour for a popup, yellow for keepane's panels). The default is
+/// what keepane drew before they were options.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ui {
+    pub mode: Style,
+    pub message: Style,
+    pub border: Option<Style>,
+}
+
+impl Default for Ui {
+    fn default() -> Ui {
+        Ui { mode: SELECTED, message: Style::colors(Color::Idx(15), Color::Idx(0)), border: None }
+    }
+}
+
+impl Ui {
+    /// The highlight as a block of colour: its colours swapped, not bold.
+    pub fn block(&self) -> Style {
+        Style::colors(self.mode.bg, self.mode.fg)
+    }
+
+    /// A frame's style: `popup-border-style`, else `own` on the default.
+    pub fn frame(&self, own: Color) -> Style {
+        self.border.unwrap_or(Style::colors(own, Color::Default))
+    }
+}
+
 /// A hint row's own colours: white on black, which the theme's 16 make its
 /// quiet bar (the light paper's darker edge, the dark paper's lighter one),
 /// and which read on any terminal's own.
@@ -2392,6 +2434,7 @@ mod tests {
                 active_border_fg: Color::Default,
                 lines,
                 frames: false,
+                ui: Ui::default(),
             };
             let g = compose(&f).0;
             [(4, 0), (4, 2), (0, 2), (8, 2), (4, 4)].map(|(x, y)| g.get(x, y).text().to_string())
@@ -2598,6 +2641,7 @@ mod tests {
             active_border_fg: Color::Idx(2),
             lines: BorderLines::Heavy,
             frames: true,
+            ui: Ui::default(),
         };
         let g = compose(&f).0;
         let rows: Vec<String> = (0..10).map(|y| (0..30).map(|x| g.get(x, y).text().to_string()).collect()).collect();
@@ -2861,6 +2905,102 @@ mod tests {
         let bar = Style::colors(Color::Default, Color::Idx(4));
         g.fill(Rect { x: 20, y: 2, w: 10, h: 1 }, bar);
         assert!(!draw_stamp(&mut g, Rect { x: 0, y: 2, w: 30, h: 1 }, 0, &parts));
+    }
+
+    #[test]
+    fn keepanes_own_colours_draw_the_picked_line_the_prompt_and_the_frames() {
+        let mode = Style { bold: true, ..Style::colors(Color::Rgb(1, 1, 1), Color::Rgb(9, 9, 9)) };
+        let message = Style::colors(Color::Rgb(2, 2, 2), Color::Rgb(8, 8, 8));
+        let frame = Style::colors(Color::Rgb(5, 5, 5), Color::Default);
+        let ui = Ui { mode, message, border: Some(frame) };
+        let area = Rect { x: 0, y: 0, w: 40, h: 10 };
+        let lines: Vec<String> = (0..4).map(|i| format!("item{i}")).collect();
+        // A picked line in the highlight.
+        let mut g = Grid::new(40, 10);
+        g.ui = ui;
+        draw_chooser(&mut g, area, &lines, 1, 0, "Enter select", "");
+        assert_eq!((g.get(0, 1).style, g.get(39, 1).style.bg), (mode, mode.bg));
+        // A menu: its frame in popup-border-style, its picked key in the highlight.
+        let menu: Vec<String> = vec!["Title".into(), "(a) Alpha".into(), "(b) Beta".into()];
+        let mut g = Grid::new(40, 10);
+        g.ui = ui;
+        draw_menu(&mut g, area, &menu, 1, 0, true);
+        let corner =
+            (0..10).flat_map(|y| (0..40).map(move |x| (x, y))).find(|&(x, y)| g.get(x, y).text() == "╭").unwrap();
+        assert_eq!(g.get(corner.0, corner.1).style, frame);
+        let marker =
+            (0..10).flat_map(|y| (0..40).map(move |x| (x, y))).find(|&(x, y)| g.get(x, y).text() == "▌").unwrap();
+        assert_eq!(g.get(marker.0, marker.1).style, mode);
+        // A prompt: the line in message-style, its label bold in the highlight's colour.
+        let mut g = Grid::new(40, 2);
+        g.ui = ui;
+        draw_notice(&mut g, 1, Some(&("(go) ".into(), "x".into(), 1)), None);
+        assert_eq!(g.get(0, 1).style, Style { bold: true, ..Style::colors(mode.fg, message.bg) });
+        assert_eq!((g.get(5, 1).style, g.get(39, 1).style), (message, message));
+        // The selected block of the tree: the highlight's colours swapped.
+        let rows = vec![("".to_string(), "s".to_string(), 0), ("".to_string(), "w".to_string(), 1)];
+        let mut g = Grid::new(40, 4);
+        g.ui = ui;
+        draw_tree(&mut g, Rect { x: 0, y: 0, w: 40, h: 4 }, &rows, 1, 0, "", "");
+        let swapped = (0..40).find(|&x| g.get(x, 1).style.bg == mode.fg);
+        assert!(swapped.is_some_and(|x| g.get(x, 1).style.fg == mode.bg), "the selected block swapped");
+    }
+
+    /// The other places keepane's own colours reach: a popup's frame, the
+    /// chart's selected block, a hint's label, the machines box's picked
+    /// row, copy mode's position indicator.
+    #[test]
+    fn keepanes_own_colours_reach_the_popup_chart_hints_machines_and_copy_mode() {
+        let mode = Style { bold: true, ..Style::colors(Color::Rgb(1, 1, 1), Color::Rgb(9, 9, 9)) };
+        let frame = Style::colors(Color::Rgb(5, 5, 5), Color::Default);
+        let ui = Ui { mode, message: Style::default(), border: Some(frame) };
+        let cells = |g: &Grid| {
+            let (w, h) = (g.cols, g.rows);
+            (0..h).flat_map(move |y| (0..w).map(move |x| (x, y))).collect::<Vec<_>>()
+        };
+        let s = screen(10, 3, b"hi");
+        let mut g = Grid::new(20, 6);
+        g.ui = ui;
+        draw_popup(&mut g, Rect { x: 1, y: 1, w: 12, h: 5 }, s.screen(), Color::Idx(2), None);
+        assert_eq!(g.get(1, 1).style, frame, "the popup's frame");
+        let nodes = chart_nodes();
+        let mut g = Grid::new(80, 24);
+        g.ui = ui;
+        draw_chart(&mut g, Rect { x: 0, y: 0, w: 80, h: 24 }, &nodes, 4, false, "", "");
+        assert!(cells(&g).iter().any(|&(x, y)| g.get(x, y).style.fg == mode.fg), "the chart's selected block");
+        let mut g = Grid::new(20, 2);
+        g.ui = ui;
+        draw_hint(&mut g, Rect { x: 0, y: 0, w: 20, h: 2 }, 0, 2, 6, "ab");
+        assert_eq!(g.get(2, 0).style, Style { bold: true, ..ui.block() }, "the hint's label");
+        assert_eq!(g.get(5, 0).style.fg, mode.fg, "what the hint found");
+        let rows_ = [ssh_row(0, "web-1", "deploy@web-1", "now", 15, ""), ssh_row(1, "db", "pg@db", "1d ago", 6, "")];
+        let shown: Vec<&super::super::sshhosts::Row> = rows_.iter().collect();
+        let mut g = Grid::new(80, 9);
+        g.ui = ui;
+        draw_ssh(&mut g, Rect { x: 0, y: 0, w: 80, h: 9 }, &shown, 1, 0, 2, "");
+        let marker = cells(&g).into_iter().find(|&(x, y)| g.get(x, y).text() == "▌").unwrap();
+        assert_eq!(g.get(marker.0, marker.1).style, mode, "the picked machine");
+        let a = screen(10, 2, b"abc");
+        let f = Frame {
+            cols: 10,
+            rows: 2,
+            panes: vec![PaneView {
+                rect: Rect { x: 0, y: 0, w: 10, h: 2 },
+                screen: a.screen(),
+                active: true,
+                copy: Some(CopyView { cx: 0, cy: 0, sel: None, rect: false, offset: 0 }),
+                border_text: None,
+            }],
+            status: None,
+            status_top: false,
+            border_fg: Color::Default,
+            active_border_fg: Color::Default,
+            lines: BorderLines::Single,
+            frames: false,
+            ui,
+        };
+        let (g, _, _) = compose(&f);
+        assert_eq!(g.get(8, 0).style, ui.block(), "copy mode's position, top right");
     }
 
     #[test]
@@ -3183,6 +3323,7 @@ mod tests {
             active_border_fg: Color::Idx(2),
             lines: BorderLines::Single,
             frames: false,
+            ui: Ui::default(),
         };
         let (g, cursor, hits) = compose(&f);
         assert_eq!(g.get(0, 0).text(), "L");
@@ -3236,6 +3377,7 @@ mod tests {
                 active_border_fg: Color::Idx(2),
                 lines: BorderLines::Single,
                 frames: false,
+                ui: Ui::default(),
             };
             let (g, _, hits) = compose(&f);
             let row: String = (0..cols).map(|x| g.get(x, 1).text()).collect();
@@ -3308,6 +3450,7 @@ mod tests {
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
             frames: false,
+            ui: Ui::default(),
         };
         let (g, _, hits) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 1).text()).collect();
@@ -3496,6 +3639,7 @@ mod tests {
                 active_border_fg: Color::Default,
                 lines: BorderLines::Single,
                 frames: false,
+                ui: Ui::default(),
             };
             let (g, cursor, _) = compose(&f);
             assert_eq!((g.cols, g.rows), (cols, rows));
@@ -3550,6 +3694,7 @@ mod tests {
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
             frames: false,
+            ui: Ui::default(),
         };
         let (g, _, _) = compose(&f);
         assert_eq!(g.get(3, 2).text(), "├");
@@ -3587,6 +3732,7 @@ mod tests {
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
             frames: false,
+            ui: Ui::default(),
         };
         let (g, _, _) = compose(&f);
         let row: String = (0..12).map(|x| g.get(x, 0).text()).collect();
@@ -3614,6 +3760,7 @@ mod tests {
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
             frames: false,
+            ui: Ui::default(),
         };
         // Top: row 0 is the label, the pane starts on row 1.
         let (g, _, _) = compose(&frame(Rect { x: 0, y: 1, w: 6, h: 2 }, Some((label(" 0: long label"), true))));
@@ -3798,6 +3945,7 @@ mod tests {
             active_border_fg: Color::Default,
             lines: BorderLines::Single,
             frames: false,
+            ui: Ui::default(),
         };
         let (g, cursor, _) = compose(&f);
         assert!(cursor.is_none());
@@ -3960,7 +4108,7 @@ mod tests {
 
     /// A list line's leading key `(x)` yellow and bold, a line of `-` a
     /// faint rule, a tinted line (a session) in its colour; the selected
-    /// line black on yellow whatever it is.
+    /// line bold yellow on black (`mode-style`) whatever it is.
     #[test]
     fn a_list_marks_keys_rules_and_sessions() {
         let lines: Vec<String> = ["(h) Split", "----", "(0) - dev: 1 windows", "plain", "(toolongkey) x"]

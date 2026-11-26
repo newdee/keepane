@@ -3604,6 +3604,48 @@ async fn the_panes_the_keys_are_not_in_are_a_shade_darker() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `message-style`, `mode-style`, `popup-border-style` (P2): the prompt
+/// in the message's colours, a menu's frame in the border style and its
+/// picked line marked in the highlight.
+#[tokio::test(flavor = "multi_thread")]
+async fn keepanes_own_colours_are_options_of_their_own() {
+    use vt100::Color;
+    let h = Harness::start("uistyle").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "t"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    for (name, value) in [
+        ("message-style", "fg=#010203,bg=#0a0b0c"),
+        ("mode-style", "fg=#0d0e0f,bg=#101112,bold"),
+        ("popup-border-style", "fg=#050607"),
+    ] {
+        assert_eq!(h.cli(&["set", "-g", name, value]).await.0, 0, "{name}");
+    }
+    let (code, _, err) = h.cli(&["set", "-g", "mode-style", "fg=nocolour"]).await;
+    assert!(code != 0 && err.contains("nocolour"), "{err}");
+    // The prompt, across the bottom row.
+    c.prefix(':').await;
+    c.wait_for("the prompt in message-style", |s| {
+        s.cell(ROWS - 1, COLS - 1).is_some_and(|c| c.bgcolor() == Color::Rgb(0x0a, 0x0b, 0x0c))
+    })
+    .await;
+    // A menu from it: its frame and its picked line.
+    c.type_str("display-menu -T Pick Alpha a list-keys Beta b list-keys").await;
+    c.enter().await;
+    let find = |s: &vt100::Screen, ch: &str| {
+        (0..ROWS).flat_map(|y| (0..COLS).map(move |x| (y, x))).find_map(|(y, x)| {
+            let cell = s.cell(y, x)?;
+            (cell.contents() == ch).then_some((cell.fgcolor(), cell.bgcolor()))
+        })
+    };
+    c.wait_for("the menu's frame and picked line", |s| {
+        find(s, "╭") == Some((Color::Rgb(5, 6, 7), Color::Default))
+            && find(s, "▌") == Some((Color::Rgb(0x0d, 0x0e, 0x0f), Color::Rgb(0x10, 0x11, 0x12)))
+    })
+    .await;
+    h.cli(&["kill-server"]).await;
+}
+
 /// A built-in theme's status line on a narrow client leaves out the
 /// machine's load (under 120 columns); a wider one shows it; narrowed
 /// again, it is gone. The work mode shows only when it is not normal.

@@ -138,7 +138,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 2026-11-26 讨论过主题的扩展（HTML 模拟看过）。用户同日定："P5 也不用做，其他按推荐来做就行"。顺序：安全两项 → 设置板第 2 步 → P3 + P6 → P1，然后 P2、P4 → 设置板第 3 步。
 
 - P1 语义色 token：主题只定义 `@paper` `@bar` `@ink` `@soft` `@muted` `@line` `@accent` `@warn` 和 16 色，格式串只写一份并引用 `#[fg=#{@accent}]`（要先让 format 在 `#[...]` 里展开 `#{@name}`）。
-- P2 界面色和 ANSI 分开：`mode-style`、`message-style`、`popup-border-style`。
+- **P2（0.97，做了）**：界面色和 ANSI 分开：`mode-style`（选中的行、选中的块；块用它的前景背景对调；默认 `fg=yellow,bg=black,bold`，就是原来的 `SELECTED`）、`message-style`（提示和消息；默认 `fg=brightwhite,bg=black`）、`popup-border-style`（弹窗、菜单、面板、按键提示的边框；默认空，各用原来的颜色）。存在每帧新建的 `Grid` 的 `ui` 里，绘制函数签名不变；默认值和原来逐格相同。样式按 tmux 的写法解析（`reverse`、`underscore` 等能画的就画，`blink` 等画不了的接受不画）。主题暂不设它们（外观不变）。
 - **P3（0.97，做了）**：8 套主题都内置（新增 `nord`、`gruvbox-dark`、`catppuccin-mocha`、`dracula`），都自己画 pane（`tokyo-night` 原来交给终端，现在也画），对比度测试从 3 套查到 8 套（文字 4.5:1、线条 3:1、提示行、状态栏每段颜色）。原配色达不到的颜色只调 OKLCH 亮度，色相不变；每个主题文件写明调了哪些。
 - P4 `~/.keepane/themes/NAME.conf` 用户主题目录和实时预览的选择器。
 - ~~P5 跟随终端亮暗~~：不做（用户 2026-11-26）。

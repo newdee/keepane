@@ -2450,6 +2450,14 @@ none). The built-in status lines say the work mode only when it is not
 `normal`, and on a narrow terminal leave out what matters least: CPU,
 memory and the battery under 120 columns, the directory too under 100.
 
+keepane's own colours are options of their own, apart from the 16 a
+program draws in: `mode-style` (a picked line in a list or a menu, the
+selected block; `fg=yellow,bg=black,bold`), `message-style` (a prompt or
+a message; `fg=brightwhite,bg=black`) and `popup-border-style` (the frame
+of a popup, a menu or a panel; empty, the default: each its own colour).
+They take tmux's style words (`fg=`, `bg=`, `bold`, `dim`, `italics`,
+`underscore`, `reverse`, `no…`, `none`, `default`).
+
 ```tmux
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm'))#[default] #H"
 ```
