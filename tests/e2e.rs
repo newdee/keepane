@@ -296,6 +296,11 @@ impl Harness {
         assert_eq!(code, 0, "{err}");
         let (code, _, err) = h.cli(&["set", "-g", "sessions-dir", &dir.to_string_lossy()]).await;
         assert_eq!(code, 0, "{err}");
+        // Nor the machine's own themes (~/.keepane/themes): an empty folder.
+        // (Nothing reads it before a theme is set.)
+        let themes = std::env::temp_dir().join(format!("keepane-test-themes-{}", std::process::id()));
+        let (code, _, err) = h.cli(&["set", "-g", "theme-path", &themes.to_string_lossy()]).await;
+        assert_eq!(code, 0, "{err}");
         // tmux's plain status line, which these tests read as text: the
         // default look (Paper Dark) is tests/console.rs's to check.
         let plain = concat!(env!("CARGO_MANIFEST_DIR"), "/themes/plain.conf");
@@ -3601,6 +3606,90 @@ async fn the_panes_the_keys_are_not_in_are_a_shade_darker() {
     assert_eq!(h.cli(&["set", "-g", "pane-colours", ""]).await.0, 0);
     c.wait_for("the terminal's own", |s| bg(s, 2) == Some(Color::Default) && bg(s, COLS - 2) == Some(Color::Default))
         .await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// `theme-path` and `pick-theme` (P4): a `NAME.conf` of the user's is a
+/// theme `list-themes` names; the picker shows the theme the cursor is on,
+/// Esc puts back the look it opened on (here tmux's plain one, `custom`),
+/// Enter keeps the one on the highlighted line.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_theme_of_your_own_is_listed_and_the_picker_shows_each() {
+    use vt100::Color;
+    let h = Harness::start("picktheme").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "t"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let dir = std::env::temp_dir().join(format!("keepane-test-picktheme-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("zz-mine.conf"), "set -g window-style \"fg=#e0e0e0,bg=#202428\"\n").unwrap();
+    assert_eq!(h.cli(&["set", "-g", "theme-path", &dir.to_string_lossy()]).await.0, 0);
+    let (code, out, _) = h.cli(&["list-themes"]).await;
+    assert_eq!((code, out.lines().next(), out.lines().last()), (0, Some("paper-dark"), Some("zz-mine")), "{out}");
+    let show = async |o: &str| h.cli(&["show-options", "-gv", o]).await.1.trim().to_string();
+    assert_eq!(show("theme").await, "custom", "tmux's plain look, which no theme is");
+    let bg = |s: &vt100::Screen| s.cell(1, 5).map(|c| c.bgcolor());
+    let mine = Color::Rgb(0x20, 0x24, 0x28);
+    // Open it, go to the last line (the user's): it is the look at once.
+    let pick = async |c: &mut Conn| {
+        c.prefix(':').await;
+        c.type_str("pick-theme").await;
+        c.enter().await;
+        c.wait_for("the picker", |s| s.contents().contains("zz-mine  (theme-path)")).await;
+        c.type_str("G").await;
+    };
+    let source = async || {
+        let (_, out, _) = h.cli(&["show-settings"]).await;
+        out.lines().find(|l| l.starts_with("theme ")).unwrap_or_default().to_string()
+    };
+    let source_before = source().await;
+    pick(&mut c).await;
+    c.wait_for("zz-mine shown", |s| bg(s) == Some(mine)).await;
+    // Esc: the look it opened on, still no theme's, and who set it as before.
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("put back", |s| bg(s) == Some(Color::Default) && !s.contents().contains("zz-mine")).await;
+    assert_eq!(show("theme").await, "custom");
+    // The mouse shows the theme it clicks on, as the keys do.
+    assert_eq!(h.cli(&["set", "-g", "mouse", "on"]).await.0, 0);
+    c.prefix(':').await;
+    c.type_str("pick-theme").await;
+    c.enter().await;
+    c.wait_for("the picker", |s| s.contents().contains("zz-mine  (theme-path)")).await;
+    let y =
+        (0..ROWS).find(|&y| c.screen.screen().rows(0, COLS).nth(usize::from(y)).is_some_and(|r| r.contains("zz-mine")));
+    let y = y.expect("the user's line") as i16;
+    c.send(ClientMsg::Mouse(MouseRecord { x: 2, y, buttons: 1, ctrl: 0, flags: 0 })).await;
+    c.send(ClientMsg::Mouse(MouseRecord { x: 2, y, buttons: 0, ctrl: 0, flags: 0 })).await;
+    c.wait_for("zz-mine shown from a click", |s| bg(s) == Some(mine)).await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("put back again", |s| bg(s) == Some(Color::Default) && !s.contents().contains("zz-mine")).await;
+    assert_eq!(source().await, source_before, "as if never touched");
+    // Tab offers the user's theme; the board is told of it.
+    c.prefix(':').await;
+    c.type_str("set -g theme zz").await;
+    c.type_str("\t").await;
+    c.wait_for("completed", |s| s.contents().contains("set -g theme zz-mine")).await;
+    c.key(0x1B, '\x1b', 0).await;
+    let (_, json, _) = h.cli(&["show-settings", "-J"]).await;
+    assert!(json.contains("\"themes\":[") && json.contains("\"zz-mine\""), "{json}");
+    // Opened on a theme of its own name, Esc gives back that name, not `custom`.
+    assert_eq!(h.cli(&["set", "-g", "theme", "nord"]).await.0, 0);
+    let nord = Color::Rgb(0x2e, 0x34, 0x40);
+    c.wait_for("nord", |s| bg(s) == Some(nord)).await;
+    pick(&mut c).await;
+    c.wait_for("zz-mine shown over nord", |s| bg(s) == Some(mine)).await;
+    c.key(0x1B, '\x1b', 0).await;
+    c.wait_for("nord again", |s| bg(s) == Some(nord) && !s.contents().contains("zz-mine")).await;
+    assert_eq!(show("theme").await, "nord");
+    // Enter: kept.
+    pick(&mut c).await;
+    c.wait_for("zz-mine shown again", |s| bg(s) == Some(mine)).await;
+    c.enter().await;
+    c.wait_for("the picker gone", |s| !s.contents().contains("(theme-path)")).await;
+    assert_eq!(show("theme").await, "zz-mine");
+    assert_eq!(bg(c.screen.screen()), Some(mine));
+    let _ = std::fs::remove_dir_all(&dir);
     h.cli(&["kill-server"]).await;
 }
 

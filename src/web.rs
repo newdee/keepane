@@ -990,7 +990,7 @@ const PAGE_PALETTE: [&str; 16] = [
 /// page draws a pane's text in: `fg`, `bg` and the 16 of the palette, from
 /// `window-style` (`fg=…,bg=…`) and `pane-colours`, the page's own where the
 /// theme leaves them to the terminal.
-fn theme_json(name: &str, style: &str, colours: &str) -> String {
+fn theme_json(name: &str, names: &[&str], style: &str, colours: &str) -> String {
     let part = |k: &str| {
         style.split(',').find_map(|p| p.trim().strip_prefix(k)).filter(|v| v.starts_with('#')).map(String::from)
     };
@@ -998,7 +998,7 @@ fn theme_json(name: &str, style: &str, colours: &str) -> String {
     let palette: Vec<&str> = if given.len() == 16 { given } else { PAGE_PALETTE.to_vec() };
     serde_json::json!({
         "name": name,
-        "names": crate::config::THEME_NAMES,
+        "names": names,
         "fg": part("fg=").unwrap_or_else(|| PAGE_FG.into()),
         "bg": part("bg=").unwrap_or_else(|| PAGE_BG.into()),
         "palette": palette,
@@ -1164,7 +1164,14 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             let show = |o: &str| q(vec!["show-options".into(), "-gv".into(), o.into()]);
             match (show("theme").await, show("window-style").await, show("pane-colours").await) {
                 (Ok((0, name, _)), Ok((0, style, _)), Ok((0, colours, _))) => {
-                    Response::json(theme_json(name.trim(), style.trim(), colours.trim()))
+                    // The themes the server takes, the user's own too (`list-themes`).
+                    let listed =
+                        q(vec!["list-themes".into()]).await.ok().filter(|(c, _, _)| *c == 0).map(|(_, o, _)| o);
+                    let names: Vec<&str> = match &listed {
+                        Some(o) => o.lines().filter(|l| !l.is_empty()).collect(),
+                        None => crate::config::THEME_NAMES.to_vec(),
+                    };
+                    Response::json(theme_json(name.trim(), &names, style.trim(), colours.trim()))
                 }
                 (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Response::text(500, &format!("{e:#}")),
                 _ => Response::text(500, "theme: the server would not say"),
@@ -1247,8 +1254,14 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
         }
         // The terminal's theme, from the phone: `set -g theme`.
         (false, "/api/theme") => {
-            let Some(name) = req.param("name").filter(|n| crate::config::THEME_NAMES.contains(n)) else {
-                return Response::text(400, &format!("name: {}", crate::config::THEME_NAMES.join(", ")));
+            // One of the themes the server takes, the user's own too.
+            let listed = q(vec!["list-themes".into()]).await.ok().filter(|(c, _, _)| *c == 0).map(|(_, o, _)| o);
+            let names: Vec<String> = match &listed {
+                Some(o) => o.lines().filter(|l| !l.is_empty()).map(String::from).collect(),
+                None => crate::config::THEME_NAMES.iter().map(|n| n.to_string()).collect(),
+            };
+            let Some(name) = req.param("name").filter(|n| names.iter().any(|t| t == n)) else {
+                return Response::text(400, &format!("name: {}", names.join(", ")));
             };
             match q(vec!["set-option".into(), "-g".into(), "theme".into(), name.into()]).await {
                 Ok((0, _, _)) => Response::text(200, name),

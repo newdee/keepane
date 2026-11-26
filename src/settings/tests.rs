@@ -150,6 +150,28 @@ fn go(b: &mut Board, name: &str) {
     }
 }
 
+/// `theme` steps through the themes the server names (`show-settings -J`'s
+/// `themes`, the user's own too), and says them; a server that names none
+/// (an older one) leaves the built-in ones (the test below).
+#[test]
+fn the_theme_steps_through_the_users_own_themes_too() {
+    let mut b = Board::new(160, 45);
+    let mut v: serde_json::Value = serde_json::from_str(&json_of(&Options::default(), None)).unwrap();
+    let mut themes: Vec<String> = keepane_themes();
+    themes.push("mine".into());
+    v["themes"] = serde_json::json!(themes);
+    b.set_settings(&v.to_string());
+    assert_eq!(b.picked().unwrap().name, "theme");
+    assert_eq!(b.key(special(KeyCode::Left)), set("theme", "mine"), "back from the first: the user's, last");
+    b.key(k('z'));
+    let text = read(&b);
+    assert!(text.contains("dracula · mine"), "zoomed, the box says what it takes: {text}");
+}
+
+fn keepane_themes() -> Vec<String> {
+    crate::config::THEME_NAMES.iter().map(|n| n.to_string()).collect()
+}
+
 /// ←/→ steps what can be picked: a choice to the next, on/off over, a
 /// number by its step and never below 0.
 #[test]

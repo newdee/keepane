@@ -471,6 +471,8 @@ enum ChooserItem {
     Ran(usize),
     /// A machine reached with `ssh` (`choose-ssh`), by its place in the book.
     Ssh(usize),
+    /// A theme (`pick-theme`), by its place in the list.
+    Theme(usize),
     /// A title or separator line: shown, never selected.
     Separator,
     /// A machine in the chart: this one (None), or a paired one by its
@@ -548,6 +550,11 @@ enum ChooserKind {
     Marks(Vec<Ran>),
     /// The machines reached with `ssh` (`choose-ssh`), connected ones first.
     Ssh,
+    /// The themes (`pick-theme`): `names` as `list-themes` gives them;
+    /// `was` the theme when it opened and `options` what each option a
+    /// theme sets was then, with where each came from (`theme` first), put
+    /// back by Esc.
+    Themes { names: Vec<String>, was: String, options: Vec<(String, String, Option<String>)> },
 }
 
 /// A command a pane's shell ran that its screen still holds.
@@ -6847,6 +6854,8 @@ impl Server {
             Cmd::SettingsSave { names, keys } => self.settings_save(&names, keys, cid),
             Cmd::RebindKey { from, to, swap } => self.rebind_key(&from, &to, swap),
             Cmd::ShowBindings { json } => self.show_bindings(json),
+            Cmd::ListThemes => Outcome::Text(self.opts.theme_names().join("\n")),
+            Cmd::PickTheme => self.pick_theme(cid),
             Cmd::SettingsReload => self.settings_reload(cid),
             Cmd::Settings => self.settings_popup(cid),
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
@@ -8144,11 +8153,13 @@ impl Server {
             }
             (_, Some([name])) => {
                 let name = crate::config::resolve_name(name).unwrap_or_default();
-                crate::config::option_values(&name)
-                    .iter()
-                    .filter(|v| v.starts_with(word))
-                    .map(|v| v.to_string())
-                    .collect()
+                // `theme` takes the user's own themes too, read now.
+                let values: Vec<String> = if name == "theme" {
+                    self.opts.theme_names()
+                } else {
+                    crate::config::option_values(&name).iter().map(|v| v.to_string()).collect()
+                };
+                values.into_iter().filter(|v| v.starts_with(word)).collect()
             }
             // A flag being typed: the command's flags (an alias or a prefix
             // counts as the command it stands for), less those already given.
@@ -8345,6 +8356,14 @@ impl Server {
         let mut lines = Vec::new();
         let expand = match kind {
             ChooserKind::Tree { expand, .. } => *expand,
+            ChooserKind::Themes { names, .. } => {
+                for (i, name) in names.iter().enumerate() {
+                    items.push(ChooserItem::Theme(i));
+                    let own = if crate::config::THEME_NAMES.contains(&name.as_str()) { "" } else { "  (theme-path)" };
+                    lines.push(format!("{name}{own}"));
+                }
+                return Some((items, lines));
+            }
             ChooserKind::Buffers => {
                 for (i, (name, data)) in self.buffers.iter().enumerate() {
                     items.push(ChooserItem::Buffer(i));
@@ -8696,7 +8715,103 @@ impl Server {
         Some((out_items, out_lines))
     }
 
+    /// `pick-theme`: the themes as a picker, on the one in use.
+    fn pick_theme(&mut self, cid: Option<ClientId>) -> Outcome {
+        let Some(cid) = cid else { return Outcome::Error("pick-theme: no client".into()) };
+        if self.clients.get(&cid).and_then(|c| c.session).is_none() {
+            return Outcome::Error("pick-theme: client not attached".into());
+        }
+        let names = self.opts.theme_names();
+        let sel = names.iter().position(|n| *n == self.opts.theme).unwrap_or(0);
+        let options = std::iter::once("theme")
+            .chain(crate::config::theme_options().iter().copied())
+            .map(|n| (n.to_string(), self.opts.get(n).unwrap_or_default(), self.option_source.get(n).cloned()))
+            .collect();
+        let kind = ChooserKind::Themes { names, was: self.opts.theme.clone(), options };
+        let (items, lines) = self.chooser_lines(&kind, &[]).unwrap_or_default();
+        let c = self.clients.get_mut(&cid).unwrap();
+        c.prompt = None;
+        c.overlay = None;
+        c.chooser = Some(Chooser::new(kind, items, lines, sel));
+        Outcome::Ok
+    }
+
+    /// A key in a picker. The theme picker is the look as it goes: the
+    /// theme under the cursor is set as soon as the cursor is on it, Enter
+    /// keeps it, Esc (`q`, `C-c`) puts back the look it opened on.
     fn chooser_key(&mut self, cid: ClientId, k: Key) {
+        let theme = match self.clients.get(&cid).and_then(|c| c.chooser.as_ref()) {
+            Some(ch) => match &ch.kind {
+                ChooserKind::Themes { names, was, options } => {
+                    Some((ch.sel, names.clone(), was.clone(), options.clone()))
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        let Some((before, names, was, options)) = theme else { return self.chooser_key_in(cid, k) };
+        let set = |name: &str, value: &str| Cmd::SetOption {
+            name: name.into(),
+            value: value.into(),
+            append: false,
+            target: None,
+        };
+        match (k.code, k.ctrl, k.alt) {
+            (KeyCode::Escape, _, _) | (KeyCode::Char('q'), false, false) | (KeyCode::Char('c'), true, _) => {
+                if let Some(c) = self.clients.get_mut(&cid) {
+                    c.chooser = None;
+                }
+                // A theme by name; a look that was no theme's, option by
+                // option; then each where it came from, as if never touched.
+                if was != "custom" {
+                    let out = self.exec(set("theme", &was), Some(cid));
+                    self.reply(cid, out);
+                } else {
+                    for (name, value, _) in options.iter().skip(1) {
+                        self.exec(set(name, value), Some(cid));
+                    }
+                }
+                for (name, _, source) in options {
+                    match source {
+                        Some(s) => self.option_source.insert(name, s),
+                        None => self.option_source.remove(&name),
+                    };
+                }
+            }
+            // Enter keeps the theme on the highlighted line: one that would not
+            // set when the cursor reached it (a line no theme may have) is
+            // tried again, and says why.
+            (KeyCode::Enter, _, _) => {
+                let item = self
+                    .clients
+                    .get_mut(&cid)
+                    .and_then(|c| c.chooser.take())
+                    .and_then(|ch| ch.items.get(ch.sel).copied());
+                if let Some(ChooserItem::Theme(i)) = item
+                    && let Some(name) = names.get(i).filter(|n| **n != self.opts.theme)
+                {
+                    let out = self.exec(set("theme", name), Some(cid));
+                    self.reply(cid, out);
+                }
+            }
+            _ => {
+                self.chooser_key_in(cid, k);
+                let now = self
+                    .clients
+                    .get(&cid)
+                    .and_then(|c| c.chooser.as_ref())
+                    .map(|ch| (ch.sel, ch.items.get(ch.sel).copied()));
+                if let Some((_, Some(ChooserItem::Theme(i)))) = now.filter(|(s, _)| *s != before)
+                    && let Some(name) = names.get(i)
+                {
+                    let out = self.exec(set("theme", name), Some(cid));
+                    self.reply(cid, out);
+                }
+            }
+        }
+    }
+
+    fn chooser_key_in(&mut self, cid: ClientId, k: Key) {
         let Some((cols, rows)) = self.clients.get(&cid).map(|c| (c.cols, c.rows)) else { return };
         let page = self.window_area(cols, rows).h.saturating_sub(1).max(1) as i64; // body rows of the picker
         let Some(c) = self.clients.get_mut(&cid) else { return };
@@ -9058,7 +9173,9 @@ impl Server {
                         }
                     }
                     Some(ChooserItem::Ssh(i)) => self.ssh_go(cid, i, false),
+                    // (Enter on a theme is taken before: it keeps the look.)
                     Some(ChooserItem::Menu(_))
+                    | Some(ChooserItem::Theme(_))
                     | Some(ChooserItem::Separator)
                     | Some(ChooserItem::Log(..))
                     | Some(ChooserItem::Hit(_))
@@ -9893,6 +10010,11 @@ impl Server {
                 .filter(|ch| matches!(ch.kind, ChooserKind::Ssh))
                 .map(|_| self.ssh_rows());
             let ch = self.clients.get_mut(&cid).unwrap().chooser.as_mut().unwrap();
+            // The theme picker shows the theme the mouse moves to, as the keys do.
+            let theme_before = match &ch.kind {
+                ChooserKind::Themes { names, .. } => Some((ch.sel, names.clone())),
+                _ => None,
+            };
             if m.flags & MOUSE_WHEELED != 0 {
                 ch.typed = None;
                 ch.step(if (m.buttons >> 16) as i16 > 0 { -1 } else { 1 });
@@ -9916,6 +10038,18 @@ impl Server {
                         ch.sel = i;
                     }
                 }
+            }
+            let (sel, item) = (ch.sel, ch.items.get(ch.sel).copied());
+            if let Some((before, names)) = theme_before
+                && sel != before
+                && let Some(ChooserItem::Theme(i)) = item
+                && let Some(name) = names.get(i)
+            {
+                let out = self.exec(
+                    Cmd::SetOption { name: "theme".into(), value: name.clone(), append: false, target: None },
+                    Some(cid),
+                );
+                self.reply(cid, out);
             }
             return;
         }
@@ -10996,6 +11130,7 @@ impl Server {
                 ChooserKind::Tree { .. } if paired => "x kill  D delete  s share  f filter  v chart",
                 ChooserKind::Tree { .. } => "x kill  D delete  f filter  v chart",
                 ChooserKind::Clients => "Enter detach  f filter",
+                ChooserKind::Themes { .. } => "Enter keep  Esc put back",
                 ChooserKind::Buffers => "Enter paste  f filter",
                 ChooserKind::History { .. } => "Enter open  +/- fold  / every day",
                 ChooserKind::Hits { .. } => "Enter open there  / look again",

@@ -113,6 +113,9 @@ pub struct Board {
     pub unsaved: BTreeSet<String>,
     /// The prefix table's keys (`show-bindings -J`).
     pub binds: Vec<BindRow>,
+    /// What `theme` takes, the user's own themes too (`show-settings -J`'s
+    /// `themes`); empty from an older server: the built-in ones.
+    themes: Vec<String>,
     /// The commands whose keys were moved here and not written yet (`●`).
     pub keys_unsaved: BTreeSet<String>,
     /// The commands the change on its way moves: marked when it went well.
@@ -157,6 +160,7 @@ impl Board {
             changed_only: false,
             unsaved: BTreeSet::new(),
             binds: Vec::new(),
+            themes: Vec::new(),
             keys_unsaved: BTreeSet::new(),
             moving: Vec::new(),
             note: None,
@@ -181,6 +185,10 @@ impl Board {
             }
         };
         self.file = v["file"].as_str().map(String::from);
+        self.themes = v["themes"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+            .unwrap_or_default();
         let s = |o: &serde_json::Value, k: &str| o[k].as_str().unwrap_or_default().to_string();
         self.rows = v["options"]
             .as_array()
@@ -322,7 +330,7 @@ impl Board {
             let n: i64 = v.trim().parse().unwrap_or(0);
             return Board::set(o.name, &(n + dir * step as i64).max(0).to_string());
         }
-        let steps = optinfo::steps(o);
+        let steps = self.steps(o);
         if steps.is_empty() {
             self.note = Some(("Enter to type it".into(), false));
             return Action::Redraw;
@@ -333,7 +341,16 @@ impl Board {
             None if dir > 0 => 0,
             None => len - 1,
         };
-        Board::set(o.name, steps[next as usize])
+        Board::set(o.name, &steps[next as usize])
+    }
+
+    /// What ←/→ go through for `o`: `theme` the themes the server has,
+    /// the user's own too; the rest as the option list says.
+    fn steps(&self, o: &OptInfo) -> Vec<String> {
+        if o.name == "theme" && !self.themes.is_empty() {
+            return self.themes.clone();
+        }
+        optinfo::steps(o).iter().map(|s| s.to_string()).collect()
     }
 
     fn save(&self) -> Vec<String> {
@@ -767,7 +784,7 @@ impl Board {
             return out;
         }
         let (doc, takes) = match items[pick] {
-            Item::Opt(o) => (format!(" {}", o.doc), Board::takes(o)),
+            Item::Opt(o) => (format!(" {}", o.doc), self.takes(o)),
             Item::Bind(j) => {
                 let b = &self.binds[j];
                 let back = match &b.base {
@@ -793,10 +810,10 @@ impl Board {
     }
 
     /// What an option takes, in a line.
-    fn takes(o: &OptInfo) -> String {
+    fn takes(&self, o: &OptInfo) -> String {
         match o.kind {
             Kind::Bool => "on or off: Space or ←/→".into(),
-            Kind::Choice => format!("{}  (←/→; Enter types another)", optinfo::steps(o).join(" · ")),
+            Kind::Choice => format!("{}  (←/→; Enter types another)", self.steps(o).join(" · ")),
             Kind::Number(step) => format!("a number: ←/→ by {step}, Enter types it"),
             Kind::Size => "bytes, as 64K, 200M, 2G: Enter types it".into(),
             Kind::Colour => "a colour: ←/→ through the 16 names, Enter types #rrggbb or colourN".into(),

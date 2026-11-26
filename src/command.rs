@@ -1196,6 +1196,12 @@ pub enum Cmd {
         to: String,
         swap: bool,
     },
+    /// `list-themes`: the themes `theme` takes, the built-in ones first,
+    /// then the `NAME.conf` files of `theme-path`, one a line.
+    ListThemes,
+    /// `pick-theme`: the themes as a picker; the one under the cursor is
+    /// the look at once, Enter keeps it, Esc puts back the one before.
+    PickTheme,
     /// `show-bindings [-J]`: the prefix table's keys, each with the key its
     /// command had when the config file had run (where `r` on the settings
     /// board puts it back).
@@ -2526,6 +2532,8 @@ impl fmt::Display for Cmd {
                 write!(f, "rebind-key{} {} {}", if *swap { " -s" } else { "" }, quote(from), quote(to))
             }
             Cmd::ShowBindings { json } => f.write_str(if *json { "show-bindings -J" } else { "show-bindings" }),
+            Cmd::ListThemes => f.write_str("list-themes"),
+            Cmd::PickTheme => f.write_str("pick-theme"),
             Cmd::SettingsReload => f.write_str("reload-settings"),
             Cmd::Settings => f.write_str("settings"),
             Cmd::SwitchClient { next, prev, last, target } => {
@@ -3353,6 +3361,8 @@ pub const COMMANDS: &[&str] = &[
     "rebind-key",
     "show-bindings",
     "settings",
+    "list-themes",
+    "pick-theme",
     "web-share-open",
     "web-share-sent",
     "web-uploaded",
@@ -3526,6 +3536,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("show-bindings", &["-J"]),
     ("reload-settings", &[]),
     ("settings", &[]),
+    ("list-themes", &[]),
+    ("pick-theme", &[]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
     ("web-uploaded", &[]),
@@ -5247,6 +5259,14 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             Cmd::RebindKey { from, to, swap }
         }
+        "list-themes" => {
+            a.none_left(n)?;
+            Cmd::ListThemes
+        }
+        "pick-theme" => {
+            a.none_left(n)?;
+            Cmd::PickTheme
+        }
         "show-bindings" => {
             let mut json = false;
             while a.is_flag() {
@@ -6691,6 +6711,8 @@ mod tests {
             "rebind-key % \"\\\"\"",
             "show-bindings",
             "show-bindings -J",
+            "list-themes",
+            "pick-theme",
             "reload-settings",
             "settings",
             "chat-say review --re 42 sounds good",

@@ -741,6 +741,12 @@ dark paper with one accent in cinnabar; the themes in the repository's
 to source. Eight are built in: `set -g theme paper` switches to the light
 one, `paper-dark` back; `tokyo-night` (the default up to 0.37) and its
 light `tokyo-day`; `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`.
+A theme of your own is a `NAME.conf` in `theme-path` (`~/.keepane/themes`),
+lines of `set -g` as the built-in ones are, of the options a theme sets;
+what it leaves out is `paper-dark`'s, and `set -g theme NAME` reads the
+file each time (a built-in name there is not taken), so `theme-path` is set before it (the settings file is written so). `list-themes` prints
+every theme; `pick-theme` lists them and shows each as the cursor (or the
+mouse) reaches it, Enter keeps it, Esc puts back the look it opened on.
 Each draws the panes with `window-style` and `pane-colours`, whatever the
 terminal's colours, every text colour at 4.5:1 or more on the panes and
 the bar and the lines at 3:1 (a test checks each theme). Under a theme
@@ -1023,7 +1029,8 @@ Set with `set -g` (`set -gu` back to the default) or on the settings board (pref
 | `web-upload-dir` | `keepane-uploads` | Where a file sent from the phone goes (under the pane's directory). |
 | `web-upload-max` | `2G` | The largest file the phone page takes. |
 | `hint-open` | empty | What opens a path picked in `hints` (empty: VS Code, `$EDITOR`, the desktop). |
-| `theme` | `paper-dark` | The built-in theme last set: `paper`, `paper-dark`, `tokyo-night`, `tokyo-day`, `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`. |
+| `theme` | `paper-dark` | The theme last set: a built-in one (`paper`, `paper-dark`, `tokyo-night`, `tokyo-day`, `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`) or a `NAME.conf` of `theme-path`. |
+| `theme-path` | `~/.keepane/themes` | Where `theme` finds themes of your own: `NAME.conf` files. |
 | `window-style` | *(theme)* | The panes' own colours. |
 | `pane-colours` | *(theme)* | The 16 colours drawn for a program's first 16. |
 | `choose-tree-style` | `chart` | How `choose-tree` shows at first: `chart`, `tree` or `list`. |

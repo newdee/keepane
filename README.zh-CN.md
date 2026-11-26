@@ -1000,6 +1000,8 @@ source-file ~/.keepane/themes/plain.conf   # 换回 tmux 的样子
 set -g theme paper
 ```
 
+自己的主题放在 `~/.keepane/themes`（`theme-path`）里，文件名是 `主题名.conf`：每行一条 `set -g`，和内置主题一样，只能设主题会设的选项（颜色、状态栏、边框）；没写的选项用 `paper-dark` 的，所以换主题时照样整套替换。每次 `set -g theme 主题名` 都重新读文件，所以 `theme-path` 要写在它前面（`save-settings` 会按这个顺序写）；和内置主题同名的文件不算。`list-themes` 列出所有主题；`pick-theme` 打开主题列表，光标或鼠标移到哪个就立刻换成哪个，Enter 保留，Esc 换回打开前的样子。设置板（`prefix g`）和手机页面里也能选到自己的主题。
+
 每套主题都自己画 pane 的颜色，在哪个终端里看都一样：设置 `window-style`（pane 的默认文字色和背景色，和 tmux 一样）和 `pane-colours`（程序用的 16 种颜色，也就是调色板的前 16 个）。文字颜色（黑色除外，程序一般把黑色用在色块上）在 pane 和状态栏上的对比度都不低于 4.5:1，线条不低于 3:1（WCAG AA），测试逐套主题、逐段状态栏颜色检查。原配色达不到的颜色（Nord 的红、多数主题的暗灰）只调了亮度，每个主题文件里写明调了哪些。主题会同时设置这些颜色和状态栏、边框，所以先设主题，自己的改动写在它后面。这些选项只要有一个用别的方式改过（加载主题文件、手动设置），外观就不再是哪套内置主题，`show -gv theme` 会显示 `custom`。想在别的主题下让 pane 用终端自己的颜色：`set -g window-style default` 加 `set -g pane-colours ""`。
 
 默认外观用的是 24 位真彩色。在不支持真彩色的终端上（macOS 自带的 Terminal，除非它声明了 `COLORTERM=truecolor`），keepane 会自动换成 256 色里最接近的颜色，keepane 自己的界面和 pane 里程序的输出都一样。

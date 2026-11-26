@@ -38,6 +38,10 @@ fn sets(line: &str) -> Option<String> {
     }
 }
 
+/// Options whose line must come before another's in a settings file: the
+/// second reads the first as it is set.
+const READ_BY: &[(&str, &str)] = &[("theme-path", "theme")];
+
 /// `old` (a settings file) with each `(name, line)` in it: the first line
 /// that sets the option replaced, any later one taken out (it would win
 /// over the one written), else the line added at the end. Every other line
@@ -65,6 +69,19 @@ pub(super) fn merge(old: &str, updates: &[(String, String)]) -> (String, Vec<(St
         }
         if !found {
             lines.push(new.clone());
+        }
+    }
+    // A line another reads goes before it, wherever each was: `theme NAME`
+    // looks for NAME.conf in `theme-path` as it runs.
+    for (first, then) in READ_BY {
+        let at = |lines: &[String], n: &str| {
+            lines.iter().position(|l| sets(l).and_then(|s| crate::config::resolve_name(&s).ok()).as_deref() == Some(n))
+        };
+        if let (Some(f), Some(t)) = (at(&lines, first), at(&lines, then))
+            && f > t
+        {
+            let line = lines.remove(f);
+            lines.insert(t, line);
         }
     }
     let at = updates
@@ -334,7 +351,11 @@ impl Server {
                 .iter()
                 .map(|(n, v, d, s)| serde_json::json!({ "name": n, "value": v, "default": d, "source": s }))
                 .collect();
-            return Outcome::Text(serde_json::json!({ "file": file, "options": options }).to_string());
+            // `themes`: what `theme` takes now (`list-themes`), the user's own too.
+            let themes = self.opts.theme_names();
+            return Outcome::Text(
+                serde_json::json!({ "file": file, "options": options, "themes": themes }).to_string(),
+            );
         }
         let mut out = vec![match &file {
             Some(f) => format!("# settings file: {f}"),
@@ -547,6 +568,26 @@ mod tests {
             "# mine\nset -g mouse off\nbind-key g display-message hi\nset -g history-limit 9000\n%if 1\nset -g status off\n%endif\nset -ga status-right x\n"
         );
         assert_eq!(at, vec![("mouse".into(), 2), ("history-limit".into(), 4)]);
+    }
+
+    /// `theme-path` goes before `theme`, which reads it as it is set:
+    /// written together in either order, or the path added to a file that
+    /// has the theme already; nothing else moves, and the line numbers
+    /// said are where the lines are now.
+    #[test]
+    fn the_theme_path_goes_before_the_theme() {
+        let both = upd(&[("theme", "set -g theme mine"), ("theme-path", "set -g theme-path ~/t")]);
+        let (text, at) = merge("", &both);
+        assert_eq!(text, format!("{HEADER}\nset -g theme-path ~/t\nset -g theme mine\n"));
+        assert_eq!(at, vec![("theme".into(), 3), ("theme-path".into(), 2)]);
+        let old = "set -g mouse on\nset -g theme mine\nset -g status off\n";
+        let (text, _) = merge(old, &upd(&[("theme-path", "set -g theme-path ~/t")]));
+        assert_eq!(text, "set -g mouse on\nset -g theme-path ~/t\nset -g theme mine\nset -g status off\n");
+        // Already in order, or only one of them: as before.
+        let (text, _) = merge("set -g theme-path ~/t\nset -g mouse on\n", &upd(&[("theme", "set -g theme mine")]));
+        assert_eq!(text, "set -g theme-path ~/t\nset -g mouse on\nset -g theme mine\n");
+        let (text, _) = merge("set -g mouse on\n", &upd(&[("theme", "set -g theme paper")]));
+        assert_eq!(text, "set -g mouse on\nset -g theme paper\n");
     }
 
     /// A continued line is not taken for the option it starts to set.

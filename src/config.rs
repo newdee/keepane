@@ -113,6 +113,9 @@ pub struct Options {
     pub window_status_current_format: String,
     /// Directory searched by `@plugin name` / `load-plugin name`.
     pub plugin_path: String,
+    /// Where `theme` looks for themes of the user's own, `NAME.conf`
+    /// (`theme-path`).
+    pub theme_path: String,
     /// `set -g @plugin x` entries not yet loaded.
     pub pending_plugins: Vec<String>,
     /// tmux-style user options (`@name`), readable by plugins via
@@ -333,6 +336,14 @@ pub const THEMES: &[(&str, &str)] = &[
 pub const THEME_NAMES: &[&str] =
     &["paper-dark", "paper", "tokyo-night", "tokyo-day", "nord", "gruvbox-dark", "catppuccin-mocha", "dracula"];
 
+/// A name `theme` can take from `theme-path`: not a built-in one, and only
+/// letters, digits, `-` and `_` (no way out of the folder).
+fn user_theme_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && !THEME_NAMES.contains(&name)
+}
+
 /// The options a theme sets (the same in each).
 pub(crate) fn theme_options() -> &'static [&'static str] {
     static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
@@ -543,6 +554,7 @@ pub const SHOWABLE: &[&str] = &[
     "prefix-hint",
     "prefix-hint-delay",
     "plugin-path",
+    "theme-path",
     "autosave",
     "restore-on-start",
     "sessions-dir",
@@ -673,6 +685,7 @@ impl Default for Options {
             window_status_format: "#[fg=#87837b] #I:#W#F ".into(),
             window_status_current_format: "#[fg=#dd625e,bold] #[underscore]#I:#W#F#[nounderscore] #[default]".into(),
             plugin_path: "~/.keepane/plugins".into(),
+            theme_path: "~/.keepane/themes".into(),
             pending_plugins: Vec::new(),
             user: Vec::new(),
             autosave: true,
@@ -965,6 +978,7 @@ pub const KNOWN: &[&str] = &[
     "status-style",
     "synchronize-panes",
     "theme",
+    "theme-path",
     "undo-kill-time",
     "update-check",
     "visual-activity",
@@ -1115,11 +1129,59 @@ impl Options {
         }
     }
 
-    /// Set every option of built-in theme `name`. Checked first and set
+    /// The folder of the user's own themes (`theme-path`, `~` expanded).
+    fn theme_dir(&self) -> PathBuf {
+        PathBuf::from(crate::server::expand_home(&self.theme_path))
+    }
+
+    /// The themes `theme` takes: the built-in ones, then by name the
+    /// `NAME.conf` files of `theme-path` (one with a built-in name, a name
+    /// `theme` cannot take, or a folder by such a name, is passed over).
+    pub fn theme_names(&self) -> Vec<String> {
+        let mut own: Vec<String> = std::fs::read_dir(self.theme_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                (p.extension()? == "conf" && p.is_file()).then_some(())?;
+                p.file_stem()?.to_str().map(String::from)
+            })
+            .filter(|n| user_theme_name(n))
+            .collect();
+        own.sort();
+        THEME_NAMES.iter().map(|n| n.to_string()).chain(own).collect()
+    }
+
+    /// The text of the user's theme `name` (`theme-path`/`name`.conf);
+    /// None for a built-in name, a name with anything but letters, digits,
+    /// `-` and `_`, or no such file.
+    fn user_theme(&self, name: &str) -> Option<String> {
+        user_theme_name(name).then(|| std::fs::read_to_string(self.theme_dir().join(format!("{name}.conf"))).ok())?
+    }
+
+    /// Set every option of theme `name`: a built-in one's lines; a user's
+    /// own, the default theme's lines and then its own on top (so what it
+    /// leaves out is the default's, and one theme still replaces the other
+    /// whole), each of them an option a theme sets. Checked first and set
     /// after, so a theme that does not read leaves the look as it was.
     fn apply_theme(&mut self, name: &str) -> Result<(), String> {
-        let text = THEMES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t).ok_or(format!("no theme {name}"))?;
-        let settings = theme_settings(text)?;
+        let built_in = THEMES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t);
+        let mut settings = theme_settings(built_in.unwrap_or(THEMES[0].1))?;
+        if built_in.is_none() {
+            let text = self.user_theme(name).ok_or(format!("no theme {name}"))?;
+            let own = theme_settings(&text).map_err(|e| format!("theme {name}: {e}"))?;
+            for (option, _) in &own {
+                let full = resolve_name(option).map_err(|e| format!("theme {name}: {e}"))?;
+                if !theme_options().contains(&full.as_str()) {
+                    return Err(format!(
+                        "theme {name}: {option} is not one a theme sets ({})",
+                        theme_options().join(", ")
+                    ));
+                }
+            }
+            settings.extend(own);
+        }
         let mut next = self.clone();
         for (option, value) in &settings {
             next.set_one(option, value).map_err(|e| format!("theme {name}: {e}"))?;
@@ -1281,6 +1343,7 @@ impl Options {
             "window-status-format" => self.window_status_format = value.to_string(),
             "window-status-current-format" => self.window_status_current_format = value.to_string(),
             "plugin-path" => self.plugin_path = value.to_string(),
+            "theme-path" => self.theme_path = value.trim().to_string(),
             "autosave" => self.autosave = parse_bool(value)?,
             "restore-on-start" => self.restore_on_start = parse_bool(value)?,
             "sessions-dir" => self.sessions_dir = value.to_string(),
@@ -1392,7 +1455,14 @@ impl Options {
             // some other way; set back, it leaves the look as it is.
             "theme" if value.trim() == "custom" => self.theme = "custom".into(),
             "theme" => {
-                let name = one_of(name, value, THEME_NAMES)?;
+                let name = value.trim().to_string();
+                if !THEME_NAMES.contains(&name.as_str()) && self.user_theme(&name).is_none() {
+                    return Err(format!(
+                        "bad theme '{value}' (one of {}; or a NAME.conf in theme-path, {})",
+                        self.theme_names().join(", "),
+                        self.theme_path
+                    ));
+                }
                 self.apply_theme(&name)?;
                 self.theme = name;
             }
@@ -1525,6 +1595,7 @@ impl Options {
             "prefix-hint" => onoff(self.prefix_hint),
             "prefix-hint-delay" => self.prefix_hint_delay_ms.to_string(),
             "plugin-path" => self.plugin_path.clone(),
+            "theme-path" => self.theme_path.clone(),
             "autosave" => onoff(self.autosave),
             "restore-on-start" => onoff(self.restore_on_start),
             // Empty: the server's own, which depends on its socket
@@ -1765,6 +1836,57 @@ mod tests {
         o.set("feishu-domain", "http://127.0.0.1:9000").unwrap();
         assert!(o.set("feishu-domain", "larks").is_err());
         assert_eq!(o.get("feishu-notify").unwrap(), "on");
+    }
+
+    /// `theme-path`: a user's `NAME.conf` is a theme `theme` takes, listed
+    /// after the built-in ones by name; what it leaves out is paper-dark's,
+    /// so it replaces any theme whole; it may set only what a theme sets
+    /// (by any abbreviation); a built-in name there, a name that is no file
+    /// name, a file that is no `.conf` are passed over.
+    #[test]
+    fn a_users_own_theme_is_taken_from_theme_path() {
+        let dir = std::env::temp_dir().join(format!("keepane-themes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |n: &str, t: &str| std::fs::write(dir.join(n), t).unwrap();
+        write("mine.conf", "# mine\nset -g window-sty \"fg=#010101,bg=#202020\"\n");
+        write("paper.conf", "set -g window-style \"bg=#ff0000\"\n");
+        write("evil.conf", "set -g prefix C-a\n");
+        write("bad name.conf", "set -g window-style \"bg=#ff0000\"\n");
+        write("notes.txt", "set -g window-style \"bg=#ff0000\"\n");
+        std::fs::create_dir_all(dir.join("folder.conf")).unwrap();
+        let mut o = Options::default();
+        o.set("theme-path", &dir.to_string_lossy()).unwrap();
+        let names = o.theme_names();
+        assert_eq!(&names[..THEME_NAMES.len()], THEME_NAMES);
+        assert_eq!(&names[THEME_NAMES.len()..], ["evil", "mine"], "{names:?}");
+        // From another theme, whole: its own bg, the rest paper-dark's.
+        o.set("theme", "tokyo-night").unwrap();
+        o.set("theme", "mine").unwrap();
+        let paper_dark = Options::default();
+        assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(1, 1, 1), Color::Rgb(0x20, 0x20, 0x20)));
+        assert_eq!(o.pane_colours, paper_dark.pane_colours);
+        assert_eq!(o.status_right, paper_dark.status_right);
+        assert_eq!(o.get("theme").as_deref(), Some("mine"));
+        // Only what a theme sets; the look stays as it was.
+        let err = o.set("theme", "evil").unwrap_err();
+        assert!(err.contains("prefix is not one a theme sets"), "{err}");
+        assert_eq!((o.get("theme").as_deref(), o.window_bg), (Some("mine"), Color::Rgb(0x20, 0x20, 0x20)));
+        // A built-in name is the built-in theme; no way out of the folder.
+        o.set("theme", "paper").unwrap();
+        assert_eq!(o.window_bg, Color::Rgb(0xf0, 0xe7, 0xd2), "paper's own, not the file's red");
+        for bad in ["../mine", "bad name", "notes", "nothing"] {
+            let err = o.set("theme", bad).unwrap_err();
+            assert!(err.contains("bad theme") && err.contains("mine") && err.contains("theme-path"), "{bad}: {err}");
+        }
+        // The file is read each time it is set.
+        write("mine.conf", "set -g window-style \"fg=#010101,bg=#303030\"\n");
+        o.set("theme", "mine").unwrap();
+        assert_eq!(o.window_bg, Color::Rgb(0x30, 0x30, 0x30));
+        // Set again while it is the theme in use: read again too.
+        write("mine.conf", "set -g window-style \"fg=#010101,bg=#404040\"\n");
+        o.set("theme", "mine").unwrap();
+        assert_eq!(o.window_bg, Color::Rgb(0x40, 0x40, 0x40));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `mode-style`, `message-style`, `popup-border-style`: their defaults

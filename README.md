@@ -2350,6 +2350,17 @@ and `tokyo-day`, its light one; and `nord`, `gruvbox-dark`,
 set -g theme paper
 ```
 
+A theme of your own is a `NAME.conf` in `~/.keepane/themes` (`theme-path`):
+`set -g` lines as in the built-in ones, of the options a theme sets (the
+colours, the status line, the borders); what it leaves out is
+`paper-dark`'s, so it still replaces the theme before it whole.
+`set -g theme NAME` reads the file each time, so set `theme-path` before it
+(`save-settings` writes them in that order); a file with a built-in name
+is passed over. `list-themes` prints every theme, and `pick-theme` lists
+them and shows each as the cursor or the mouse reaches it: Enter keeps it,
+Esc puts back the look it opened on. The settings board (`prefix g`) and
+the phone's page offer the user's themes too.
+
 Each draws the panes itself, so it looks the same in any terminal: it sets
 `window-style` (a pane's default text and background, as in tmux) and
 `pane-colours` (the 16 colours programs use, the first 16 of the palette).
