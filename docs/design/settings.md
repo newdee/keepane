@@ -44,7 +44,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 
 | 框 | 选项 |
 |---|---|
-| 1 Look | theme、window-style、pane-colours、边框（pane-border-*、pane-active-border-style、pane-frames）、display-panes-*、clock-mode-*、choose-tree-style、dashboard-icons、animation、animation-time |
+| 1 Look | theme、window-style、pane-colours、边框（pane-border-*、pane-active-border-style、pane-frames）、pane-dim、display-panes-*、clock-mode-*、choose-tree-style、dashboard-icons、animation、animation-time |
 | 2 Status line | status、status-position、status-justify、status-style、status-left/right、它们的 length、status-interval、window-status-* |
 | 3 Keys | prefix、repeat-time、prefix-hint、prefix-hint-delay；下面是 prefix 表的每个键（0.96） |
 | 4 Windows and panes | mouse、history-limit、base-index、pane-base-index、remain-on-exit、keep-zoom、undo-kill-time、window-size、pane-timestamps、default-shell、default-command、default-terminal |
@@ -142,4 +142,4 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 - **P3（0.97，做了）**：8 套主题都内置（新增 `nord`、`gruvbox-dark`、`catppuccin-mocha`、`dracula`），都自己画 pane（`tokyo-night` 原来交给终端，现在也画），对比度测试从 3 套查到 8 套（文字 4.5:1、线条 3:1、提示行、状态栏每段颜色）。原配色达不到的颜色只调 OKLCH 亮度，色相不变；每个主题文件写明调了哪些。
 - P4 `~/.keepane/themes/NAME.conf` 用户主题目录和实时预览的选择器。
 - ~~P5 跟随终端亮暗~~：不做（用户 2026-11-26）。
-- P6 非活动 pane 压暗、状态栏按优先级藏项、边框上显示 agent 状态。
+- **P6（0.97，做了）**：`pane-dim`（默认开）：有主题时不是当前的 pane 背景暗一点（深色纸往黑走 35%，浅色纸 5%；交给终端颜色时不压暗）；在画完 pane、画弹窗之前做，弹窗和提示不受影响。内置主题的状态栏：工作模式是 `normal` 时不显示；客户端窄于 120 列藏 CPU / MEM / 电池，窄于 100 列再藏目录（`#{&&:#{client_width},#{<:#{client_width},N}}`，没有客户端时宽度 0，不藏）。默认的 `pane-border-format` 在 `ai`、`shell` 模式的 pane（以及程序已退出的 pane）后面加 `pane_state`，颜色和 dashboard 一样（busy 黄、idle 绿、exited 红、typing 青、其余暗）。

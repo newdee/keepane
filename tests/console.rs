@@ -198,10 +198,12 @@ fn real_client_in_conpty() {
         row.starts_with(" t ") && row.contains(" 0:cmd* ")
     });
     assert!(t.parser.screen().alternate_screen(), "client should use the alternate screen");
-    // The default right side: the pane's directory and the machine's
-    // load, read in-process, and the clock.
+    // The default right side at 80 columns: the clock; the directory and
+    // the machine's load are left out under 100 and 120 columns (the e2e
+    // test `a_narrow_client_leaves_the_least_off_the_status_line` widens).
     let row = t.row(23);
-    assert!(row.contains("CPU ") && row.contains("MEM "), "machine on the right: {row:?}");
+    assert!(!row.contains("CPU ") && !row.contains("MEM "), "narrow: no machine on the right: {row:?}");
+    assert!(row.trim_end().rsplit(' ').next().is_some_and(|w| w.len() == 5 && w.as_bytes()[2] == b':'), "{row:?}");
     // In Paper Dark's colours: the session on its cinnabar block, the pane
     // on the dark paper.
     let cell = t.parser.screen().cell(23, 1).unwrap();

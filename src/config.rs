@@ -86,6 +86,10 @@ pub struct Options {
     /// `pane-frames`: each pane in a frame of its own, rounded at its
     /// corners, its `pane-border-format` text on the frame's top.
     pub pane_frames: bool,
+    /// The panes the keys are not in on a background a shade off the
+    /// panes' own (`pane-dim`), so the one in use stands out; nothing when
+    /// the panes are in the terminal's own colours.
+    pub pane_dim: bool,
     pub pane_border_fg: Color,
     /// Status line formats (see `format.rs`).
     pub status_left: String,
@@ -502,6 +506,7 @@ pub const SHOWABLE: &[&str] = &[
     "pane-active-border-style",
     "pane-border-lines",
     "pane-frames",
+    "pane-dim",
     "display-panes-colour",
     "display-panes-active-colour",
     "clock-mode-style",
@@ -606,7 +611,11 @@ impl Default for Options {
             update_check: true,
             agent_cost: true,
             pane_border_status: "off".into(),
-            pane_border_format: " #{?pane_active,#[bold],}#{pane_index}: #{pane_title}#[default] ".into(),
+            // The pane's number and title, then, for a pane in `ai` or
+            // `shell` mode or one whose program has exited, what it is up to
+            // (`pane_state`), in the dashboard's colours: busy yellow, free
+            // green, exited red, typing cyan, the rest faint.
+            pane_border_format: " #{?pane_active,#[bold],}#{pane_index}: #{pane_title}#[default]#{?#{!=:#{pane_state},-}, #{?#{==:#{pane_state},busy},#[fg=yellow]busy,#{?#{==:#{pane_state},idle},#[fg=green]idle,#{?#{==:#{pane_state},exited},#[fg=red]exited,#{?#{==:#{pane_state},typing},#[fg=cyan]typing,#[fg=brightblack]#{pane_state}}}}}#[default],} ".into(),
             base_index: 0,
             pane_base_index: 0,
             display_time_ms: 1500,
@@ -626,6 +635,7 @@ impl Default for Options {
             clock_mode_look: "plain".into(),
             pane_border_lines: "heavy".into(),
             pane_frames: false,
+            pane_dim: true,
             pane_border_fg: Color::Rgb(0x66, 0x66, 0x64),
             // The session name on a cinnabar block, the one block on the bar;
             // after it, while `passthrough` gives the pane every key, a word
@@ -634,11 +644,14 @@ impl Default for Options {
                           #{?pane_passthrough,#[fg=#dd625e,bold]passthrough#[default] ,}"
                 .into(),
             // What is useful at a glance and costs nothing to read: a newer
-            // keepane when there is one, the branch when in a repository
-            // (and what git last said is changed there, `●3 ↑2`),
-            // where the pane is, the machine's load, the battery when there
-            // is one, then the time.
-            status_right: "#{?keepane_update,#[fg=#dd625e,bold]⇡ #{keepane_update}#[default]  ,}#{?web_url,#[fg=#cecabe]web #{web_clients}#[default]  ,}#{?#{==:#{pane_work_mode},normal},#[fg=#87837b]normal  ,#[fg=#dd625e,bold]#{pane_work_mode}#[default]  }#{?git_branch,#[fg=#cecabe]#{git_branch}#{?git_marks, #{git_marks},}  ,}#[fg=#87837b]#{pane_current_path_short}  CPU #{cpu_percentage}  MEM #{ram_percentage}  #{?battery_percentage,BAT #{battery_percentage}  ,}#[fg=#cecabe,bold]%H:%M ".into(),
+            // keepane when there is one, the phone page's viewers while it
+            // is on, the pane's work mode when it is not `normal`, the branch
+            // when in a repository (and what git last said is changed there,
+            // `●3 ↑2`), where the pane is, the machine's load, the battery
+            // when there is one, then the time. On a client narrower than 120
+            // columns the load and the battery are left out, under 100 where
+            // the pane is too (no client, the phone page: width 0, all kept).
+            status_right: "#{?keepane_update,#[fg=#dd625e,bold]⇡ #{keepane_update}#[default]  ,}#{?web_url,#[fg=#cecabe]web #{web_clients}#[default]  ,}#{?#{==:#{pane_work_mode},normal},,#[fg=#dd625e,bold]#{pane_work_mode}#[default]  }#{?git_branch,#[fg=#cecabe]#{git_branch}#{?git_marks, #{git_marks},}  ,}#[fg=#87837b]#{?#{&&:#{client_width},#{<:#{client_width},100}},,#{pane_current_path_short}  }#{?#{&&:#{client_width},#{<:#{client_width},120}},,CPU #{cpu_percentage}  MEM #{ram_percentage}  #{?battery_percentage,BAT #{battery_percentage}  ,}}#[fg=#cecabe,bold]%H:%M ".into(),
             status_left_length: 40,
             status_right_length: 100, // the default right side is a long one; it gives way only to the current window and its marks
             status_justify: "left".into(),
@@ -857,6 +870,7 @@ pub const KNOWN: &[&str] = &[
     "pane-border-status",
     "pane-border-style",
     "pane-colours",
+    "pane-dim",
     "pane-frames",
     "pane-timestamps",
     "plugin-path",
@@ -929,6 +943,7 @@ const BOOLEAN: &[&str] = &[
     "notify",
     "monitor-activity",
     "pane-frames",
+    "pane-dim",
     "pane-timestamps",
     "monitor-bell",
     "mouse",
@@ -1114,6 +1129,7 @@ impl Options {
             "clock-mode-look" => self.clock_mode_look = one_of(name, value, CLOCK_LOOKS)?,
             "pane-border-lines" => self.pane_border_lines = one_of(name, value, PANE_BORDER_LINES)?,
             "pane-frames" => self.pane_frames = parse_bool(value)?,
+            "pane-dim" => self.pane_dim = parse_bool(value)?,
             "display-panes-active-colour" => self.display_panes_active_colour = parse_color(value)?,
             "pane-active-border-style" => {
                 if let (Some(c), _) = parse_style(value)? {
@@ -1489,6 +1505,7 @@ impl Options {
             "clock-mode-look" => self.clock_mode_look.clone(),
             "pane-border-lines" => self.pane_border_lines.clone(),
             "pane-frames" => onoff(self.pane_frames),
+            "pane-dim" => onoff(self.pane_dim),
             "display-panes-active-colour" => color_name(self.display_panes_active_colour),
             _ => return None,
         })
@@ -1984,11 +2001,11 @@ mod tests {
         assert!(o.set("save-history", "").is_err(), "not an on/off option");
     }
 
-    /// Each built-in theme that draws its panes (paper-dark, paper,
-    /// tokyo-day) reads clearly: each colour text is drawn in (the panes'
-    /// text, the 15 colours after black, which a light theme keeps light for
-    /// what is drawn on colour) at 4.5:1 or more on the panes and on the
-    /// status bar (WCAG AA), the pane borders at 3:1 on the panes.
+    /// Each built-in theme (every one draws its panes) reads clearly: each
+    /// colour text is drawn in (the panes' text, the 15 colours after black,
+    /// which a light theme keeps light for what is drawn on colour) at 4.5:1
+    /// or more on the panes, dimmed (`pane-dim`) or not, and on the status
+    /// bar (WCAG AA), the pane borders at 3:1 on the panes.
     #[test]
     fn the_themes_that_draw_the_panes_read_clearly() {
         fn lum(c: Color) -> f64 {
@@ -2018,8 +2035,11 @@ mod tests {
                     .into_iter()
                     .chain(o.pane_colours.iter().enumerate().skip(1).map(|(i, c)| (format!("colour {i}"), *c)))
                     .collect();
+            // `pane-dim`: the panes the keys are not in, a shade darker.
+            let dim = crate::server::render::dimmed(pane).unwrap();
             for (name, c) in text {
                 assert!(ratio(c, pane) >= 4.5, "{theme}: {name} on the panes: {:.2}:1", ratio(c, pane));
+                assert!(ratio(c, dim) >= 4.5, "{theme}: {name} on a dimmed pane: {:.2}:1", ratio(c, dim));
                 assert!(ratio(c, bar) >= 4.5, "{theme}: {name} on the bar: {:.2}:1", ratio(c, bar));
             }
             // The key hint rows (render.rs `HINT_BAR`): their text white,
@@ -2055,14 +2075,14 @@ mod tests {
         assert_eq!(
             checked,
             [
-                ("paper-dark", 11),
-                ("paper", 11),
-                ("tokyo-night", 14),
-                ("tokyo-day", 14),
-                ("nord", 14),
-                ("gruvbox-dark", 14),
-                ("catppuccin-mocha", 14),
-                ("dracula", 14)
+                ("paper-dark", 10),
+                ("paper", 10),
+                ("tokyo-night", 13),
+                ("tokyo-day", 13),
+                ("nord", 13),
+                ("gruvbox-dark", 13),
+                ("catppuccin-mocha", 13),
+                ("dracula", 13)
             ]
         );
     }

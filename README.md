@@ -2439,7 +2439,16 @@ Modifiers, as in tmux: `#{=10:pane_title}` (first 10 characters),
 
 `set -g pane-border-status top` (or `bottom`) puts a line of
 `pane-border-format` on every pane's border: by default the pane's number
-and title, the active pane's in bold.
+and title, the active pane's in bold, then, for a pane in `ai` or `shell`
+mode or one whose program has exited, what it is up to (`busy` yellow,
+`idle` green, `exited` red, `typing` cyan, the rest faint, as on the
+dashboard).
+
+Under a theme, the panes the keys are not in sit on a background a shade
+darker than the one in use (`pane-dim`, on; `set -g pane-dim off` for
+none). The built-in status lines say the work mode only when it is not
+`normal`, and on a narrow terminal leave out what matters least: CPU,
+memory and the battery under 120 columns, the directory too under 100.
 
 ```tmux
 set -g status-right "#[fg=yellow]#(pwsh -NoProfile -c (Get-Date).ToString('HH:mm'))#[default] #H"

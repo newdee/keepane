@@ -78,6 +78,7 @@ pub const OPTIONS: &[OptInfo] = &[
     o("pane-border-status", 0, Choice, "A line of text on each pane's `top` or `bottom` border."),
     o("pane-border-format", 0, Format, "That line (a format)."),
     o("pane-frames", 0, Bool, "Each pane in a rounded frame of its own."),
+    o("pane-dim", 0, Bool, "The panes the keys are not in on a background a shade off the theme's."),
     o("display-panes-colour", 0, Colour, "`display-panes`: the other panes' numbers."),
     o("display-panes-active-colour", 0, Colour, "`display-panes`: the active pane's number."),
     o("clock-mode-style", 0, Choice, "`clock-mode`: hours as `12` or `24`."),

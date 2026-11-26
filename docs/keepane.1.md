@@ -743,7 +743,13 @@ one, `paper-dark` back; `tokyo-night` (the default up to 0.37) and its
 light `tokyo-day`; `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`.
 Each draws the panes with `window-style` and `pane-colours`, whatever the
 terminal's colours, every text colour at 4.5:1 or more on the panes and
-the bar and the lines at 3:1 (a test checks each theme). The lines between panes are heavy
+the bar and the lines at 3:1 (a test checks each theme). Under a theme
+the panes the keys are not in sit on a background a shade darker
+(`pane-dim`, on). The built-in status lines say the work mode only when it
+is not `normal`, and on a client narrower than 120 columns leave out CPU,
+memory and the battery, under 100 the directory too; the default
+`pane-border-format` adds what an `ai` or `shell` pane, or one whose
+program has exited, is up to (`pane_state`, in the dashboard's colours). The lines between panes are heavy
 (`┃` `━`); `set -g pane-border-lines single` draws tmux's thin ones,
 `double` or `simple` (ASCII) the others. `set -g pane-frames on` puts
 each pane in a rounded frame of its own instead (`╭` `╮` `╰` `╯`), the
@@ -941,6 +947,7 @@ Set with `set -g` (`set -gu` back to the default) or on the settings board (pref
 | `pane-active-border-style` | *(theme)* | The active pane's lines. |
 | `pane-border-lines` | `heavy` | `heavy`, `single`, `double` or `simple` (ASCII). |
 | `pane-frames` | `off` | Each pane in a rounded frame of its own. |
+| `pane-dim` | `on` | The panes the keys are not in on a background a shade off the theme's. |
 | `display-panes-colour` | `blue` | `display-panes`: the other panes' numbers. |
 | `display-panes-active-colour` | `red` | `display-panes`: the active pane's number. |
 | `clock-mode-style` | `24` | `clock-mode`: hours as `12` or `24`. |

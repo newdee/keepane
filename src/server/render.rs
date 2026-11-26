@@ -1245,6 +1245,34 @@ pub fn recolor(g: &mut Grid, bar: Option<u16>, fg: Color, bg: Color, palette: &[
     }
 }
 
+/// `pane-dim`: the background the panes the keys are not in take, a shade
+/// off the theme's `bg`: darker (35% of the way to black on dark paper,
+/// 5% on light), so text keeps reading on it (4.5:1, a test in config.rs
+/// checks). None when the panes are in the terminal's own
+/// colours: there is no colour to shade.
+pub fn dimmed(bg: Color) -> Option<Color> {
+    let (r, g, b) = rgb_of(bg)?;
+    let dark = contrast((r, g, b), (0, 0, 0)) < contrast((r, g, b), (255, 255, 255));
+    let k = if dark { 0.35 } else { 0.05 };
+    let shade = |v: u8| (f64::from(v) * (1.0 - k)).round() as u8;
+    Some(Color::Rgb(shade(r), shade(g), shade(b)))
+}
+
+/// The cells of `rect` on the default background (a pane's own, not one a
+/// program painted) put on `bg`.
+pub fn dim_rect(g: &mut Grid, rect: Rect, bg: Color) {
+    for y in rect.y..rect.y.saturating_add(rect.h).min(g.rows) {
+        for x in rect.x..rect.x.saturating_add(rect.w).min(g.cols) {
+            let i = usize::from(y) * usize::from(g.cols) + usize::from(x);
+            if let Some(cell) = g.cells.get_mut(i)
+                && cell.style.bg == Color::Default
+            {
+                cell.style.bg = bg;
+            }
+        }
+    }
+}
+
 /// A colour as RGB: as given, or one of the 256 past the first 16
 /// (xterm's cube and greys); None for the first 16 or the default, whose
 /// look the terminal decides.
@@ -3640,6 +3668,30 @@ mod tests {
         let want = [Color::Idx(6), Color::Idx(4), Color::Idx(5), Color::Idx(2), Color::Idx(3)];
         assert_eq!((0..5).map(block).collect::<Vec<_>>(), want);
         assert_eq!(g.get(0, 1).style.fg, Color::Idx(8), "the tree lines faint");
+    }
+
+    /// `pane-dim`: dark paper 35% darker, light paper 5%; none
+    /// for the terminal's own colours; only cells on the pane's own
+    /// background change, not one a program painted.
+    #[test]
+    fn a_dimmed_pane_keeps_what_programs_painted() {
+        assert_eq!(dimmed(Color::Rgb(0x17, 0x17, 0x16)), Some(Color::Rgb(0x0f, 0x0f, 0x0e)));
+        assert_eq!(dimmed(Color::Rgb(0xf0, 0xe7, 0xd2)), Some(Color::Rgb(0xe4, 0xdb, 0xc8)));
+        assert_eq!(dimmed(Color::Default), None);
+        // One of the 16: the terminal decides its look, nothing to shade; one
+        // of the 256 past them shades as its RGB.
+        assert_eq!(dimmed(Color::Idx(0)), None);
+        assert_eq!(dimmed(Color::Idx(235)), Some(Color::Rgb(0x19, 0x19, 0x19)));
+        let mut tiny = Grid::new(1, 1);
+        dim_rect(&mut tiny, Rect { x: 0, y: 0, w: 5, h: 5 }, Color::Rgb(1, 2, 3));
+        assert_eq!(tiny.get(0, 0).style.bg, Color::Rgb(1, 2, 3), "a rect past the grid is clipped");
+        let mut g = Grid::new(4, 2);
+        g.put_str(0, 0, "ab", Style::colors(Color::Default, Color::Idx(4)), 2);
+        dim_rect(&mut g, Rect { x: 0, y: 0, w: 3, h: 1 }, Color::Rgb(1, 2, 3));
+        assert_eq!(g.get(0, 0).style.bg, Color::Idx(4), "painted by the program");
+        assert_eq!(g.get(2, 0).style.bg, Color::Rgb(1, 2, 3), "the pane's own");
+        assert_eq!(g.get(3, 0).style.bg, Color::Default, "outside the rect");
+        assert_eq!(g.get(0, 1).style.bg, Color::Default, "outside the rect");
     }
 
     /// A theme's colours: the palette's first 16 everywhere, the default

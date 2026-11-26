@@ -729,24 +729,25 @@ mod tests {
         assert_eq!(c.var("pane_activity").as_deref(), Some("1700000042"));
     }
 
-    /// The default status line says the current pane's work mode: `ai` and
-    /// `shell` marked out (bold, in the accent), `normal` muted.
+    /// The default status line says the current pane's work mode when it is
+    /// worth the eye: `ai` and `shell` marked out (bold, in the accent);
+    /// `normal`, the usual one, not said at all (since 0.97).
     #[test]
     fn the_default_status_line_says_the_panes_mode() {
         let right = crate::config::Options::default().status_right;
         let mut cache = ShellCache::default();
-        let style = |mode: &str, cache: &mut ShellCache| {
+        let segs_of = |mode: &str, cache: &mut ShellCache| {
             let mut c = ctx();
             c.pane_work_mode = mode.into();
-            let segs = expand(&right, &c, cache, Style::default(), now());
-            let seg = segs.iter().find(|s| s.text.trim() == mode).unwrap_or_else(|| panic!("{mode}: {}", plain(&segs)));
-            seg.style
+            expand(&right, &c, cache, Style::default(), now())
         };
-        let normal = style("normal", &mut cache);
-        assert!(!normal.bold, "{normal:?}");
+        let normal = plain(&segs_of("normal", &mut cache));
+        assert!(!normal.contains("normal"), "{normal:?}");
         for mode in ["ai", "shell"] {
-            let s = style(mode, &mut cache);
-            assert!(s.bold && s.fg != normal.fg, "{mode}: {s:?} against normal's {normal:?}");
+            let segs = segs_of(mode, &mut cache);
+            let s =
+                segs.iter().find(|s| s.text.trim() == mode).unwrap_or_else(|| panic!("{mode}: {}", plain(&segs))).style;
+            assert!(s.bold && s.fg == Color::Rgb(0xdd, 0x62, 0x5e), "{mode}: {s:?}");
         }
         // Every mode apart from the branch after it, in each theme (a
         // conditional's last branch keeps its spaces: `shellmain` once).
@@ -773,8 +774,72 @@ mod tests {
                 checked.push(theme.as_str());
             }
         }
-        for theme in ["default", "paper.conf", "paper-dark.conf", "tokyo-day.conf", "plain.conf"] {
-            assert_eq!(checked.iter().filter(|t| **t == theme).count(), 3, "{theme}: {checked:?}");
+        // The built-in themes say ai and shell (normal not at all); plain.conf,
+        // tmux's look, says every mode.
+        for theme in ["default", "paper.conf", "paper-dark.conf", "tokyo-day.conf", "nord.conf", "dracula.conf"] {
+            assert_eq!(checked.iter().filter(|t| **t == theme).count(), 2, "{theme}: {checked:?}");
+        }
+        assert_eq!(checked.iter().filter(|t| **t == "plain.conf").count(), 3, "{checked:?}");
+    }
+
+    /// The default border line says what an `ai` or `shell` pane is up to,
+    /// or that a pane's program exited, in the dashboard's colours; a
+    /// `normal` pane still running (`-`) says nothing more.
+    #[test]
+    fn the_border_line_says_what_the_pane_is_up_to() {
+        let f = crate::config::Options::default().pane_border_format;
+        let mut cache = ShellCache::default();
+        let line = |state: &str, cache: &mut ShellCache| {
+            let c = Context { pane_state: state.into(), pane_title: "build".into(), ..ctx() };
+            expand(&f, &c, cache, Style::default(), now())
+        };
+        assert_eq!(plain(&line("-", &mut cache)).trim_end(), " 1: build");
+        for (state, colour) in [("busy", 3), ("idle", 2), ("exited", 1), ("typing", 6), ("no-agent", 8)] {
+            let segs = line(state, &mut cache);
+            assert!(plain(&segs).ends_with(&format!("build {state} ")), "{state}: {:?}", plain(&segs));
+            let s = segs.iter().find(|s| s.text == state).unwrap().style;
+            assert_eq!(s.fg, Color::Idx(colour), "{state}");
+        }
+    }
+
+    /// A narrow client's status line leaves out what matters least: under
+    /// 120 columns CPU / MEM / battery, under 100 the directory too; no
+    /// client (a script's `status-line`, the phone page) leaves out nothing.
+    #[test]
+    fn a_narrow_status_line_leaves_out_what_matters_least() {
+        let mut cache = ShellCache::default();
+        let mut rights = vec![crate::config::Options::default().status_right];
+        for (_, text) in crate::config::THEMES {
+            let mut o = crate::config::Options::default();
+            for (name, value) in crate::config::theme_settings(text).unwrap() {
+                o.set(&name, &value).unwrap();
+            }
+            rights.push(o.status_right);
+        }
+        for right in &rights {
+            let at = |width: u16, cache: &mut ShellCache| {
+                let c = Context {
+                    client_width: width,
+                    pane_path_short: "~/src".into(),
+                    cpu_percentage: "7%".into(),
+                    ..ctx()
+                };
+                plain(&expand(right, &c, cache, Style::default(), now()))
+            };
+            for (width, path, cpu) in [
+                (90, false, false),
+                (99, false, false),
+                (100, true, false),
+                (110, true, false),
+                (119, true, false),
+                (120, true, true),
+                (130, true, true),
+                (1, false, false),
+                (0, true, true),
+            ] {
+                let text = at(width, &mut cache);
+                assert_eq!((text.contains("~/src"), text.contains("CPU")), (path, cpu), "{width}: {text:?}");
+            }
         }
     }
 

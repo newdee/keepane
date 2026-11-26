@@ -10748,6 +10748,18 @@ impl Server {
                 }
             }
         }
+        // `pane-dim`: the panes the keys are not in, on a background a shade
+        // off the theme's (before anything is drawn over them: a popup, a
+        // picker, a message keep their own colours). A pane alone, or a
+        // zoomed one (the only rectangle), is the active one: nothing dims.
+        if self.opts.pane_dim
+            && let Some(bg) = render::dimmed(self.opts.window_bg)
+        {
+            let w = &self.sessions[spos].windows[self.sessions[spos].cur];
+            for (_, rect) in w.rects.iter().filter(|(id, _)| *id != w.active) {
+                render::dim_rect(&mut grid, *rect, bg);
+            }
+        }
         // `animation`: the focus frame on its way to where the keys now go,
         // or the zooming pane at its size of the moment, framed.
         let frame_style = render::Style {

@@ -3564,10 +3564,79 @@ async fn a_programs_dark_box_keeps_its_text_on_light_paper() {
     h.cli(&["kill-server"]).await;
 }
 
-/// `theme`: paper-dark, the default, and tokyo-day draw the panes (their
-/// default colours and the palette's first 16) whatever the terminal's are;
-/// tokyo-night leaves them to the terminal. The phone's page reads it and
-/// sets it at `/api/theme`.
+/// `pane-dim`: under a theme, the pane the keys are not in on a background
+/// a shade darker than the theme's, the one in use on the theme's own; off,
+/// both on the theme's; one pane alone is never dimmed; left to the
+/// terminal (plain.conf), nothing is.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_panes_the_keys_are_not_in_are_a_shade_darker() {
+    use vt100::Color;
+    let h = Harness::start("dim").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "t"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let bg = |s: &vt100::Screen, col: u16| s.cell(1, col).map(|c| c.bgcolor());
+    assert_eq!(h.cli(&["set", "-g", "theme", "paper-dark"]).await.0, 0);
+    let paper = Color::Rgb(0x17, 0x17, 0x16);
+    c.wait_for("one pane: the paper", |s| bg(s, 2) == Some(paper)).await;
+    // Split: the new pane (right) has the keys; the left one is dimmed.
+    assert_eq!(h.cli(&["split-window", "-h", "-t", "t"]).await.0, 0);
+    let dim = Color::Rgb(0x0f, 0x0f, 0x0e);
+    c.wait_for("the left one dimmed", |s| bg(s, 2) == Some(dim) && bg(s, COLS - 2) == Some(paper)).await;
+    assert_eq!(h.cli(&["select-pane", "-t", "t:0.0"]).await.0, 0);
+    c.wait_for("the right one dimmed", |s| bg(s, 2) == Some(paper) && bg(s, COLS - 2) == Some(dim)).await;
+    // Squeezed to 2x2 and back: still drawn, still dimmed.
+    c.send(ClientMsg::Resize { cols: 2, rows: 2 }).await;
+    c.screen = vt100::Parser::new(2, 2, 0);
+    assert_eq!(h.cli(&["display-message", "-p", "-t", "t", "#{client_width}"]).await.0, 0);
+    c.send(ClientMsg::Resize { cols: COLS, rows: ROWS }).await;
+    c.screen = vt100::Parser::new(ROWS, COLS, 0);
+    c.wait_for("dimmed again at full size", |s| bg(s, 2) == Some(paper) && bg(s, COLS - 2) == Some(dim)).await;
+    assert_eq!(h.cli(&["set", "-g", "pane-dim", "off"]).await.0, 0);
+    c.wait_for("off: both on the paper", |s| bg(s, 2) == Some(paper) && bg(s, COLS - 2) == Some(paper)).await;
+    // Left to the terminal: nothing to shade.
+    assert_eq!(h.cli(&["set", "-g", "pane-dim", "on"]).await.0, 0);
+    assert_eq!(h.cli(&["source-file", concat!(env!("CARGO_MANIFEST_DIR"), "/themes/plain.conf")]).await.0, 0);
+    assert_eq!(h.cli(&["set", "-g", "window-style", "default"]).await.0, 0);
+    assert_eq!(h.cli(&["set", "-g", "pane-colours", ""]).await.0, 0);
+    c.wait_for("the terminal's own", |s| bg(s, 2) == Some(Color::Default) && bg(s, COLS - 2) == Some(Color::Default))
+        .await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// A built-in theme's status line on a narrow client leaves out the
+/// machine's load (under 120 columns); a wider one shows it; narrowed
+/// again, it is gone. The work mode shows only when it is not normal.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_narrow_client_leaves_the_least_off_the_status_line() {
+    let h = Harness::start("narrow").await;
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "t"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    assert_eq!(h.cli(&["set", "-g", "theme", "nord"]).await.0, 0);
+    let last = |s: &vt100::Screen| {
+        let (rows, cols) = s.size();
+        s.rows(0, cols).nth(usize::from(rows) - 1).unwrap_or_default()
+    };
+    let resize = async |c: &mut Conn, cols: u16| {
+        c.send(ClientMsg::Resize { cols, rows: ROWS }).await;
+        c.screen = vt100::Parser::new(ROWS, cols, 0);
+    };
+    c.wait_for("80 columns: the clock, no CPU", |s| last(s).contains(':') && !last(s).contains("CPU ")).await;
+    assert!(!last(c.screen.screen()).contains("normal"), "{:?}", last(c.screen.screen()));
+    resize(&mut c, 130).await;
+    c.wait_for("130 columns: CPU and MEM", |s| last(s).contains("CPU ") && last(s).contains("MEM ")).await;
+    resize(&mut c, 110).await;
+    c.wait_for("110 columns: no CPU again", |s| last(s).contains(':') && !last(s).contains("CPU ")).await;
+    // A pane in ai mode says so.
+    assert_eq!(h.cli(&["set-work-mode", "-t", "t", "ai"]).await.0, 0);
+    c.wait_for("the work mode", |s| last(s).contains(" ai ")).await;
+    h.cli(&["kill-server"]).await;
+}
+
+/// `theme`: every built-in theme draws the panes (their default colours
+/// and the palette's first 16) whatever the terminal's are, tokyo-night too
+/// since 0.97. The phone's page reads it and sets it at `/api/theme`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
     let h = Harness::start("theme").await;
