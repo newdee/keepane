@@ -687,7 +687,12 @@ impl Default for Options {
             plugin_path: "~/.keepane/plugins".into(),
             theme_path: "~/.keepane/themes".into(),
             pending_plugins: Vec::new(),
-            user: Vec::new(),
+            // The default look's colours by name (P1): paper-dark's tokens.
+            user: theme_settings(THEMES[0].1)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(n, _)| n.starts_with('@'))
+                .collect(),
             autosave: true,
             restore_on_start: true,
             sessions_dir: String::new(),
@@ -1129,6 +1134,33 @@ impl Options {
         }
     }
 
+    /// `value` with each `#{@name}` in it put as that user option is now
+    /// (P1: a theme's colours, `@paper` ... `@warn`, set at its top and
+    /// used below, so a colour is written once); one not set is left as
+    /// written. Done when an option is set: what is kept, shown and saved
+    /// is the colour itself.
+    fn with_tokens(&self, value: &str) -> String {
+        let mut out = String::with_capacity(value.len());
+        let mut rest = value;
+        while let Some(i) = rest.find("#{@") {
+            out.push_str(&rest[..i]);
+            let after = &rest[i + 2..];
+            let Some(j) = after.find('}') else {
+                out.push_str(&rest[i..]);
+                return out;
+            };
+            let name = &after[..j];
+            // Read as `show -gv` reads it (the last, for one set more than once).
+            match self.get(name) {
+                Some(v) => out.push_str(&v),
+                None => out.push_str(&rest[i..i + 2 + j + 1]),
+            }
+            rest = &after[j + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// The folder of the user's own themes (`theme-path`, `~` expanded).
     fn theme_dir(&self) -> PathBuf {
         PathBuf::from(crate::server::expand_home(&self.theme_path))
@@ -1163,7 +1195,8 @@ impl Options {
     /// Set every option of theme `name`: a built-in one's lines; a user's
     /// own, the default theme's lines and then its own on top (so what it
     /// leaves out is the default's, and one theme still replaces the other
-    /// whole), each of them an option a theme sets. Checked first and set
+    /// whole), each of them an option a theme sets; its `@` colours before
+    /// the default's other lines, which use them. Checked first and set
     /// after, so a theme that does not read leaves the look as it was.
     fn apply_theme(&mut self, name: &str) -> Result<(), String> {
         let built_in = THEMES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t);
@@ -1180,7 +1213,12 @@ impl Options {
                     ));
                 }
             }
-            settings.extend(own);
+            // Its colours (`@paper` ...) go before the default theme's other
+            // lines, which use them: one that sets only colours is a look.
+            let token = |(n, _): &(String, String)| n.starts_with('@');
+            let (base_tokens, base_rest): (Vec<_>, Vec<_>) = settings.into_iter().partition(token);
+            let (own_tokens, own_rest): (Vec<_>, Vec<_>) = own.into_iter().partition(token);
+            settings = base_tokens.into_iter().chain(own_tokens).chain(base_rest).chain(own_rest).collect();
         }
         let mut next = self.clone();
         for (option, value) in &settings {
@@ -1196,7 +1234,8 @@ impl Options {
         self.set_one(name, value)?;
         // By its full name: `set status-sty …` is `status-style`.
         let full = resolve_name(name).unwrap_or_else(|_| name.to_string());
-        if full != "theme" && theme_options().contains(&full.as_str()) {
+        // (A colour by name changes nothing set already: the look is the same.)
+        if full != "theme" && !full.starts_with('@') && theme_options().contains(&full.as_str()) {
             self.theme = "custom".into();
         }
         Ok(())
@@ -1204,6 +1243,9 @@ impl Options {
 
     fn set_one(&mut self, name: &str, value: &str) -> Result<(), String> {
         let name = &resolve_name(name)?;
+        // A secret is kept as it is typed, `#{@` and all.
+        let tokened = if SECRETS.contains(&name.as_str()) { value.to_string() } else { self.with_tokens(value) };
+        let value = tokened.as_str();
         // No value at all flips an on/off option, which is what makes
         // `set mouse` and `set -w sync` worth typing.
         let flipped;
@@ -1886,6 +1928,57 @@ mod tests {
         write("mine.conf", "set -g window-style \"fg=#010101,bg=#404040\"\n");
         o.set("theme", "mine").unwrap();
         assert_eq!(o.window_bg, Color::Rgb(0x40, 0x40, 0x40));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P1: `#{@name}` in a value is the `@` option as it is when the value
+    /// is set, in a style or a format alike; a name not set, or a `#{@`
+    /// not closed, stays as written; later changes to the `@` option leave
+    /// it. Every built-in theme names its eight colours; the default look
+    /// has paper-dark's. A user's theme that sets only colours is a look:
+    /// they go before paper-dark's lines that use them.
+    #[test]
+    fn a_colour_is_named_once_and_used_where_it_is_set() {
+        let mut o = Options::default();
+        assert_eq!(o.get("@paper").as_deref(), Some("#171716"), "the default look's");
+        o.set("@accent", "#010203").unwrap();
+        o.set("window-style", "fg=#{@accent},bg=#{@paper}").unwrap();
+        assert_eq!((o.window_fg, o.window_bg), (Color::Rgb(1, 2, 3), Color::Rgb(0x17, 0x17, 0x16)));
+        o.set("status-left", "#[fg=#{@accent}]#{@nothing} #{@accent").unwrap();
+        assert_eq!(o.status_left, "#[fg=#010203]#{@nothing} #{@accent");
+        o.set("@accent", "#ffffff").unwrap();
+        assert_eq!(o.window_fg, Color::Rgb(1, 2, 3), "set already: as it was");
+        // One set more than once (`@plugin`): the last, as `show -gv` reads it.
+        o.set("@plugin", "a").unwrap();
+        o.set("@plugin", "b").unwrap();
+        o.set("status-right", "#{@plugin}").unwrap();
+        assert_eq!((o.status_right.as_str(), o.get("@plugin").as_deref()), ("b", Some("b")));
+        // A colour by name alone leaves the theme as it was; a secret is not rewritten.
+        o.set("theme", "paper").unwrap();
+        o.set("@accent", "#123456").unwrap();
+        assert_eq!(o.get("theme").as_deref(), Some("paper"));
+        o.set("done-webhook-secret", "a#{@accent}b").unwrap();
+        assert_eq!(o.done_webhook_secret, "a#{@accent}b");
+        for (theme, text) in THEMES {
+            let names: Vec<String> =
+                theme_settings(text).unwrap().into_iter().map(|(n, _)| n).filter(|n| n.starts_with('@')).collect();
+            assert_eq!(names, ["@paper", "@ink", "@bar", "@soft", "@muted", "@line", "@accent", "@warn"], "{theme}");
+            assert!(
+                !text.lines().any(|l| l.starts_with("set -g ") && !l.contains("@") && l.contains("window-style")),
+                "{theme} names its paper"
+            );
+        }
+        // Only colours: paper-dark's lines in them.
+        let dir = std::env::temp_dir().join(format!("keepane-tokens-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("teal.conf"), "set -g @paper \"#003333\"\nset -g @accent \"#00aaaa\"\n").unwrap();
+        o.set("theme-path", &dir.to_string_lossy()).unwrap();
+        o.set("theme", "nord").unwrap();
+        o.set("theme", "teal").unwrap();
+        assert_eq!(o.window_bg, Color::Rgb(0, 0x33, 0x33));
+        assert_eq!(o.pane_border_active_fg, Color::Rgb(0, 0xaa, 0xaa));
+        assert!(o.status_left.contains("bg=#00aaaa"), "{}", o.status_left);
+        assert_eq!(o.status_bg, Options::default().status_bg, "what it leaves: paper-dark's");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

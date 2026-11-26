@@ -751,6 +751,10 @@ what it leaves out is `paper-dark`'s, and `set -g theme NAME` reads the
 file each time (a built-in name there is not taken), so `theme-path` is set before it (the settings file is written so). `list-themes` prints
 every theme; `pick-theme` lists them and shows each as the cursor (or the
 mouse) reaches it, Enter keeps it, Esc puts back the look it opened on.
+Each theme names its colours once at its top (`@paper`, `@ink`, `@bar`,
+`@soft`, `@muted`, `@line`, `@accent`, `@warn`) and writes `#{@accent}`
+below: `#{@name}` in an option's value is put as that `@` option is when
+the option is set (one not set stays as written; a secret is kept as typed).
 Each draws the panes with `window-style` and `pane-colours`, whatever the
 terminal's colours, every text colour at 4.5:1 or more on the panes and
 the bar and the lines at 3:1 (a test checks each theme). Under a theme

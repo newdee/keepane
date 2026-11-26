@@ -2365,6 +2365,15 @@ them and shows each as the cursor or the mouse reaches it: Enter keeps it,
 Esc puts back the look it opened on. The settings board (`prefix g`) and
 the phone's page offer the user's themes too.
 
+Each theme names its colours once, at its top: `@paper` (the panes),
+`@ink` (their text), `@bar` and `@soft` (the status line and its text),
+`@muted`, `@line` (the borders), `@accent` and `@warn`; its other lines
+write `#{@accent}` and so on. `#{@name}` in an option's value is put as
+that `@` option is when the option is set (a name not set stays as it is;
+a secret is kept as typed; setting a colour alone leaves `theme` as it was),
+so a theme of your own can start from a copy and change a colour in one
+place, or keep paper-dark's lines and set only its `@` colours.
+
 Each draws the panes itself, so it looks the same in any terminal: it sets
 `window-style` (a pane's default text and background, as in tmux) and
 `pane-colours` (the 16 colours programs use, the first 16 of the palette).
