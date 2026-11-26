@@ -9688,8 +9688,8 @@ async fn tab_completes_at_the_prompt_and_the_shell_gets_a_completer() {
         // Flags: an alias reads as its command, a flag given is not offered
         // again, one match is typed with a space, no flags says so.
         ("splitw -", "(-h -v -b -d -f -c +2) splitw -"),
-        ("set -g -", "(-a -w -s -t) set -g -"),
-        ("set -ga -", "(-w -s -t) set -ga -"),
+        ("set -g -", "(-a -u -w -s -t) set -g -"),
+        ("set -ga -", "(-u -w -s -t) set -ga -"),
         ("neww -n", ":neww -n "),
         ("ls -", "(no completion) ls -"),
     ] {
