@@ -1196,6 +1196,14 @@ pub enum Cmd {
         to: String,
         swap: bool,
     },
+    /// `show-format [-J] [-t target] FORMAT`: FORMAT expanded for the pane,
+    /// as the status line draws it (`-J`: its runs, with their styles), for
+    /// the settings board's preview; `#(command)` pieces are not run.
+    ShowFormat {
+        target: Option<Target>,
+        json: bool,
+        format: String,
+    },
     /// `list-themes`: the themes `theme` takes, the built-in ones first,
     /// then the `NAME.conf` files of `theme-path`, one a line.
     ListThemes,
@@ -2533,6 +2541,14 @@ impl fmt::Display for Cmd {
             }
             Cmd::ShowBindings { json } => f.write_str(if *json { "show-bindings -J" } else { "show-bindings" }),
             Cmd::ListThemes => f.write_str("list-themes"),
+            Cmd::ShowFormat { target, json, format } => {
+                f.write_str("show-format")?;
+                if *json {
+                    f.write_str(" -J")?;
+                }
+                fmt_target(f, target)?;
+                write!(f, " {}", quote(format))
+            }
             Cmd::PickTheme => f.write_str("pick-theme"),
             Cmd::SettingsReload => f.write_str("reload-settings"),
             Cmd::Settings => f.write_str("settings"),
@@ -3363,6 +3379,7 @@ pub const COMMANDS: &[&str] = &[
     "settings",
     "list-themes",
     "pick-theme",
+    "show-format",
     "web-share-open",
     "web-share-sent",
     "web-uploaded",
@@ -3538,6 +3555,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("settings", &[]),
     ("list-themes", &[]),
     ("pick-theme", &[]),
+    ("show-format", &["-J", "-t"]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
     ("web-uploaded", &[]),
@@ -5263,6 +5281,17 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             a.none_left(n)?;
             Cmd::ListThemes
         }
+        "show-format" => {
+            let (mut target, mut json) = (None, false);
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-J" => json = true,
+                    "-t" => target = Some(Target::parse(a.value("-t")?)),
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            Cmd::ShowFormat { target, json, format: a.rest().join(" ") }
+        }
         "pick-theme" => {
             a.none_left(n)?;
             Cmd::PickTheme
@@ -6713,6 +6742,8 @@ mod tests {
             "show-bindings -J",
             "list-themes",
             "pick-theme",
+            "show-format '#{pane_index}: #[bold]x'",
+            "show-format -J -t work '#{session_name}'",
             "reload-settings",
             "settings",
             "chat-say review --re 42 sounds good",

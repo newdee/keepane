@@ -22,7 +22,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 /// The only server commands the board sends to look.
-pub const QUERIES: &[&str] = &["show-settings", "show-bindings"];
+pub const QUERIES: &[&str] = &["show-settings", "show-bindings", "show-format"];
 /// The only ones it sends to change anything.
 pub const ACTIONS: &[&str] = &["set-option", "save-settings", "reload-settings", "rebind-key", "bind-key"];
 
@@ -116,6 +116,9 @@ pub struct Board {
     /// What `theme` takes, the user's own themes too (`show-settings -J`'s
     /// `themes`); empty from an older server: the built-in ones.
     themes: Vec<String>,
+    /// While a format is typed: the text the server last expanded and what
+    /// it came to (`show-format -J`), each run its SGR and its text.
+    preview: Option<(String, Vec<(String, String)>)>,
     /// The commands whose keys were moved here and not written yet (`●`).
     pub keys_unsaved: BTreeSet<String>,
     /// The commands the change on its way moves: marked when it went well.
@@ -161,6 +164,7 @@ impl Board {
             unsaved: BTreeSet::new(),
             binds: Vec::new(),
             themes: Vec::new(),
+            preview: None,
             keys_unsaved: BTreeSet::new(),
             moving: Vec::new(),
             note: None,
@@ -204,6 +208,48 @@ impl Board {
 
     /// `show-bindings -J`, read; an answer that does not read (an older
     /// server) lists no keys.
+    /// The text to have expanded (`show-format -J`): what is typed for a
+    /// format option, when the server has not expanded it yet.
+    pub fn wants_preview(&self) -> Option<String> {
+        let Some(Edit::Line { name: Some(name), text, .. }) = &self.edit else { return None };
+        let format = optinfo::OPTIONS.iter().any(|o| o.name == name && o.kind == Kind::Format);
+        (format && self.preview.as_ref().is_none_or(|(t, _)| t != text)).then(|| text.clone())
+    }
+
+    /// `show-format -J`'s answer for `text`: each run's SGR (its colours as
+    /// the board's terminal draws them, bold, ...) and its text; an answer
+    /// that does not read is shown as it came, faint.
+    pub fn set_preview(&mut self, text: &str, json: &str) {
+        fn colour(v: &serde_json::Value, base: u8) -> Option<String> {
+            if let Some(n) = v.as_u64() {
+                return Some(format!("{};5;{n}", base));
+            }
+            let hex = v.as_str()?.strip_prefix('#')?;
+            let p = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+            Some(format!("{base};2;{};{};{}", p(0)?, p(2)?, p(4)?))
+        }
+        let runs = match serde_json::from_str::<Vec<serde_json::Value>>(json) {
+            Ok(segs) => segs
+                .iter()
+                .map(|s| {
+                    let mut sgr: Vec<String> = Vec::new();
+                    for (k, code) in
+                        [("bold", "1"), ("dim", "2"), ("italic", "3"), ("underline", "4"), ("inverse", "7")]
+                    {
+                        if s[k].as_bool() == Some(true) {
+                            sgr.push(code.into());
+                        }
+                    }
+                    sgr.extend(colour(&s["fg"], 38));
+                    sgr.extend(colour(&s["bg"], 48));
+                    (sgr.join(";"), inert(s["text"].as_str().unwrap_or_default()))
+                })
+                .collect(),
+            Err(_) => vec![("2".into(), inert(json.lines().next().unwrap_or_default()))],
+        };
+        self.preview = Some((text.to_string(), runs));
+    }
+
     pub fn set_bindings(&mut self, json: &str) {
         let s = |o: &serde_json::Value, k: &str| o[k].as_str().unwrap_or_default().to_string();
         self.binds = serde_json::from_str::<Vec<serde_json::Value>>(json)
@@ -424,6 +470,7 @@ impl Board {
                     _ => {
                         let text = self.row(o.name).value;
                         let at = text.chars().count();
+                        self.preview = None;
                         self.edit = Some(Edit::Line { name: Some(o.name.into()), text, at, secret: false });
                     }
                 }
@@ -805,7 +852,39 @@ impl Board {
         out.push(first);
         let rest = doc.chars().skip(used).collect::<String>();
         out.push(if rest.is_empty() { String::new() } else { cut(&format!(" {}", rest.trim_start()), inner) });
-        out.push(paint("2", &cut(&format!(" {takes}"), inner)));
+        out.push(match self.typed_format(items[pick]) {
+            Some(text) => self.preview_line(text, inner),
+            None => paint("2", &cut(&format!(" {takes}"), inner)),
+        });
+        out
+    }
+
+    /// The text being typed for `item`, when it is a format option.
+    fn typed_format(&self, item: Item) -> Option<&str> {
+        let Item::Opt(o) = item else { return None };
+        match &self.edit {
+            Some(Edit::Line { name: Some(n), text, .. }) if n == o.name && o.kind == Kind::Format => Some(text),
+            _ => None,
+        }
+    }
+
+    /// ` = ` and what the format being typed comes to, in its colours, cut
+    /// to `width`; ` = …` while the server has not said.
+    fn preview_line(&self, text: &str, width: usize) -> String {
+        let runs = match &self.preview {
+            Some((t, runs)) if t == text => runs,
+            _ => return paint("2", " = …"),
+        };
+        let mut out = paint("2", " = ");
+        let mut room = width.saturating_sub(3);
+        for (sgr, run) in runs {
+            if room == 0 {
+                break;
+            }
+            let piece = if width_of(run) > room { cut(run, room) } else { run.clone() };
+            room = room.saturating_sub(width_of(&piece));
+            out.push_str(&if sgr.is_empty() { piece } else { paint(sgr, &piece) });
+        }
         out
     }
 
@@ -1033,6 +1112,11 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime) -> anyhow::Result<i32> {
             if (cols, rows) != (board.cols, board.height) {
                 board.resize(cols, rows);
                 console.write_str("\x1b[2J");
+            }
+            // A format being typed: what it comes to, before it is drawn.
+            if let Some(text) = board.wants_preview() {
+                let (code, out, err) = ask(&owned(&["show-format", "-J", &text]));
+                board.set_preview(&text, if code == 0 { &out } else { &err });
             }
             console.write_str(&board.frame());
             let first = match rx.recv_timeout(Duration::from_secs(1)) {

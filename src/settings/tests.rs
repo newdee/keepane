@@ -150,6 +150,68 @@ fn go(b: &mut Board, name: &str) {
     }
 }
 
+/// Settings step 3: a format typed in a zoomed box is shown as it comes
+/// out under it (`show-format -J`, asked again whenever the text changes),
+/// in its colours; ` = …` until the server says; nothing asked for an
+/// option that is no format.
+#[test]
+fn a_format_typed_is_shown_as_it_comes_out() {
+    let mut b = board(160, 45);
+    b.key(k('2'));
+    go(&mut b, "status-left");
+    b.key(k('z'));
+    assert_eq!(b.wants_preview(), None, "nothing typed yet");
+    b.key(special(KeyCode::Enter));
+    let typed = b.wants_preview().expect("the value as it is, to expand");
+    assert!(read(&b).contains(" = …"), "{}", read(&b));
+    let json = r##"[{"text":" main ","fg":"#121212","bg":"#dd625e","bold":true},{"text":"x","fg":null,"bg":null}]"##;
+    b.set_preview(&typed, json);
+    assert_eq!(b.wants_preview(), None, "asked once for the same text");
+    let lines = b.lines();
+    let line = lines.iter().find(|l| strip(l).contains(" =  main x")).expect("the preview line");
+    assert!(line.contains("\x1b[1;38;2;18;18;18;48;2;221;98;94m main "), "{line:?}");
+    // Typed on: asked again, and `…` till then.
+    b.key(k('!'));
+    assert_eq!(b.wants_preview(), Some(format!("{typed}!")));
+    assert!(read(&b).contains(" = …"));
+    // An answer that does not read is shown as it came, faint.
+    b.set_preview(&format!("{typed}!"), "show-format: bad");
+    assert!(read(&b).contains(" = show-format: bad"), "{}", read(&b));
+    // Not a format: nothing to ask.
+    b.key(special(KeyCode::Escape));
+    go(&mut b, "status-left-length");
+    b.key(special(KeyCode::Enter));
+    assert_eq!(b.wants_preview(), None);
+}
+
+/// A preview longer than the box is cut to it, `…` at the end: every line
+/// of the board stays the board's width.
+#[test]
+fn a_long_preview_is_cut_to_the_box() {
+    let mut b = board(60, 30);
+    b.key(k('2'));
+    go(&mut b, "status-left");
+    b.key(k('z'));
+    b.key(special(KeyCode::Enter));
+    let typed = b.wants_preview().unwrap();
+    let long = format!(
+        r##"[{{"text":"{}","fg":"#dd625e","bg":null}},{{"text":"tail","fg":null,"bg":null}}]"##,
+        "y".repeat(200)
+    );
+    b.set_preview(&typed, &long);
+    let lines = b.lines();
+    let line = lines.iter().find(|l| strip(l).contains(" = y")).expect("the preview line");
+    assert!(strip(line).contains("…") && !strip(line).contains("tail"), "{}", strip(line));
+    for l in &lines {
+        assert!(
+            crate::settings::width_of(&strip(l)) <= 60,
+            "{} wide: {}",
+            crate::settings::width_of(&strip(l)),
+            strip(l)
+        );
+    }
+}
+
 /// `theme` steps through the themes the server names (`show-settings -J`'s
 /// `themes`, the user's own too), and says them; a server that names none
 /// (an older one) leaves the built-in ones (the test below).

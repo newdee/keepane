@@ -117,7 +117,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 
 ## 9. 安全
 
-- 板只发这几条命令：看 `show-settings`、`show-bindings`；改 `set-option`、`save-settings`、`reload-settings`、`rebind-key`、`bind-key`（后两个 0.96 起）。和 dashboard 一样有白名单，测试逐键检查。
+- 板只发这几条命令：看 `show-settings`、`show-bindings`、`show-format`（0.97 起，格式串预览，`#()` 不跑）；改 `set-option`、`save-settings`、`reload-settings`、`rebind-key`、`bind-key`（后两个 0.96 起）。和 dashboard 一样有白名单，测试逐键检查。
 - `reload-settings` 会丢运行时的改动，要确认。
 - 密钥不显示、不进日志：`show-settings` 给 `(set)`，底行输入回显 `•`。命令行里的密钥值在事件日志、日志和 `:` 提示的历史里写成 `(set)`（`command::redact_secrets`，0.95）。
 - 人的选项（`config::PERSONS`）agent 的 pane 只能读；它也不能 `save-settings`、`reload-settings`（0.95，护栏不是墙，见 principles.md 信任边界）。
@@ -130,7 +130,7 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 
 1. **第一步（0.94）**：选项清单、`settings-file`、来源、`show-settings`、`save-settings`、`reload-settings`、`set-option -u`、`keepane settings` 和 `prefix g`，以及第 3–7 节的全部。
 2. **第二步（0.96，做了）**：Keys 框在 4 个选项下面列出 prefix 表的每个键（`C-b c  new-window`）。选中一条按 Enter 后按新键；新键已被占用时两行标红，底行写"C-b x is bound to kill-pane"，Enter 交换，Esc 取消；`r` 放回配置文件给它的位置（`base`）；配置绑过、现在没有键的命令显示 `(no key)`，按一个键就绑上。
-3. 第三步：格式串在放大的框里编辑时，下面实时显示展开的结果。
+3. **第三步（0.97，做了）**：格式串在放大的框里编辑时，下面实时显示展开的结果（带颜色）。板每次文字变了就问 `show-format -J`（新的只读查询，进了 `QUERIES`）；它用一个用完就丢的 `ShellCache` 展开，`#()` 不运行、展开成空，所以敲到一半的命令不会被执行；对着当前 pane 展开（和别的命令一样：客户端所在的 pane，在弹窗里就是最近使用的会话的活动 pane；一个会话都没有时只有 server 自己的变量）。
 4. ~~第四步：网页端的设置页~~：不做（用户 2026-11-26："这个不做"）。
 
 ## 12. 主题扩展（讨论过，待做）

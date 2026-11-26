@@ -2273,6 +2273,10 @@ back; none can be moved, hidden or taken away.
   `pane-border-lines`), a number by its step, a colour. `Enter` types the
   rest on the bottom line; a secret shows as dots, and the prefix is set by
   pressing the new key. `r` puts the default back.
+- A format typed in a zoomed box (`status-left`, `pane-border-format`,
+  ...) shows under it what it comes to, in its colours, at every key
+  (`show-format` does the same from a command line). A `#(command)` in
+  it is not run there, so one half typed never runs.
 - Under its options the Keys box lists every key of the prefix table
   (`C-b c  new-window`). Enter, then press the key it should be on; a key
   bound already turns both lines red, and Enter swaps the two. `r` puts it

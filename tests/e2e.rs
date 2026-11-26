@@ -3609,6 +3609,52 @@ async fn the_panes_the_keys_are_not_in_are_a_shade_darker() {
     h.cli(&["kill-server"]).await;
 }
 
+/// `show-format` (settings step 3): a format expanded for the pane as the
+/// status line draws it, `-J` its runs with their styles; a `#(command)` in
+/// it is not run (the board asks this at every key, a command half typed
+/// included): `display-message`'s, asked after it, is, and once it has run
+/// the first one has still not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_format_is_shown_as_it_comes_out_and_runs_nothing() {
+    let h = Harness::start("showformat").await;
+    h.cli(&["new", "-d", "-s", "fmt"]).await;
+    h.wait_capture("fmt:0", "shell prompt", |t| t.contains("keepane>")).await;
+    let (code, out, err) = h.cli(&["show-format", "-t", "fmt", "[#{session_name}]"]).await;
+    assert_eq!((code, out.trim()), (0, "[fmt]"), "{err}");
+    // The pane named: another session's, not the one a command goes to by
+    // itself; one that is not there is an error.
+    h.cli(&["new", "-d", "-s", "zzz"]).await;
+    for name in ["fmt", "zzz"] {
+        let (_, out, _) = h.cli(&["show-format", "-t", name, "[#{session_name}]"]).await;
+        assert_eq!(out.trim(), format!("[{name}]"));
+    }
+    let (code, _, err) = h.cli(&["show-format", "-t", "nothere", "x"]).await;
+    assert!(code != 0 && err.contains("nothere"), "{err}");
+    let (_, json, _) = h.cli(&["show-format", "-J", "-t", "fmt", "#[fg=#dd625e,bold]#{session_name}#[default]!"]).await;
+    let runs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+    assert_eq!(runs[0]["text"], "fmt");
+    assert_eq!((runs[0]["fg"].as_str(), runs[0]["bold"].as_bool()), (Some("#dd625e"), Some(true)));
+    assert_eq!((runs[1]["text"].as_str(), runs[1]["fg"].is_null()), (Some("!"), true));
+    let dir = std::env::temp_dir().join(format!("keepane-test-showformat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let touch = |name: &str| {
+        let p = dir.join(name).to_string_lossy().replace('\\', "/");
+        if cfg!(windows) { format!("cmd /c type nul > \"{p}\"") } else { format!("touch '{p}'") }
+    };
+    let (code, out, _) = h.cli(&["show-format", "-t", "fmt", &format!("a#({})b", touch("never"))]).await;
+    assert_eq!((code, out.trim()), (0, "ab"), "the command's place empty");
+    h.cli(&["display-message", "-p", "-t", "fmt", &format!("#({})", touch("ran"))]).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !dir.join("ran").exists() {
+        assert!(Instant::now() < deadline, "display-message's command never ran");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!dir.join("never").exists(), "show-format ran its command");
+    let _ = std::fs::remove_dir_all(&dir);
+    h.cli(&["kill-server"]).await;
+}
+
 /// `theme-path` and `pick-theme` (P4): a `NAME.conf` of the user's is a
 /// theme `list-themes` names; the picker shows the theme the cursor is on,
 /// Esc puts back the look it opened on (here tmux's plain one, `custom`),

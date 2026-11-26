@@ -725,6 +725,7 @@ const DOCS: &[Doc] = &[
     d("save-settings", "Write options' values to the settings file.", &[("-k", "", "The prefix table's keys too.")]),
     d("rebind-key", "Move a prefix-table key to another key.", &[("-s", "", "Swap with the key bound there.")]),
     d("show-bindings", "Print the prefix table's keys and where each was.", &[("-J", "", "As JSON.")]),
+    d("show-format", "Print a format as it comes out; #() is not run.", &[("-J", "", "Each run with its style."), ("-t", "PANE", "For this pane.")]),
     d("list-themes", "Print the themes: the built-in ones, then theme-path's.", &[]),
     d("pick-theme", "Pick a theme, each shown as you move; Esc goes back.", &[]),
     d("reload-settings", "Reset every option, then run the config files again.", &[]),

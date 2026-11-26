@@ -289,7 +289,11 @@ a command line (`-s` swaps); `show-bindings` (`-J`: as JSON) prints each
 prefix key, what it runs and where the config left it; `save-settings -k`
 writes the keys as they differ from where the config left them, as
 `unbind-key` and `bind-key` lines in place of the file's own; `R` puts
-the prefix table back to its defaults before the files run again.
+the prefix table back to its defaults before the files run again. A
+format typed in a zoomed box (`status-left`, `pane-border-format`, ...)
+shows under it what it comes to, in its colours, at every key:
+`show-format` [`-J`] [`-t` *PANE*] *FORMAT* prints that from a command line
+(`-J`: each run with its style); a `#(command)` in it is not run.
 
 ### Resuming after a reboot
 

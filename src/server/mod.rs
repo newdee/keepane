@@ -6856,6 +6856,7 @@ impl Server {
             Cmd::ShowBindings { json } => self.show_bindings(json),
             Cmd::ListThemes => Outcome::Text(self.opts.theme_names().join("\n")),
             Cmd::PickTheme => self.pick_theme(cid),
+            Cmd::ShowFormat { target, json, format } => self.show_format(&format, target.as_ref(), cid, json),
             Cmd::SettingsReload => self.settings_reload(cid),
             Cmd::Settings => self.settings_popup(cid),
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
@@ -10620,6 +10621,35 @@ impl Server {
     /// parts: each segment's text and style, each window's label with its
     /// number, whether it is current and its active pane (the phone page
     /// opens that pane when the label is tapped).
+    /// `show-format`: `format` expanded for the target pane (else, as for
+    /// any command, the one the client runs in or the active one of the last
+    /// used session; with no session, the server's own variables), as the
+    /// status line draws it. `#(command)`
+    /// pieces are not run (a cache of its own, thrown away): what the
+    /// settings board previews as it is typed never runs a command.
+    fn show_format(&mut self, format: &str, target: Option<&Target>, cid: Option<ClientId>, json: bool) -> Outcome {
+        let at = match self.resolve(target, cid) {
+            Ok(r) => Some(r),
+            Err(e) if target.is_some() => return Outcome::Error(e),
+            // (Without a target it fails only with no session at all.)
+            Err(_) => None,
+        };
+        let ctx = match at {
+            Some((sid, widx, pid)) => self.context(sid, widx, Some(pid), cid),
+            None => crate::format::Context {
+                host: crate::sysinfo::hostname(),
+                socket: self.socket.clone(),
+                ..Default::default()
+            },
+        };
+        let mut cache = crate::format::ShellCache::default();
+        let segs = crate::format::expand(format, &ctx, &mut cache, render::Style::default(), chrono::Local::now());
+        if json {
+            return Outcome::Text(segments_json(&segs).to_string());
+        }
+        Outcome::Text(segs.into_iter().map(|s| s.text).collect())
+    }
+
     fn status_line_out(&mut self, sid: SessionId, json: bool, view: Option<(usize, PaneId)>) -> Outcome {
         let Some(spos) = self.sessions.iter().position(|s| s.id == sid) else {
             return Outcome::Error("no such session".into());
@@ -10631,25 +10661,7 @@ impl Server {
             let line = format!("{}{}  {}", text(&left), list.join(&self.opts.window_status_separator), text(&right));
             return Outcome::Text(line.trim_end().to_string());
         }
-        fn colour(c: vt100::Color) -> serde_json::Value {
-            match c {
-                vt100::Color::Default => serde_json::Value::Null,
-                vt100::Color::Idx(n) => n.into(),
-                vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}").into(),
-            }
-        }
-        let segs = |segs: &[crate::format::Segment]| -> serde_json::Value {
-            segs.iter()
-                .filter(|s| !s.text.is_empty())
-                .map(|s| {
-                    serde_json::json!({
-                        "text": s.text, "fg": colour(s.style.fg), "bg": colour(s.style.bg),
-                        "bold": s.style.bold, "dim": s.style.dim, "italic": s.style.italic,
-                        "underline": s.style.underline, "inverse": s.style.inverse,
-                    })
-                })
-                .collect()
-        };
+        let segs = segments_json;
         let s = &self.sessions[spos];
         let base = self.opts.base_index;
         let list: Vec<serde_json::Value> = windows
@@ -11356,6 +11368,32 @@ fn unix_seconds(i: Instant) -> i64 {
 }
 
 /// Expand a leading `~` or `~/` to the user's home directory.
+/// A colour as JSON: null for the terminal's own, a number of the 256, or
+/// `#rrggbb`.
+fn colour(c: vt100::Color) -> serde_json::Value {
+    match c {
+        vt100::Color::Default => serde_json::Value::Null,
+        vt100::Color::Idx(n) => n.into(),
+        vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}").into(),
+    }
+}
+
+/// Runs of text with their styles as JSON (`status-line -J`,
+/// `show-format -J`): `text`, `fg` and `bg` (null for the terminal's own,
+/// a number of the 256, or `#rrggbb`), and the attributes; empty runs left out.
+pub(crate) fn segments_json(segs: &[crate::format::Segment]) -> serde_json::Value {
+    segs.iter()
+        .filter(|s| !s.text.is_empty())
+        .map(|s| {
+            serde_json::json!({
+                "text": s.text, "fg": colour(s.style.fg), "bg": colour(s.style.bg),
+                "bold": s.style.bold, "dim": s.style.dim, "italic": s.style.italic,
+                "underline": s.style.underline, "inverse": s.style.inverse,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn expand_home(path: &str) -> String {
     if (path == "~" || path.starts_with("~/") || path.starts_with("~\\"))
         && let Some(home) = dirs::home_dir()
