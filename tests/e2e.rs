@@ -11797,6 +11797,153 @@ async fn the_channel_picked_is_kept_by_the_server_and_only_the_person_moves_it()
     h.cli(&["kill-server"]).await;
 }
 
+/// One option of `show-settings -J`: (value, source).
+async fn setting(h: &Harness, name: &str) -> (String, String) {
+    let (code, out, err) = h.cli(&["show-settings", "-J"]).await;
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let o = v["options"].as_array().unwrap().iter().find(|o| o["name"] == name).unwrap_or_else(|| panic!("{name}"));
+    (o["value"].as_str().unwrap().to_string(), o["source"].as_str().unwrap().to_string())
+}
+
+/// The settings board's server side (docs/design/settings.md): who set each
+/// option (a config line, a theme, `set`), the settings file written line
+/// by line and run after the config (at the start and on a reload, which
+/// puts every option back to its default first), `set -u` back to the
+/// default (it flipped an on/off option before), a secret written but
+/// never shown, and no settings file when the config was named and
+/// `settings-file` was not set.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_settings_file_is_written_line_by_line_and_run_after_the_config() {
+    let dir = std::env::temp_dir().join(format!("keepane-test-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("sub").join("settings.conf");
+    // A plugin that sets an option: it runs again on a reload.
+    let plug = dir.join("plug");
+    std::fs::create_dir_all(&plug).unwrap();
+    std::fs::write(plug.join("plugin.keepane"), "set -g display-panes-colour green\n").unwrap();
+    let slash = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+    let config = format!(
+        "set -g settings-file {}\nset -g history-limit 20000\nset -g mouse on\nset -g @plugin {}\n",
+        slash(&file),
+        slash(&plug)
+    );
+    let h = Harness::start_with("settings", &config).await;
+    let conf = format!("keepane-test-settings-{}.conf", std::process::id());
+
+    // Who set what: the config's lines (its first is the harness's own).
+    let (v, by) = setting(&h, "history-limit").await;
+    assert!(v == "20000" && by.ends_with(&format!("{conf}:3")), "{v} {by}");
+    assert!(setting(&h, "mouse").await.1.ends_with(&format!("{conf}:4")));
+    assert_eq!(setting(&h, "pane-frames").await, ("off".into(), "default".into()));
+    let (code, out, _) = h.cli(&["show-settings", "-J"]).await;
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["file"].as_str().unwrap().ends_with("settings.conf"), "{}", v["file"]);
+    let text = h.cli(&["show-settings"]).await.1;
+    assert!(text.lines().any(|l| l.starts_with("history-limit 20000  # ")), "{text}");
+
+    // Set by hand, then written: the file and its folder made, the line
+    // replaced in place when written again, the source the file's line.
+    assert_eq!(h.cli(&["set", "-g", "mouse", "off"]).await.0, 0);
+    assert_eq!(setting(&h, "mouse").await, ("off".into(), "set".into()));
+    let (code, out, err) = h.cli(&["save-settings", "mouse"]).await;
+    assert!(code == 0 && out.contains("saved 1 option to"), "{code} {out} {err}");
+    let written = std::fs::read_to_string(&file).unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    assert!(lines[0].starts_with("# keepane's settings board"), "{written}");
+    assert_eq!(&lines[1..], ["set -g mouse off"]);
+    assert!(setting(&h, "mouse").await.1.ends_with("settings.conf:2"));
+    std::fs::write(&file, format!("{written}# mine\nset -g status-position top\n")).unwrap();
+    h.cli(&["set", "-g", "mouse", "on"]).await;
+    h.cli(&["save-settings", "mouse"]).await;
+    h.cli(&["set", "-g", "mouse", "off"]).await;
+    h.cli(&["save-settings", "mouse"]).await;
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        written.lines().skip(1).collect::<Vec<_>>(),
+        ["set -g mouse off", "# mine", "set -g status-position top"]
+    );
+
+    // A secret: written as it is, shown as (set).
+    assert_eq!(h.cli(&["set", "-g", "feishu-app-secret", "s3cret-x"]).await.0, 0);
+    assert_eq!(setting(&h, "feishu-app-secret").await.0, "(set)");
+    assert_eq!(h.cli(&["save-settings", "feishu-app-secret"]).await.0, 0);
+    assert!(std::fs::read_to_string(&file).unwrap().contains("set -g feishu-app-secret s3cret-x"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "kept to this user");
+    }
+    assert!(!h.cli(&["show-settings"]).await.1.contains("s3cret"));
+
+    // `set -u`: back to the default, the default nobody's; a second time
+    // it stays (it flipped pane-frames before).
+    h.cli(&["set", "-g", "pane-frames", "on"]).await;
+    for _ in 0..2 {
+        assert_eq!(h.cli(&["set", "-gu", "pane-frames"]).await.0, 0);
+        assert_eq!(setting(&h, "pane-frames").await, ("off".into(), "default".into()));
+    }
+    // A theme's options are the theme's.
+    h.cli(&["set", "-g", "theme", "paper"]).await;
+    assert_eq!(setting(&h, "status-style").await.1, "theme paper");
+    assert_eq!(setting(&h, "theme").await.1, "set");
+
+    // A reload: every option back to its default, then the config, then
+    // the settings file (edited by hand), so what was set by hand goes.
+    h.cli(&["set", "-g", "history-limit", "777"]).await;
+    h.cli(&["set", "-g", "display-time", "900"]).await;
+    let (code, out, err) = h.cli(&["reload-settings"]).await;
+    assert!(code == 0 && out.contains("back to the defaults"), "{code} {out} {err}");
+    assert!(setting(&h, "history-limit").await.1.ends_with(&format!("{conf}:3")));
+    assert_eq!(setting(&h, "history-limit").await.0, "20000");
+    assert_eq!(setting(&h, "display-time").await, ("1500".into(), "default".into()));
+    assert_eq!(setting(&h, "theme").await, ("paper-dark".into(), "default".into()));
+    let (v, by) = setting(&h, "mouse").await;
+    assert!(v == "off" && by.ends_with("settings.conf:2"), "the settings file after the config: {v} {by}");
+    assert_eq!(setting(&h, "status-position").await.0, "top");
+    let (v, by) = setting(&h, "display-panes-colour").await;
+    assert!(v == "green" && by.ends_with("plugin.keepane:1"), "the plugin ran again: {v} {by}");
+    let plugins = h.cli(&["show-options", "-g"]).await.1;
+    assert_eq!(plugins.lines().filter(|l| l.starts_with("@plugin")).count(), 1, "{plugins}");
+
+    // The config run again by hand (`source-file`): the settings file runs
+    // after it, as at the start, so it still wins.
+    let conf_path = std::env::temp_dir().join(&conf);
+    assert_eq!(h.cli(&["source-file", &conf_path.to_string_lossy()]).await.0, 0);
+    assert_eq!(setting(&h, "mouse").await.0, "off", "the config says on, the settings file off");
+
+    // A value broken over two lines is not written (it would be two lines,
+    // the second no command); a folder is no settings file.
+    let kept = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(h.cli(&["set", "-g", "status-right", "a\nb"]).await.0, 0);
+    let (code, _, err) = h.cli(&["save-settings", "mouse", "status-right"]).await;
+    assert!(code != 0 && err.contains("line break"), "{code} {err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), kept, "nothing written");
+    h.cli(&["set", "-gu", "status-right"]).await;
+    h.cli(&["set", "-g", "settings-file", &slash(&plug)]).await;
+    let (code, _, _) = h.cli(&["save-settings", "mouse"]).await;
+    assert_ne!(code, 0, "a folder is no file to write");
+    h.cli(&["set", "-g", "settings-file", &slash(&file)]).await;
+
+    // A server starting runs the settings file after the config too.
+    let h2 = Harness::start_with("settings2", &config).await;
+    assert_eq!(setting(&h2, "mouse").await.0, "off");
+    assert_eq!(setting(&h2, "status-position").await.0, "top");
+    assert_eq!(setting(&h2, "feishu-app-secret").await.0, "(set)");
+
+    // The config named and no settings-file: no settings file at all.
+    let h3 = Harness::start("settingsnone").await;
+    let (code, _, err) = h3.cli(&["save-settings", "mouse"]).await;
+    assert!(code != 0 && err.contains("no settings file"), "{code} {err}");
+    let v: serde_json::Value = serde_json::from_str(&h3.cli(&["show-settings", "-J"]).await.1).unwrap();
+    assert!(v["file"].is_null());
+    for s in [&h, &h2, &h3] {
+        s.cli(&["kill-server"]).await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A dashboard opens where the last one was left (`board-pick`): the page
 /// and the pane picked there, which the server keeps. A pane gone by then
 /// leaves the one it was asked from; an agent's pane may read the place,

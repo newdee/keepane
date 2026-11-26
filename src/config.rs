@@ -239,6 +239,11 @@ pub struct Options {
     /// The most bytes one file sent with a chat line holds
     /// (`chat-file-max-size`).
     pub chat_file_max_size: u64,
+    /// Where the settings board writes (`settings-file`, read after the
+    /// config file); empty: `~/.keepane/settings.conf` when the config was
+    /// found where it is looked for, none when one was named
+    /// (`KEEPANE_CONFIG`, `-f`). docs/design/settings.md.
+    pub settings_file: String,
 }
 
 /// What `dashboard-icons` can be.
@@ -314,7 +319,7 @@ pub const THEMES: &[(&str, &str)] = &[
 pub const THEME_NAMES: &[&str] = &["paper-dark", "paper", "tokyo-night", "tokyo-day"];
 
 /// The options a theme sets (the same in each).
-fn theme_options() -> &'static [&'static str] {
+pub(crate) fn theme_options() -> &'static [&'static str] {
     static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     NAMES.get_or_init(|| {
         let names: Vec<String> = theme_settings(THEMES[0].1).unwrap_or_default().into_iter().map(|(n, _)| n).collect();
@@ -542,6 +547,7 @@ pub const SHOWABLE: &[&str] = &[
     "dashboard-icons",
     "chat-days",
     "chat-file-max-size",
+    "settings-file",
 ];
 
 impl Default for Options {
@@ -671,6 +677,7 @@ impl Default for Options {
             dashboard_icons: "emoji".into(),
             chat_days: 30,
             chat_file_max_size: 25 * 1024 * 1024,
+            settings_file: String::new(),
         }
     }
 }
@@ -831,6 +838,7 @@ pub const KNOWN: &[&str] = &[
     "restore-on-start",
     "save-history",
     "sessions-dir",
+    "settings-file",
     "status",
     "status-bg",
     "status-fg",
@@ -966,6 +974,7 @@ pub fn option_values(name: &str) -> &'static [&'static str] {
         "status-justify" => &["absolute-centre", "centre", "left", "right"],
         "window-size" => &["largest", "latest", "manual", "smallest"],
         "done-panes" => &["all", "named"],
+        "message-envelope" => &["fields", "json"],
         "done-webhook-format" => DONE_WEBHOOK_FORMATS,
         "feishu-domain" => &["feishu", "lark"],
         "theme" => THEME_NAMES,
@@ -1268,6 +1277,13 @@ impl Options {
             "chat-file-max-size" => {
                 self.chat_file_max_size = parse_size(name, value, 1024, 1024 * 1024 * 1024)?;
             }
+            "settings-file" => {
+                let v = value.trim();
+                if v.contains(['\n', '\r', '\0']) {
+                    return Err("bad settings-file: one line, a file (~ for the home directory), or empty".into());
+                }
+                self.settings_file = v.to_string();
+            }
             "default-terminal" => {
                 let v = value.trim();
                 if v.is_empty() || v.contains(char::is_whitespace) {
@@ -1307,6 +1323,17 @@ impl Options {
             other => return Err(format!("unknown option '{other}'")),
         }
         Ok(())
+    }
+
+    /// The value to write to a file, `set` reading it back to the same:
+    /// what `get` prints, a secret's own text in place of `(set)`. Never
+    /// for a screen or a log.
+    pub fn get_to_save(&self, name: &str) -> Option<String> {
+        match resolve_name(name).ok()?.as_str() {
+            "done-webhook-secret" => Some(self.done_webhook_secret.clone()),
+            "feishu-app-secret" => Some(self.feishu_app_secret.clone()),
+            _ => self.get(name),
+        }
     }
 
     /// Current value of an option as `show-options` prints it. Takes the
@@ -1410,6 +1437,7 @@ impl Options {
             "dashboard-icons" => self.dashboard_icons.clone(),
             "chat-days" => self.chat_days.to_string(),
             "chat-file-max-size" => size_name(self.chat_file_max_size),
+            "settings-file" => self.settings_file.clone(),
             "log-history-dir" => {
                 if self.log_history_dir.is_empty() {
                     crate::histlog::default_dir().to_string_lossy().into_owned()
@@ -1714,7 +1742,7 @@ mod tests {
         assert_eq!(resolve_name("-").unwrap(), "-");
         assert_eq!(resolve_name("s-").unwrap(), "s-");
         let many = resolve_name("s").unwrap_err();
-        assert!(many.contains("and 10 more"), "{many}");
+        assert!(many.contains("and 11 more"), "{many}");
         assert!(many.matches(", ").count() <= 4, "{many}");
         assert!(resolve_name("vis").is_err(), "visual-bell and visual-activity are both there");
         // Each dash-separated word may be abbreviated too.

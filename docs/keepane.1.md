@@ -265,6 +265,24 @@ but not change it. Each channel keeps a file a day under `chat` in
 the data directory, for `chat-days` days (30; 0 keeps all); its last 1000
 lines are in memory. `keepane chat <what> ...` runs `chat-<what> ...`.
 
+`settings` (prefix `g`, a popup; `keepane settings` in any terminal) is
+the settings board: every option in nine boxes that stay where they are
+(Look, Status line, Keys, Windows and panes, Sessions and history, Alerts,
+Agents and messages, Machines, web, Feishu, System); `z` zooms the box in
+use to the whole board, with each option's default, who set it and what
+it takes, and back. `←`/`→` steps what can be picked (on and off, a
+choice, a number, a colour), Enter types the rest on the bottom line (a
+secret as dots, the prefix by pressing it), `r` puts the default back;
+each change is set at once and written only by `w`, to the
+`settings-file`, never to the config file, which runs before it (also
+when `source-file` runs the config again). `R` puts every option back to
+its default and runs the config and the settings file again (asked
+first). `show-settings` (`-J`: as JSON) prints each option's value,
+default and who set it last (a config file's line, `theme NAME`, `set`);
+`save-settings` *NAME*... writes options' values to the settings file,
+each on its own `set -g` line, replacing the one there and keeping every
+other line; `reload-settings` is `R`.
+
 ### Resuming after a reboot
 
 Sessions save themselves to the data directory (`sessions`; a server
@@ -679,6 +697,7 @@ text prompt stays as typed. The defaults:
 | `[` / `]` | copy mode / paste |
 | `/` | what panes printed, by day |
 | `v` | the dashboard |
+| `g` | the settings board |
 | `B` | every pane at a glance (jobs) |
 | `S` | send what is typed to every pane of the window |
 | `C-t` | each command's time at the end of its line |
@@ -877,7 +896,7 @@ off. No password or key is read or kept.
 
 ### Every option
 
-Set with `set -g` (`set -gu` back to the default), read with
+Set with `set -g` (`set -gu` back to the default) or on the settings board (prefix `g`), read with
 `show-options -g`. A name may be shortened while it stays one option's.
 *(theme)* is the built-in theme's value (`theme`).
 
@@ -981,6 +1000,7 @@ Set with `set -g` (`set -gu` back to the default), read with
 | `dashboard-icons` | `emoji` | The dashboard's `[0] Files` marks: `emoji` or `nerd`. |
 | `chat-days` | `30` | Days a group chat line is kept (0: all). |
 | `chat-file-max-size` | `25M` | The most bytes one file sent with a chat line holds (`chat-say --file`). |
+| `settings-file` | empty | Where the settings board writes, run after the config file (empty: `~/.keepane/settings.conf`; none when `KEEPANE_CONFIG` or `-f` names the config). |
 | `synchronize-panes` | `off` | Keys typed go to every pane of the window. |
 ### Every format variable
 

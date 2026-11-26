@@ -2252,6 +2252,32 @@ Options unknown to keepane but common in `.tmux.conf` (`escape-time`,
 unless set) is the `TERM` panes get on Linux and macOS; on Windows ConPTY
 sets up the terminal and the option does nothing.
 
+### The settings board
+
+`C-b g` (a popup) or `keepane settings` (any terminal) lists every option
+in nine boxes: Look, Status line, Keys, Windows and panes, Sessions and
+history, Alerts, Agents and messages, Machines, web, Feishu, and System.
+The boxes stay where they are: `z` zooms the one in use to the whole board
+(each option's default, who set it, what it takes) and `z` or `Esc` puts it
+back; none can be moved, hidden or taken away.
+
+- `j`/`k` an option, `Tab` or `1`-`9` a box, `/` a filter, `m` only what
+  differs from the default.
+- `←`/`→` steps what can be picked: on and off, a choice (`theme`,
+  `pane-border-lines`), a number by its step, a colour. `Enter` types the
+  rest on the bottom line; a secret shows as dots, and the prefix is set by
+  pressing the new key. `r` puts the default back.
+- A change is set at once (see it on the status line behind the popup) and
+  marked `●` until `w` writes it to `~/.keepane/settings.conf`
+  (`settings-file`). keepane runs that file after `~/.keepane.conf`, which
+  the board never writes: your comments, `%if` blocks and order stay yours.
+  The file can be edited by hand too; `R` then puts every option back to
+  its default and runs both files again (asked first).
+
+`show-settings` prints each option's value and who set it last (a config
+file's line, `theme paper`, `set`); `set -gu NAME` puts one back to its
+default. The design: [docs/design/settings.md](docs/design/settings.md).
+
 ### Environment
 
 `set-environment NAME value` adds a variable to the environment every pane

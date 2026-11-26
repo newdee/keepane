@@ -95,6 +95,8 @@ Plugins / scripting:
   run-shell [-b] command   set-hook -g hook command   show-hooks   load-plugin name   list-plugins
   show-options [-gqv] [name]
 Config: ~/.keepane.conf (tmux syntax: set -g prefix C-a, bind h select-pane -L, set -g @plugin name).
+  settings   (prefix g: every option in nine boxes; pick or type a value, w writes ~/.keepane/settings.conf, run after the config)
+  show-settings [-J]   (each option's value, default and who set it)   save-settings name...   reload-settings   set -gu name
   import-config [-n] [-o file] [file]   (bring what keepane can use from ~/.tmux.conf or any config into it;
   the rest goes in commented out, with why; -n shows it and writes nothing; tmux.conf is never read on its own)
 Tab completion:  completion powershell|bash|zsh|fish   (prints the completer to load; see README)
@@ -347,6 +349,13 @@ fn main() {
                 Err(_) => Some(Err(anyhow::anyhow!("dashboard: bad pane {id}"))),
             },
             _ => Some(Err(anyhow::anyhow!("dashboard: takes no arguments"))),
+        },
+        // The settings board (docs/design/settings.md), in this terminal;
+        // prefix g opens it in a popup (`--popup`).
+        "settings" => match &args[1..] {
+            [] => Some(keepane::settings::run(&socket, &rt)),
+            [p] if p == "--popup" => Some(keepane::settings::run(&socket, &rt)),
+            _ => Some(Err(anyhow::anyhow!("settings: takes no arguments"))),
         },
         _ => None,
     };

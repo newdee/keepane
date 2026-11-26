@@ -1171,6 +1171,27 @@ pub enum Cmd {
         /// to; the current one without it.
         target: Option<Target>,
     },
+    /// `set-option -u NAME`: the option back to its default (a user option,
+    /// `@name`, gone).
+    UnsetOption {
+        name: String,
+    },
+    /// `show-settings [-J]`: every option's value, default and who set it
+    /// last (a config file's line, a theme, `set`), with where the settings
+    /// file is (docs/design/settings.md).
+    ShowSettings {
+        json: bool,
+    },
+    /// `save-settings NAME...`: these options' values written to the
+    /// settings file, each on its own `set -g` line.
+    SettingsSave {
+        names: Vec<String>,
+    },
+    /// `reload-settings`: every option back to its default, then the config
+    /// file and the settings file run again.
+    SettingsReload,
+    /// `settings`: the settings board in a popup (prefix g).
+    Settings,
     /// `show-options [-g] [-v] [-q] [name]`: one option, or all of them.
     ShowOptions {
         name: Option<String>,
@@ -2477,6 +2498,17 @@ impl fmt::Display for Cmd {
                 fmt_target(f, target)?;
                 write!(f, " {} {}", quote(name), quote(value))
             }
+            Cmd::UnsetOption { name } => write!(f, "set-option -gu {}", quote(name)),
+            Cmd::ShowSettings { json } => f.write_str(if *json { "show-settings -J" } else { "show-settings" }),
+            Cmd::SettingsSave { names } => {
+                f.write_str("save-settings")?;
+                for n in names {
+                    write!(f, " {}", quote(n))?;
+                }
+                Ok(())
+            }
+            Cmd::SettingsReload => f.write_str("reload-settings"),
+            Cmd::Settings => f.write_str("settings"),
             Cmd::SwitchClient { next, prev, last, target } => {
                 f.write_str("switch-client")?;
                 if *next {
@@ -3261,6 +3293,10 @@ pub const COMMANDS: &[&str] = &[
     "chat-dir",
     "chat-pick",
     "board-pick",
+    "show-settings",
+    "save-settings",
+    "reload-settings",
+    "settings",
     "web-share-open",
     "web-share-sent",
     "web-uploaded",
@@ -3387,8 +3423,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("set-cwd", &["-t"]),
     ("set-environment", &["-g", "-u"]),
     ("set-hook", &["-g", "-u"]),
-    ("set-option", &["-g", "-a", "-w", "-s", "-t"]),
-    ("set-window-option", &["-g", "-a", "-t"]),
+    ("set-option", &["-g", "-a", "-u", "-w", "-s", "-t"]),
+    ("set-window-option", &["-g", "-a", "-u", "-t"]),
     ("show-buffer", &["-b"]),
     ("show-environment", &["-g"]),
     ("show-hooks", &["-g"]),
@@ -3428,6 +3464,10 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("chat-dir", &[]),
     ("chat-pick", &[]),
     ("board-pick", &[]),
+    ("show-settings", &["-J"]),
+    ("save-settings", &[]),
+    ("reload-settings", &[]),
+    ("settings", &[]),
     ("web-share-open", &[]),
     ("web-share-sent", &[]),
     ("web-uploaded", &[]),
@@ -5098,6 +5138,36 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
             }
             Cmd::BoardPick { place: page.map(|p| (p, row)) }
         }
+        "show-settings" => {
+            let mut json = false;
+            while a.is_flag() {
+                match a.next().unwrap() {
+                    "-J" => json = true,
+                    f => return Err(bad_flag(n, f)),
+                }
+            }
+            a.none_left(n)?;
+            Cmd::ShowSettings { json }
+        }
+        "save-settings" => {
+            let names = a.rest();
+            if names.is_empty() {
+                return Err(format!("{n}: name the options to write"));
+            }
+            let mut out = Vec::new();
+            for o in names {
+                let name = crate::config::resolve_name(&o)?;
+                if !name.starts_with('@') && !crate::config::SHOWABLE.contains(&name.as_str()) {
+                    return Err(format!("{n}: no option {o}"));
+                }
+                out.push(name);
+            }
+            Cmd::SettingsSave { names: out }
+        }
+        "reload-settings" | "settings" => {
+            a.none_left(n)?;
+            if n == "settings" { Cmd::Settings } else { Cmd::SettingsReload }
+        }
         "web-status" | "web-stop" | "web-resume" => {
             a.none_left(n)?;
             match n {
@@ -5578,7 +5648,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
         "set-option" => {
             // -g / -s / -w are accepted and ignored; -a appends, and tmux
             // users write it combined ("set -ag status-right ...").
-            let (mut append, mut target) = (false, None);
+            let (mut append, mut unset, mut target) = (false, false, None);
             while a.is_flag() {
                 let flag = a.next().unwrap();
                 if flag == "-t" {
@@ -5588,13 +5658,29 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 if flag.contains('a') {
                     append = true;
                 }
+                // `-u` (`set -gu NAME`): back to the default.
+                if flag.contains('u') {
+                    unset = true;
+                }
             }
             // An option name may be abbreviated the way a command name is:
             // `set sync` is `set synchronize-panes`. Expanding it here means
             // everything downstream sees the real name.
             let name = crate::config::resolve_name(a.next().ok_or("set-option: option name required")?)?;
             let value = a.rest().join(" ");
-            Cmd::SetOption { name, value, append, target }
+            if unset {
+                if !value.is_empty() || append {
+                    return Err(format!("{n}: -u takes an option's name alone"));
+                }
+                if name == "synchronize-panes" {
+                    // A window's, off by default.
+                    Cmd::SetOption { name, value: "off".into(), append: false, target }
+                } else {
+                    Cmd::UnsetOption { name }
+                }
+            } else {
+                Cmd::SetOption { name, value, append, target }
+            }
         }
         "switch-client" => {
             let (mut next, mut prev, mut last, mut target) = (false, false, false, None);
@@ -6499,6 +6585,13 @@ mod tests {
             "board-pick 1 %15",
             "board-pick 1 100.1.2.3:7681/%4",
             "board-pick 3 12",
+            "set-option -gu mouse",
+            "set -u @mine",
+            "show-settings",
+            "show-settings -J",
+            "save-settings mouse history-limit",
+            "reload-settings",
+            "settings",
             "chat-say review --re 42 sounds good",
             "chat-say review --file a.png --re 7",
             "chat-read review --thread 42 -J",
@@ -6853,6 +6946,37 @@ mod tests {
         assert!(parse_line("link-unshare 10.0.0.1:7681").unwrap_err().contains("or --all"));
         assert!(parse_line("link-unshare 10.0.0.1:7681 work --all").unwrap_err().contains("or --all"));
         assert!(parse_line("link-share 10.0.0.1:7681 10.0.0.2:7681/%7").unwrap_err().contains("another machine"));
+    }
+
+    /// `set -u` puts an option back to its default, which it never did:
+    /// `-u` was dropped like `-g`, and `set -gu mouse` flipped the mouse.
+    #[test]
+    fn set_u_is_back_to_the_default_and_takes_a_name_alone() {
+        let p = |line: &str| parse_line(line).unwrap().unwrap();
+        assert_eq!(p("set -gu mouse"), Cmd::UnsetOption { name: "mouse".into() });
+        assert_eq!(p("set-option -ug hist"), Cmd::UnsetOption { name: "history-limit".into() }, "a short name");
+        assert_eq!(p("set -u @mine"), Cmd::UnsetOption { name: "@mine".into() });
+        assert_eq!(
+            p("setw -u sync"),
+            Cmd::SetOption { name: "synchronize-panes".into(), value: "off".into(), append: false, target: None },
+            "a window's synchronize-panes: off"
+        );
+        // Without -u nothing changed.
+        assert_eq!(
+            p("set -g mouse"),
+            Cmd::SetOption { name: "mouse".into(), value: String::new(), append: false, target: None }
+        );
+        for bad in ["set -gu mouse on", "set -gau status-right x"] {
+            assert!(parse_line(bad).unwrap_err().contains("-u takes an option's name alone"), "{bad}");
+        }
+        assert_eq!(
+            p("save-settings hist mouse"),
+            Cmd::SettingsSave { names: vec!["history-limit".into(), "mouse".into()] }
+        );
+        assert!(parse_line("save-settings").unwrap_err().contains("name the options"));
+        assert!(parse_line("save-settings no-such-option").is_err());
+        assert!(parse_line("reload-settings now").is_err());
+        assert!(parse_line("show-settings -x").is_err());
     }
 
     /// `board-pick`: a page from 1 to 9 and one word for the row; nothing

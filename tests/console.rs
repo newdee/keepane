@@ -674,6 +674,45 @@ fn prefix_v_opens_the_dashboard_on_the_current_pane() {
     assert_eq!(t.wait_exit(), 0);
 }
 
+/// prefix g opens the settings board in a popup: a change is set at once
+/// and marked until written; with no settings file (the config was named)
+/// `w` says so; a box zooms and comes back; quitting with a change not
+/// written asks first.
+#[test]
+fn prefix_g_opens_the_settings_board() {
+    let socket = format!("settings-{}", std::process::id());
+    let mut t = Term::spawn(&["-L", &socket, "new", "-s", "t", "cmd.exe", "/q", "/k", "prompt keepane$g"], 100, 30);
+    t.wait_for("prompt", |s| s.contents().contains("keepane>"));
+    let mouse = || {
+        let out = keepane().args(["-L", &socket, "show-options", "-gv", "mouse"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    assert_eq!(mouse(), "on");
+    t.pump(Duration::from_millis(300));
+    t.send("\x02g");
+    t.wait_for("the board", |s| s.contents().contains("[1] Look") && s.contents().contains("[4] Windows and panes"));
+    t.wait_for("its options", |s| s.contents().contains("history-limit"));
+    // Box 4's first option is mouse: Space turns it off at once.
+    t.send("4");
+    t.send(" ");
+    t.wait_for("said and marked", |s| s.contents().contains("mouse: off") && s.contents().contains("1 not written"));
+    assert_eq!(mouse(), "off");
+    t.send("w");
+    t.wait_for("no file to write", |s| s.contents().contains("no settings file"));
+    // Zoomed: the table; back: the boxes.
+    t.send("z");
+    t.wait_for("zoomed", |s| s.contents().contains("set by") && !s.contents().contains("[1] Look"));
+    t.send("z");
+    t.wait_for("back", |s| s.contents().contains("[1] Look"));
+    t.send("q");
+    t.wait_for("asked first", |s| s.contents().contains("1 change not written"));
+    t.send("q");
+    t.wait_for("the board gone", |s| !s.contents().contains("[1] Look"));
+    assert_eq!(mouse(), "off", "it lasts until the server restarts");
+    t.send("\x02d");
+    assert_eq!(t.wait_exit(), 0);
+}
+
 /// A kill-on-close job like the one OpenSSH puts each session in: whatever
 /// is still inside when the handle closes is ended with it.
 struct Job(windows_sys::Win32::Foundation::HANDLE);

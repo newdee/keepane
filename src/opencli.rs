@@ -575,6 +575,7 @@ const DOCS: &[Doc] = &[
     d("set-option", "Set an option.", &[
         ("-g", "", "Accepted for tmux: always global."),
         ("-a", "", "Append to the value."),
+        ("-u", "", "Back to the default."),
         ("-w", "", "Accepted for tmux: always global."),
         ("-s", "", "Accepted for tmux: always global."),
         ("-t", TARGET, "The pane or window it is for."),
@@ -582,6 +583,7 @@ const DOCS: &[Doc] = &[
     d("set-window-option", "Set an option (as set-option).", &[
         ("-g", "", "Accepted for tmux: always global."),
         ("-a", "", "Append to the value."),
+        ("-u", "", "Back to the default."),
         ("-t", TARGET, "The window it is for."),
     ]),
     d("show-buffer", "Print a paste buffer.", &[
@@ -719,6 +721,10 @@ const DOCS: &[Doc] = &[
     d("chat-dir", "Print the folder a channel's files go in.", &[]),
     d("chat-pick", "Print or set the channel boards and pages open on.", &[]),
     d("board-pick", "Print or set the dashboard's page and row it opens on.", &[]),
+    d("show-settings", "Print each option's value, default and who set it.", &[("-J", "", "As JSON.")]),
+    d("save-settings", "Write options' values to the settings file.", &[]),
+    d("reload-settings", "Reset every option, then run the config files again.", &[]),
+    d("settings", "Open the settings board in a popup.", &[]),
     d("web-share-open", "A share's link was opened (the page's).", &[]),
     d("web-share-sent", "A share was downloaded (the page's).", &[]),
     d("web-uploaded", "A file came from the phone (the page's).", &[]),

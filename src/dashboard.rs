@@ -690,14 +690,14 @@ const CHAT_PAGE: u8 = 2;
 const SHARES_PAGE: u8 = 3;
 
 /// Visible width of text that may hold SGR sequences.
-fn width_of(s: &str) -> usize {
+pub(crate) fn width_of(s: &str) -> usize {
     clip(s, usize::MAX).1
 }
 
 /// `s` cut to `width` columns, escape sequences kept (a CSI whole, an OSC
 /// up to its end), other control characters as spaces; with the width it
 /// takes. A cut string ends its styles.
-fn clip(s: &str, width: usize) -> (String, usize) {
+pub(crate) fn clip(s: &str, width: usize) -> (String, usize) {
     let mut out = String::new();
     let mut used = 0;
     let mut styled = false;
@@ -754,13 +754,13 @@ fn clip(s: &str, width: usize) -> (String, usize) {
 /// plain again; nothing for no text. Colour says what a thing is, never
 /// only decorates: the 16 colours the terminal's theme maps, so a light
 /// theme reads as well as a dark one.
-fn paint(sgr: &str, text: &str) -> String {
+pub(crate) fn paint(sgr: &str, text: &str) -> String {
     if text.is_empty() { String::new() } else { format!("\x1b[{sgr}m{text}\x1b[0m") }
 }
 
 /// Keys and what they do (`j/k pane  Enter screen`, two spaces between),
 /// each key cyan and bold so the eye finds it, what it does plain.
-fn key_hints(hints: &str) -> String {
+pub(crate) fn key_hints(hints: &str) -> String {
     hints
         .split("  ")
         .map(|h| match h.split_once(' ') {
@@ -822,13 +822,13 @@ fn paint_context(context: &str) -> String {
 }
 
 /// `s` in `width` columns, against their right edge (a number).
-fn fit_right(s: &str, width: usize) -> String {
+pub(crate) fn fit_right(s: &str, width: usize) -> String {
     let (out, used) = clip(s, width);
     format!("{}{out}", " ".repeat(width - used))
 }
 
 /// `s` in exactly `width` columns: cut, or filled with spaces.
-fn fit(s: &str, width: usize) -> String {
+pub(crate) fn fit(s: &str, width: usize) -> String {
     let (mut out, used) = clip(s, width);
     out.push_str(&" ".repeat(width - used));
     out
@@ -837,22 +837,22 @@ fn fit(s: &str, width: usize) -> String {
 /// Where each panel is on the screen: its top row, its height (borders
 /// included), and its left column and width.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Rect {
-    x: usize,
-    y: usize,
-    w: usize,
-    h: usize,
+pub(crate) struct Rect {
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    pub(crate) w: usize,
+    pub(crate) h: usize,
 }
 
 impl Rect {
-    fn holds(&self, x: usize, y: usize) -> bool {
+    pub(crate) fn holds(&self, x: usize, y: usize) -> bool {
         x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
     }
     /// Rows inside the borders.
-    fn inner_h(&self) -> usize {
+    pub(crate) fn inner_h(&self) -> usize {
         self.h.saturating_sub(2)
     }
-    fn inner_w(&self) -> usize {
+    pub(crate) fn inner_w(&self) -> usize {
         self.w.saturating_sub(2)
     }
 }
@@ -2933,7 +2933,7 @@ fn tail(s: &str, width: usize) -> String {
 }
 
 /// The first of `len` lines to show in `rows` so that line `at` is in view.
-fn window_start(at: usize, len: usize, rows: usize) -> usize {
+pub(crate) fn window_start(at: usize, len: usize, rows: usize) -> usize {
     if rows == 0 || len <= rows {
         return 0;
     }
@@ -2986,7 +2986,7 @@ fn inert(s: &str) -> String {
         .collect()
 }
 
-fn strip(s: &str) -> String {
+pub(crate) fn strip(s: &str) -> String {
     let mut out = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -3012,7 +3012,7 @@ fn strip(s: &str) -> String {
 /// inside, all in `r`. The focused panel's border is green, the others the
 /// theme's faint ink (bright black): a colour of its own, where dim only
 /// halves the text's and fades into a light page.
-fn boxed(title: &str, right: &str, lines: Vec<String>, r: Rect, focused: bool) -> Vec<String> {
+pub(crate) fn boxed(title: &str, right: &str, lines: Vec<String>, r: Rect, focused: bool) -> Vec<String> {
     let (w, inner) = (r.w, r.inner_w());
     let border = if focused { "\x1b[1;32m" } else { "\x1b[90m" };
     // The right-hand text (the tabs) only where the title keeps some room.

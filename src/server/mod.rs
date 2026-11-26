@@ -43,6 +43,7 @@ mod public_ip;
 pub mod render;
 mod schedule;
 mod screenrules;
+mod settings;
 mod share_host;
 mod shellhist;
 mod sshhosts;
@@ -1372,6 +1373,15 @@ pub struct Server {
     /// about a session here, a pane it starts, keys typed into its client
     /// attached here): a pane made meanwhile is its (`Pane::made_by`).
     acting: Option<String>,
+    /// Who set each option last (docs/design/settings.md): a config file's
+    /// line (`~/.keepane.conf:12`), a theme (`theme paper`), or `set`; an
+    /// option not here is at its default.
+    option_source: HashMap<String, String>,
+    /// The config file's line being run now, while one is sourced.
+    config_at: Option<String>,
+    /// The config file run at the start (`load_config`), run again by
+    /// `reload-settings`.
+    config_loaded: Option<PathBuf>,
     /// Every change, numbered, for copies on other machines (decision 17).
     journal: journal::Journal,
     /// The machines that copy this one's sessions now (`link_feed`).
@@ -1677,6 +1687,7 @@ fn default_bindings() -> HashMap<Key, Binding> {
         ("D", "choose-client"),
         ("B", "choose-jobs"),
         ("v", "dashboard"),
+        ("g", "settings"),
         ("/", "choose-history"),
         ("u", "undo-kill"),
         (
@@ -1840,6 +1851,9 @@ impl Server {
             next_remote_client: link_attach::FIRST_ID,
             board_place: None,
             acting: None,
+            option_source: HashMap::new(),
+            config_at: None,
+            config_loaded: None,
             journal: journal::Journal::default(),
             feeds: Vec::new(),
             mirrors: HashMap::new(),
@@ -2426,7 +2440,9 @@ impl Server {
     }
 
     fn load_config(&mut self) {
-        if let Some(path) = self.config_override.clone().or_else(crate::config::find_config) {
+        let config = self.config_override.clone().or_else(crate::config::find_config);
+        self.config_loaded = config.clone();
+        if let Some(path) = config {
             match self.source_file(&path.to_string_lossy()) {
                 Ok(n) => log::info!("loaded {} ({})", path.display(), crate::format::count(n, "command")),
                 Err(e) => {
@@ -2443,6 +2459,11 @@ impl Server {
             );
             log::info!("{note}");
             self.note_message(&note);
+        }
+        // The settings board's file, after the config: what it says wins.
+        if let Err(e) = self.source_settings_file() {
+            log::error!("{e}");
+            self.config_errors.get_or_insert_with(Vec::new).extend(e.lines().map(str::to_string));
         }
         // The environment as set-environment last left it, before any pane.
         self.load_environment();
@@ -2491,11 +2512,16 @@ impl Server {
         if let Some(line_no) = unterminated {
             errors.push(format!("{path}:{line_no}: %if without %endif; the rest of the file was skipped"));
         }
+        // What each line sets is that line's (`option_source`); the file
+        // that sourced this one goes on after it.
+        let outer = self.config_at.take();
+        let shown = settings::shown_path(path);
         for (line_no, line) in lines {
             match crate::command::parse_line(&line) {
                 Ok(None) => {}
                 Ok(Some(cmd)) => {
                     n += 1;
+                    self.config_at = Some(format!("{shown}:{line_no}"));
                     if let Outcome::Error(e) = self.exec(cmd, None) {
                         errors.push(format!("{path}:{line_no}: {e}"));
                     }
@@ -2503,6 +2529,7 @@ impl Server {
                 Err(e) => errors.push(format!("{path}:{line_no}: {e}")),
             }
         }
+        self.config_at = outer;
         let pending = std::mem::take(&mut self.opts.pending_plugins);
         for p in pending {
             if let Err(e) = self.load_plugin(&p) {
@@ -6430,6 +6457,7 @@ impl Server {
                     self.git_command_changed();
                 }
                 if r.is_ok() {
+                    self.option_set_by(&name, &value);
                     // The event log follows its options at once, not at the
                     // next tick: `event-log off` means nothing more is written.
                     self.sync_event_log();
@@ -6800,6 +6828,11 @@ impl Server {
             Cmd::Share(what) => self.exec_share(what, cid),
             Cmd::Chat(c) => self.exec_chat(c, cid),
             Cmd::BoardPick { place } => self.board_pick(cid, place),
+            Cmd::UnsetOption { name } => self.unset_option(&name, cid),
+            Cmd::ShowSettings { json } => self.show_settings(json),
+            Cmd::SettingsSave { names } => self.settings_save(&names),
+            Cmd::SettingsReload => self.settings_reload(),
+            Cmd::Settings => self.settings_popup(cid),
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
             Cmd::ShareSent { token, peer, note } => self.share_sent(&token, &peer, &note),
             Cmd::WebUploaded { pane, path, bytes, peer } => self.web_uploaded(&pane, &path, bytes, &peer),
@@ -7093,7 +7126,7 @@ impl Server {
                 }
                 Outcome::Ok
             }
-            Cmd::SourceFile { path } => self.source_file(&path).map(|_| ()).into(),
+            Cmd::SourceFile { path } => self.source_command(&path),
             // Window-scoped, so it is not in the global table: answer it from
             // the window the client is looking at.
             Cmd::ShowOptions { ref name, value_only, quiet: _ } if name.as_deref() == Some("synchronize-panes") => {

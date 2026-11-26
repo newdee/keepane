@@ -1006,6 +1006,16 @@ keepane 是画在你运行它的那个终端里的，所以用 `tokyo-night` 时
 
 `.tmux.conf` 里常见但 keepane 用不上的选项（`escape-time`、`focus-events` 这些）如果还是被设置了（比如用 `source-file` 读了一份 tmux 配置），会被接受然后忽略；`import-config` 不会导入它们。`default-terminal`（不设就是 `xterm-256color`）是 Linux 和 macOS 上 pane 拿到的 `TERM`；Windows 上终端由 ConPTY 安排，这个选项不起作用。
 
+### 设置板
+
+`C-b g`（弹窗）或 `keepane settings`（任何终端）把所有选项分进 9 个框：Look（外观）、Status line（状态栏）、Keys（按键）、Windows and panes（窗口和 pane）、Sessions and history（会话和历史）、Alerts（提醒）、Agents and messages（agent 和消息）、Machines, web, Feishu（其他机器、网页、飞书）、System（系统）。框的位置固定：`z` 把当前框放大到整个板（多显示每项的默认值、谁设的、能填什么），`z` 或 `Esc` 还原；框不能移动、隐藏或删除。
+
+- `j`/`k` 选项，`Tab` 或 `1`-`9` 换框，`/` 筛选，`m` 只看和默认值不同的。
+- `←`/`→` 直接选：开关、枚举（`theme`、`pane-border-lines`）、按步长加减的数字、颜色。其余的按 `Enter` 在底行输入；密钥显示成圆点，前缀键直接按下新键。`r` 恢复默认。
+- 改动马上生效（弹窗后面的状态栏就能看到），标 `●`，按 `w` 才写进 `~/.keepane/settings.conf`（`settings-file`）。keepane 先运行 `~/.keepane.conf`，再运行这个文件；设置板从不改 `~/.keepane.conf`，你写的注释、`%if` 块和顺序都保持原样。这个文件也可以手改，改完按 `R`：所有选项先回到默认，再运行两个文件（会先问）。
+
+`show-settings` 列出每个选项的值和最后是谁设的（配置文件的哪一行、`theme paper`、`set`）；`set -gu 选项名` 把一个选项恢复默认。设计见 [docs/design/settings.md](docs/design/settings.md)。
+
 ### 环境变量
 
 `set-environment 名字 值` 给每个 pane 拿到的环境变量加一个或改一个，`set-environment -u 名字` 去掉它。之后新开的 pane 一启动就有。已经开着的 shell 在下一次显示提示符时拿到这个变化（PowerShell、bash、zsh、fish 和 `wsl.exe` pane 里的 shell，通过 keepane 的提示符钩子），之后它运行的程序都有。已经在跑的程序还是启动时的环境：一个程序改不了另一个程序的环境，要新值就重启它（`respawn-pane -k`）。shell 自己在启动后（或这个名字上次变化后）设的值不会被覆盖。这张表和会话存在一起，服务器重启后还在；`~/.keepane.conf` 先读，它设的名字以它为准。
