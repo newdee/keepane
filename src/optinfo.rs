@@ -257,6 +257,8 @@ mod tests {
             if o.kind == Kind::Choice {
                 assert!(!fixed.is_empty(), "{} is a choice of nothing", o.name);
             }
+            // The board's secrets are the ones kept out of every line kept.
+            assert_eq!(o.kind == Kind::Secret, crate::config::SECRETS.contains(&o.name), "{}", o.name);
         }
         for c in steps(info("clock-mode-colour").unwrap()) {
             assert!(parse_color(c).is_ok(), "{c}");
@@ -281,6 +283,21 @@ mod tests {
             let mut o = Options::default();
             o.set(name, &v).unwrap_or_else(|e| panic!("set {name} {v:?}: {e}"));
             assert_eq!(o.get(name), d.get(name), "{name}");
+        }
+    }
+
+    /// The person's options and the secrets are options; a secret shows as
+    /// `(set)` and is written as it is.
+    #[test]
+    fn the_persons_options_and_the_secrets_are_options() {
+        for n in crate::config::PERSONS.iter().chain(crate::config::SECRETS) {
+            assert!(SHOWABLE.contains(n), "{n}");
+        }
+        for n in crate::config::SECRETS {
+            let mut o = Options::default();
+            o.set(n, "zz-secret").unwrap();
+            assert_eq!(o.get(n).as_deref(), Some(crate::config::SECRET_SHOWN), "{n}");
+            assert_eq!(o.get_to_save(n).as_deref(), Some("zz-secret"), "{n}");
         }
     }
 

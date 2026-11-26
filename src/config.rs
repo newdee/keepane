@@ -445,6 +445,31 @@ fn size_name(n: u64) -> String {
 /// secret on a screen or in a log is a secret given away.
 pub const SECRET_SHOWN: &str = "(set)";
 
+/// The person's options: an agent's pane (`ai` work mode, or one another
+/// pane made) may read them, not change them, so an agent does not widen
+/// what it may do (how many panes it makes, what programs it starts, how
+/// far its messages go) or where what happens is sent (a webhook, a Feishu
+/// app). A guard for agents that keep to keepane's commands, not a wall:
+/// a program in a pane runs as the person and can write their files.
+pub const PERSONS: &[&str] = &[
+    "agent-pane-limit",
+    "agent-commands",
+    "message-hop-limit",
+    "done-webhook",
+    "done-webhook-format",
+    "done-webhook-secret",
+    "feishu-app-id",
+    "feishu-app-secret",
+    "feishu-domain",
+    "feishu-notify",
+    "settings-file",
+];
+
+/// The options whose value is a secret: shown as `SECRET_SHOWN`, and taken
+/// out of any command line kept (a log, the event log, prompt history:
+/// `command::redact_secrets`).
+pub const SECRETS: &[&str] = &["done-webhook-secret", "feishu-app-secret"];
+
 fn secret_shown(s: &str) -> String {
     if s.is_empty() { String::new() } else { SECRET_SHOWN.into() }
 }

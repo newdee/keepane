@@ -1382,6 +1382,9 @@ pub struct Server {
     /// The config file run at the start (`load_config`), run again by
     /// `reload-settings`.
     config_loaded: Option<PathBuf>,
+    /// The agent's pane whose `source-file` runs now: what the file sets is
+    /// that agent's (`config::PERSONS` stays the person's).
+    agent_sourcing: Option<PaneId>,
     /// Every change, numbered, for copies on other machines (decision 17).
     journal: journal::Journal,
     /// The machines that copy this one's sessions now (`link_feed`).
@@ -1854,6 +1857,7 @@ impl Server {
             option_source: HashMap::new(),
             config_at: None,
             config_loaded: None,
+            agent_sourcing: None,
             journal: journal::Journal::default(),
             feeds: Vec::new(),
             mirrors: HashMap::new(),
@@ -6450,6 +6454,9 @@ impl Server {
                 w.synchronized = on.unwrap_or(!w.synchronized);
                 Outcome::Ok
             }
+            Cmd::SetOption { name, .. } if self.persons_refused(&name, cid).is_some() => {
+                Outcome::Error(self.persons_refused(&name, cid).unwrap_or_default())
+            }
             Cmd::SetOption { name, value, .. } => {
                 let git_was = self.opts.git_command.clone();
                 let r = self.opts.set(&name, &value);
@@ -6830,8 +6837,8 @@ impl Server {
             Cmd::BoardPick { place } => self.board_pick(cid, place),
             Cmd::UnsetOption { name } => self.unset_option(&name, cid),
             Cmd::ShowSettings { json } => self.show_settings(json),
-            Cmd::SettingsSave { names } => self.settings_save(&names),
-            Cmd::SettingsReload => self.settings_reload(),
+            Cmd::SettingsSave { names } => self.settings_save(&names, cid),
+            Cmd::SettingsReload => self.settings_reload(cid),
             Cmd::Settings => self.settings_popup(cid),
             Cmd::ShareOpen { token, peer } => self.share_open(&token, &peer),
             Cmd::ShareSent { token, peer, note } => self.share_sent(&token, &peer, &note),
@@ -7126,7 +7133,7 @@ impl Server {
                 }
                 Outcome::Ok
             }
-            Cmd::SourceFile { path } => self.source_command(&path),
+            Cmd::SourceFile { path } => self.source_command(&path, cid),
             // Window-scoped, so it is not in the global table: answer it from
             // the window the client is looking at.
             Cmd::ShowOptions { ref name, value_only, quiet: _ } if name.as_deref() == Some("synchronize-panes") => {
@@ -7987,9 +7994,12 @@ impl Server {
                     (KeyCode::Enter, _, _) => {
                         let prompt = c.prompt.take().unwrap();
                         let PromptKind::Command { template } = prompt.kind else { unreachable!() };
-                        // A line typed at `:` goes on its history.
+                        // A line typed at `:` goes on its history, a secret's
+                        // value as `(set)` (`show-prompt-history` prints it,
+                        // to an agent's pane too; set back, `(set)` keeps
+                        // the secret as it is).
                         if template.is_none() {
-                            self.prompt_history.add("command", &prompt.input);
+                            self.prompt_history.add("command", &crate::command::redact_secrets(&prompt.input));
                         }
                         let line = match template {
                             Some(t) => t.replace("%%", &crate::command::quote(&prompt.input)),

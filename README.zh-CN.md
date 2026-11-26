@@ -641,7 +641,7 @@ Codex（0.160 起）和 pi（1.0 起）默认在备用屏幕里画界面，和 v
 | `wait_output` | 等某个 pane 打出含某段文字的一行（服务器就绪、构建报错），拿到这一行 |
 | `list_links`、`link_info`、`read_screen`、`create_remote_pane`、`push_repo` | 配过对的机器、某台机器的信息、某个 pane（本机或另一台）的屏幕、在另一台机器上开 pane（用 `kill_pane` 关），以及把当前分支的提交送过去 |
 
-通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini`、`cursor-agent`、`opencode` 的是 `ai` 模式，跑 `pwsh`、`powershell`、`bash`、`zsh` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（Windows 上是 `pwsh powershell claude codex`，其他系统是 `bash zsh sh claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（32；`set -g agent-pane-limit N` 可改，0 到 256）限制。Claude Code 调用你没放行过的 MCP 工具前会先问你。
+通过 MCP 开的 pane，没指定模式时：跑 `claude`、`codex`、`gemini`、`cursor-agent`、`opencode` 的是 `ai` 模式，跑 `pwsh`、`powershell`、`bash`、`zsh` 的是 `shell` 模式，其他是 `normal`。agent 能启动的程序限于 `agent-commands`（Windows 上是 `pwsh powershell claude codex`，其他系统是 `bash zsh sh claude codex`），它和它开的 pane 一共能开多少个受 `agent-pane-limit`（32；`set -g agent-pane-limit N` 可改，0 到 256）限制。这两个选项，以及其他决定 agent 能做什么、事情发到哪里的选项（`message-hop-limit`、`done-webhook` 和 `feishu-` 开头的、`settings-file`），归你：agent 的 pane 只能读，改不了。这能让用 keepane 命令的 agent 守在限制内；存心绕过的程序以你的身份运行，挡不住它。Claude Code 调用你没放行过的 MCP 工具前会先问你。
 
 ## 在手机上用
 

@@ -7,7 +7,7 @@
 
 use super::{Outcome, Server, expand_home};
 use crate::command::{Cmd, parse_line, quote};
-use crate::config::{ACCEPTED, Options, SHOWABLE};
+use crate::config::{ACCEPTED, Options, PERSONS, SHOWABLE};
 use std::path::{Path, PathBuf};
 
 /// The first line of a settings file the board starts.
@@ -96,15 +96,38 @@ impl Server {
         }
     }
 
+    /// Why this caller may not change option `name`: it is the person's
+    /// (`config::PERSONS`) and the caller an agent's pane, or a file such a
+    /// pane sources.
+    pub(super) fn persons_refused(&self, name: &str, cid: Option<super::ClientId>) -> Option<String> {
+        if !PERSONS.contains(&name) {
+            return None;
+        }
+        let pane = self.agent_caller(cid).or(self.agent_sourcing)?;
+        Some(format!("{name} is the person's to change: an agent's pane (%{pane}) may read it, not change it"))
+    }
+
+    /// Why this caller may not write or reload the settings: an agent's
+    /// pane (they are the person's).
+    fn settings_refused(&self, what: &str, cid: Option<super::ClientId>) -> Option<String> {
+        let pane = self.agent_caller(cid).or(self.agent_sourcing)?;
+        Some(format!("{what}: the settings are the person's: an agent's pane (%{pane}) may read them (show-settings)"))
+    }
+
     /// `source-file PATH`. When it is the config file run at the start (and
     /// not from inside another file being run), the settings file runs
     /// after it, as at the start: what the board wrote wins over the
     /// config again, whichever way the config is run.
-    pub(super) fn source_command(&mut self, path: &str) -> Outcome {
+    /// Run by an agent's pane, what the file sets is that pane's: the
+    /// person's options stay as they are.
+    pub(super) fn source_command(&mut self, path: &str, cid: Option<super::ClientId>) -> Outcome {
         let is_config = self.sourcing.is_empty()
             && self.config_loaded.as_ref().is_some_and(|c| same_file(c, Path::new(&expand_home(path))));
+        let outer = self.agent_sourcing;
+        self.agent_sourcing = outer.or(self.agent_caller(cid));
         let ran = self.source_file(path).map(|_| ());
         let then = if is_config { self.source_settings_file() } else { Ok(()) };
+        self.agent_sourcing = outer;
         match (ran, then) {
             (Ok(()), Ok(())) => Outcome::Ok,
             (Err(a), Err(b)) => Outcome::Error(format!("{a}\n{b}")),
@@ -126,7 +149,9 @@ impl Server {
     }
 
     /// `set -u NAME`: back to the default, the way `set` would put it (so
-    /// whatever follows a change follows this one); the default is nobody's.
+    /// whatever follows a change follows this one, and an agent's pane is
+    /// refused the person's options there, with the same caller); the
+    /// default is nobody's.
     pub(super) fn unset_option(&mut self, name: &str, cid: Option<super::ClientId>) -> Outcome {
         if name.starts_with('@') {
             self.opts.user.retain(|(k, _)| k != name);
@@ -180,7 +205,10 @@ impl Server {
     /// `save-settings NAME...`: each option's value on a `set -g` line of
     /// the settings file (a secret's own text: the file is kept to this
     /// user). The file and its folder are made when missing.
-    pub(super) fn settings_save(&mut self, names: &[String]) -> Outcome {
+    pub(super) fn settings_save(&mut self, names: &[String], cid: Option<super::ClientId>) -> Outcome {
+        if let Some(why) = self.settings_refused("save-settings", cid) {
+            return Outcome::Error(why);
+        }
         let Some(path) = self.settings_path() else {
             return Outcome::Error(
                 "save-settings: no settings file: the config was named (KEEPANE_CONFIG or -f); set settings-file in it"
@@ -221,7 +249,10 @@ impl Server {
     /// file and the settings file run again, as at the start, plugins and
     /// all. Key bindings, hooks and `@` options are not undone first: their
     /// lines run again, as with `source-file`.
-    pub(super) fn settings_reload(&mut self) -> Outcome {
+    pub(super) fn settings_reload(&mut self, cid: Option<super::ClientId>) -> Outcome {
+        if let Some(why) = self.settings_refused("reload-settings", cid) {
+            return Outcome::Error(why);
+        }
         let d = Options::default();
         // The theme first: put back, it sets its own options to theirs.
         let mut names: Vec<&str> = Vec::new();
@@ -396,6 +427,39 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&ok).unwrap(), "x\n");
         assert!(!ok.with_extension("conf.new").exists());
         std::fs::remove_dir_all(ok.parent().unwrap()).unwrap();
+    }
+
+    /// A command a paired machine sends (refused or not) is kept in the
+    /// event log with a secret's value as `(set)`.
+    #[test]
+    fn a_machines_command_is_kept_without_its_secret() {
+        let (pane_tx, _p) = std::sync::mpsc::channel::<super::super::PaneEvent>();
+        let (events, _e) = tokio::sync::mpsc::unbounded_channel::<super::super::Event>();
+        let mut s = Server::new(pane_tx, "t".into(), events);
+        let dir = std::env::temp_dir().join(format!("keepane-settings-feed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let peer =
+            crate::link::Peer { key: "c".into(), addr: "10.0.0.3:7681".into(), full: true, lan: true, off: false };
+        s.link = Some(super::super::link_state::LinkHost {
+            dir: dir.clone(),
+            id: crate::link::Identity::make(&dir.join("key")).unwrap(),
+            peers: vec![peer],
+            nonces: Default::default(),
+            seen: Default::default(),
+            origin: Default::default(),
+            refused: Default::default(),
+            sent: Default::default(),
+            made: Default::default(),
+            incoming: Default::default(),
+        });
+        // The event log on, in a folder of its own.
+        s.observe.dir = Some(dir.join("events"));
+        let _fed = s.feed_for_test("c");
+        s.stream_command("c", 1, "set -g feishu-app-secret s3cret-z");
+        let kept = s.observe.recent(20, |_| true).join("\n");
+        assert!(kept.contains("feishu-app-secret (set)"), "{kept}");
+        assert!(!kept.contains("s3cret-z"), "{kept}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

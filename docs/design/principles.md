@@ -36,6 +36,8 @@ keepane 只传递和记录；能执行什么、能看到什么，由人授权。
 - pane 里的程序不能把别的 pane 切成 `shell` 模式（收到的消息会当命令执行）。
 - 让别的机器进来（`link allow --full`、`link share`、`link connect`）只能由人在 pane 之外操作；`link allow` 收回（`--none`，`R` 键）也一样。pane 里的程序能做的只有减少：`link unshare`、`link disconnect`。
 - 每台机器只决定自己这一边（link.md 第 21 条）：断开只管本机问不问对方，挡住对方靠收回授权。
+- agent 不能放宽自己的限制（2026-11-26，用户说"按推荐来做"）：人的选项（`agent-pane-limit`、`agent-commands`、`message-hop-limit`、`done-webhook` 系列、`feishu-` 系列、`settings-file`，`config::PERSONS`）agent 的 pane 只能读，`set`、`set -a`、`set -u`、它 `source-file` 的文件都改不了；`save-settings`、`reload-settings` 也不行。
+- 这些都是护栏，不是墙：认 agent 靠客户端报来的 `KEEPANE_PANE`，pane 里的程序以人的身份运行，去掉这个变量、或直接改人的文件，就绕过了。它挡的是守规矩的 agent 顺手越权，挡不住存心的程序；后者要靠操作系统级的隔离（另一个用户、容器）。
 
 ## 各家 Agent 的支持程度（如实写）
 

@@ -896,6 +896,13 @@ off. No password or key is read or kept.
 
 ### Every option
 
+The person's options (`agent-pane-limit`, `agent-commands`,
+`message-hop-limit`, the `done-webhook` ones, the `feishu-` ones,
+`settings-file`) an agent's pane (`ai` work mode, or one another pane
+made) may read and not change, by `set` or by a file it sources; it may
+not `save-settings` or `reload-settings` either. A secret's value
+(`done-webhook-secret`, `feishu-app-secret`) shows as `(set)` and is kept
+out of the event log, the log and the `:` prompt's history.
 Set with `set -g` (`set -gu` back to the default) or on the settings board (prefix `g`), read with
 `show-options -g`. A name may be shortened while it stays one option's.
 *(theme)* is the built-in theme's value (`theme`).

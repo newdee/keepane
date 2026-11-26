@@ -11797,6 +11797,77 @@ async fn the_channel_picked_is_kept_by_the_server_and_only_the_person_moves_it()
     h.cli(&["kill-server"]).await;
 }
 
+/// The person's options (`config::PERSONS`) stay theirs: an agent's pane
+/// reads them and cannot change them, not by `set`, `set -a`, `set -u`, a
+/// short name, nor a file it sources (whose other lines still run); it
+/// reads the settings and cannot write or reload them. The person can. A
+/// secret typed at the `:` prompt stays out of the prompt's history.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_pane_reads_the_persons_options_and_does_not_change_them() {
+    let dir = std::env::temp_dir().join(format!("keepane-test-persons-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let slash = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+    let config = format!("set -g settings-file {}\n", slash(&dir.join("settings.conf")));
+    let h = Harness::start_with("persons", &config).await;
+    h.cli(&["new", "-d", "-s", "s"]).await;
+    let a = pane_id(&h, "s:0.0").await;
+    assert_eq!(h.cli(&["set-work-mode", "-t", &format!("%{a}"), "ai"]).await.0, 0);
+    let get = |name: &'static str| {
+        let h = &h;
+        async move { h.cli(&["show-options", "-gv", name]).await.1.trim().to_string() }
+    };
+    let commands = get("agent-commands").await;
+    let refused: [&[&str]; 5] = [
+        &["set", "-g", "agent-pane-limit", "256"],
+        &["set", "-gu", "agent-commands"],
+        &["set", "-ga", "agent-commands", " evil"],
+        &["set", "-g", "done-webhook", "https://x.example/"],
+        &["set", "-g", "feishu-app-s", "x"],
+    ];
+    for argv in refused {
+        let (code, _, err) = h.cli_in(Some(a), argv).await;
+        assert!(code != 0 && err.contains("is the person's to change"), "{argv:?}: {code} {err}");
+    }
+    assert_eq!(get("agent-pane-limit").await, "32");
+    assert_eq!(get("agent-commands").await, commands);
+    assert_eq!(get("done-webhook").await, "");
+    // What is not the person's, an agent's pane changes as before.
+    assert_eq!(h.cli_in(Some(a), &["set", "-g", "mouse", "off"]).await.0, 0);
+    // The settings: read, not written or reloaded.
+    assert_eq!(h.cli_in(Some(a), &["show-settings", "-J"]).await.0, 0);
+    for argv in [&["save-settings", "mouse"][..], &["reload-settings"][..]] {
+        let (code, _, err) = h.cli_in(Some(a), argv).await;
+        assert!(code != 0 && err.contains("the settings are the person's"), "{argv:?}: {code} {err}");
+    }
+    // A file it sources: its other lines run, the person's option stays.
+    let f = dir.join("mine.conf");
+    std::fs::write(&f, "set -g display-time 900\nset -g agent-pane-limit 200\n").unwrap();
+    let (code, _, err) = h.cli_in(Some(a), &["source-file", &slash(&f)]).await;
+    assert!(code != 0 && err.contains("is the person's to change"), "{code} {err}");
+    assert_eq!((get("display-time").await, get("agent-pane-limit").await), ("900".into(), "32".into()));
+    // The person: may.
+    assert_eq!(h.cli(&["set", "-g", "agent-pane-limit", "40"]).await.0, 0);
+    assert_eq!(get("agent-pane-limit").await, "40");
+    assert_eq!(h.cli(&["source-file", &slash(&f)]).await.0, 0);
+    assert_eq!(get("agent-pane-limit").await, "200");
+    assert_eq!(h.cli(&["save-settings", "mouse"]).await.0, 0);
+
+    // A secret typed at `:`: set, and kept in the history as `(set)`.
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "p"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    c.prefix(':').await;
+    c.type_str("set -g feishu-app-secret s3cret-y").await;
+    c.enter().await;
+    h.wait_for_cli("the secret set", &["show-options", "-gv", "feishu-app-secret"], |_, out| out.trim() == "(set)")
+        .await;
+    let (_, out, _) = h.cli(&["show-prompt-history", "-T", "command"]).await;
+    assert!(out.contains("feishu-app-secret (set)") && !out.contains("s3cret-y"), "{out}");
+    h.cli(&["kill-server"]).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// One option of `show-settings -J`: (value, source).
 async fn setting(h: &Harness, name: &str) -> (String, String) {
     let (code, out, err) = h.cli(&["show-settings", "-J"]).await;

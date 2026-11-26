@@ -1443,8 +1443,14 @@ A pane made through MCP starts in `ai` mode when it runs `claude`, `codex`,
 agent may start is limited to `agent-commands` (`pwsh powershell claude
 codex` on Windows, `bash zsh sh claude codex` elsewhere), and how many
 panes it and the panes it made may make to `agent-pane-limit` (32;
-`set -g agent-pane-limit N` changes it, 0 to 256). Claude
-Code asks you before each MCP call you have not allowed.
+`set -g agent-pane-limit N` changes it, 0 to 256). These, and the
+other options that say what an agent may do or where what happens is
+sent (`message-hop-limit`, the `done-webhook` and `feishu-` ones,
+`settings-file`), are yours: an agent's pane reads them and cannot change
+them. That keeps an agent that uses keepane's commands within its
+limits; it is no wall against a program set on getting round it, which
+runs as you. Claude Code asks you before each MCP call you have not
+allowed.
 
 ## On your phone
 

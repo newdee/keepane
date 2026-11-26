@@ -349,9 +349,14 @@ impl Server {
                 (ok, text, pane)
             }
         };
-        self.observe
-            .link("command", &format!(",\"addr\":{},\"key\":{},\"line\":{},\"ok\":{ok}", js(&addr), js(key), js(line)));
-        log::info!("link: {addr} ran `{line}`: {}", if ok { "done" } else { text.as_str() });
+        // Kept with a secret's value as `(set)`: the event log and the log
+        // are files on disk, read by whoever reads them.
+        let kept = crate::command::redact_secrets(line);
+        self.observe.link(
+            "command",
+            &format!(",\"addr\":{},\"key\":{},\"line\":{},\"ok\":{ok}", js(&addr), js(key), js(&kept)),
+        );
+        log::info!("link: {addr} ran `{kept}`: {}", if ok { "done" } else { text.as_str() });
         // Its changes first: the machine has them when it reads the reply.
         self.journal_look();
         self.stream_push();
@@ -366,7 +371,9 @@ impl Server {
         let (tx, rx) = mpsc::unbounded_channel();
         let ip = IpAddr::from([127, 0, 0, 1]);
         let queued = Arc::new(AtomicUsize::new(0));
-        self.feeds.push(Subscriber { key: key.into(), ip, addr: "127.0.0.1:1".into(), tx, queued, next: 0 });
+        // From the next change on, as a feed that had what is there.
+        let next = self.journal.last() + 1;
+        self.feeds.push(Subscriber { key: key.into(), ip, addr: "127.0.0.1:1".into(), tx, queued, next });
         rx
     }
 

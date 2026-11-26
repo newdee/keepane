@@ -2685,6 +2685,41 @@ fn fmt_target(f: &mut fmt::Formatter<'_>, t: &Option<Target>) -> fmt::Result {
 }
 
 /// Quote a word for the command language if it needs it.
+/// `line` as it may be kept (a log, the event log, prompt history): a
+/// secret option's value (`config::SECRETS`) shown as `(set)`, the rest as
+/// it was. A line that does not read is cut after the secret's name. Each
+/// `;`-separated part is looked at; a line with no secret comes back whole.
+pub fn redact_secrets(line: &str) -> String {
+    use crate::config::{SECRET_SHOWN, SECRETS};
+    // A word that names a secret, or could (`feishu-app` is ambiguous, and
+    // the value after it may be the secret all the same).
+    let secret = |n: &str| {
+        crate::config::resolve_name(n).is_ok_and(|n| SECRETS.contains(&n.as_str()))
+            || crate::config::option_candidates(n).iter().any(|c| SECRETS.contains(c))
+    };
+    let one = |part: &str| -> Option<String> {
+        match parse_line(part.trim()) {
+            Ok(Some(Cmd::SetOption { name, append, target, .. })) if SECRETS.contains(&name.as_str()) => {
+                Some(Cmd::SetOption { name, value: SECRET_SHOWN.into(), append, target }.to_string())
+            }
+            Ok(_) => None,
+            // Not a command as written (an open quote...): everything after
+            // a word naming a secret goes.
+            Err(_) => {
+                let words: Vec<&str> = part.split_whitespace().collect();
+                let at = words.iter().position(|w| secret(w))?;
+                Some(format!("{} {SECRET_SHOWN}", words[..=at].join(" ")))
+            }
+        }
+    };
+    let parts: Vec<&str> = line.split(';').collect();
+    let shown: Vec<Option<String>> = parts.iter().map(|p| one(p)).collect();
+    if shown.iter().all(Option::is_none) {
+        return line.to_string();
+    }
+    parts.iter().zip(shown).map(|(p, s)| s.unwrap_or_else(|| p.trim().to_string())).collect::<Vec<_>>().join(" ; ")
+}
+
 pub fn quote(s: &str) -> String {
     if !s.is_empty()
         && !s.starts_with('#')
@@ -6946,6 +6981,32 @@ mod tests {
         assert!(parse_line("link-unshare 10.0.0.1:7681").unwrap_err().contains("or --all"));
         assert!(parse_line("link-unshare 10.0.0.1:7681 work --all").unwrap_err().contains("or --all"));
         assert!(parse_line("link-share 10.0.0.1:7681 10.0.0.2:7681/%7").unwrap_err().contains("another machine"));
+    }
+
+    /// A secret's value never stays in a command line kept: set, appended,
+    /// by a short name, after a `;`, in a line that does not read; a line
+    /// with no secret comes back as it was, byte for byte.
+    #[test]
+    fn a_kept_line_holds_no_secret() {
+        for (line, want) in [
+            ("set -g feishu-app-secret abc123", "set-option feishu-app-secret (set)"),
+            ("set -g feishu-app-s abc123", "set-option feishu-app-secret (set)"),
+            ("set-option -g done-webhook-secret \"a b c\"", "set-option done-webhook-secret (set)"),
+            ("set -ga feishu-app-secret abc123", "set-option -a feishu-app-secret (set)"),
+            ("new -d -s x ; set -g feishu-app-secret abc123", "new -d -s x ; set-option feishu-app-secret (set)"),
+            ("set -g feishu-app-secret \"abc123", "set -g feishu-app-secret (set)"),
+            // Ambiguous (feishu-app-id or -secret): refused, but kept without it.
+            ("set -g feishu-app abc123", "set -g feishu-app (set)"),
+        ] {
+            let kept = redact_secrets(line);
+            assert_eq!(kept, want, "{line}");
+            assert!(!kept.contains("abc123") && !kept.contains("a b c"), "{line}");
+        }
+        for line in
+            ["set -g mouse on", "set -g feishu-app-id cli_x", "send-message --to %1 feishu-app-secret abc", "x \"y"]
+        {
+            assert_eq!(redact_secrets(line), line, "no secret set: as it was");
+        }
     }
 
     /// `set -u` puts an option back to its default, which it never did:

@@ -119,7 +119,8 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 
 - 板只发这几条命令：看 `show-settings`；改 `set-option`、`save-settings`、`reload-settings`。和 dashboard 一样有白名单，测试逐键检查。
 - `reload-settings` 会丢运行时的改动，要确认。
-- 密钥不显示、不进日志：`show-settings` 给 `(set)`，底行输入回显 `•`。
+- 密钥不显示、不进日志：`show-settings` 给 `(set)`，底行输入回显 `•`。命令行里的密钥值在事件日志、日志和 `:` 提示的历史里写成 `(set)`（`command::redact_secrets`，0.95）。
+- 人的选项（`config::PERSONS`）agent 的 pane 只能读；它也不能 `save-settings`、`reload-settings`（0.95，护栏不是墙，见 principles.md 信任边界）。
 
 ## 10. 顺带修的
 
@@ -130,15 +131,15 @@ keepane 有 97 个选项（`show-options -g` 列出的，`config::SHOWABLE`）�
 1. **第一步（0.94）**：选项清单、`settings-file`、来源、`show-settings`、`save-settings`、`reload-settings`、`set-option -u`、`keepane settings` 和 `prefix g`，以及第 3–7 节的全部。
 2. 第二步：Keys 框加上 prefix 绑定表，选中一条按 Enter 后按新键，冲突时标红并说和谁冲突，Enter 交换。写进文件是 `unbind-key` + `bind-key`。
 3. 第三步：格式串在放大的框里编辑时，下面实时显示展开的结果。
-4. 第四步：网页端的设置页，读同一份清单；字体在这里选。
+4. ~~第四步：网页端的设置页~~：不做（用户 2026-11-26："这个不做"）。
 
 ## 12. 主题扩展（讨论过，待做）
 
-2026-11-26 讨论过主题的扩展（HTML 模拟看过，用户说"也可以吧"），还没说"改吧"，记在这里：
+2026-11-26 讨论过主题的扩展（HTML 模拟看过）。用户同日定："P5 也不用做，其他按推荐来做就行"。顺序：安全两项 → 设置板第 2 步 → P3 + P6 → P1，然后 P2、P4 → 设置板第 3 步。
 
 - P1 语义色 token：主题只定义 `@paper` `@bar` `@ink` `@soft` `@muted` `@line` `@accent` `@warn` 和 16 色，格式串只写一份并引用 `#[fg=#{@accent}]`（要先让 format 在 `#[...]` 里展开 `#{@name}`）。
 - P2 界面色和 ANSI 分开：`mode-style`、`message-style`、`popup-border-style`。
 - P3 所有主题统一标准，并用测试检查 WCAG 对比度（文字 4.5:1，线条 3:1）。
 - P4 `~/.keepane/themes/NAME.conf` 用户主题目录和实时预览的选择器。
-- P5 跟随终端亮暗（`theme-light` / `theme-dark`）。
+- ~~P5 跟随终端亮暗~~：不做（用户 2026-11-26）。
 - P6 非活动 pane 压暗、状态栏按优先级藏项、边框上显示 agent 状态。
