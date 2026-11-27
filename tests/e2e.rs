@@ -16304,8 +16304,10 @@ async fn a_pane_of_another_machine_joins_a_channel_over_link() {
     let (code, far, err) = a.cli_in(Some(pa), &["chat-read", &there, "--thread", &asked]).await;
     assert!(code == 0 && far.contains("which branch?") && far.contains("the release one"), "{far}{err}");
     assert_eq!(far.lines().count(), 2, "{far}");
-    // A file sent there with @: its member here is told which machine keeps
-    // it, not that machine's path (no use here); a read from here the same.
+    // A file sent there with @: its member here is told its group file's
+    // link (chat.md §13), not that machine's path (no use here), and the
+    // link gives the file; a read from here the same link; the share is
+    // listed there for the group file, and ends when the file is deleted.
     let rel = format!("chat-far-file-{}.txt", std::process::id());
     std::fs::write(std::env::temp_dir().join(&rel), "far").unwrap();
     let (code, out, err) = b.cli(&["chat-say", "review", "--file", &rel, "@blog the log"]).await;
@@ -16322,10 +16324,43 @@ async fn a_pane_of_another_machine_joins_a_channel_over_link() {
         assert!(Instant::now() < deadline, "never told of the file");
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
-    assert!(told.contains(&format!("📎 {rel}")) && told.contains("files are not sent over link yet"), "{told}");
     assert!(!told.contains(&b_dir), "no path of that machine: {told}");
+    let url = told
+        .split_whitespace()
+        .find(|w| w.starts_with("http://") && w.contains("/s/"))
+        .unwrap_or_else(|| panic!("a link for the file: {told}"))
+        .to_string();
+    let (host, path) = url.trim_start_matches("http://").split_once('/').unwrap();
+    let get = async |path: &str| {
+        let addr: std::net::SocketAddr = tokio::net::lookup_host(host).await.unwrap().next().unwrap();
+        http(addr, "GET", &format!("/{path}"), "", "").await
+    };
+    let (code, body) = get(path).await;
+    assert!(code == 200 && body.ends_with("far"), "{code}: {body}");
     let (_, read, _) = a.cli_in(Some(pa), &["chat-read", &there, "--all", "-n", "3"]).await;
-    assert!(read.contains("files are not sent over link yet") && !read.contains(&b_dir), "{read}");
+    assert!(read.contains(&url) && !read.contains(&b_dir), "the same link: {read}");
+    let (_, files, _) = a.cli_in(Some(pa), &["chat-group-files", &there, "-J"]).await;
+    let files = json(&files);
+    assert_eq!(files["group_files"][0]["url"].as_str(), Some(url.as_str()), "{files}");
+    let (_, shares, _) = b.cli(&["share", "-l"]).await;
+    assert!(shares.contains("for group file #review #"), "{shares}");
+    // Only the pane that sent it or the person deletes it: this pane here
+    // did not send it.
+    let (code, _, err) = a.cli_in(Some(pa), &["chat-group-file-rm", &there, &rel]).await;
+    assert!(code != 0 && err.contains("only"), "{err}");
+    let (code, out, err) = b.cli(&["chat-group-file-rm", "review", &rel]).await;
+    assert_eq!(code, 0, "{out}{err}");
+    let (code, _) = get(path).await;
+    assert_ne!(code, 200, "its link ended with it");
+    // Stopped, not just missing its file: ended there, for the group file.
+    let shares = json(&b.cli(&["share", "-l", "-J"]).await.1);
+    let ours: Vec<&serde_json::Value> = shares["shares"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["origin"].as_str().is_some_and(|o| o.starts_with("group file #review #")))
+        .collect();
+    assert!(!ours.is_empty() && ours.iter().all(|s| s["state"] == "stopped"), "{shares}");
     let _ = std::fs::remove_dir_all(&b_dir);
     // It leaves: kept there, marked left.
     let (code, _, err) = a.cli_in(Some(pa), &["chat-leave", &there]).await;

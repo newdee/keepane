@@ -6,6 +6,7 @@ mod agents;
 mod agentsync;
 mod board;
 mod chat;
+mod chat_files;
 /// Where the copy of a file sent in the chat is (the web page saves it).
 pub use chat::copy_path;
 mod chat_link;

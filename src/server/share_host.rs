@@ -68,6 +68,10 @@ pub(super) struct Share {
     /// opened, sent, extended, back, ended. The last `EVENTS_KEPT`.
     #[serde(default)]
     events: Vec<(i64, String)>,
+    /// What keepane shared it for itself: `group file #chan #185`, a group
+    /// file another machine's reader was given (docs/design/chat.md §13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -77,6 +81,43 @@ pub(super) struct Shares {
     #[serde(default)]
     pub(super) ended: VecDeque<Share>,
     pub(super) last: u32,
+}
+
+/// The kind of network an address is on: Tailscale's (100.64.0.0/10), a
+/// private one (10/8, 172.16/12, 192.168/16), or any other; IPv6 its own.
+fn net_kind(ip: std::net::IpAddr) -> u8 {
+    match ip {
+        std::net::IpAddr::V4(v) => match v.octets() {
+            [100, b, ..] if (64..128).contains(&b) => 1,
+            [10, ..] => 2,
+            [172, b, ..] if (16..32).contains(&b) => 3,
+            [192, 168, ..] => 4,
+            _ => 5,
+        },
+        std::net::IpAddr::V6(_) => 6,
+    }
+}
+
+/// Of this machine's addresses, the one a machine at `near` (`host:port`)
+/// reaches best: one on the same kind of network (Tailscale for
+/// Tailscale, that LAN for a LAN), the most of its leading bits alike;
+/// else the first. None with no address at all.
+fn nearest(addrs: &[std::net::IpAddr], near: &str) -> Option<std::net::IpAddr> {
+    let host = near.rsplit_once(':').map_or(near, |(h, _)| h).trim_start_matches('[').trim_end_matches(']');
+    let Ok(peer) = host.parse::<std::net::IpAddr>() else { return addrs.first().copied() };
+    let alike = |a: std::net::IpAddr| -> u32 {
+        match (a, peer) {
+            (std::net::IpAddr::V4(a), std::net::IpAddr::V4(p)) => (u32::from(a) ^ u32::from(p)).leading_zeros(),
+            (std::net::IpAddr::V6(a), std::net::IpAddr::V6(p)) => (u128::from(a) ^ u128::from(p)).leading_zeros(),
+            _ => 0,
+        }
+    };
+    addrs
+        .iter()
+        .copied()
+        .filter(|a| net_kind(*a) == net_kind(peer))
+        .max_by_key(|a| alike(*a))
+        .or(addrs.first().copied())
 }
 
 fn now_ms() -> i64 {
@@ -172,6 +213,42 @@ impl Server {
                     }
                 }
             }
+        }
+    }
+
+    /// A group file shared for another machine's readers (`chat_files`): a
+    /// link with no end, said to be for `origin`; its number.
+    pub(super) fn share_group_file(&mut self, path: &std::path::Path, origin: &str) -> Result<u32, String> {
+        // Never started for it, as `share` starts it: what another machine
+        // reads must not make this one listen (its reading came through the
+        // page, so the page is on whenever this is asked for it).
+        if self.web.is_none() {
+            return Err("the phone page is off (`keepane web` serves the links)".into());
+        }
+        self.share_add(&path.to_string_lossy(), Some(0), false, None)?;
+        let s = self.shares.list.last_mut().ok_or("the share was not made")?;
+        s.origin = Some(origin.to_string());
+        s.event(format!("for {origin}"));
+        let id = s.id;
+        self.shares_save();
+        Ok(id)
+    }
+
+    /// The link of share `id` while it is on, at the phones' page's
+    /// address nearest `near` (a `host:port` of the machine it is for: the
+    /// same network when one is); None when it ended or the page is off.
+    pub(super) fn share_link_near(&self, id: u32, near: &str) -> Option<String> {
+        let s = self.shares.list.iter().find(|s| s.id == id)?;
+        let w = self.web.as_ref()?;
+        let ip = nearest(&w.addrs(), near)?;
+        Some(format!("http://{}/s/{}", crate::link::hostport(ip, w.port()), s.token))
+    }
+
+    /// Share `id` stopped, when it is on (its group file was deleted).
+    pub(super) fn share_stop_for(&mut self, id: u32) {
+        if self.shares.list.iter().any(|s| s.id == id) {
+            self.share_end(id, Ended::Stopped);
+            self.shares_save();
         }
     }
 
@@ -311,6 +388,7 @@ impl Server {
             port,
             ended: None,
             events: Vec::new(),
+            origin: None,
         };
         let mut s = s;
         s.event(format!("shared, {}{}", s.until_text(), if once { ", once" } else { "" }));
@@ -347,6 +425,10 @@ impl Server {
         for s in &self.shares.list {
             let once = if s.once { ", once" } else { "" };
             let from = s.by.map(|p| format!(", from pane %{p}")).unwrap_or_default();
+            let from = match &s.origin {
+                Some(o) => format!("{from}, for {o}"),
+                None => from,
+            };
             let missing = if s.path.exists() { "" } else { ", missing (its file is gone)" };
             lines.push(format!(
                 "{}  {}  {}{once}, sent {}{from}{missing}  {}",
@@ -382,7 +464,7 @@ impl Server {
                 "id": s.id, "state": s.state(), "kind": s.what(), "name": s.name, "path": s.path.to_string_lossy(),
                 "created": s.created, "until": s.until, "once": s.once, "sent": s.sent, "seen": s.seen,
                 "from": s.by.map(|p| format!("%{p}")), "links": links, "port": s.port, "port_moved": moved,
-                "ended": s.ended.map(|(_, at)| at), "events": s.events,
+                "ended": s.ended.map(|(_, at)| at), "events": s.events, "origin": s.origin,
             })
         };
         let all: Vec<serde_json::Value> = self.shares.list.iter().chain(self.shares.ended.iter()).map(one).collect();

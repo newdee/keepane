@@ -84,7 +84,7 @@ Panes on other machines (both run `keepane web`; docs/design/link.md):
   link start host:port [-s session] [-n name] [-m mode] [-c dir] [-- program args]   link kill host:port/%pane
 Group chat (docs/design/chat.md; from a pane, as that pane; outside every pane, as you@machine):
   chat new NAME [--topic TEXT] [--tag T]...   chat list [MACHINE] [--tag T]... [-J]   chat who CHAN [-J]
-  chat join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]   chat leave CHAN [HANDLE]   chat say CHAN [--file PATH]... [--re N] TEXT   (@handle tells that member, @you the person; files copied into the channel; --re replies in line N's thread)   chat dir CHAN
+  chat join CHAN [--as HANDLE] [--role ROLE] [--hear all|mentions]   chat leave CHAN [HANDLE]   chat say CHAN [--file PATH]... [--re N] TEXT   (@handle tells that member, @you the person; files copied into the channel's group files; --re replies in line N's thread)   chat dir CHAN   chat group-files CHAN [-J]   chat group-file-rm CHAN FILE
   chat read CHAN [-n N] [--all] [--peek] [--wait SECS] [--thread N] [-J]   chat topic CHAN TEXT   chat tag CHAN +T -T   chat rename CHAN NEW   chat delete CHAN
   link disconnect host:port   (stop asking it; it still has what it was given, --none takes that)   link connect host:port   link remove host:port   (unpair: `link add` again to come back)
   link id   link trust host:port key [--full [--lan]]   link rekey
@@ -261,7 +261,7 @@ fn main() {
             }
             _ => {
                 eprintln!(
-                    "usage: keepane chat new|list|join|leave|say|read|who|topic|tag|rename|delete|dir|pick ... (docs/design/chat.md)"
+                    "usage: keepane chat new|list|join|leave|say|read|who|topic|tag|rename|delete|dir|group-files|group-file-rm|pick ... (docs/design/chat.md)"
                 );
                 std::process::exit(2);
             }

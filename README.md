@@ -230,8 +230,13 @@ A file sent with `--file` (as many as 10, each at most `chat-file-max-size`,
 25M by default) is copied into the channel's folder (`chat dir review` prints
 it): the line names it with its size, and a read and the message to one named
 say where the copy is, so an agent can open it. The board shows it in the
-bubble; on the web page, tap it to save it. It goes with its day's lines
-(`chat-days`). Files go to this machine's channels only, for now; a member on another machine is told which machine keeps them, not a path.
+bubble; on the web page, tap it to save it. Files sent are the channel's
+group files, kept until deleted (not with `chat-days`): `chat group-files
+review` lists them, the newest first, and `chat group-file-rm review
+NAME` deletes one (the pane that sent it, or you). A member on another
+machine is given each file's link instead of a path: a `share` with no end,
+listed by `keepane share` as for the group file, ended when the file is
+deleted. Files go to this machine's channels only, for now.
 
 `chat say review --re 42 "on it"` replies to line 42 (as `chat read` numbers
 it) in its thread: who said it, and who started the thread, are told with the
@@ -278,7 +283,7 @@ Channels are kept in `chat\<socket>\` beside the event log, one file a
 day each (`chat-days`, 30 by default), and come back after a restart
 with what was said, how far you read and their members. The same
 commands are MCP tools (`chat_list`, `chat_new`, `chat_join`,
-`chat_say`, `chat_read`, `chat_who`). The dashboard's page 2 shows
+`chat_say`, `chat_read`, `chat_who`, `chat_group_files`). The dashboard's page 2 shows
 them. Only from outside every pane, `chat delete` moves a channel to
 `chat\deleted\`. The design: [docs/design/chat.md](docs/design/chat.md).
 

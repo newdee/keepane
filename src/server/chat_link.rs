@@ -208,6 +208,8 @@ impl Server {
                 return Some(Outcome::Error(format!("chat-dir: the files of a channel of {machine} are at {machine}")));
             }
             ChatCmd::Read { channel, cached, .. } => ("read", channel.clone(), *cached),
+            ChatCmd::GroupFiles { channel, cached, .. } => ("group-files", channel.clone(), *cached),
+            ChatCmd::GroupFileRm { channel, .. } => ("group-file-rm", channel.clone(), false),
             ChatCmd::Who { channel, cached, .. } => ("who", channel.clone(), *cached),
             ChatCmd::Topic { channel, .. }
             | ChatCmd::Tag { channel, .. }
@@ -251,6 +253,10 @@ impl Server {
                 body.wait = wait.map(|w| w.min(self.opts.message_wait_max));
             }
             ChatCmd::Who { json, .. } => body.json = *json,
+            ChatCmd::GroupFiles { json, .. } => body.json = *json,
+            // The file asked for, in the text (a machine before group files
+            // answers that it is not a chat request).
+            ChatCmd::GroupFileRm { file, .. } => body.text = file.clone(),
             _ => {}
         }
         // The board: what was last heard, at once; asked again behind it
@@ -464,7 +470,9 @@ impl Server {
                 other => other,
             },
             "say" => self.chat_say(None, &me, &id, b.text, Vec::new(), b.re),
-            "read" if b.thread.is_some() => self.chat_thread(at, b.thread.unwrap_or(0), b.json, false),
+            "read" if b.thread.is_some() => {
+                self.chat_thread(at, b.thread.unwrap_or(0), b.json, Some(peer.addr.clone()))
+            }
             "read" => {
                 let out = self.chat_read(cid, &me, &id, b.n, b.all, b.peek, b.wait, b.json);
                 // Waiting: answered when something comes, or the wait runs
@@ -478,6 +486,8 @@ impl Server {
                 out
             }
             "who" => self.chat_who(&id, b.json),
+            "group-files" => self.chat_group_files(&me, at, b.json),
+            "group-file-rm" => self.chat_group_file_rm(&me, at, &b.text),
             other => Outcome::Error(format!("not a chat request: {other}")),
         };
         self.chat_link_out(nonce, out)

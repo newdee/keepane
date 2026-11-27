@@ -253,6 +253,20 @@ pub enum ChatCmd {
     Dir {
         channel: String,
     },
+    /// `chat-group-files CHAN [-J] [--cached]`: its group files, the newest
+    /// first: each with its path, or (to another machine) its link
+    /// (docs/design/chat.md §13).
+    GroupFiles {
+        channel: String,
+        json: bool,
+        cached: bool,
+    },
+    /// `chat-group-file-rm CHAN FILE`: a group file deleted, by the pane
+    /// that sent it or the person.
+    GroupFileRm {
+        channel: String,
+        file: String,
+    },
     /// `chat-pick [CHAN]`: the channel the person picked last in the
     /// board or on the page (printed), or that one now (kept), so every
     /// board and page opens on it.
@@ -2274,6 +2288,19 @@ impl fmt::Display for Cmd {
                     ChatCmd::Rename { channel, name } => write!(f, "chat-rename {} {}", q(channel), q(name)),
                     ChatCmd::Delete { channel } => write!(f, "chat-delete {}", q(channel)),
                     ChatCmd::Dir { channel } => write!(f, "chat-dir {}", q(channel)),
+                    ChatCmd::GroupFiles { channel, json, cached } => {
+                        write!(f, "chat-group-files {}", q(channel))?;
+                        if *json {
+                            f.write_str(" -J")?;
+                        }
+                        if *cached {
+                            f.write_str(" --cached")?;
+                        }
+                        Ok(())
+                    }
+                    ChatCmd::GroupFileRm { channel, file } => {
+                        write!(f, "chat-group-file-rm {} {}", q(channel), q(file))
+                    }
                     ChatCmd::Pick { channel: None } => write!(f, "chat-pick"),
                     ChatCmd::Pick { channel: Some(c) } => write!(f, "chat-pick {}", q(c)),
                 }
@@ -2967,6 +2994,24 @@ fn parse_chat(n: &str, a: &mut Args) -> Result<ChatCmd, String> {
             a.none_left(n)?;
             ChatCmd::Dir { channel }
         }
+        "chat-group-files" => {
+            let channel = channel(a)?;
+            let (mut json, mut cached) = (false, false);
+            while let Some(w) = a.next() {
+                match w {
+                    "-J" => json = true,
+                    "--cached" => cached = true,
+                    f => return Err(not_taken(n, f)),
+                }
+            }
+            ChatCmd::GroupFiles { channel, json, cached }
+        }
+        "chat-group-file-rm" => {
+            let channel = channel(a)?;
+            let file = a.next().ok_or("chat-group-file-rm: which file (day/line/name, or its name)")?.to_string();
+            a.none_left(n)?;
+            ChatCmd::GroupFileRm { channel, file }
+        }
         "chat-pick" => {
             let channel = if a.peek().is_some() { Some(channel(a)?) } else { None };
             a.none_left(n)?;
@@ -3369,6 +3414,8 @@ pub const COMMANDS: &[&str] = &[
     "chat-rename",
     "chat-delete",
     "chat-dir",
+    "chat-group-files",
+    "chat-group-file-rm",
     "chat-pick",
     "board-pick",
     "show-settings",
@@ -3545,6 +3592,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("chat-rename", &[]),
     ("chat-delete", &[]),
     ("chat-dir", &[]),
+    ("chat-group-files", &["-J", "--cached"]),
+    ("chat-group-file-rm", &[]),
     ("chat-pick", &[]),
     ("board-pick", &[]),
     ("show-settings", &["-J"]),
@@ -6720,6 +6769,8 @@ mod tests {
             "chat-say review --file only.pdf",
             "chat-say review -- --flag-like text",
             "chat-dir review",
+            "chat-group-files review -J",
+            "chat-group-file-rm review 2026-11-26/185/whale.png",
             "chat-pick",
             "chat-pick review",
             "chat-pick 100.1.2.3:7681/0190a-1",

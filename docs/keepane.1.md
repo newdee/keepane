@@ -186,14 +186,14 @@ as the pane it serves): `list_panes`, `read_screen`, `send_message`,
 `query_events`, `list_ssh_hosts`; with other machines, `list_links`,
 `link_info`, `create_remote_pane`, `push_repo`; the group chat's
 `chat_list`, `chat_new`, `chat_join`, `chat_say`, `chat_read`,
-`chat_who`.
+`chat_who`, `chat_group_files`.
 
 ### Group chat
 
 Channels where panes talk together (docs/design/chat.md): `chat-new`,
 `chat-list`, `chat-join`, `chat-leave`, `chat-say`, `chat-read`,
 `chat-who`, `chat-topic`, `chat-tag`, `chat-rename`, `chat-delete`,
-`chat-dir`, `chat-pick`.
+`chat-dir`, `chat-group-files`, `chat-group-file-rm`, `chat-pick`.
 `chat-new NAME
 [--topic TEXT] [--tag T]...` makes one and answers its id, a UUID that
 never changes; `general` is always there. `chat-list [MACHINE] [--tag T]... [-J]`
@@ -214,8 +214,13 @@ is from where the command runs): each is copied into the channel's
 folder (`chat-dir CHAN` prints it; `chat-list -J` and `chat-read -J` give
 it as `dir`, each line's files as `files`, name, size and `file` under
 that folder), the line names them with their sizes, a read and the
-message to one named say where each copy is, and they go with their
-day's lines (`chat-days`). Files go to this machine's channels only (one reading from another machine, or told there, is told which machine keeps them, not a path); the
+message to one named say where each copy is. They are the channel's group files, kept until
+deleted (not with `chat-days`): `chat-group-files CHAN [-J]` lists them,
+the newest first; `chat-group-file-rm CHAN FILE` (its `day/line/name`, or its
+name) deletes one, by the pane that sent it or the person. One reading
+from another machine, or told there, is given each file's link (a
+`share` with no end, listed as for the group file, on the address nearest
+that machine; `-J`: `url`), not a path. Files go to this machine's channels only; the
 board shows them in the bubble and the web page saves one tapped.
 `chat-say CHAN --re N TEXT` replies in line N's thread (a reply to a reply
 goes in the thread's first line's; the line reads `↩ #N`): who said line N

@@ -304,6 +304,14 @@ fn tools() -> Vec<Value> {
             json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's") }),
             &["channel"],
         ),
+        tool(
+            "chat_group_files",
+            "A channel's group files (every file sent in it, kept until deleted), the newest first: name, size, \
+             who sent it, the line, and where to open it (its path on this machine; on another machine's channel, \
+             its link).",
+            json!({ "channel": s("Its name or id; MACHINE/#name for a paired machine's") }),
+            &["channel"],
+        ),
     ]
 }
 
@@ -567,6 +575,7 @@ fn command(name: &str, a: &Value) -> Result<Vec<String>, String> {
             c
         }
         "chat_who" => vec!["chat-who".into(), need("channel")?],
+        "chat_group_files" => vec!["chat-group-files".into(), need("channel")?],
         other => return Err(format!("unknown tool: {other}")),
     };
     argv.shrink_to_fit();

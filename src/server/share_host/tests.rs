@@ -283,3 +283,21 @@ async fn shares_are_kept_and_come_back_on_their_links() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A group file's link for another machine: on this machine's address on
+/// the same kind of network as that machine (Tailscale's 100.64.0.0/10 for
+/// Tailscale, however its second part differs; that LAN for a LAN), the
+/// most bits alike; a name or a kind it shares with none: the first.
+#[test]
+fn the_address_nearest_the_machine_it_is_for() {
+    let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+    let mine = [ip("192.168.1.5"), ip("10.0.0.7"), ip("100.70.3.4"), ip("192.168.50.2")];
+    assert_eq!(nearest(&mine, "100.101.1.2:7681"), Some(ip("100.70.3.4")), "Tailscale for Tailscale");
+    assert_eq!(nearest(&mine, "192.168.50.9:7681"), Some(ip("192.168.50.2")), "the LAN most alike");
+    assert_eq!(nearest(&mine, "10.9.9.9:7681"), Some(ip("10.0.0.7")));
+    assert_eq!(nearest(&mine, "mac.local:7681"), Some(ip("192.168.1.5")), "a name: the first");
+    assert_eq!(nearest(&mine, "8.8.8.8:7681"), Some(ip("192.168.1.5")), "no kind alike: the first");
+    assert_eq!(nearest(&mine, ""), Some(ip("192.168.1.5")));
+    assert_eq!(nearest(&[ip("fe80::1"), ip("192.168.1.5")], "[fe80::9]:7681"), Some(ip("fe80::1")));
+    assert_eq!(nearest(&[], "100.101.1.2:7681"), None);
+}

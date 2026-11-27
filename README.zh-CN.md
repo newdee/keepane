@@ -128,7 +128,7 @@ keepane chat who review                             # 谁在、从哪来
 keepane chat list --tag ci
 ```
 
-`--file` 发送文件（一次最多 10 个，每个不超过 `chat-file-max-size`，默认 25M）：文件会复制到频道的文件夹里（`chat dir review` 打印这个位置）。这一行写出文件名和大小；读频道时、以及被 @ 的成员收到的消息里，都写着副本的位置，agent 可以直接打开。dashboard 在气泡里显示它；网页上点一下就能保存。它和当天的消息一起按 `chat-days` 清理。目前只能发到本机的频道；别的机器上的成员只看到文件存在哪台机器上，不给路径。
+`--file` 发送文件（一次最多 10 个，每个不超过 `chat-file-max-size`，默认 25M）：文件会复制到频道的文件夹里（`chat dir review` 打印这个位置）。这一行写出文件名和大小；读频道时、以及被 @ 的成员收到的消息里，都写着副本的位置，agent 可以直接打开。dashboard 在气泡里显示它；网页上点一下就能保存。发出的文件就是这个频道的群文件，一直保留到被删除（不跟 `chat-days` 清理）：`chat group-files review` 列出它们（新的在前），`chat group-file-rm review 文件名` 删除一个（只有发它的 pane 或你本人能删）。别的机器上的成员拿到的是文件的链接而不是路径：一个不限时的 `share`，`keepane share` 列表里标着是哪个群文件的，删掉文件时链接一起失效。目前只能发到本机的频道。
 
 `chat say review --re 42 "这就去做"` 回复第 42 行（`chat read` 显示的行号），归到它的话题里：说那一行的成员、开这个话题的成员都会收到通知，消息里先引用那一行；`chat read review --thread 42` 读整个话题。回复的回复归到话题的第一行，所以一个话题就是一行加它的回复。dashboard 和网页在回复上方引用被回复的那一行；网页上每行下面有"回复"。
 
@@ -138,7 +138,7 @@ keepane chat list --tag ci
 
 pane 关掉或服务重启后，成员还在频道里，只是变成离线（频道里会写一句）；@ 它不会推送。同名的 pane 回来时（恢复会话会恢复 pane 名），或者有 pane 用它的称呼加入时，它重新在线，接着从原来读到的地方读。成员主动离开（在它的 pane 里 `chat leave 频道`），或者被你移出（在所有 pane 之外 `chat leave 频道 称呼`），都会留在频道里，标成"已离开"：不算成员数，@ 它不推送，同名的 pane 回来也不自动接回；pane 重新加入（用这个称呼，或者同一个 pane 不给称呼）就回来了。离线或离开超过 `chat-days` 天的自动清掉。`chat who` 显示谁在线、离线、已离开。
 
-频道保存在事件日志旁边的 `chat\<socket>\`，每个频道一天一个文件（保留 `chat-days` 天，默认 30），重启后频道、说过的话和你读到哪里都在；agent 重新加入。同样的命令也是 MCP 工具（`chat_list`、`chat_new`、`chat_join`、`chat_say`、`chat_read`、`chat_who`）。dashboard 第 2 页显示群聊。只能在所有 pane 之外运行 `chat delete`，它把频道移到 `chat\deleted\`。设计稿：[docs/design/chat.md](docs/design/chat.md)。
+频道保存在事件日志旁边的 `chat\<socket>\`，每个频道一天一个文件（保留 `chat-days` 天，默认 30），重启后频道、说过的话和你读到哪里都在；agent 重新加入。同样的命令也是 MCP 工具（`chat_list`、`chat_new`、`chat_join`、`chat_say`、`chat_read`、`chat_who`、`chat_group_files`）。dashboard 第 2 页显示群聊。只能在所有 pane 之外运行 `chat delete`，它把频道移到 `chat\deleted\`。设计稿：[docs/design/chat.md](docs/design/chat.md)。
 
 频道只属于一台机器，配对过的机器（`keepane link`，见下文）上的 pane 可以加入它。在那样的 pane 里，频道前面写上机器：
 
