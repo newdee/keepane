@@ -1,6 +1,8 @@
 # 控制模式：UnifyTerm 直接渲染 keepane 的 pane（设计稿）
 
-状态：**提议，等用户确认**（2026-11-27）。用户原话："keepane 如果检测到有 unifyterm，是否可以用 unifyterm 作为自己的输出终端，渲染都在上面？……还是说，unifyterm 和 keepane 之间定一种协议，通过这种协议实现相融"；"再写控制模式设计稿，最好给一个本地 html demo"。
+状态：**暂不做**（2026-11-27）。用户定 keepane 不依赖任何终端；图片改由 keepane 自己保存，见 [kitty-graphics.md](kitty-graphics.md) 第 3 节。下面是当时的提议，留作记录。
+
+原状态：提议（2026-11-27）。用户原话："keepane 如果检测到有 unifyterm，是否可以用 unifyterm 作为自己的输出终端，渲染都在上面？……还是说，unifyterm 和 keepane 之间定一种协议，通过这种协议实现相融"；"再写控制模式设计稿，最好给一个本地 html demo"。
 
 演示：[control-mode-demo.html](control-mode-demo.html)（本地打开，模拟数据，不连真 server）。
 
@@ -10,7 +12,7 @@
 
 1. keepane server 为每个 pane 跑一个终端模型（`vt100`），只存字符格子。
 2. keepane client 把合成好的整屏画给 UnifyTerm。UnifyTerm 只是一块"画布"。
-3. 所以 UnifyTerm 会的东西，到了 keepane 里都用不上：kitty 图片（`vt100` 丢掉 APC）、它的字体渲染和连字、原生滚动和选择、命令标记、agent 侧栏对单个 pane 的理解。
+3. 所以 UnifyTerm 的一部分功能到了 keepane 里用不上：kitty 图片（`vt100` 丢掉 APC）、每个 pane 的原生滚动和选择、命令标记、agent 侧栏对单个 pane 的理解。（更正：字体渲染、连字、配色、透明度在普通 attach 下照旧由 UnifyTerm 画，不在此列。）
 
 目标：在 UnifyTerm 里连 keepane 时，**每个 pane 由 UnifyTerm 自己的终端核心渲染**；keepane 照旧保活、管理会话、跑 dashboard、手机网页、agent、群聊。
 
