@@ -25,6 +25,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+mod preview;
+
 pub const DEFAULT_PORT: u16 = 7681;
 /// Request line and headers together.
 const MAX_HEAD: usize = 16 * 1024;
@@ -956,6 +958,7 @@ async fn write_response(stream: &mut TcpStream, r: &Response) -> Result<()> {
         404 => "Not Found",
         405 => "Method Not Allowed",
         413 => "Content Too Large",
+        415 => "Unsupported Media Type",
         _ => "Error",
     };
     let mut head = format!(
@@ -1043,6 +1046,9 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                 | "/api/chat/say"
                 | "/api/chat/seen"
                 | "/api/chat/pick"
+                | "/api/chat/group-file-rm"
+                | "/api/share/stop"
+                | "/api/share/extend"
         )
     {
         return Response::text(405, "POST");
@@ -1228,6 +1234,10 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             let Some(path) = crate::server::copy_path(&dir, f) else {
                 return Response::text(400, "f: a file of the channel (day/number/name)");
             };
+            // `view=1`: to be shown on the page, not saved.
+            if req.param("view") == Some("1") {
+                return preview::file(&path).await;
+            }
             match tokio::fs::read(&path).await {
                 Ok(body) => {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1235,7 +1245,45 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
                     r.headers.push(("Content-Disposition", crate::share::disposition(&name)));
                     r
                 }
-                Err(_) => Response::text(404, "no such file (its day may be past chat-days)"),
+                Err(_) => Response::text(404, "no such file (deleted from the group files)"),
+            }
+        }
+        // The channel's group files (`chat-group-files`), the newest first.
+        (true, "/api/chat/group-files") => {
+            let Some(c) = req.param("c").filter(|c| is_channel_id(c)) else {
+                return Response::text(400, "c: a channel's id");
+            };
+            match q(vec!["chat-group-files".into(), c.into(), "-J".into()]).await {
+                Ok((0, out, _)) => Response::json(out.trim().to_string()),
+                Ok((_, _, err)) => Response::text(404, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
+        // What this machine shares (`share -l -J`), ended ones too.
+        (true, "/api/shares") => match q(vec!["share".into(), "-l".into(), "-J".into()]).await {
+            Ok((0, out, _)) => Response::json(out.trim().to_string()),
+            Ok((_, _, err)) => Response::text(500, err.trim()),
+            Err(e) => Response::text(500, &format!("{e:#}")),
+        },
+        // A shared file, to be shown: only one `share -l` lists, and only a
+        // file (a folder is not shown).
+        (true, "/api/share/file") => {
+            let Some(id) = req.param("id").and_then(|i| i.parse::<u32>().ok()) else {
+                return Response::text(400, "id: a share's number");
+            };
+            let listed = match q(vec!["share".into(), "-l".into(), "-J".into()]).await {
+                Ok((0, out, _)) => serde_json::from_str::<serde_json::Value>(out.trim()).unwrap_or_default(),
+                Ok((_, _, err)) => return Response::text(500, err.trim()),
+                Err(e) => return Response::text(500, &format!("{e:#}")),
+            };
+            let share = listed["shares"].as_array().and_then(|a| a.iter().find(|s| s["id"] == id)).cloned();
+            match share {
+                Some(s) if s["kind"] == "file" => match s["path"].as_str() {
+                    Some(p) => preview::file(std::path::Path::new(p)).await,
+                    None => Response::text(404, "no path"),
+                },
+                Some(_) => Response::text(415, "a folder: its files are not shown here"),
+                None => Response::text(404, "no such share (share -l)"),
             }
         }
         (false, "/api/send")
@@ -1248,6 +1296,9 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
         | (false, "/api/chat/say")
         | (false, "/api/chat/seen")
         | (false, "/api/chat/pick")
+        | (false, "/api/chat/group-file-rm")
+        | (false, "/api/share/stop")
+        | (false, "/api/share/extend")
             if state.read_only =>
         {
             Response::text(403, "read-only")
@@ -1369,6 +1420,46 @@ pub async fn handle(req: &Request, peer: IpAddr, state: &State) -> Response {
             };
             match q(vec!["chat-pick".into(), c.into()]).await {
                 Ok((0, _, _)) => Response::text(200, "kept"),
+                Ok((_, _, err)) => Response::text(400, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
+        // A group file deleted by the person (`chat-group-file-rm`): `f` is
+        // its `file` (day/number/name).
+        (false, "/api/chat/group-file-rm") => {
+            let Some(c) = req.param("c").filter(|c| is_channel_id(c)) else {
+                return Response::text(400, "c: a channel's id");
+            };
+            let Some(f) = req.param("f").filter(|f| !f.is_empty() && f.len() <= 1024 && !f.starts_with('-')) else {
+                return Response::text(400, "f: a group file (day/number/name)");
+            };
+            match q(vec!["chat-group-file-rm".into(), c.into(), f.into()]).await {
+                Ok((0, out, _)) => Response::text(200, out.trim()),
+                Ok((_, _, err)) => Response::text(400, err.trim()),
+                Err(e) => Response::text(500, &format!("{e:#}")),
+            }
+        }
+        // A share stopped, or given more time (`for`: `1h`, `24h`, `7d`,
+        // `0` for no end; none: as long as it had): `share stop|extend`.
+        (false, "/api/share/stop") | (false, "/api/share/extend") => {
+            let Some(id) = req.param("id").and_then(|i| i.parse::<u32>().ok()) else {
+                return Response::text(400, "id: a share's number");
+            };
+            let mut argv: Vec<String> = if req.path == "/api/share/stop" {
+                vec!["share".into(), "stop".into(), id.to_string()]
+            } else {
+                vec!["share".into(), "extend".into(), id.to_string()]
+            };
+            if req.path == "/api/share/extend"
+                && let Some(d) = req.param("for")
+            {
+                if let Err(e) = crate::share::parse_for(d) {
+                    return Response::text(400, &e);
+                }
+                argv.extend(["--for".into(), d.into()]);
+            }
+            match q(argv).await {
+                Ok((0, out, _)) => Response::text(200, out.trim()),
                 Ok((_, _, err)) => Response::text(400, err.trim()),
                 Err(e) => Response::text(500, &format!("{e:#}")),
             }
@@ -2271,6 +2362,32 @@ mod tests {
         let mut empty = req("POST", "/api/chat/say", Some("sekrit"));
         empty.query = vec![("c".into(), "0190a-1".into())];
         assert_eq!(handle(&empty, ip, &s).await.status, 400, "nothing to say");
+        // Group files and shares: the key guards them; deleting, stopping
+        // and extending are POSTs, refused read-only; what names a channel,
+        // a file, a share or a time is checked before anything is asked.
+        for path in ["/api/chat/group-files", "/api/shares", "/api/share/file", "/api/share/stop"] {
+            assert_eq!(handle(&req("GET", path, None), ip, &s).await.status, 401, "{path} without a key");
+        }
+        for path in ["/api/chat/group-file-rm", "/api/share/stop", "/api/share/extend"] {
+            assert_eq!(handle(&req("GET", path, Some("sekrit")), ip, &s).await.status, 405, "{path}");
+            assert_eq!(handle(&req("POST", path, Some("sekrit")), ip, &ro).await.status, 403, "{path} read-only");
+        }
+        let with = |method: &str, path: &str, query: &[(&str, &str)]| {
+            let mut r = req(method, path, Some("sekrit"));
+            r.query = query.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            r
+        };
+        for (r, why) in [
+            (with("GET", "/api/chat/group-files", &[("c", "../x")]), "not a channel's id"),
+            (with("POST", "/api/chat/group-file-rm", &[("c", "0190a-1")]), "no file"),
+            (with("POST", "/api/chat/group-file-rm", &[("c", "0190a-1"), ("f", "-x")]), "a flag for a file"),
+            (with("GET", "/api/share/file", &[("id", "x")]), "not a share's number"),
+            (with("POST", "/api/share/stop", &[]), "no share"),
+            (with("POST", "/api/share/extend", &[("id", "3"), ("for", "forever")]), "not a time"),
+            (with("POST", "/api/share/extend", &[("id", "3"), ("for", "400d")]), "longer than a year"),
+        ] {
+            assert_eq!(handle(&r, ip, &s).await.status, 400, "{why}");
+        }
     }
 
     #[test]

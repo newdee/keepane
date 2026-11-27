@@ -70,4 +70,5 @@ keepane share stop <编号>|--all              # 取消
 - server 启动并恢复 session 时（`restore-on-start`，默认开）一起恢复：时间没到的按原 token 回来，需要时打开手机页面，状态栏说"恢复了 N 个"；手机页面的端口和链接给出时不一样时也说出来（地址不归 keepane 管，Tailscale 地址不变）。到期按真实时间算，server 关着的时间也算；启动时已到期的记为 `expired`。
 - 状态：`active`；`missing`（文件不在了，链接暂时不答，文件回来就恢复）；`stopped`；`expired`；`used`（一次性，已下载）。最近结束的 100 个保留，每个分享保留最近 20 件事（分享、被谁打开、发给谁、延长、恢复、结束）。
 - `share extend ID [--for TIME]`：从现在起重新计时，链接不变；到期的也按原链接回来（用户明确的操作）。停止的、一次性已下载的不能延长，只能 `share again ID`：同一路径换新 token，旧的结束。
-- `share -l -J`：全部分享（含已结束）的 JSON，给 dashboard 第二页用。
+- `share -l -J`：全部分享（含已结束）的 JSON，给 dashboard 的分享页（0.82.0 起是第 3 页）和网页的分享页用。
+- 网页的分享页（0.98.0，chat.md 第 13 节）：列表、复制链接、延长、停止（先确认，只读网页没有）；文件可预览（`GET /api/share/file?id=N`，只给 `share -l` 里的文件，不给文件夹）。预览也守第 47 条的理由：类型按开头的字节判断，HTML、SVG 当文本给（`text/plain`，带 CSP `sandbox`），页面带密钥取回后图片用 blob 地址、文本放进 `<pre>`，分享的网页永远不会以手机页的源运行。

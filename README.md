@@ -230,7 +230,10 @@ A file sent with `--file` (as many as 10, each at most `chat-file-max-size`,
 25M by default) is copied into the channel's folder (`chat dir review` prints
 it): the line names it with its size, and a read and the message to one named
 say where the copy is, so an agent can open it. The board shows it in the
-bubble; on the web page, tap it to save it. Files sent are the channel's
+bubble; on the web page, tap it to see it (a picture, a PDF or text: what
+its bytes are, not its name; an SVG or a web page is shown as text, never
+drawn) and save it from there; the 📎 button over a channel lists its group
+files, to see, save or delete. Files sent are the channel's
 group files, kept until deleted (not with `chat-days`): `chat group-files
 review` lists them, the newest first, and `chat group-file-rm review
 NAME` deletes one (the pane that sent it, or you). A member on another
@@ -1664,7 +1667,11 @@ while it is read (links in it are left out). Whatever is shared is sent as
 a download, never shown as a page. The link is on the phone page's address
 and port: when that is off, `share` turns it on. The status line says each
 share, who downloads it and when it went, also when an agent in a pane
-shares something.
+shares something. The phone page's shares view (the 🔗 button in its header
+on a wide screen, in the Appearance menu on a phone) lists them with their
+state, time left, downloads and link: a file can be seen, a share made to
+end 1 hour, 24 hours or 7 days from now (or never) or stopped after a yes;
+a read-only page only looks.
 
 The list of shares is kept like the saved sessions (`share/shares.json`
 in the sessions directory). While no server runs no link works; the next

@@ -1,5 +1,5 @@
 import { Button, Chip, Dropdown, Header, Label, Separator, Toast, toast } from "@heroui/react";
-import { Check, Languages, Laptop, MessagesSquare, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Plus, SlidersHorizontal, Sun, Terminal } from "lucide-react";
+import { Check, Languages, Laptop, Link2, MessagesSquare, Moon, MousePointerClick, Palette, PanelLeftClose, PanelLeftOpen, Plus, SlidersHorizontal, Sun, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, keptPane, post, q, startPane, type DoneItem, type Info, type Pane, type Renamed } from "./api";
 import {
@@ -23,6 +23,7 @@ import { PaneList, PaneRail } from "./components/PaneList";
 import { PaneView } from "./components/PaneView";
 import { ConfirmClose, InboxSheet, RenameDialog, Switcher } from "./components/Sheets";
 import { ChatView, useChatUnread } from "./components/Chat";
+import { SharesView } from "./components/Shares";
 
 const THEME_NAMES: Record<string, string> = {
   "paper-dark": "Paper Dark",
@@ -56,6 +57,8 @@ export default function App() {
   // The group chat over the panes' place (kept on this device), and what is
   // unread in it for the header's badge.
   const [chat, setChat] = useStored<boolean>("keepane-chat", false);
+  // What this machine shares, in the panes' place (not with the chat).
+  const [shares, setShares] = useStored<boolean>("keepane-shares", false);
   const unread = useChatUnread(!!info && !chat);
   // The panes are not asked for while the chat covers them.
   const { panes, error, reload } = usePanes(!!info && !chat, grid && showList && !rail ? GRID_LINES : 0);
@@ -337,7 +340,10 @@ export default function App() {
               className="relative pointer-coarse:size-11"
               aria-label={chat ? t("Back to the panes", "回到 pane 列表") : t("Group chat", "群聊")}
               aria-pressed={chat}
-              onPress={() => setChat(!chat)}
+              onPress={() => {
+                setShares(false);
+                setChat(!chat);
+              }}
             >
               <MessagesSquare className="size-4.5" />
               {!chat && unread ? (
@@ -345,6 +351,23 @@ export default function App() {
                   {unread > 99 ? "99+" : unread}
                 </span>
               ) : null}
+            </Button>
+          ) : null}
+          {info && wide ? (
+            <Button
+              id="shares-toggle"
+              isIconOnly
+              variant={shares ? "secondary" : "ghost"}
+              size="sm"
+              className="pointer-coarse:size-11"
+              aria-label={shares ? t("Back to the panes", "回到 pane 列表") : t("Shares", "分享")}
+              aria-pressed={shares}
+              onPress={() => {
+                setChat(false);
+                setShares(!shares);
+              }}
+            >
+              <Link2 className="size-4.5" />
             </Button>
           ) : null}
           {status}
@@ -361,6 +384,11 @@ export default function App() {
             themes={term.theme.names}
             theme={term.theme.name}
             readOnly={!!info?.readOnly}
+            // A phone's header has no room for the shares button: here.
+            onShares={info && !wide ? () => {
+              setChat(false);
+              setShares(true);
+            } : undefined}
             setTheme={async (n) => {
               try {
                 await term.set(n);
@@ -373,7 +401,9 @@ export default function App() {
         </header>
       ) : null}
 
-      {chat && info ? (
+      {shares && info ? (
+        <SharesView wide={wide} readOnly={info.readOnly} onClose={() => setShares(false)} />
+      ) : chat && info ? (
         <ChatView wide={wide} readOnly={info.readOnly} onClose={() => setChat(false)} />
       ) : (
       <div className="flex min-h-0 flex-1" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
@@ -494,6 +524,7 @@ function Settings({
   theme,
   setTheme,
   readOnly,
+  onShares,
 }: {
   lang: Lang;
   setLang: (l: Lang) => void;
@@ -503,6 +534,7 @@ function Settings({
   theme: string;
   setTheme: (n: string) => void;
   readOnly: boolean;
+  onShares?: () => void;
 }) {
   // Light or dark is the switch beside it; here also "like the system", the
   // language and the terminal's theme.
@@ -518,8 +550,19 @@ function Settings({
             if (key.startsWith("mode:")) setMode(key.slice(5) as Mode);
             else if (key.startsWith("lang:")) setLang(key.slice(5) as Lang);
             else if (key.startsWith("theme:")) setTheme(key.slice(6));
+            else if (key === "shares") onShares?.();
           }}
         >
+          {onShares ? (
+            <Dropdown.Section>
+              <Header>{t("Open", "打开")}</Header>
+              <Dropdown.Item id="shares" textValue={t("Shares", "分享")}>
+                <Link2 className="size-4" />
+                <Label>{t("Shares", "分享")}</Label>
+              </Dropdown.Item>
+            </Dropdown.Section>
+          ) : null}
+          {onShares ? <Separator /> : null}
           <Dropdown.Section>
             <Header>{t("This page", "这个页面")}</Header>
             {(

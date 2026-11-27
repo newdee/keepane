@@ -420,6 +420,21 @@ machine take none. `GET /api/upload-info?pane=%N` says where they would
 go and how big one may be. The server is told each with `web-uploaded`
 (a keepane command of the page's) and says it on the status line.
 
+The page's chat shows a file sent with a line, and its 📎 button the
+channel's group files (`GET /api/chat/group-files?c=ID`, as
+`chat-group-files -J`), each seen, saved or deleted (`POST
+/api/chat/group-file-rm?c=ID&f=FILE`). Its shares view (the header's 🔗 on
+a wide screen, the Appearance menu on a phone) lists `share -l -J` (`GET
+/api/shares`), a file shared seen (`GET /api/share/file?id=N`, only one
+`share -l` lists), a share stopped or given more time (`POST
+/api/share/stop?id=N`, `/api/share/extend?id=N&for=TIME`). What a file
+is comes from its first bytes (`view=1` on `/api/chat/file`): PNG, JPEG,
+GIF, WebP and PDF whole (up to 50 MiB; a bigger one is saved, not shown), UTF-8 text its first 256 KiB (`X-Keepane-Cut`
+gives the whole size), anything else 415; each with `nosniff` and a
+`sandbox` policy, and the page shows a picture from a blob and text as text,
+so an SVG or a web page is read, never drawn or run. A `--read-only` page
+deletes, stops and extends nothing (403).
+
 `keepane share PATH [--for TIME] [--once]` (the server command `share`)
 gives out a file or a folder by a link on the phone page's address and port,
 `http://host:port/s/TOKEN`, and prints it with a QR code: one link a

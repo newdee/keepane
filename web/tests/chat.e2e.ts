@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { expect } from "e2e";
 import { afterEach, beforeEach } from "@e2e-dev/web";
-import { test } from "../e2e/fixtures.ts";
+import { dialog, test } from "../e2e/fixtures.ts";
 import { EXE, SOCKET, keyOn, kp, page, paneNumber, portOf, token } from "../e2e/keepane.ts";
 
 type Line = { seq: number; kind: string; text: string; from?: { handle: string }; files?: { name: string; size: number; file: string }[]; re?: number };
@@ -125,11 +125,16 @@ test("a file sent in a channel shows by name and size and saves as it was sent",
   await screen.getByRole("complementary", "频道").getByRole("button", `#${older}`).click();
   const talk = screen.getByRole("region", `#${older}`);
   await expect(talk.getByText("the report")).toBeVisible();
-  const save = talk.getByRole("button", `保存 ${sent.name}`);
-  await expect(save).toBeVisible();
-  await expect(save).toContainText(`${sent.size} B`);
+  const chip = talk.getByRole("button", `查看 ${sent.name}`);
+  await expect(chip).toBeVisible();
+  await expect(chip).toContainText(`${sent.size} B`);
 
-  // Saved: what the page hands the browser is the file's name and bytes.
+  // Shown (its text), and saved from there: what the page hands the
+  // browser is the file's name and bytes.
+  await chip.click();
+  const shown = dialog(screen, `${sent.name} 的预览`);
+  await expect(shown.getByLabel("文件内容")).toHaveText(body.trimEnd());
+  const save = shown.getByRole("button", "保存");
   await browser.evaluate(() => {
     const w = window as unknown as { saved?: { name: string; text: string } };
     HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {

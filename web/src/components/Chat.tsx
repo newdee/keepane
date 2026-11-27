@@ -1,7 +1,8 @@
 import { Button } from "@heroui/react";
 import { ArrowLeft, AtSign, Hash, MessagesSquare, Paperclip, Reply, SendHorizontal, Users, X } from "lucide-react";
+import { FileChip, GroupFiles } from "./Files";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { getJson, post, q, saveFile } from "../api";
+import { getJson, post, q } from "../api";
 import { useVisible } from "../hooks";
 import { t } from "../i18n";
 
@@ -390,6 +391,8 @@ function Conversation({
   const [members, setMembers] = useState<Member[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showMembers, setShowMembers] = useState(false);
+  // The channel's group files beside it (one side panel at a time).
+  const [showFiles, setShowFiles] = useState(false);
   // The line what is typed replies to, while one is picked.
   const [replyTo, setReplyTo] = useState<Line | null>(null);
   useEffect(() => setReplyTo(null), [channel.id]);
@@ -476,12 +479,29 @@ function Conversation({
           {channel.topic ? <div className="truncate text-xs text-muted">{channel.topic}</div> : null}
         </div>
         <Button
+          isIconOnly
+          variant={showFiles ? "secondary" : "ghost"}
+          size="sm"
+          className="pointer-coarse:size-11"
+          aria-label={t("Group files", "群文件")}
+          aria-expanded={showFiles}
+          onPress={() => {
+            setShowMembers(false);
+            setShowFiles(!showFiles);
+          }}
+        >
+          <Paperclip className="size-4" />
+        </Button>
+        <Button
           variant="ghost"
           size="sm"
           className="gap-1.5 pointer-coarse:h-11"
           aria-label={t("Members", "成员")}
           aria-expanded={showMembers}
-          onPress={() => setShowMembers(!showMembers)}
+          onPress={() => {
+            setShowFiles(false);
+            setShowMembers(!showMembers);
+          }}
         >
           <Users className="size-4" />
           <span className="tabular-nums">
@@ -527,6 +547,7 @@ function Conversation({
           </ol>
         </div>
         {showMembers ? <MemberList members={members} wide={wide} onClose={() => setShowMembers(false)} /> : null}
+        {showFiles ? <GroupFiles channel={channel.id} last={channel.last} wide={wide} readOnly={readOnly} onClose={() => setShowFiles(false)} /> : null}
       </div>
       {readOnly ? (
         <p className="border-t border-separator px-4 py-3 text-center text-xs text-muted">{t("Read-only: watching only.", "只读：只能看。")}</p>
@@ -565,37 +586,17 @@ function Said({ text, members }: { text: string; members: Member[] }) {
   );
 }
 
-/** A size as people read it: `512 B`, `1.5 KB`, `3.2 MB`. */
-const sizeText = (b: number) =>
-  b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : b >= 1 << 20 ? `${(b / (1 << 20)).toFixed(1)} MB` : b >= 1024 ? `${(b / 1024).toFixed(1)} KB` : `${b} B`;
-
-/** The files sent with a line, each a button that saves it. */
+/** The files sent with a line, each a chip that shows it (saved from there). */
 function Files({ line, channel }: { line: Line; channel: string }) {
-  const [failed, setFailed] = useState("");
   if (!line.files?.length) return null;
   return (
     <span className={"flex flex-col gap-1 " + (line.text ? "mt-1.5" : "")}>
       {line.files.map((f) => (
-        <button
-          key={f.file}
-          type="button"
-          className="flex items-center gap-2 rounded-xl border border-separator bg-background/60 px-2.5 py-1.5 text-left text-[13px] text-foreground hover:bg-background pointer-coarse:min-h-11"
-          aria-label={t(`Save ${f.name}`, `保存 ${f.name}`)}
-          onClick={() => {
-            setFailed("");
-            saveFile(`/api/chat/file?c=${q(channel)}&f=${q(f.file)}`, f.name).catch((e: Error) => setFailed(e.message));
-          }}
-        >
-          <Paperclip className="size-4 shrink-0 text-muted" aria-hidden />
-          <span className="min-w-0 flex-1 truncate">{f.name}</span>
-          <span className="shrink-0 text-xs text-muted">{sizeText(f.size)}</span>
-        </button>
+        <FileChip key={f.file} name={f.name} size={f.size} channel={channel} file={f.file} />
       ))}
-      {failed ? <span className="text-xs text-danger">{failed}</span> : null}
     </span>
   );
 }
-
 /** Under a bubble: Reply, which puts the line below into reply mode. */
 function ReplyButton({ line, onReply }: { line: Line; onReply?: (l: Line) => void }) {
   if (!onReply) return null;
