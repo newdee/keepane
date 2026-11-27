@@ -118,8 +118,41 @@ pub struct ChatLine {
     pub text: String,
 }
 
+/// A group file, as `chat-group-files -J` gives it (docs/design/chat.md
+/// §13): where it is opened, its path here or its link (another machine's
+/// channel), or why it cannot be.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupFileRow {
+    pub file: String,
+    pub name: String,
+    pub size: u64,
+    pub from: String,
+    pub seq: u64,
+    /// `2026-11-26`.
+    pub day: String,
+    pub path: Option<String>,
+    pub url: Option<String>,
+    pub missing: Option<String>,
+}
+
+impl GroupFileRow {
+    /// Where it is opened: its path here, else its link (`y` copies it).
+    pub fn place(&self) -> Option<&str> {
+        self.path.as_deref().or(self.url.as_deref())
+    }
+}
+
 #[derive(Default)]
 pub struct ChatPage {
+    /// The picked channel's group files, the newest first (`[0]` on this
+    /// page), and the one picked.
+    pub group_files: Vec<GroupFileRow>,
+    pub file_pick: usize,
+    /// The channel `group_files` were read for: until the picked one's
+    /// are read, none are shown (nor deleted).
+    pub files_for: Option<String>,
+    /// Other machines' group files fetched to be shown.
+    pub fetches: super::group_files::Fetches,
     pub channels: Vec<ChanRow>,
     pub pick: usize,
     pub members: Vec<MemberRow>,
@@ -187,6 +220,10 @@ impl ChatPage {
     /// The person picks the `i`th channel shown: the one the board had
     /// picked last time is no longer waited for.
     pub(super) fn pick_at(&mut self, i: usize) {
+        if i != self.pick {
+            // Another channel's group files: from its newest.
+            self.file_pick = 0;
+        }
         self.pick = i;
         self.wanted = None;
     }
@@ -260,6 +297,49 @@ impl ChatPage {
             })
             .unwrap_or_default();
         self.member_pick = self.member_pick.min(self.members.len().saturating_sub(1));
+    }
+
+    /// `chat-group-files -J`; the file picked stays picked (by its `file`)
+    /// while it is there. An answer that does not read (an older server)
+    /// lists none.
+    pub(super) fn set_group_files(&mut self, json: &str) {
+        let was = self.group_files.get(self.file_pick).map(|g| g.file.clone());
+        let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap_or_default();
+        let opt = |g: &serde_json::Value, k: &str| g[k].as_str().map(inert);
+        self.group_files = v["group_files"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|g| GroupFileRow {
+                        file: s(g, "file"),
+                        name: s(g, "name"),
+                        size: g["size"].as_u64().unwrap_or(0),
+                        from: s(g, "from"),
+                        seq: g["seq"].as_u64().unwrap_or(0),
+                        day: s(g, "at").get(..10).unwrap_or_default().to_string(),
+                        path: opt(g, "path"),
+                        url: opt(g, "url"),
+                        missing: opt(g, "missing"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.files_for = self.picked().map(|c| c.id.clone());
+        self.file_pick = was
+            .and_then(|f| self.group_files.iter().position(|g| g.file == f))
+            .unwrap_or(self.file_pick)
+            .min(self.group_files.len().saturating_sub(1));
+    }
+
+    /// The picked channel's group files, once read (none before).
+    pub(super) fn files_shown(&self) -> &[GroupFileRow] {
+        let ours = self.files_for.is_some() && self.files_for == self.picked().map(|c| c.id.clone());
+        if ours { &self.group_files } else { &[] }
+    }
+
+    /// The group file picked in `[0]`.
+    pub(super) fn picked_file(&self) -> Option<&GroupFileRow> {
+        self.files_shown().get(self.file_pick)
     }
 
     /// `chat-read --all -J`.
@@ -658,13 +738,16 @@ impl Board {
         if let Some(c) = self.chat.picked() {
             let mut who = owned(&["chat-who", &c.id, "-J"]);
             let mut read = owned(&["chat-read", &c.id, "--all", "-n", &SHOWN.to_string(), "-J"]);
+            let mut files = owned(&["chat-group-files", &c.id, "-J"]);
             // Another machine's: what was last heard of it, at once.
             if !c.machine.is_empty() {
                 who.push("--cached".into());
                 read.push("--cached".into());
+                files.push("--cached".into());
             }
             q.push(who);
             q.push(read);
+            q.push(files);
         }
         q
     }
@@ -679,7 +762,7 @@ impl Board {
         Some(owned(&["chat-read", &c.id, "-n", "1000"]))
     }
 
-    /// Page 3's `[1]`: j/k pick, `s` say, `n` a new channel, `t` its topic,
+    /// The chat page's `[1]`: j/k pick, `s` say, `n` a new channel, `t` its topic,
     /// `#` its tags, Enter into `[4]`.
     pub(super) fn channel_key(&mut self, code: KeyCode) -> Action {
         let n = self.chat.shown().len();
@@ -707,7 +790,7 @@ impl Board {
         Action::Redraw
     }
 
-    /// Page 3's `[2]`: j/k pick a member, `o` goes to its pane, `s` says
+    /// The chat page's `[2]`: j/k pick a member, `o` goes to its pane, `s` says
     /// something to it (`@handle` first).
     pub(super) fn member_key(&mut self, code: KeyCode) -> Action {
         let n = self.chat.members.len();
@@ -874,6 +957,17 @@ impl Board {
     pub(super) fn chat_box(&self, r: Rect) -> Vec<String> {
         let focused = self.focus == Panel::Main;
         let w = r.inner_w();
+        // [0] has the group files: the picked one, from its top; while a
+        // line is typed (`s` in [4]), the chat, to see it.
+        let typing_any = matches!(&self.input, Some((Input::ChatSay { .. }, _)));
+        if self.left == Panel::GroupFiles && !typing_any {
+            let (title, line, all) = self.group_file_shown(w);
+            let rows = r.inner_h();
+            let most = all.len().saturating_sub(rows);
+            self.scroll_most.set(most);
+            let start = self.scroll.min(most);
+            return boxed(&title, &line, all.into_iter().skip(start).take(rows).collect(), r, focused);
+        }
         let Some(c) = self.chat.picked() else {
             return boxed("[4] Chat", "", vec![paint("2", "no channel")], r, focused);
         };

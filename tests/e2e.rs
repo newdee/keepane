@@ -16344,6 +16344,30 @@ async fn a_pane_of_another_machine_joins_a_channel_over_link() {
     assert_eq!(files["group_files"][0]["url"].as_str(), Some(url.as_str()), "{files}");
     let (_, shares, _) = b.cli(&["share", "-l"]).await;
     assert!(shares.contains("for group file #review #"), "{shares}");
+    // The board here, on that channel (picked last): [0] lists the file,
+    // and 0 shows it in [4], fetched by its link.
+    assert_eq!(a.cli(&["chat-pick", &rid]).await.0, 0);
+    let (code, _, err) = a.cli(&["new", "-d", "-s", "board", "-x", "160", "-y", "40", exe, "dashboard"]).await;
+    assert_eq!(code, 0, "{err}");
+    // (It opens on the page the last board was left on: the chat's.)
+    let open = a.wait_capture("board:0", "the board", |t| t.contains("[1] Panes") || t.contains("[1] Channels")).await;
+    if open.contains("[1] Panes") {
+        a.cli(&["send-keys", "-t", "board:0", ">"]).await;
+    }
+    a.wait_capture("board:0", "the other machine's group file", |t| {
+        t.contains("[0] Group files 1") && t.contains("chat-far-file-")
+    })
+    .await;
+    a.cli(&["send-keys", "-t", "board:0", "0"]).await;
+    a.wait_capture("board:0", "it fetched and shown", |t| t.contains("from http://") && t.contains("1 far")).await;
+    a.cli(&["kill-session", "-t", "board"]).await;
+    // The board's copy goes with the test (its link's own folder).
+    let cache = std::env::temp_dir().join("keepane-board-files");
+    for d in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
+        if d.path().join(&rel).is_file() {
+            let _ = std::fs::remove_dir_all(d.path());
+        }
+    }
     // Only the pane that sent it or the person deletes it: this pane here
     // did not send it.
     let (code, _, err) = a.cli_in(Some(pa), &["chat-group-file-rm", &there, &rel]).await;
@@ -16497,6 +16521,35 @@ async fn a_file_sent_in_the_chat_is_copied_and_its_place_told() {
     // A channel of another machine: not yet.
     let (code, _, err) = h.cli(&["chat-say", "elsewhere/#review", "--file", "Cargo.toml"]).await;
     assert!(code != 0 && err.contains("this machine's channels only"), "{err}");
+    // The board's chat page: [0] is the channel's group files; 0 picks the
+    // file and [4] shows it (its lines, or `ut md`'s where UnifyTerm is).
+    let exe = env!("CARGO_BIN_EXE_keepane");
+    let (code, _, err) = h.cli(&["new", "-d", "-s", "board", "-x", "160", "-y", "40", exe, "dashboard"]).await;
+    assert_eq!(code, 0, "{err}");
+    h.wait_capture("board:0", "the board", |t| t.contains("[1] Panes")).await;
+    h.cli(&["send-keys", "-t", "board:0", ">"]).await;
+    // (Page 1's inbox names #review too: the channels' own line.)
+    h.wait_capture("board:0", "the channels", |t| t.contains("[1] Channels") && t.contains("#review 👥")).await;
+    // #general is the first: j picks #review.
+    h.cli(&["send-keys", "-t", "board:0", "j"]).await;
+    let stem = &name[..12];
+    h.wait_capture("board:0", "the group files on the chat page", |t| {
+        t.contains("[0] Group files 1") && t.contains(stem)
+    })
+    .await;
+    h.cli(&["send-keys", "-t", "board:0", "0"]).await;
+    h.wait_capture("board:0", "the group file shown in [4]", |t| {
+        t.contains(&format!("[4] {stem}")) && t.contains("with a second line")
+    })
+    .await;
+    // On [0] still, d: asked first; y: gone from the group files.
+    h.cli(&["send-keys", "-t", "board:0", "d"]).await;
+    h.wait_capture("board:0", "the question", |t| t.contains("delete group file")).await;
+    h.cli(&["send-keys", "-t", "board:0", "y"]).await;
+    h.wait_capture("board:0", "no group files left", |t| t.contains("none yet")).await;
+    let left: serde_json::Value = serde_json::from_str(&h.cli(&["chat-group-files", "review", "-J"]).await.1).unwrap();
+    assert_eq!(left["group_files"].as_array().map(Vec::len), Some(0), "{left}");
+    h.cli(&["kill-session", "-t", "board"]).await;
     let _ = std::fs::remove_dir_all(&dir);
     h.cli(&["kill-server"]).await;
 }

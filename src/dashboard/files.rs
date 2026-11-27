@@ -388,6 +388,10 @@ pub fn preview(path: &Path, width: usize, hidden: bool, icons: Icons, ut: Option
             return head;
         }
         Some(Err(e)) => head.push(paint("33", &format!("ut could not show it: {e}"))),
+        // No `ut` here: what would show a picture, said once.
+        None if ut.is_none() && super::ut::what(path) == Some(super::ut::What::Picture) => {
+            head.push(paint("2", "with UnifyTerm (ut view) the picture shows here"));
+        }
         None => {}
     }
     let bytes = match read_head(path, PREVIEW_MAX) {

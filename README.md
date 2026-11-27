@@ -402,8 +402,16 @@ the bottom of `[4]` is a line to type in: `s` on `[1]`, `[2]` or `[4]`
 On `[1]`, `s` says something as you, `n` makes a channel
 (its name, then its topic), `t` changes its topic, `#` its tags (`+a
 -b`); on `[2]`, `o` goes to the member's pane and `s` says something
-to it. What you had not read of the channel shown counts as read. The
-design: [docs/design/dashboard.md](docs/design/dashboard.md).
+to it. What you had not read of the channel shown counts as read. On this
+page `[0]` is the picked channel's group files (`[0] Group files`), the
+newest first: name, size, who sent it; the one under the cursor shows in
+`[4]` (the line it came with on the right of its title, `#9 2026-11-27`)
+as `[0] Files` shows a file (with no `ut` here, a picture says that
+UnifyTerm's `ut view` would show it). A file of another machine's channel
+is fetched by its link first (http or https only, at most 50 MiB, into a
+folder under the temporary one). `Enter` (or `l`) goes into `[4]` to
+scroll it, `y` copies its path (or its link), `d` deletes it after a yes.
+The design: [docs/design/dashboard.md](docs/design/dashboard.md).
 
 ### What the agents use and cost
 

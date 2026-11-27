@@ -119,7 +119,10 @@ what is under the cursor on the right (a picture drawn by `ut view` and
 markdown by `ut md` where UnifyTerm's `ut` is on the PATH, in
 `UNIFYTERM_COMMANDS` or in `%LOCALAPPDATA%\unifyterm\bin`),
 over the machine's CPU, memory, disk and network; `>` and `<` turn to
-page 2, the group chat, and page 3, what is shared; it opens on the page
+page 2, the group chat (its `[0]` the picked channel's group files, the
+one under the cursor shown on the right, another machine's fetched by its
+link first; `y` copies its path or link, `d` deletes it after a yes), and
+page 3, what is shared; it opens on the page
 and row the last one was left on, `board-pick` below), `list-agents` (the
 Claude Code, Codex, pi
 and Cursor CLI the panes run: model, cost, tokens, context, CPU, memory;

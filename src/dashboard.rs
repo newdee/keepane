@@ -24,6 +24,7 @@ use unicode_width::UnicodeWidthChar;
 mod chat;
 mod files;
 mod gitview;
+mod group_files;
 mod machine;
 mod shares;
 pub(crate) mod ut;
@@ -45,11 +46,13 @@ pub const QUERIES: &[&str] = &[
     "show-options",
     // `link-list -J`: the paired machines, while `L` lists them.
     "link-list",
-    // Page 3: the channels, the picked one's members and lines; what the
+    // The chat page: the channels, the picked one's members and lines; what the
     // person has not read of the one shown is read (`chat_seen`).
     "chat-list",
     "chat-who",
     "chat-read",
+    // The chat page's `[0]`: the picked channel's group files.
+    "chat-group-files",
     // `chat-pick`: the channel the person picked last, on a board or a page.
     "chat-pick",
     // `board-pick`: the page and row the last board was left on.
@@ -67,8 +70,10 @@ pub const ACTIONS: &[&str] = &[
     "move-message",
     // Page 2: stop, extend, again; `S` in [0] shares.
     "share",
-    // Page 3: what the person says, a new channel, its topic and tags.
+    // The chat page: what the person says, a new channel, its topic and tags;
+    // `d` in its `[0]` deletes a group file (asked first).
     "chat-say",
+    "chat-group-file-rm",
     "chat-new",
     "chat-topic",
     "chat-tag",
@@ -97,6 +102,8 @@ pub fn needs_yes(argv: &[String]) -> bool {
         // both take more than a key to undo (connecting and disconnecting
         // are this machine's side only, each undone by the other key).
         Some("link-allow" | "link-remove") => true,
+        // A group file deleted: its copy is gone, and its link.
+        Some("chat-group-file-rm") => true,
         _ => false,
     }
 }
@@ -461,10 +468,13 @@ pub enum Panel {
     Shares,
     /// Page 2's `[2]`: what happened to the shares.
     Activity,
-    /// Page 3's `[1]`: the group chat's channels.
+    /// The chat page's `[1]`: the group chat's channels.
     Channels,
-    /// Page 3's `[2]`: the picked channel's members.
+    /// The chat page's `[2]`: the picked channel's members.
     Members,
+    /// The chat page's `[0]`: the picked channel's group files (in `[0] Files`'
+    /// place: docs/design/chat.md §13).
+    GroupFiles,
 }
 
 /// What the main panel shows of the chosen pane.
@@ -533,7 +543,7 @@ enum Input {
     Rename {
         to: String,
     },
-    /// Page 3: what the person says in a channel, a new channel (its name,
+    /// The chat page: what the person says in a channel, a new channel (its name,
     /// then its topic), a channel's topic, its tags (`+a -b`).
     ChatSay {
         id: String,
@@ -871,7 +881,7 @@ struct Layout {
     /// Page 2's middle column, in place of panes, inbox and tasks.
     shares: Option<Rect>,
     activity: Option<Rect>,
-    /// Page 3's: the channels over their members.
+    /// The chat page's: the channels over their members.
     channels: Option<Rect>,
     members: Option<Rect>,
 }
@@ -1134,8 +1144,15 @@ impl Board {
     /// or [4]; from a list it goes to the new page's first.
     fn turn_page(&mut self, back: bool) {
         self.page = if back { (self.page + PAGES - 2) % PAGES + 1 } else { self.page % PAGES + 1 };
+        // [0] is the chat page's group files, the others' pane directory:
+        // on [0] (or back from [4] to it), the new page's.
+        let zero = if self.page == CHAT_PAGE { Panel::GroupFiles } else { Panel::Files };
+        if matches!(self.left, Panel::Files | Panel::GroupFiles) {
+            self.left = zero;
+        }
         let to = match (self.page, self.focus) {
-            (_, Panel::Files | Panel::Main) => self.focus,
+            (_, Panel::Files | Panel::GroupFiles) => zero,
+            (_, Panel::Main) => Panel::Main,
             (SHARES_PAGE, _) => Panel::Shares,
             (CHAT_PAGE, _) => Panel::Channels,
             _ => Panel::Panes,
@@ -1290,7 +1307,7 @@ impl Board {
     fn cycle(&mut self, back: bool) {
         const ONE: [Panel; 5] = [Panel::Files, Panel::Panes, Panel::Inbox, Panel::Tasks, Panel::Main];
         const TWO: [Panel; 4] = [Panel::Files, Panel::Shares, Panel::Activity, Panel::Main];
-        const THREE: [Panel; 4] = [Panel::Files, Panel::Channels, Panel::Members, Panel::Main];
+        const THREE: [Panel; 4] = [Panel::GroupFiles, Panel::Channels, Panel::Members, Panel::Main];
         let order: &[Panel] = match self.page {
             SHARES_PAGE => &TWO,
             CHAT_PAGE => &THREE,
@@ -1317,8 +1334,9 @@ impl Board {
         // back towards the top for what is read from the top.
         let from_bottom = match self.page {
             1 => self.tab.read_up(),
-            // The chat page's [4]: a channel, the latest at the bottom.
-            CHAT_PAGE => true,
+            // The chat page's [4]: a channel, the latest at the bottom; a
+            // group file shown there, from its top.
+            CHAT_PAGE => self.left != Panel::GroupFiles,
             _ => false,
         };
         let by = if from_bottom { up } else { -up };
@@ -1364,7 +1382,10 @@ impl Board {
                 self.last_follow = None;
                 return;
             }
-            Panel::Main | Panel::Shares | Panel::Activity | Panel::Channels | Panel::Members => return,
+            // (The chat page's [0] shows its file in [4] itself: `chat_box`.)
+            Panel::Main | Panel::Shares | Panel::Activity | Panel::Channels | Panel::Members | Panel::GroupFiles => {
+                return;
+            }
         };
         let now = Some((self.focus, want.clone()));
         if self.last_follow == now {
@@ -1424,6 +1445,7 @@ impl Board {
             }
             KeyCode::Char(c @ ('0' | '1' | '2' | '3' | '4')) if plain => {
                 self.focus_on(match (c, self.page) {
+                    ('0', CHAT_PAGE) => Panel::GroupFiles,
                     ('0', _) => Panel::Files,
                     ('1', SHARES_PAGE) => Panel::Shares,
                     ('2' | '3', SHARES_PAGE) => Panel::Activity,
@@ -1468,7 +1490,7 @@ impl Board {
                 return Action::Redraw;
             }
             KeyCode::Char('/') if plain => {
-                // Page 3 filters the channels (by a name or a tag).
+                // The chat page filters the channels (by a name or a tag).
                 let now = if self.page == CHAT_PAGE { self.chat.filter.clone() } else { self.filter.clone() };
                 self.input = Some((Input::Filter, now));
                 return Action::Redraw;
@@ -1514,6 +1536,7 @@ impl Board {
             Panel::Activity => self.activity_key(k.code),
             Panel::Channels => self.channel_key(k.code),
             Panel::Members => self.member_key(k.code),
+            Panel::GroupFiles => self.group_file_key(k.code),
         }
     }
 
@@ -1863,8 +1886,10 @@ impl Board {
         const WHEELED: u32 = 0x4;
         let (x, y) = (m.x.max(0) as usize, m.y.max(0) as usize);
         let layout = self.layout();
+        // The chat page's [0] is its group files, in the same place.
+        let zero = if self.page == CHAT_PAGE { Panel::GroupFiles } else { Panel::Files };
         let at = [
-            (Panel::Files, layout.files),
+            (zero, layout.files),
             (Panel::Panes, layout.panes),
             (Panel::Inbox, layout.inbox),
             (Panel::Tasks, layout.tasks),
@@ -1908,6 +1933,9 @@ impl Board {
                 }
                 Panel::Members => {
                     self.member_key(if up { KeyCode::Up } else { KeyCode::Down });
+                }
+                Panel::GroupFiles => {
+                    self.group_file_key(if up { KeyCode::Up } else { KeyCode::Down });
                 }
             }
             return Action::Redraw;
@@ -1966,6 +1994,14 @@ impl Board {
                     self.chat.pick_at(start + row / per);
                 }
             }
+            Panel::GroupFiles => {
+                let n = self.chat.files_shown().len();
+                let start = window_start(self.chat.file_pick, n, rect.inner_h());
+                if start + row < n && self.chat.file_pick != start + row {
+                    self.chat.file_pick = start + row;
+                    self.scroll = 0;
+                }
+            }
             Panel::Members => {
                 let n = self.chat.members.len();
                 let start = window_start(self.chat.member_pick, n, rect.inner_h());
@@ -2014,7 +2050,7 @@ impl Board {
             (w, (self.focus == Panel::Main).then_some(Rect { x: mx, y: 0, w, h: body }))
         } else {
             // Half, up to 64: the pane list needs the room more than the
-            // screen beside it, in a popup above all. Page 3's channels and
+            // screen beside it, in a popup above all. The chat page's channels and
             // members are short lines: three tenths, the chat the rest.
             let lw =
                 if self.page == CHAT_PAGE { (w * 3 / 10).clamp(32, 44) } else { (w / 2).clamp(30, 64) }.min(w - 20);
@@ -2034,9 +2070,9 @@ impl Board {
                 members: None,
             };
         }
-        // No machine's column to be over: Files takes the left column while
-        // it is focused.
-        if files.is_none() && self.focus == Panel::Files {
+        // No machine's column to be over: [0] (Files, or the chat page's
+        // group files) takes the left column while it is focused.
+        if files.is_none() && matches!(self.focus, Panel::Files | Panel::GroupFiles) {
             let files = Some(Rect { x: mx, y: 0, w: left_w, h: body });
             return Layout {
                 machine,
@@ -2057,7 +2093,7 @@ impl Board {
         let inbox_h = small.min(body.saturating_sub(panes_h));
         let tasks_h = body.saturating_sub(panes_h + inbox_h);
         let rect = |y, h| (h >= 3).then_some(Rect { x: mx, y, w: left_w, h });
-        // Page 3: the channels half, the picked one's members the rest.
+        // The chat page: the channels half, the picked one's members the rest.
         if self.page == CHAT_PAGE {
             let channels_h = (body / 2).max(3).min(body);
             return Layout {
@@ -2582,6 +2618,9 @@ impl Board {
             Panel::Activity => "j/k scroll  g/G latest/oldest",
             Panel::Channels => "j/k pick  s say  n new  t topic  # tags  Enter its lines",
             Panel::Members => "j/k pick  s say to  o go there",
+            Panel::GroupFiles => {
+                "j/k pick (shown right)  g/G first/last  Enter scroll it  y copy path or link  d delete"
+            }
             Panel::Panes => {
                 "j/k pane  g/G first/last  Enter screen  s send  r rename  m mode  R ready  o go there  x close"
             }
@@ -2634,7 +2673,9 @@ impl Board {
         // row is put together left to right.
         let (p, i, t, m) = (layout.panes, layout.inbox, layout.tasks, layout.main);
         let (mc, fr) = (layout.machine, layout.files);
-        place(fr, fr.map(|r| self.files_box(r)).unwrap_or_default());
+        // The chat page's [0] is its group files.
+        let zero = |r: Rect| if self.page == CHAT_PAGE { self.group_files_box(r) } else { self.files_box(r) };
+        place(fr, fr.map(zero).unwrap_or_default());
         place(mc, mc.map(|r| boxed("System", "", self.machine.lines(r.inner_w()), r, false)).unwrap_or_default());
         place(p, p.map(|r| self.panes_box(r)).unwrap_or_default());
         place(i, i.map(|r| self.inbox_box(r)).unwrap_or_default());
@@ -3083,7 +3124,11 @@ fn help_lines() -> Vec<String> {
         "  .          hidden entries          -       back to the pane's directory",
         "  S          share it (how long, once or not; asks)",
         "",
-        "Page 2 (< / >): the group chat (keepane chat); [0] and System as on page 1",
+        "Page 2 (< / >): the group chat (keepane chat); System as on page 1",
+        "[0] Group files: the channel's, the newest first (kept until deleted)",
+        "  j / k      pick one (shown right)  Enter   scroll it",
+        "  y          copy its path or link   d       delete it (asks first)",
+        "  another machine's: fetched by its link to be shown",
         "[1] Channels: name, members, what you have not read, tags, the last line and when",
         "  j / k      pick one (shown right)  Enter   scroll its lines",
         "  s          say something (as you)  n       a new channel: its name, then its topic",
@@ -3596,17 +3641,19 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
             if board.wants_machines() {
                 board.set_machines(&ask(&owned(&["link-list", "-J"])).1);
             }
-            // Page 3: the channels, then the picked one's members and lines;
+            // The chat page: the channels, then the picked one's members and lines;
             // what the person had not read of the one shown is read.
             if board.page == CHAT_PAGE {
                 board.chat.set_channels(&ask(&owned(&["chat-list", "--machines", "-J"])).1);
                 let q = board.chat_queries();
-                if let [_, who, read] = q.as_slice() {
+                if let [_, who, read, files] = q.as_slice() {
                     board.chat.set_members(&ask(who).1);
                     board.chat.set_lines(&ask(read).1);
+                    board.chat.set_group_files(&ask(files).1);
                 } else {
                     board.chat.members.clear();
                     board.chat.lines.clear();
+                    board.chat.group_files.clear();
                 }
                 if let Some(seen) = board.chat_seen() {
                     ask(&seen);
@@ -3917,6 +3964,39 @@ mod tests {
         }
         for q in [board().main_query().unwrap(), board().inbox_query().unwrap(), board().tasks_query()] {
             assert!(QUERIES.contains(&q[0].as_str()), "{q:?}");
+        }
+        // The chat page's [0], a group file picked: the same rule, and what
+        // the page asks is all queries.
+        let chat = || {
+            let mut b = board();
+            b.key(Key::ch('>'));
+            b.chat.set_channels(r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0}]"#);
+            b.chat.set_group_files(
+                r#"{"group_files":[{"file":"2026-11-27/3/a.txt","name":"a.txt","size":1,"from":"lead","seq":3,"at":"","missing":"gone"}]}"#,
+            );
+            b.focus_on(Panel::GroupFiles);
+            b
+        };
+        for q in chat().chat_queries() {
+            assert!(QUERIES.contains(&q[0].as_str()), "{q:?}");
+        }
+        // (Not judged by `needs_yes` alone: a group file deleted needs one.)
+        assert!(needs_yes(&owned(&["chat-group-file-rm", "general", "2026-11-27/3/a.txt"])));
+        let mut asked = chat();
+        assert_eq!(asked.key(Key::ch('d')), Action::Redraw, "nothing sent before the yes");
+        assert!(matches!(asked.dialog, Some(Dialog::Confirm { .. })));
+        for k in every_key() {
+            let mut b = chat();
+            match b.key(k) {
+                Action::Run(argv) | Action::Go(argv) => {
+                    assert!(ACTIONS.contains(&argv[0].as_str()), "{k:?} -> {argv:?}");
+                    assert!(!needs_yes(&argv), "{k:?} ran {argv:?} without asking");
+                }
+                _ => {}
+            }
+            if let Some(Dialog::Confirm { argv, .. }) = &b.dialog {
+                assert!(ACTIONS.contains(&argv[0].as_str()), "{k:?} asks for {argv:?}");
+            }
         }
     }
 
@@ -4692,14 +4772,16 @@ mod tests {
         let text = screen(&b).join("\n");
         assert!(text.contains("\u{f07c} sub/") && text.contains("\u{f15c} a.txt"), "{text}");
         b.files.icons = files::Icons::Emoji;
-        // Page 2: [0] stays, but the main panel is the share picked, so no
-        // folder is open; back on page 1 it is again.
+        // Page 2 (the chat): its [0] is the group files (on [0], the focus
+        // goes to them), so no folder is listed; back on page 1, [0] is the
+        // pane's directory again, the folder open.
         b.key(Key::ch('>'));
-        assert_eq!((b.page, b.focus), (2, Panel::Files));
+        assert_eq!((b.page, b.focus), (2, Panel::GroupFiles));
         let text = screen(&b).join("\n");
-        assert!(text.contains("📁 sub/") && !text.contains("📂"), "{text}");
+        assert!(text.contains("[0] Group files") && !text.contains("sub/"), "{text}");
         assert_eq!(b.local_main(None), None, "page 2 reads no file");
         b.key(Key::ch('<'));
+        assert_eq!(b.focus, Panel::Files);
         assert!(screen(&b).join("\n").contains("📂 sub/"));
         b.key(Key::ch('j'));
         // l on a file: its preview takes the keys; h comes back.
@@ -4769,7 +4851,7 @@ mod tests {
         assert!(!steps.contains("\x1b[2J") && !steps.contains("\x1b[1;1H"), "{steps:?}");
         assert_eq!(inert("x\ty\nz"), "x y\nz", "lines kept, tabs a space");
     }
-    /// Page 3: the channels over the picked one's members, its lines on the
+    /// The chat page: the channels over the picked one's members, its lines on the
     /// right with the latest at the bottom; `<` goes back a page, `>` on;
     /// Another machine's channel on page 2 (docs/design/chat.md §10): listed
     /// after these, its machine's name after its own; picked, its members
@@ -4995,6 +5077,380 @@ mod tests {
     /// s, n, t and # ask for text and run the chat command; o goes to a
     /// member's pane; `/` filters the channels; a click picks one.
     #[test]
+    fn the_chat_pages_zero_is_its_group_files_shown_on_the_right() {
+        let dir = std::env::temp_dir().join(format!("keepane-board-group-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.md"), "first line\nsecond line\n").unwrap();
+        std::fs::write(dir.join("pic.png"), b"\x89PNG\r\n\x1a\n\0\0").unwrap();
+        let mut b = board();
+        b.resize(160, 30);
+        b.files.ut = None;
+        b.key(Key::ch('>'));
+        b.chat.set_channels(
+            r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0,"unread":0},
+                {"id":"mac:7681/0190b-33333333","name":"far","machine":"mac","topic":"","tags":[],"members":1,"unread":0}]"#,
+        );
+        // Asked with the lines: the picked channel's group files (another
+        // machine's, as last heard).
+        assert_eq!(b.chat_queries()[3], owned(&["chat-group-files", "0190a-11111111", "-J"]));
+        let p = |n: &str| serde_json::to_string(&dir.join(n).to_string_lossy()).unwrap();
+        b.chat.set_group_files(&format!(
+            r#"{{"channel":{{"id":"0190a-11111111","name":"general"}},"group_files":[
+                {{"file":"2026-11-27/9/notes.md","name":"notes.md","size":23,"from":"lead","seq":9,"at":"2026-11-27T10:00:00+08:00","path":{}}},
+                {{"file":"2026-11-27/8/pic.png","name":"pic.png","size":10,"from":"tester","seq":8,"at":"2026-11-27T09:00:00+08:00","path":{}}},
+                {{"file":"2026-11-26/2/old.txt","name":"old.txt","size":3,"from":"","seq":2,"at":"2026-11-26","missing":"deleted"}}]}}"#,
+            p("notes.md"),
+            p("pic.png")
+        ));
+        // 0: the group files, a line each; the picked one in [4], from its top.
+        b.key(Key::ch('0'));
+        assert_eq!(b.focus, Panel::GroupFiles);
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[0] Group files 3") && text.contains("notes.md  23B  lead"), "{text}");
+        assert!(text.contains("[4] notes.md") && text.contains("1 first line"), "{text}");
+        assert!(text.contains("#9 2026-11-27"), "the line it came with, on [4]'s title: {text}");
+        assert!(strip(&b.foot()).contains("y copy path or link") && strip(&b.foot()).contains("d delete"));
+        // A picture, with no `ut` here: said what would show it.
+        b.key(Key::ch('j'));
+        let text = screen(&b).join("\n");
+        assert!(
+            text.contains("[4] pic.png") && text.contains("with UnifyTerm (ut view) the picture shows here"),
+            "{text}"
+        );
+        // One deleted since: said so.
+        b.key(Key::ch('G'));
+        assert!(screen(&b).join("\n").contains("[4] old.txt"));
+        // Enter: into [4] to scroll it; Enter there: back to [0].
+        b.key(Key::ch('g'));
+        b.key(Key::plain(KeyCode::Enter));
+        assert_eq!(b.focus, Panel::Main);
+        assert!(screen(&b).join("\n").contains("[4] notes.md"), "[4] still shows it");
+        // s there: the chat, to see the line typed; Esc: the file again.
+        b.key(Key::ch('s'));
+        for c in "about it".chars() {
+            b.key(Key::ch(c));
+        }
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[4] #general") && text.contains("about it"), "{text}");
+        b.key(Key::plain(KeyCode::Escape));
+        assert!(screen(&b).join("\n").contains("[4] notes.md"));
+        b.key(Key::plain(KeyCode::Enter));
+        assert_eq!(b.focus, Panel::GroupFiles);
+        // d: deleted, asked first.
+        b.key(Key::ch('d'));
+        assert!(matches!(&b.dialog, Some(Dialog::Confirm { argv, .. })
+            if *argv == owned(&["chat-group-file-rm", "0190a-11111111", "2026-11-27/9/notes.md"])));
+        b.dialog = None;
+        // The channels again: [4] is the chat once more.
+        b.key(Key::ch('1'));
+        assert!(screen(&b).join("\n").contains("[4] #general"));
+        // Another machine's channel: until its files are read, the last
+        // channel's are neither listed nor deleted.
+        b.key(Key::ch('j'));
+        assert_eq!(b.chat_queries()[3], owned(&["chat-group-files", "mac:7681/0190b-33333333", "-J", "--cached"]));
+        b.key(Key::ch('0'));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("reading...") && !text.contains("notes.md"), "{text}");
+        b.key(Key::ch('d'));
+        assert!(b.dialog.is_none(), "nothing of #general deleted from #far");
+        // Its files by their links, fetched first.
+        let url = "http://192.0.2.1:7681/s/abc";
+        let now = std::time::Duration::ZERO;
+        b.chat.fetches.put(url, None, now);
+        b.chat.set_group_files(&format!(
+            r#"{{"group_files":[{{"file":"2026-11-27/4/far.md","name":"far.md","size":5,"from":"blog","seq":4,"at":"","url":"{url}"}}]}}"#
+        ));
+        assert!(screen(&b).join("\n").contains("fetching it from its machine"));
+        std::fs::write(dir.join("far.md"), "from afar\n").unwrap();
+        b.chat.fetches.put(url, Some(Ok(dir.join("far.md"))), now);
+        let text = screen(&b).join("\n");
+        assert!(text.contains(&format!("from {url}")) && text.contains("1 from afar"), "{text}");
+        b.chat.fetches.put(url, Some(Err("couldn't connect".into())), now);
+        assert!(screen(&b).join("\n").contains("could not fetch it: couldn't connect"));
+        let _ = std::fs::remove_dir_all(&dir);
+        // A fetch that failed is tried again 10 seconds on, not before;
+        // nothing listening: curl's reason.
+        let fetches = group_files::Fetches::default();
+        let refused = "http://127.0.0.1:1/x";
+        let old = Some(Err("old".to_string()));
+        fetches.put(refused, old.clone(), std::time::Duration::from_secs(9));
+        assert_eq!(fetches.get_or_start(refused, "x"), old, "not yet");
+        fetches.put(refused, old.clone(), std::time::Duration::from_secs(11));
+        assert_eq!(fetches.get_or_start(refused, "x"), None, "again");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let why = loop {
+            match fetches.get_or_start(refused, "x") {
+                Some(Err(e)) if e != "old" => break e,
+                got => assert!(std::time::Instant::now() < deadline, "{got:?}"),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert!(!why.is_empty() && !why.contains("ended with"), "curl says why: {why}");
+        // Narrower than the machine's column needs: 0 puts the group files
+        // in place of the left column, as [0] Files.
+        b.resize(120, 30);
+        b.key(Key::ch('1'));
+        assert!(!screen(&b).join("\n").contains("[0] Group files"));
+        b.key(Key::ch('0'));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[0] Group files 1") && text.contains("far.md"), "{text}");
+    }
+
+    #[test]
+    fn a_group_file_reads_from_its_top_and_another_starts_at_its_own() {
+        let dir = std::env::temp_dir().join(format!("keepane-board-group-scroll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let long = |tag: &str| (1..=80).map(|i| format!("{tag} {i}\n")).collect::<String>();
+        std::fs::write(dir.join("a.txt"), long("alpha")).unwrap();
+        std::fs::write(dir.join("b.txt"), long("beta")).unwrap();
+        let p = |n: &str| serde_json::to_string(&dir.join(n).to_string_lossy()).unwrap();
+        let listing = format!(
+            r#"{{"group_files":[
+                {{"file":"2026-11-27/2/a.txt","name":"a.txt","size":9,"from":"lead","seq":2,"at":"","path":{}}},
+                {{"file":"2026-11-27/1/b.txt","name":"b.txt","size":9,"from":"lead","seq":1,"at":"","path":{}}}]}}"#,
+            p("a.txt"),
+            p("b.txt")
+        );
+        let mut b = board();
+        b.resize(160, 30);
+        b.files.ut = None;
+        b.key(Key::ch('>'));
+        b.chat.set_channels(
+            r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0},
+                {"id":"0190a-22222222","name":"review","topic":"","tags":[],"members":0}]"#,
+        );
+        b.chat.set_group_files(&listing);
+        b.key(Key::ch('0'));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("1 alpha 1") && !text.contains("alpha 80"), "from its top: {text}");
+        // In [4], j goes down the file.
+        b.key(Key::plain(KeyCode::Enter));
+        assert_eq!(b.focus, Panel::Main);
+        // (Over the lines: the path, how many, a blank.)
+        for _ in 0..6 {
+            b.key(Key::ch('j'));
+        }
+        let text = screen(&b).join("\n");
+        assert!(!text.contains("│ 1 alpha 1 ") && text.contains("│ 4 alpha 4 "), "six lines down: {text}");
+        // Another file: from its own top.
+        b.key(Key::plain(KeyCode::Enter));
+        b.key(Key::ch('j'));
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[4] b.txt") && text.contains("│ 1 beta 1 "), "{text}");
+        // y copies where it is opened: the path here, a link only without one.
+        let mut row = b.chat.picked_file().unwrap().clone();
+        assert_eq!(row.place(), Some(dir.join("b.txt").to_string_lossy().as_ref()));
+        row.url = Some("http://192.0.2.1/s/x".into());
+        assert_eq!(row.place(), Some(dir.join("b.txt").to_string_lossy().as_ref()), "the path first");
+        row.path = None;
+        assert_eq!(row.place(), Some("http://192.0.2.1/s/x"));
+        // Another channel: its files from their newest, whatever was
+        // picked in the last one's.
+        b.key(Key::ch('1'));
+        b.key(Key::ch('j'));
+        b.chat.set_group_files(&listing.replace("a.txt", "c.txt").replace("b.txt", "d.txt"));
+        b.key(Key::ch('0'));
+        assert_eq!(b.chat.file_pick, 0);
+        assert!(screen(&b).join("\n").contains("[4] c.txt"));
+        // Two on their way: a third waits (not started) until one ends.
+        let busy = group_files::Fetches::default();
+        let now = std::time::Duration::ZERO;
+        busy.put("http://192.0.2.1/s/one", None, now);
+        busy.put("http://192.0.2.1/s/two", None, now);
+        let third = "http://192.0.2.1/s/three";
+        assert_eq!(busy.get_or_start(third, "c.txt"), None);
+        assert!(!busy.knows(third), "not started while two are on their way");
+        // A copy a board fetched before: taken as it is, nothing fetched.
+        let kept = format!("http://192.0.2.1/s/kept-{}", std::process::id());
+        let copy = group_files::cache_path(&kept, "kept.txt");
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, "kept\n").unwrap();
+        assert_eq!(busy.get_or_start(&kept, "kept.txt"), Some(Ok(copy.clone())), "even with two on their way");
+        let _ = std::fs::remove_dir_all(copy.parent().unwrap());
+        // Cut short (10 of 100 bytes, then gone): an error, and no half
+        // copy where a whole one would be taken later.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let short = format!("http://{}/s/short-{}", listener.local_addr().unwrap(), std::process::id());
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut s, _)) = listener.accept() {
+                let _ = s.read(&mut [0; 1024]);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789");
+            }
+        });
+        let fetches = group_files::Fetches::default();
+        assert_eq!(fetches.get_or_start(&short, "short.txt"), None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            match fetches.get_or_start(&short, "short.txt") {
+                Some(Err(_)) => break,
+                Some(Ok(p)) => panic!("a cut copy taken: {}", p.display()),
+                None => assert!(std::time::Instant::now() < deadline, "never ended"),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let at = group_files::cache_path(&short, "short.txt");
+        let left: Vec<_> = std::fs::read_dir(at.parent().unwrap()).into_iter().flatten().flatten().collect();
+        assert!(!at.exists() && left.is_empty(), "nothing left: {left:?}");
+        let _ = std::fs::remove_dir_all(at.parent().unwrap());
+        // What a board closed mid-fetch left (its curl's .part-, two
+        // minutes old): swept when a fetch starts; a fresh one is kept.
+        let left = group_files::cache_path(&format!("http://192.0.2.1/s/left-{}", std::process::id()), "x");
+        std::fs::create_dir_all(left.parent().unwrap()).unwrap();
+        let (stale, fresh) = (left.with_file_name(".part-1"), left.with_file_name(".part-2"));
+        std::fs::write(&stale, "half").unwrap();
+        std::fs::write(&fresh, "half").unwrap();
+        let ago = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(ago).unwrap();
+        let sweeper = group_files::Fetches::default();
+        let refused = format!("http://127.0.0.1:1/s/sweep-{}", std::process::id());
+        assert_eq!(sweeper.get_or_start(&refused, "y"), None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while sweeper.get_or_start(&refused, "y").is_none() {
+            assert!(std::time::Instant::now() < deadline, "never ended");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!stale.exists() && fresh.exists(), "the stale one swept, the fresh one kept");
+        let _ = std::fs::remove_dir_all(left.parent().unwrap());
+        let _ = std::fs::remove_dir_all(group_files::cache_path(&refused, "y").parent().unwrap());
+        // A link another machine gives that is no web address: not fetched.
+        let fetches = group_files::Fetches::default();
+        let local = format!("file:///{}", dir.join("a.txt").to_string_lossy().replace('\\', "/"));
+        assert_eq!(fetches.get_or_start(&local, "a.txt"), None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            match fetches.get_or_start(&local, "a.txt") {
+                Some(Err(_)) => break,
+                Some(Ok(p)) => panic!("a file: link fetched to {}", p.display()),
+                None => assert!(std::time::Instant::now() < deadline, "never ended"),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[0]` is the chat page's group files and the other pages' Files,
+    /// whatever way the focus gets there (keys, pages turned, a board
+    /// opened on the chat page). (No `y`: it would write the clipboard.)
+    #[test]
+    fn each_page_focuses_its_own_zero() {
+        let keys: Vec<Key> = "01234<>hljkgG/sdn"
+            .chars()
+            .map(Key::ch)
+            .chain([KeyCode::Tab, KeyCode::Enter, KeyCode::Escape, KeyCode::Left, KeyCode::Right].map(Key::plain))
+            .collect();
+        let starts: [fn() -> Board; 4] = [
+            || board(),
+            || {
+                let mut b = board();
+                b.key(Key::ch('>'));
+                b
+            },
+            || {
+                let mut b = board();
+                b.key(Key::ch('0'));
+                b.key(Key::ch('>'));
+                b
+            },
+            || {
+                let mut b = board();
+                b.open_at("2", None);
+                b
+            },
+        ];
+        for (s, start) in starts.iter().enumerate() {
+            for k1 in &keys {
+                for k2 in &keys {
+                    let mut b = start();
+                    b.chat
+                        .set_channels(r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0}]"#);
+                    b.key(*k1);
+                    b.key(*k2);
+                    let wrong = if b.page == CHAT_PAGE { Panel::Files } else { Panel::GroupFiles };
+                    assert!(
+                        b.focus != wrong && b.left != wrong,
+                        "start {s}, {k1:?} {k2:?}: page {} focus {:?} left {:?}",
+                        b.page,
+                        b.focus,
+                        b.left
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn odd_group_files_stay_in_bounds_and_draw_nothing_of_their_own() {
+        let row = |i: usize, name: &str, size: u64, place: &str| {
+            format!(
+                r#"{{"file":"2026-11-27/{i}/x","name":{},"size":{size},"from":"lead","seq":{i},"at":""{place}}}"#,
+                serde_json::to_string(name).unwrap()
+            )
+        };
+        let mut rows = vec![
+            row(1, "\x1b[31mred\x1b[0m\u{200B}.txt", 0, r#","missing":"gone""#),
+            row(2, "报告书很长的名字很长很长很长很长很长很长.png", u64::MAX, r#","missing":"gone""#),
+            row(3, &"n".repeat(300), 5, r#","missing":"gone""#),
+            row(4, "", 1, ""),
+        ];
+        rows.extend((5..205).map(|i| row(i, &format!("f{i}.md"), 9, r#","missing":"gone""#)));
+        let listing = format!(r#"{{"group_files":[{}]}}"#, rows.join(","));
+        for (cols, height) in [(160, 30), (120, 12), (60, 8), (40, 6)] {
+            let mut b = board();
+            b.resize(cols, height);
+            b.key(Key::ch('>'));
+            b.chat.set_channels(r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0}]"#);
+            b.chat.set_group_files(&listing);
+            b.key(Key::ch('0'));
+            for k in [Key::ch('g'), Key::ch('j'), Key::ch('j'), Key::ch('j'), Key::ch('G')] {
+                b.key(k);
+                let frame = b.frame();
+                assert!(!frame.contains("\x1b[31m"), "a name's own colour drawn at {cols}x{height}");
+                for l in screen(&b) {
+                    assert!(width_of(&l) <= usize::from(cols), "{cols}x{height}: {} wide: {l}", width_of(&l));
+                }
+            }
+            assert_eq!(b.chat.file_pick, 203, "G: the last of 204");
+            if height >= 12 {
+                assert!(screen(&b).join("\n").contains("f204.md"), "{}", screen(&b).join("\n"));
+            }
+        }
+        // The same listing and keys: the same frame, byte for byte.
+        let frame = || {
+            let mut b = board();
+            b.resize(160, 30);
+            b.key(Key::ch('>'));
+            b.chat.set_channels(r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0}]"#);
+            b.chat.set_group_files(&listing);
+            for k in [Key::ch('0'), Key::ch('j'), Key::ch('j')] {
+                b.key(k);
+            }
+            b.frame()
+        };
+        let first = frame();
+        assert!((0..3).all(|_| frame() == first), "the same each time");
+        // The fourth: no name, no path, no link: said, not drawn as a file.
+        let mut b = board();
+        b.resize(160, 30);
+        b.key(Key::ch('>'));
+        b.chat.set_channels(r#"[{"id":"0190a-11111111","name":"general","topic":"","tags":[],"members":0}]"#);
+        b.chat.set_group_files(&listing);
+        b.key(Key::ch('0'));
+        for _ in 0..3 {
+            b.key(Key::ch('j'));
+        }
+        assert!(screen(&b).join("\n").contains("nowhere to open it"));
+        // An answer that is no listing (an older server): none, said so.
+        b.chat.set_group_files("chat-group-files: unknown command\n");
+        let text = screen(&b).join("\n");
+        assert!(text.contains("[0] Group files ") && text.contains("none yet"), "{text}");
+        assert_eq!(b.key(Key::ch('d')), Action::Redraw);
+        assert!(b.dialog.is_none(), "nothing to delete");
+    }
+
+    #[test]
     fn page_two_shows_the_group_chat_and_says_things_as_the_person() {
         let mut b = board();
         b.resize(160, 30);
@@ -5099,7 +5555,7 @@ mod tests {
         b.key(Key::plain(KeyCode::Tab));
         assert_eq!(b.focus, Panel::Main);
         b.key(Key::plain(KeyCode::Tab));
-        assert_eq!(b.focus, Panel::Files);
+        assert_eq!(b.focus, Panel::GroupFiles, "the chat page's [0]: its group files");
         // /: the channels by a name or a tag; the panes' filter untouched.
         b.key(Key::ch('/'));
         for c in "gen".chars() {
