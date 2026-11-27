@@ -2654,6 +2654,14 @@ not reach.
 Environment inside panes: `KEEPANE` (socket name) and `KEEPANE_PANE` (pane id). A
 `keepane` command run inside a pane talks to the server that owns it, the way
 `$TMUX` works for tmux, so `keepane ls` from a script or a plugin needs no `-L`.
+A pane also has `TERM_PROGRAM=keepane`, `TERM_PROGRAM_VERSION` (keepane's
+version) and `COLORTERM=truecolor`, and what names the terminal the server was
+started from is taken away in it (`WT_SESSION`, `WT_PROFILE_ID`,
+`KITTY_WINDOW_ID`, `KITTY_PID`, `ITERM_SESSION_ID`, `LC_TERMINAL`,
+`LC_TERMINAL_VERSION`), as tmux says `TERM_PROGRAM=tmux`: its programs draw on
+keepane, not on that terminal, so one that picks how to draw by the terminal
+(`ut view`) draws half blocks, not kitty's or sixel pictures keepane does not
+show. A `set-environment` of any of them wins.
 Server log: `%LOCALAPPDATA%\keepane\server.log` (`KEEPANE_LOG=debug` for more).
 Past 5 MB it becomes `server.log.1` and a new one starts, so a server that
 runs for months keeps at most about 10 MB of log.

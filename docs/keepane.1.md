@@ -1121,6 +1121,9 @@ flags are `1` or `0`. `#{?name,yes,no}` chooses, `#{=N:name}` cuts,
 `KEEPANE_PANE`
 : The pane's id (the *N* of `%`*N*), set in every pane.
 
+`TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `COLORTERM`
+: `keepane`, its version and `truecolor` in every pane (what its programs draw on is keepane, as tmux says `tmux`), and what says which terminal the server was started from is taken away there: `WT_SESSION`, `WT_PROFILE_ID`, `KITTY_WINDOW_ID`, `KITTY_PID`, `ITERM_SESSION_ID`, `LC_TERMINAL`, `LC_TERMINAL_VERSION`. So a program that picks how to draw by the terminal (`ut view`) draws what keepane shows, not kitty's or sixel pictures it drops. `set-environment` of any of them still wins.
+
 `KEEPANE_CONFIG`
 : The config file to read instead of `~/.keepane.conf`.
 

@@ -98,6 +98,21 @@ pub type ClientId = u32;
 pub type SessionId = u32;
 pub type WindowId = u32;
 
+/// What says which terminal a process draws on, for one started outside
+/// keepane: Windows Terminal's, kitty's, iTerm2's. Taken away in a pane
+/// (`TERM_PROGRAM` says keepane there), so that a program choosing how to
+/// draw (pictures by sixel, kitty's or iTerm2's protocol) does not draw for
+/// a terminal it is not on.
+pub(super) const OUTER_TERMINAL_VARS: &[&str] = &[
+    "WT_SESSION",
+    "WT_PROFILE_ID",
+    "KITTY_WINDOW_ID",
+    "KITTY_PID",
+    "ITERM_SESSION_ID",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+];
+
 const MOUSE_MOVED: u32 = 0x0001;
 const MOUSE_WHEELED: u32 = 0x0004;
 const MOUSE_HWHEELED: u32 = 0x0008;
@@ -3759,6 +3774,10 @@ impl Server {
 
     fn pane_env(&self, pane_id: PaneId) -> Vec<pane::EnvVar> {
         let mut env: Vec<pane::EnvVar> = self.keepane_env(pane_id).into_iter().map(|(k, v)| (k, Some(v))).collect();
+        // The terminal the server was started from is not what the pane's
+        // programs draw on: what says it is one with pictures goes (a
+        // `set-environment` of one of them still wins, after).
+        env.extend(OUTER_TERMINAL_VARS.iter().map(|k| (k.to_string(), None)));
         // `set-environment` entries last, so they can override even PATH;
         // a name taken away (`-u`) goes, even one this server was started
         // with (a new process starts from the server's own environment).
@@ -3788,6 +3807,14 @@ impl Server {
         if crate::platform::shell::SETS_TERM {
             env.push(("TERM".into(), self.opts.default_terminal.clone()));
         }
+        // Who they draw on, as tmux says it is tmux: a program that picks how
+        // to draw by the terminal (`ut view`: kitty's pictures for UnifyTerm,
+        // sixel for Windows Terminal, both of which keepane drops) picks what
+        // keepane draws. And its 24-bit colour (kept, and brought down for a
+        // terminal without it).
+        env.push(("TERM_PROGRAM".into(), "keepane".into()));
+        env.push(("TERM_PROGRAM_VERSION".into(), env!("CARGO_PKG_VERSION").into()));
+        env.push(("COLORTERM".into(), "truecolor".into()));
         env.extend(self.env_hook_vars());
         #[cfg(windows)]
         if let Some(start) = crate::platform::shell::wsl_start() {

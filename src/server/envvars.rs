@@ -322,6 +322,8 @@ impl Server {
                 "KEEPANE_PANE" => "the pane's own id",
                 "PATH" => "keepane's folder in it",
                 "TERM" => "default-terminal",
+                "TERM_PROGRAM" | "TERM_PROGRAM_VERSION" => "keepane, which its programs draw on",
+                "COLORTERM" => "keepane keeps 24-bit colour",
                 "KEEPANE_ENV_FILE" => "where its shell reads set-environment's changes",
                 "KEEPANE_ENV_SEQ" => "the last change its shell has had",
                 _ => "",
@@ -329,6 +331,11 @@ impl Server {
             let overridden = self.env.iter().any(|(n, _)| same_name(n, &k));
             lines.push(var(&k, &v, if overridden { "(set-environment's value wins)" } else { note }));
         }
+        lines.push(vec![
+            seg("  -", faint),
+            seg(&super::OUTER_TERMINAL_VARS.join(" "), name),
+            seg("   taken away: the terminal outside is not what panes draw on", faint),
+        ]);
         let text = lines.iter().map(|l| l.iter().map(|s| s.text.as_str()).collect::<String>()).collect();
         (text, lines)
     }
@@ -492,6 +499,44 @@ mod tests {
         let mut u = server("other", &dir);
         u.load_environment();
         assert!(u.env.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pane says it draws on keepane (as tmux says tmux), with 24-bit
+    /// colour, and not on the terminal the server was started from: what
+    /// says that one is Windows Terminal, kitty or iTerm2 is taken away,
+    /// so that `ut view` and its like draw what keepane shows. A
+    /// `set-environment` of one of them still wins; the overlay says both.
+    #[test]
+    fn a_pane_draws_on_keepane_not_on_the_terminal_outside() {
+        let dir = std::env::temp_dir().join(format!("keepane-envterm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = server("term.sock", &dir);
+        s.load_environment();
+        let last = |env: &[crate::server::pane::EnvVar], k: &str| {
+            env.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.clone())
+        };
+        let env = s.pane_env(4);
+        assert_eq!(last(&env, "TERM_PROGRAM"), Some(Some("keepane".into())));
+        assert_eq!(last(&env, "TERM_PROGRAM_VERSION"), Some(Some(env!("CARGO_PKG_VERSION").into())));
+        assert_eq!(last(&env, "COLORTERM"), Some(Some("truecolor".into())));
+        for k in super::super::OUTER_TERMINAL_VARS {
+            assert_eq!(last(&env, k), Some(None), "{k} taken away");
+        }
+        set(&mut s, "set-environment WT_SESSION mine");
+        set(&mut s, "set-environment TERM_PROGRAM other");
+        let env = s.pane_env(4);
+        assert_eq!(last(&env, "WT_SESSION"), Some(Some("mine".into())), "set-environment wins");
+        assert_eq!(last(&env, "TERM_PROGRAM"), Some(Some("other".into())));
+        let (shown, _) = s.environment_overlay(4);
+        assert!(
+            shown.iter().any(|l| l.contains("TERM_PROGRAM") && l.contains("set-environment's value wins")),
+            "{shown:?}"
+        );
+        assert!(
+            shown.iter().any(|l| l.contains("WT_SESSION KITTY") || l.contains("WT_SESSION WT_PROFILE_ID")),
+            "{shown:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
