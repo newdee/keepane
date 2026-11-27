@@ -133,6 +133,22 @@ fn start_safe(line: String) -> String {
 mod tests {
     use super::*;
 
+    /// The version in Cargo.toml has its release notes, written by hand
+    /// (`docs/releases/vX.md`, which the Release workflow publishes): what
+    /// it changed, a line each, never a bare Full Changelog link. A version
+    /// bumped without them fails here, before it is tagged.
+    #[test]
+    fn every_version_has_its_release_notes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs")
+            .join("releases")
+            .join(format!("v{}.md", env!("CARGO_PKG_VERSION")));
+        let notes = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}: write what this version changed", path.display()));
+        let changes = notes.lines().filter(|l| l.starts_with("- ")).count();
+        assert!(changes > 0, "{} lists no change", path.display());
+    }
+
     /// Every command keepane takes is on the page: a command added without
     /// a word there fails here.
     #[test]

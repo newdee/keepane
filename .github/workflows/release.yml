@@ -18,6 +18,16 @@ jobs:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+      - name: release notes written
+        # What the version changed is written by hand in docs/releases/vX.md
+        # (the user, 2026-11-27: never a bare Full Changelog link); none, no
+        # release. The lib test `every_version_has_its_release_notes` stops it
+        # on the bump commit already.
+        shell: pwsh
+        run: |
+          $notes = "docs/releases/${{ github.ref_name }}.md"
+          if (-not (Test-Path $notes)) { throw "$notes is missing: write what this version changed" }
+          if (-not (Select-String -Path $notes -Pattern '^- ' -Quiet)) { throw "$notes lists no change" }
       - name: wait for CI on this commit
         # A tag is only released once the CI workflow (fmt, clippy, the
         # whole suite) has passed on the very commit it points at. It may
@@ -99,7 +109,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ github.ref_name }}"
-          gh release create $tag dist\*.zip dist\*.msi dist\*.sha256 --title "keepane $tag" --generate-notes
+          gh release create $tag dist\*.zip dist\*.msi dist\*.sha256 --title "keepane $tag" --notes-file "docs/releases/$tag.md"
       - name: submit the update to winget-pkgs
         # Only with a WINGET_TOKEN secret (a classic token with public_repo,
         # from the account that owns the winget-pkgs fork), and only once the

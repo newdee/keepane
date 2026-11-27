@@ -7131,3 +7131,16 @@ UnifyTerm 维护者 2026-11-24 在 #unifyterm-keepane 请求（用户让做的�
 | 7 | 边界与退化输入（真程序的网页接口，临时测试，不提交）+ 范围内测试 | 临时 web 测试对着真 server：E1 空文件 `view=1` → 200、`text/plain`、长度 0、没有 `X-Keepane-Cut`；E2 名字带空格、汉字和 `#` 的文件 → 200，正文 `a\r\nb\r\n`（CRLF 原样）；E3 `../../channels.json` 删和看都 400，群文件仍是 2 个；E4 格式对但不存在的频道 → 404；E5 不存在的分享：看 404、延长 400、停止 400；E6 分享的文件被删：状态 `missing`、看 404；E7 不带 `for` 的延长 → 200，结束时间是 24 小时后（`share extend` 的默认）。7 项第一遍都过；临时测试已删。没有发现。范围内测试：fmt 干净、`clippy exit 0`；Windows lib 810 / 2 ignored、console 12 / 1 ignored、Rust e2e 16；网页类型检查、构建、构建前后一样、web e2e 15 个文件 48 个测试；Linux lib 794 / 2 ignored、Rust e2e 16；全过；C 盘 325.5 GB。 | 干净（3/3），验收通过 |
 
 0.98.0 发布（第 240–242 条：群文件第 1–3 步）：发版前 Windows 全量 lib 810 / console 12 / e2e 198 全过（共 1020，首页数字从 1010 改），web `npm run check` 通过；015e937 的 CI 45940216056 四个 job 通过（全量，含 macOS）；Pages 45940216048 通过；tag v0.98.0（带注释）；Release 45940927599 四个 job 通过；manifests 53c2544；winget PR #490710（第一次运行报 null，分支没建成：同步 fork 后重跑成功）；Homebrew formula 45941916747 通过，三个 tar.gz 的 sha256 与 release 一致。
+
+## 243. 发版说明手写：`docs/releases/vX.md`，Release 工作流读它（不再 `--generate-notes`）
+
+用户 2026-11-27："每次发版的时候，这个版本做了哪些改动都要写的，不能直接贴full changelog"；"以后改成读说明文件"。原因：`release.yml` 用 `gh release create … --generate-notes`，这个仓库不走 PR，生成的说明只有一行 compare 链接（0.98.0 就是这样，已按用户同意用 `gh release edit` 补写）。
+
+- **做了什么。** `docs/releases/v0.98.0.md`（和已发布的正文逐字相同）；`release.yml` 第一步检查 `docs/releases/<tag>.md` 存在且至少有一行 `- ` 开头的改动，否则发版失败，`gh release create` 改成 `--notes-file`；lib 测试 `man::tests::every_version_has_its_release_notes`：Cargo.toml 的版本没有说明文件、或文件里没有改动条目就失败，所以漏写会在 bump 提交的 CI 上就被拦下，不必等打了 tag 再挪 tag。
+- 评估：只影响发版流程和一个新测试；其他测试不变。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 逻辑正确与不变量 + 范围内测试 | 读 `release.yml`：检查步骤在"等 CI"之前（缺文件立刻失败）；文件名用 `github.ref_name`（`v0.98.0`），和测试用的 `v{CARGO_PKG_VERSION}` 同名；只有这一处 `gh release create`，其他 job 只 `upload`。YAML 用 Python 解析通过，步骤顺序 checkout → release notes written → wait for CI。fmt 干净、`clippy exit 0`；man 测试 Windows 8/8、Linux 8/8。没有发现。 | 干净（1/3） |
+| 2 | 机制通路存活 | 把说明文件拿走：测试失败（"系统找不到指定的文件 … write what this version changed"）；把文件换成只有标题和 Full Changelog：测试失败（"lists no change"）；都逐字节恢复。工作流的检查对真文件：存在、6 条改动。man 测试 8/8。没有发现。 | 干净（2/3） |
+| 3 | 静态一致性 | 仓库里的说明文件和 GitHub 上 0.98.0 的正文逐字相同；工作流注释、测试名、发版步骤记忆里的测试名一致；全局 CLAUDE.md 的规则和这个流程一致。fmt 干净、`clippy exit 0`。没有发现。 | 干净（3/3），验收通过 |
