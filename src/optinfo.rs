@@ -68,7 +68,7 @@ pub const OPTIONS: &[OptInfo] = &[
         "theme",
         0,
         Choice,
-        "The theme last set: a built-in one (`paper`, `paper-dark`, `tokyo-night`, `tokyo-day`, `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`) or a `NAME.conf` of `theme-path`.",
+        "The theme last set: a built-in one (`paper`, `paper-dark`, `terminal`, `tokyo-night`, `tokyo-day`, `nord`, `gruvbox-dark`, `catppuccin-mocha`, `dracula`) or a `NAME.conf` of `theme-path`.",
     ),
     o("theme-path", 0, Text, "Where `theme` finds themes of your own: `NAME.conf` files."),
     o("window-style", 0, Style, "The panes' own colours."),

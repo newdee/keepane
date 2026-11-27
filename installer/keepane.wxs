@@ -69,6 +69,11 @@
         <File Id="ReadmeFile" Name="README.md" Source="$(var.SourceDir)\README.md" />
         <File Id="LicenseFile" Name="LICENSE" Source="$(var.SourceDir)\LICENSE" />
         <File Id="ConfExampleFile" Name="keepane.conf.example" Source="$(var.SourceDir)\keepane.conf.example" />
+        <!-- The console host each pane runs in (third-party/conpty): Windows' own
+             drops kitty's pictures. conpty.dll starts OpenConsole.exe beside it. -->
+        <File Id="ConptyDll" Name="conpty.dll" Source="$(var.SourceDir)\conpty.dll" />
+        <File Id="OpenConsoleExe" Name="OpenConsole.exe" Source="$(var.SourceDir)\OpenConsole.exe" />
+        <File Id="ConptyLicense" Name="ConPTY-LICENSE" Source="$(var.SourceDir)\ConPTY-LICENSE" />
         <!-- `keepane` works from any new shell; removed again on uninstall. -->
         <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="no" Permanent="no" />
         <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
@@ -97,6 +102,17 @@
       </Component>
       <Component Id="ConfExample" Guid="*" Win64="yes">
         <File Id="ConfExampleFile" Name="keepane.conf.example" Source="$(var.SourceDir)\keepane.conf.example" KeyPath="yes" />
+      </Component>
+      <!-- The console host each pane runs in (third-party/conpty): Windows' own
+           drops kitty's pictures. conpty.dll starts OpenConsole.exe beside it. -->
+      <Component Id="ConptyDll" Guid="*" Win64="yes">
+        <File Id="ConptyDll" Name="conpty.dll" Source="$(var.SourceDir)\conpty.dll" KeyPath="yes" />
+      </Component>
+      <Component Id="OpenConsoleExe" Guid="*" Win64="yes">
+        <File Id="OpenConsoleExe" Name="OpenConsole.exe" Source="$(var.SourceDir)\OpenConsole.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="ConptyLicense" Guid="*" Win64="yes">
+        <File Id="ConptyLicense" Name="ConPTY-LICENSE" Source="$(var.SourceDir)\ConPTY-LICENSE" KeyPath="yes" />
       </Component>
     </ComponentGroup>
 <?endif ?>

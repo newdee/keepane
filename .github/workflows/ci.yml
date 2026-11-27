@@ -44,6 +44,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: the console host shipped beside keepane.exe (Windows)
+        # The panes' console host the release ships (third-party/conpty):
+        # the tests run on it, kitty's pictures need it.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh -File tools/fetch-conpty.ps1
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy

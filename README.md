@@ -608,6 +608,13 @@ runtime is in keepane.exe, so no Visual C++ redistributable is needed. From the
   `%LOCALAPPDATA%\Programs\keepane`, and puts it on your `PATH`. Neither it
   nor `keepane update` needs administrator rights, so both work over SSH.
 
+Beside `keepane.exe`, the zip and both MSIs hold `conpty.dll` and
+`OpenConsole.exe`: Microsoft's console host (MIT, licence in
+`ConPTY-LICENSE`), newer than Windows' own, which each pane runs in.
+Windows' own drops what it does not know, kitty's pictures among it
+(Pictures in panes). Copy the three together; `keepane.exe` alone still runs,
+with Windows' own.
+
 Scoop installs the zip straight from the manifest in this repository, with
 no administrator rights:
 
@@ -2399,11 +2406,15 @@ source-file ~/.keepane/themes/dracula.conf
 source-file ~/.keepane/themes/plain.conf   # tmux's look instead
 ```
 
-Eight themes are built in, to switch with one option (or from the phone's
+Nine themes are built in, to switch with one option (or from the phone's
 page): `paper-dark`, the default, and `paper`, its light one (white paper,
-as the code on dfine.tech by day); `tokyo-night`, the default up to 0.37,
-and `tokyo-day`, its light one; and `nord`, `gruvbox-dark`,
-`catppuccin-mocha` and `dracula`.
+as the code on dfine.tech by day); `terminal`, every colour the terminal's
+own (its text, background and palette, so a translucent window or the
+terminal's own theme shows through, and keepane changes with it);
+`tokyo-night`, the default up to 0.37, and `tokyo-day`, its light one; and
+`nord`, `gruvbox-dark`, `catppuccin-mocha` and `dracula`. The others draw the
+panes on a background of their own, which a terminal paints over its
+translucency.
 
 ```tmux
 set -g theme paper

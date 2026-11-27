@@ -3844,6 +3844,15 @@ async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
     assert_eq!(code, 0, "{err}");
     c.wait_for("light panes", |s| bg_at(s) == Some(Color::Rgb(0xe1, 0xe2, 0xe7))).await;
     c.wait_for("the day's red", |s| red_cell(s) == Some(Color::Rgb(0xb2, 0x1e, 0x49))).await;
+    // `terminal`: every colour the terminal's own again, as with plain.conf:
+    // a translucent window shows through the panes.
+    let (code, _, err) = h.cli(&["set", "-g", "theme", "terminal"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("the terminal's own background", |s| bg_at(s) == Some(Color::Default)).await;
+    c.wait_for("the terminal's own red", |s| red_cell(s) == Some(Color::Idx(1))).await;
+    let (code, _, err) = h.cli(&["set", "-g", "theme", "tokyo-day"]).await;
+    assert_eq!(code, 0, "{err}");
+    c.wait_for("light panes again", |s| bg_at(s) == Some(Color::Rgb(0xe1, 0xe2, 0xe7))).await;
     assert_eq!(h.cli(&["show", "-gv", "theme"]).await.1.trim(), "tokyo-day");
     // The page: what it is, set from there, refused when read-only.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3862,6 +3871,7 @@ async fn a_theme_draws_the_panes_and_the_page_can_set_it() {
         serde_json::json!([
             "paper-dark",
             "paper",
+            "terminal",
             "tokyo-night",
             "tokyo-day",
             "nord",

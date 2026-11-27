@@ -251,6 +251,8 @@ install keepane-v<版本>-linux-x86_64/keepane ~/.local/bin/
 - `keepane-<版本>-windows-x86_64.msi`：安装到 `Program Files`，供所有用户使用，并加入系统 `PATH`；可在“应用和功能”中卸载。需要管理员权限（静默安装：`msiexec /i keepane-<版本>-windows-x86_64.msi /qn`）。
 - `keepane-<版本>-windows-x86_64-user.msi`：只为当前用户安装，装到 `%LOCALAPPDATA%\Programs\keepane`，加入用户 `PATH`。安装和 `keepane update` 都不需要管理员权限，通过 SSH 也能装、能升级。
 
+zip 和两个 MSI 里，`keepane.exe` 旁边还有 `conpty.dll` 和 `OpenConsole.exe`：微软的控制台宿主（MIT 许可，原文在 `ConPTY-LICENSE`），比 Windows 自带的新，每个 pane 都在它里面运行。Windows 自带的会把不认识的序列丢掉，kitty 图片也在其中（见"pane 里的图片"）。三个文件要放在一起；只有 `keepane.exe` 也能运行，那时用的是 Windows 自带的。
+
 Scoop 可直接使用仓库中的清单安装 zip，无需管理员权限：
 
 ```powershell
@@ -1010,7 +1012,7 @@ source-file ~/.keepane/themes/dracula.conf
 source-file ~/.keepane/themes/plain.conf   # 换回 tmux 的样子
 ```
 
-内置八套主题，一个选项就能切换（手机页面上也能切）：默认的 `paper-dark` 和它的浅色版 `paper`（白纸，像 dfine.tech 白天的代码块）；0.37 及以前的默认 `tokyo-night` 和它的浅色版 `tokyo-day`；还有 `nord`、`gruvbox-dark`、`catppuccin-mocha`、`dracula`。
+内置九套主题，一个选项就能切换（手机页面上也能切）：默认的 `paper-dark` 和它的浅色版 `paper`（白纸，像 dfine.tech 白天的代码块）；`terminal`，所有颜色都用终端自己的（文字、背景和 16 色都跟着终端，终端的半透明、背景图和主题都会透出来，换终端主题时 keepane 跟着变）；0.37 及以前的默认 `tokyo-night` 和它的浅色版 `tokyo-day`；还有 `nord`、`gruvbox-dark`、`catppuccin-mocha`、`dracula`。除了 `terminal`，别的主题都给 pane 画自己的背景色，终端会把它画成不透明的。
 
 ```tmux
 set -g theme paper

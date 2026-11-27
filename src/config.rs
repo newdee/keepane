@@ -334,6 +334,7 @@ fn one_of(name: &str, value: &str, words: &[&str]) -> Result<String, String> {
 pub const THEMES: &[(&str, &str)] = &[
     ("paper-dark", include_str!("../themes/paper-dark.conf")),
     ("paper", include_str!("../themes/paper.conf")),
+    ("terminal", include_str!("../themes/terminal.conf")),
     ("tokyo-night", include_str!("../themes/tokyo-night.conf")),
     ("tokyo-day", include_str!("../themes/tokyo-day.conf")),
     ("nord", include_str!("../themes/nord.conf")),
@@ -341,8 +342,17 @@ pub const THEMES: &[(&str, &str)] = &[
     ("catppuccin-mocha", include_str!("../themes/catppuccin-mocha.conf")),
     ("dracula", include_str!("../themes/dracula.conf")),
 ];
-pub const THEME_NAMES: &[&str] =
-    &["paper-dark", "paper", "tokyo-night", "tokyo-day", "nord", "gruvbox-dark", "catppuccin-mocha", "dracula"];
+pub const THEME_NAMES: &[&str] = &[
+    "paper-dark",
+    "paper",
+    "terminal",
+    "tokyo-night",
+    "tokyo-day",
+    "nord",
+    "gruvbox-dark",
+    "catppuccin-mocha",
+    "dracula",
+];
 
 /// A name `theme` can take from `theme-path`: not a built-in one, and only
 /// letters, digits, `-` and `_` (no way out of the folder).
@@ -2395,10 +2405,10 @@ mod tests {
             (x.max(y) + 0.05) / (x.min(y) + 0.05)
         };
         let mut checked = Vec::new();
-        for (theme, _) in THEMES {
+        for (theme, _) in THEMES.iter().filter(|(t, _)| *t != "terminal") {
             let mut o = Options::default();
             o.set("theme", theme).unwrap();
-            // Every built-in theme draws the panes in colours of its own.
+            // Every built-in theme but `terminal` draws the panes in colours of its own.
             assert!(
                 !o.pane_colours.is_empty() && o.window_bg != Color::Default,
                 "{theme} leaves the panes to the terminal"
@@ -2521,8 +2531,9 @@ mod tests {
             for (name, value) in theme_settings(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display())) {
                 o.set(&name, &value).unwrap_or_else(|e| panic!("{}: {name}: {e}", f.display()));
             }
-            // Every built-in theme draws the panes; plain.conf (tmux's look) gives them back.
-            let own = !f.ends_with("plain.conf");
+            // Every built-in theme but terminal draws the panes; plain.conf
+            // (tmux's look) and terminal.conf give them back.
+            let own = !f.ends_with("plain.conf") && !f.ends_with("terminal.conf");
             assert_eq!(
                 o.window_bg == Color::Default && o.pane_colours.is_empty(),
                 !own,
@@ -2531,7 +2542,35 @@ mod tests {
             );
             seen += 1;
         }
-        assert_eq!(seen, 9);
+        assert_eq!(seen, 10);
+    }
+
+    /// `terminal` leaves every colour to the terminal: the panes its default
+    /// text and background (a translucent window shows through: a terminal
+    /// paints no background where a cell has its default one), its own 16
+    /// colours untouched, and only those 16 by name elsewhere.
+    #[test]
+    fn the_terminal_theme_leaves_every_colour_to_the_terminal() {
+        let mut o = Options::default();
+        o.set("theme", "terminal").unwrap();
+        assert_eq!(o.get("theme").as_deref(), Some("terminal"));
+        assert_eq!((o.window_fg, o.window_bg), (Color::Default, Color::Default));
+        assert!(o.pane_colours.is_empty(), "the terminal's own palette");
+        assert_eq!((o.status_fg, o.status_bg), (Color::Default, Color::Default));
+        assert_eq!((o.pane_border_fg, o.pane_border_active_fg), (Color::Idx(8), Color::Idx(2)));
+        // No colour given as RGB anywhere it sets.
+        for (name, value) in theme_settings(include_str!("../themes/terminal.conf")).unwrap() {
+            let rgb = value.match_indices('#').any(|(i, _)| {
+                let after: Vec<char> = value[i + 1..].chars().take(6).collect();
+                after.len() == 6 && after.iter().all(char::is_ascii_hexdigit)
+            });
+            assert!(!rgb, "{name} gives an RGB colour: {value}");
+        }
+        // And from it, another theme replaces it whole, and back.
+        o.set("theme", "paper-dark").unwrap();
+        assert_ne!(o.window_bg, Color::Default);
+        o.set("theme", "terminal").unwrap();
+        assert_eq!(o.window_bg, Color::Default);
     }
 
     #[test]

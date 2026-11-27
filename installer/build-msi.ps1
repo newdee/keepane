@@ -3,8 +3,8 @@
   Build the keepane MSI from an already built release binary.
 
 .DESCRIPTION
-  Stages the files the installer ships (keepane.exe, README.md, LICENSE,
-  keepane.conf.example) into a temporary directory and runs WiX over
+  Stages the files the installer ships (keepane.exe, conpty.dll,
+  OpenConsole.exe, README.md, LICENSE, ConPTY-LICENSE, keepane.conf.example) into a temporary directory and runs WiX over
   installer/keepane.wxs. WiX 3.14 is used from -WixBin, from PATH, from the usual
   "WiX Toolset v3.x" install, or downloaded (no install) when none is found.
 
@@ -69,6 +69,13 @@ Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item $exe $stage
 foreach ($f in @("README.md", "LICENSE", "keepane.conf.example")) { Copy-Item (Join-Path $root $f) $stage }
+# The console host beside it (third-party/conpty; build.rs put it there).
+foreach ($f in @("conpty.dll", "OpenConsole.exe")) {
+    $p = Join-Path (Split-Path -Parent $exe) $f
+    if (-not (Test-Path $p)) { throw "no $f beside $exe (pwsh tools/fetch-conpty.ps1, then cargo build --release)" }
+    Copy-Item $p $stage
+}
+Copy-Item (Join-Path $root "third-party/conpty/LICENSE") (Join-Path $stage "ConPTY-LICENSE")
 
 $obj = Join-Path $stage "keepane.wixobj"
 $outDirFull = if ([IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $root $OutDir }

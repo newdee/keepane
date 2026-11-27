@@ -811,6 +811,21 @@ fn a_server_started_inside_a_job_outlives_it_when_the_job_allows() {
     }
 }
 
+/// kitty's pictures reach keepane through the console host it ships
+/// (build.rs puts it beside the test programs once `tools/fetch-conpty.ps1`
+/// has fetched it); Windows' own drops them. Without it these tests say so
+/// rather than fail on a missing picture.
+fn needs_the_shipped_console_host() {
+    let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_keepane"));
+    let dir = exe.parent().unwrap();
+    for f in ["conpty.dll", "OpenConsole.exe"] {
+        assert!(
+            dir.join(f).is_file(),
+            "{f} is not beside {}: run `pwsh tools/fetch-conpty.ps1`, then build again (third-party/conpty/README.md)",
+            exe.display()
+        );
+    }
+}
 /// kitty's pictures (docs/design/kitty-graphics.md) through both consoles,
 /// as keepane runs under UnifyTerm on Windows: a program in a pane writes a
 /// picture into the pane's console, the server keeps it, and the client
@@ -818,6 +833,7 @@ fn a_server_started_inside_a_job_outlives_it_when_the_job_allows() {
 /// them; one that does not gets a label. As text the picture is blank.
 #[test]
 fn a_kitty_picture_goes_through_both_consoles() {
+    needs_the_shipped_console_host();
     let socket = format!("console-kitty-{}", std::process::id());
     let dir = own_dir("kitty");
     std::fs::create_dir_all(&dir).unwrap();
@@ -870,6 +886,7 @@ fn a_kitty_picture_goes_through_both_consoles() {
 /// the client attached again is sent the picture again.
 #[test]
 fn a_kitty_picture_comes_back_after_a_server_restart() {
+    needs_the_shipped_console_host();
     let socket = format!("console-kitty-restart-{}", std::process::id());
     let dir = own_dir("kitty-restart");
     std::fs::create_dir_all(&dir).unwrap();
@@ -925,6 +942,7 @@ fn a_kitty_picture_comes_back_after_a_server_restart() {
 /// shows pictures.
 #[test]
 fn the_board_shows_a_png_with_kitty_pictures() {
+    needs_the_shipped_console_host();
     let socket = format!("console-kitty-board-{}", std::process::id());
     let dir = own_dir("kitty-board");
     let files = std::path::Path::new(&dir).join("pics");

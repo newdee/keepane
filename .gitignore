@@ -2,3 +2,5 @@
 /dist
 /web/node_modules
 /.impeccable
+# Fetched by tools/fetch-conpty.ps1 (Microsoft's console host, shipped beside keepane.exe).
+/vendor/conpty/

@@ -54,6 +54,11 @@ jobs:
           }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: the console host shipped beside keepane.exe
+        # Microsoft's ConPTY (MIT), its version and hash fixed in the script;
+        # build.rs puts it beside the program (third-party/conpty/README.md).
+        shell: pwsh
+        run: pwsh -File tools/fetch-conpty.ps1
       - name: build
         run: cargo build --release --locked
       - name: package (zip)
@@ -62,7 +67,8 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $name = "keepane-$tag-windows-x86_64"
           New-Item -ItemType Directory -Force dist\$name | Out-Null
-          Copy-Item target\release\keepane.exe, README.md, README.zh-CN.md, keepane.conf.example, LICENSE dist\$name\
+          Copy-Item target\release\keepane.exe, target\release\conpty.dll, target\release\OpenConsole.exe, README.md, README.zh-CN.md, keepane.conf.example, LICENSE dist\$name\
+          Copy-Item third-party\conpty\LICENSE dist\$name\ConPTY-LICENSE
           Compress-Archive -Path dist\$name -DestinationPath dist\$name.zip
           $hash = (Get-FileHash dist\$name.zip -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Set-Content -NoNewline dist\$name.zip.sha256

@@ -214,7 +214,7 @@ kitty 图形协议只能显示像素图片，不能排版 HTML。在终端里"�
 6. **格子宽高比固定 1:2**（10×20 像素），没有向终端询问像素大小：理由同上。kitty 的虚拟放置会把图片按比例放进格子里，比例差一点只多一点空白，不会变形。
 7. **保存的会话里图片表存成 `[编号, 图片]` 的列表**：JSON 的对象键只能是字符串，而 pane 是在带标签的 `SavedNode` 里读的，serde 在那里不会把字符串键读成数字（真程序测试 `restart-server` 时发现）。
 8. **dashboard 的编号从 `0xE00000` 起**，避开程序自己用的小编号和 keepane 给无编号图片分的 `0xF00000` 起的编号。
-9. **Windows 要新版 ConPTY**：Windows 自带的 conhost 会把 pane 里程序写的 APC 丢掉，图片到不了 keepane。微软的新版 ConPTY（`conpty.dll` 加 `OpenConsole.exe`，和 UnifyTerm 带的同一版 1.25）放在 `keepane.exe` 旁边时，`portable-pty` 会优先用它，图片能过去（实测：13 个 console 测试和 198 个 e2e 在新版下全部通过）。要不要随安装包带上，等用户定。
+9. **Windows 要新版 ConPTY**：Windows 自带的 conhost 会把 pane 里程序写的 APC 丢掉，图片到不了 keepane。微软的新版 ConPTY（`conpty.dll` 加 `OpenConsole.exe`，和 UnifyTerm 带的同一版 1.25）放在 `keepane.exe` 旁边时，`portable-pty` 会优先用它，图片能过去（实测：13 个 console 测试和 198 个 e2e 在新版下全部通过）。用户定（2026-11-27）：随安装包带上（zip、两个 MSI；scoop 用 zip，winget 用 MSI），`tools/fetch-conpty.ps1` 在 CI 里下载固定版本并核对 SHA-256，`build.rs` 放到程序旁边，许可证随包为 `ConPTY-LICENSE`（`third-party/conpty/`）。只有 `keepane.exe` 也能运行，用 Windows 自带的。
 10. **`ut view` 要 UnifyTerm 那边改一处**才会在 keepane 里发 kitty 图片：它按 `TERM_PROGRAM` 选画法，现在对 `keepane` 选半格方块。keepane 在 pane 里设了 `KEEPANE_GRAPHICS=kitty` 给它判断。
 11. **每个 pane 最多记 256 张图片**（`MOST_IMAGES`），超过时忘掉最早的；它的格子如果还在屏幕上，显示标签。
 12. **发给副本的图片最多 8 MiB**（`link_feed::PICTURE_MOST`，订阅队列上限的一半）：再大的会把订阅挤断，副本重连后又要，反复断开（第 3 轮验收发现）。更大的回"没有"，副本显示标签；"没有"和哈希不对的回答都过 30 秒才再问。
