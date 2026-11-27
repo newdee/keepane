@@ -21,9 +21,22 @@ fn main() {
         _ => return,
     };
     let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/conpty").join(arch);
-    // OUT_DIR is target/<profile>/build/<package>-<hash>/out.
+    // OUT_DIR is target/<profile>/build/<package>-<hash>/out, or with a
+    // newer cargo target/<profile>/build/<package>/<hash>/out: the folder
+    // the program is put in is the one above `build`, named for the profile.
     let Ok(out_dir) = std::env::var("OUT_DIR") else { return };
-    let Some(profile) = Path::new(&out_dir).ancestors().nth(3) else { return };
+    let profile_name = std::env::var("PROFILE").unwrap_or_default();
+    let Some(profile) = Path::new(&out_dir)
+        .ancestors()
+        .filter(|dir| dir.file_name().is_some_and(|name| name == "build"))
+        .filter_map(Path::parent)
+        .find(|dir| dir.file_name().is_some_and(|name| name == profile_name.as_str()))
+    else {
+        println!(
+            "cargo:warning=no {profile_name}/build folder above {out_dir}: conpty.dll and OpenConsole.exe are not put beside keepane.exe, so Windows' own console host will be used."
+        );
+        return;
+    };
     for name in FILES {
         let source = vendor.join(name);
         if !source.is_file() {
