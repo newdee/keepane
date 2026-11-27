@@ -86,6 +86,10 @@ pub enum PaneChange {
     /// It ended: its exit code when the shell gave one, how long it ran,
     /// and the byte its output ends at.
     CommandEnd { command: String, exit: Option<i32>, secs: u64, at: u64 },
+    /// A picture it was sent (kitty.rs), by its number in the pane: which
+    /// file it is and the cells its placement takes. Not its bytes: a copy
+    /// asks for those when it shows the picture (`ImageWanted`).
+    Image { id: u32, image: crate::server::kitty::Image },
 }
 
 impl PaneChange {
@@ -103,6 +107,7 @@ impl PaneChange {
             PaneChange::CommandStart { command, cwd, .. } => command.len() + cwd.as_ref().map_or(0, String::len),
             PaneChange::CommandEnd { command, .. } => command.len(),
             PaneChange::Size { .. } | PaneChange::Fullscreen { .. } => 0,
+            PaneChange::Image { image, .. } => image.hash.len() + 32,
         }
     }
 }
@@ -141,12 +146,18 @@ impl PaneChanges {
         // limit (500 x 200 cells, each its own colour; a long scrollback)
         // is still kept: a whole one never makes another.
         let whole = change.is_whole();
+        // What the pictures are is not in a model: those notes stay, after it.
+        let mut pictures = Vec::new();
         if whole {
-            self.list.clear();
+            pictures = self.list.drain(..).filter(|c| matches!(c, PaneChange::Image { .. })).collect();
             self.cost = 0;
         }
         self.cost += change.cost();
         self.list.push(change);
+        for p in pictures {
+            self.cost += p.cost();
+            self.list.push(p);
+        }
         if self.cost > PANE_LIMIT && !whole {
             self.push(PaneChange::Screen { snapshot: screen(), at: 0 }, Vec::new);
         }
@@ -317,6 +328,8 @@ pub struct PaneScreen {
     pub screen: Vec<u8>,
     /// Bytes it has printed: where its next output starts.
     pub at: u64,
+    /// The pictures it has (kitty.rs), by their numbers in it.
+    pub images: Vec<(u32, crate::server::kitty::Image)>,
 }
 
 impl Journal {
@@ -556,6 +569,7 @@ impl Server {
                         fullscreen: screen.alternate_screen(),
                         screen: screen.snapshot(),
                         at: p.changes.at,
+                        images: p.graphics.images.iter().map(|(k, v)| (*k, v.clone())).collect(),
                     });
                 }
             }
@@ -663,6 +677,15 @@ fn list_changes(entries: &[&Entry], out: &mut String) {
                     PaneChange::CommandEnd { command, exit, secs, .. } => {
                         let how = exit.map_or("ended".into(), |c| format!("exit {c}"));
                         format!("command ends: {command}  ({how}, {secs} s)")
+                    }
+                    PaneChange::Image { id, image } => {
+                        format!(
+                            "picture {id}: {} {}x{}, {}",
+                            image.format.name(),
+                            image.width,
+                            image.height,
+                            &image.hash[..12.min(image.hash.len())]
+                        )
                     }
                 };
                 out.push_str(&format!("#{} {time} %{pane} {what}\n", e.seq));
@@ -779,6 +802,27 @@ mod tests {
         let got = c.take();
         assert_eq!(got.len(), 1);
         assert!(matches!(&got[0], PaneChange::Screen { snapshot, .. } if snapshot.len() == PANE_LIMIT * 2));
+    }
+
+    #[test]
+    fn what_the_pictures_are_outlives_a_whole_model() {
+        let mut c = PaneChanges::new(80, 24);
+        let image = crate::server::kitty::Image {
+            hash: "a".repeat(64),
+            format: crate::server::kitty::Format::Png,
+            width: 8,
+            height: 8,
+            cells: Some((4, 2)),
+        };
+        c.push(PaneChange::Image { id: 7, image: image.clone() }, Vec::new);
+        c.push(out(0, "placed"), Vec::new);
+        c.push(PaneChange::Screen { snapshot: b"S".to_vec(), at: 0 }, Vec::new);
+        let got = c.take();
+        assert_eq!(
+            got,
+            [PaneChange::Screen { snapshot: b"S".to_vec(), at: 6 }, PaneChange::Image { id: 7, image }],
+            "the output before the model goes; the picture's note stays, after it"
+        );
     }
 
     #[test]

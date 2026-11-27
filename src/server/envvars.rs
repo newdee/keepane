@@ -324,6 +324,7 @@ impl Server {
                 "TERM" => "default-terminal",
                 "TERM_PROGRAM" | "TERM_PROGRAM_VERSION" => "keepane, which its programs draw on",
                 "COLORTERM" => "keepane keeps 24-bit colour",
+                "KEEPANE_GRAPHICS" => "kitty's pictures are kept (kitty-graphics)",
                 "KEEPANE_ENV_FILE" => "where its shell reads set-environment's changes",
                 "KEEPANE_ENV_SEQ" => "the last change its shell has had",
                 _ => "",
@@ -520,6 +521,10 @@ mod tests {
         assert_eq!(last(&env, "TERM_PROGRAM"), Some(Some("keepane".into())));
         assert_eq!(last(&env, "TERM_PROGRAM_VERSION"), Some(Some(env!("CARGO_PKG_VERSION").into())));
         assert_eq!(last(&env, "COLORTERM"), Some(Some("truecolor".into())));
+        assert_eq!(last(&env, "KEEPANE_GRAPHICS"), Some(Some("kitty".into())), "kitty-graphics is on by default");
+        set(&mut s, "set -g kitty-graphics off");
+        assert_eq!(last(&s.pane_env(4), "KEEPANE_GRAPHICS"), None, "off: not said");
+        set(&mut s, "set -g kitty-graphics on");
         for k in super::super::OUTER_TERMINAL_VARS {
             assert_eq!(last(&env, k), Some(None), "{k} taken away");
         }

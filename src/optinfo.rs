@@ -123,6 +123,13 @@ pub const OPTIONS: &[OptInfo] = &[
     o("undo-kill-time", 3, Number(5), "Seconds a killed pane or window waits for `undo-kill`."),
     o("window-size", 3, Choice, "Whose size a session takes: `latest`, `smallest`, `largest`, `manual`."),
     o("pane-timestamps", 3, Bool, "When each command ran, and how it went, at its line's end."),
+    o(
+        "kitty-graphics",
+        3,
+        Bool,
+        "Pictures programs send with kitty's protocol: shown where the terminal can, a label elsewhere.",
+    ),
+    o("image-disk-limit", 3, Size, "The most the kept pictures take on disk; the ones not shown longest go first."),
     o("default-shell", 3, Text, "What a new pane runs when no program is given."),
     o("default-command", 3, Text, "A whole command line that replaces `default-shell` when set."),
     o("default-terminal", 3, Text, "`TERM` in panes on Linux and macOS."),

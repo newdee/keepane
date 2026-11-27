@@ -27,6 +27,10 @@ use crate::link_proto::Answer;
 
 /// What may wait for a feed's web task before it is ended.
 pub const FEED_LIMIT: usize = 16 << 20;
+/// The largest picture sent to a machine that asks for one: half a feed's
+/// room, so a picture never ends the feed it goes on (a bigger one shows as
+/// a label there).
+pub const PICTURE_MOST: usize = FEED_LIMIT / 2;
 
 /// Where this machine's terminals look: each of its own sessions' window
 /// and the one before it, each window's pane and the one before it. Taken
@@ -109,6 +113,9 @@ pub struct Feed {
     /// (`link_proto::Command`): to the server, which runs it if it is one
     /// that changes a session's shape, and replies on this feed.
     pub command: Box<dyn Fn(u64, String) + Send + Sync>,
+    /// A picture it shows and has not (`link_proto::ImageWanted`), by its
+    /// hash: to the server, which sends its bytes on this feed.
+    pub image: Box<dyn Fn(String) + Send + Sync>,
 }
 
 pub enum FeedItem {
@@ -116,6 +123,8 @@ pub enum FeedItem {
     Snapshot(journal::Snapshot),
     /// What became of one of its commands, after the changes it made.
     Reply(crate::link_proto::Reply),
+    /// A picture's bytes it asked for.
+    Image(crate::link_proto::ImageData),
     /// The feed ends, and why.
     End(String),
 }
@@ -126,6 +135,7 @@ impl FeedItem {
             FeedItem::Entry(e) => e.cost(),
             FeedItem::Snapshot(s) => s.panes.iter().map(|p| p.screen.len() + 64).sum::<usize>() + 256,
             FeedItem::Reply(r) => r.text.len() + 32,
+            FeedItem::Image(d) => d.data.len() + 128,
             FeedItem::End(_) => 0,
         }
     }
@@ -253,7 +263,11 @@ impl Server {
         let command = Box::new(move |id, line| {
             let _ = events.send(super::Event::StreamCommand(key.clone(), id, line));
         });
-        let _ = ask.reply.send(StreamReply { msg2, open: Some((keys, Feed { rx, queued, input, command })) });
+        let (events, key) = (self.events.clone(), peer.key.clone());
+        let image = Box::new(move |hash| {
+            let _ = events.send(super::Event::StreamImage(key.clone(), hash));
+        });
+        let _ = ask.reply.send(StreamReply { msg2, open: Some((keys, Feed { rx, queued, input, command, image })) });
     }
 
     /// Send every feed what changed since it was last sent to; end those
@@ -363,6 +377,36 @@ impl Server {
         let reply = crate::link_proto::Reply { id, ok, text, pane };
         if let Some(sub) = self.feeds.iter().find(|s| s.key == key) {
             sub.send(FeedItem::Reply(reply));
+        }
+    }
+    /// A machine fed asks for a picture it shows (`link_proto::ImageWanted`):
+    /// its bytes, when a pane of this machine's own has it and it is still on
+    /// disk; else said missing. Only while the machine is fed (it has all of
+    /// this one).
+    pub(super) fn stream_image(&mut self, key: &str, hash: &str) {
+        if self.fed_addr(key).is_none() {
+            return;
+        }
+        let image = self
+            .sessions
+            .iter()
+            .filter(|s| s.remote.is_none())
+            .flat_map(|s| s.windows.iter())
+            .flat_map(|w| w.panes.iter())
+            .find_map(|p| p.graphics.images.values().find(|i| i.hash == hash).cloned());
+        let dir = self.images_dir();
+        let data = image.as_ref().and_then(|i| self.images.get(&dir, i)).filter(|d| d.len() <= PICTURE_MOST);
+        let reply = match (&image, data) {
+            (Some(i), Some(d)) => crate::link_proto::ImageData {
+                hash: hash.into(),
+                format: i.format.ext().into(),
+                data: d.to_vec(),
+                missing: false,
+            },
+            _ => crate::link_proto::ImageData { hash: hash.into(), missing: true, ..Default::default() },
+        };
+        if let Some(sub) = self.feeds.iter().find(|s| s.key == key) {
+            sub.send(FeedItem::Image(reply));
         }
     }
     /// A machine fed, for a test: its feed's other end.

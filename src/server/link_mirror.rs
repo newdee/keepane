@@ -41,6 +41,8 @@ const RETRY_REFUSED: Duration = Duration::from_secs(60);
 const MODEL_MAX: usize = 256 << 20;
 /// How long a command sent there waits for its reply.
 const REPLY_WAIT: Duration = Duration::from_secs(10);
+/// A picture asked for and not had is asked for again after this.
+const ASK_PICTURE_AGAIN: Duration = Duration::from_secs(30);
 
 /// A command sent there, waiting for its reply.
 struct Ask {
@@ -84,6 +86,9 @@ pub(super) struct Mirror {
     /// Commands sent there, by number, waiting for their replies.
     asks: HashMap<u64, Ask>,
     next_ask: u64,
+    /// Pictures asked of it (`ImageWanted`), by hash, and when: asked again
+    /// after `ASK_PICTURE_AGAIN` when no answer came.
+    pictures_asked: HashMap<String, Instant>,
     /// The resize a border drag sent last, while it waits for its reply.
     drag: Option<u64>,
     state: State,
@@ -451,6 +456,51 @@ impl Server {
         Outcome::Text(out)
     }
 
+    /// Pictures a client is shown in a pane of machine `key`'s copy that
+    /// are not on disk here: asked for (`ImageWanted`), each once a while.
+    pub(super) fn mirror_want_pictures(&mut self, key: &str, hashes: Vec<String>) {
+        let Some(m) = self.mirrors.get_mut(key) else { return };
+        if !matches!(m.state, State::Live(_)) {
+            return;
+        }
+        let now = Instant::now();
+        for hash in hashes {
+            if m.pictures_asked.get(&hash).is_some_and(|t| now.duration_since(*t) < ASK_PICTURE_AGAIN) {
+                continue;
+            }
+            let want = proto::ImageWanted { hash: hash.clone() };
+            if m.input.send(ToServer { kind: Some(crate::link_proto::to_server::Kind::ImageWanted(want)) }).is_ok() {
+                m.pictures_asked.insert(hash, now);
+            }
+        }
+    }
+
+    /// A picture's bytes from machine `key`: kept on disk here when they are
+    /// what was asked for (their hash checked); the frames drawn next show it.
+    fn mirror_image(&mut self, key: &str, d: proto::ImageData) {
+        let Some(m) = self.mirrors.get_mut(key) else { return };
+        if !m.pictures_asked.contains_key(&d.hash) {
+            return; // not asked for
+        }
+        // Not there, too big to send, or bytes that are not what was asked
+        // for: asked again only after a while (at once, it would be asked
+        // and answered so again every frame).
+        use sha2::Digest as _;
+        let hash: String = sha2::Sha256::digest(&d.data).iter().map(|b| format!("{b:02x}")).collect();
+        let format = super::kitty::Format::from_ext(&d.format);
+        if d.missing || hash != d.hash || format.is_none() {
+            if !d.missing {
+                log::warn!("link mirror {}: a picture whose bytes are not what it was asked for", m.addr);
+            }
+            m.pictures_asked.insert(d.hash, Instant::now());
+            return;
+        }
+        m.pictures_asked.remove(&d.hash);
+        let Some(format) = format else { return };
+        let dir = self.images_dir();
+        self.images.put(&dir, super::kitty::Received { hash, format, bytes: d.data });
+    }
+
     /// Take one message in; one the copy cannot follow from loses it: it
     /// asks for a snapshot, and lets what comes before that go.
     pub(super) fn mirror_receive(&mut self, key: &str, msg: ToClient) {
@@ -458,6 +508,10 @@ impl Server {
         // the copy stands.
         if let Some(to_client::Kind::Reply(r)) = msg.kind {
             return self.mirror_reply(key, r);
+        }
+        // A picture's bytes it asked for: outside the numbered changes too.
+        if let Some(to_client::Kind::ImageData(d)) = msg.kind {
+            return self.mirror_image(key, d);
         }
         let snapshot = matches!(msg.kind, Some(to_client::Kind::Snapshot(_)));
         if self.mirrors.get(key).is_none_or(|m| m.lost && !snapshot) {
@@ -486,10 +540,12 @@ impl Server {
         let m = self.mirrors.get(key).ok_or("not copied")?;
         let (addr, input, last) = (m.addr.clone(), m.input.clone(), m.last.load(Ordering::Relaxed));
         match msg.kind {
-            None | Some(to_client::Kind::Ping(_)) | Some(to_client::Kind::Reply(_)) => Ok(()),
+            None | Some(to_client::Kind::Ping(_) | to_client::Kind::Reply(_) | to_client::Kind::ImageData(_)) => Ok(()),
             Some(to_client::Kind::Snapshot(s)) => {
                 let mut models = HashMap::new();
-                for p in s.panes {
+                let mut pictures = Vec::new();
+                for mut p in s.panes {
+                    pictures.push((p.id, std::mem::take(&mut p.images)));
                     let bytes = proto::inflate(&p.deflated, MODEL_MAX).ok_or("a pane's model that does not inflate")?;
                     let parser = model_of(&bytes)
                         .ok_or_else(|| format!("pane %{}'s model is not one this keepane reads", p.id))?;
@@ -497,6 +553,17 @@ impl Server {
                 }
                 let shape = s.shape.unwrap_or_default();
                 self.mirror_shape(key, &addr, &input, &shape, models);
+                // What the pictures in each pane's model are.
+                for (id, notes) in pictures {
+                    if let Some(p) = self.mirror_pane_mut(key, id) {
+                        p.graphics.images.clear();
+                        for n in &notes {
+                            if let Some(image) = n.image() {
+                                p.graphics.keep(n.id, image);
+                            }
+                        }
+                    }
+                }
                 let m = self.mirrors.get_mut(key).expect("found above");
                 m.shape = Some(shape);
                 m.last.store(s.seq, Ordering::Relaxed);
@@ -543,6 +610,11 @@ impl Server {
                                 p.feed_remote(&o.bytes);
                             }
                             Some(Kind::Size(s)) => p.set_remote_size(dim(s.cols)?, dim(s.rows)?),
+                            Some(Kind::Image(note)) => {
+                                if let Some(image) = note.image() {
+                                    p.graphics.keep(note.id, image);
+                                }
+                            }
                         }
                     }
                 }
@@ -575,6 +647,7 @@ impl Mirror {
             commands: false,
             asks: HashMap::new(),
             next_ask: 0,
+            pictures_asked: HashMap::new(),
             drag: None,
             state: State::Connecting,
             shape: None,
@@ -905,7 +978,13 @@ mod tests {
             .map(|&(id, text, at)| {
                 let mut p = vt100::Parser::new(5, 20, 10);
                 p.process(text.as_bytes());
-                PaneScreen { id, fullscreen: false, deflated: proto::deflate(&p.screen().snapshot()), at }
+                PaneScreen {
+                    id,
+                    fullscreen: false,
+                    deflated: proto::deflate(&p.screen().snapshot()),
+                    at,
+                    images: vec![],
+                }
             })
             .collect();
         ToClient { kind: Some(to_client::Kind::Snapshot(Snapshot { seq, shape: Some(shape(&ids)), panes })) }
@@ -943,7 +1022,13 @@ mod tests {
             kind: Some(to_client::Kind::Snapshot(Snapshot {
                 seq: 20,
                 shape: Some(shape(&[1])),
-                panes: vec![PaneScreen { id: 1, fullscreen: false, deflated: proto::deflate(b"junk"), at: 0 }],
+                panes: vec![PaneScreen {
+                    id: 1,
+                    fullscreen: false,
+                    deflated: proto::deflate(b"junk"),
+                    at: 0,
+                    images: vec![],
+                }],
             })),
         };
         assert!(s.mirror_apply(KEY, bad).is_err());
@@ -1705,5 +1790,300 @@ mod tests {
     fn a_size_from_the_wire_is_held_to_what_a_pane_can_be() {
         assert_eq!(dim(80), Ok(80));
         assert!(dim(0).is_err() && dim(1001).is_err() && dim(u32::MAX).is_err());
+    }
+
+    /// Everything a client was sent, as text.
+    fn drawn(rx: &mut mpsc::Receiver<crate::ipc::ServerMsg>) -> String {
+        let mut out = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            if let crate::ipc::ServerMsg::Output(b) = m {
+                out.extend(b);
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    // kitty's pictures (kitty.rs), drawn through a pane here (a copied
+    // one: no program to start), as the server draws them for two clients.
+    #[test]
+    fn a_picture_shows_in_a_terminal_that_shows_them_and_a_label_in_one_that_does_not() {
+        use crate::server::kitty;
+        let (mut s, _typed) = copying();
+        let dir = std::env::temp_dir().join(format!("kp-kitty-render-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        s.opts.sessions_dir = dir.to_string_lossy().into_owned();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "", 10)])).unwrap();
+        let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
+        // 8×8 pixels on 4 columns of 10×20-pixel cells: 2 rows.
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08\0\0\0\x08".to_vec();
+        png.extend_from_slice(b"\x08\x06\0\0\0rest-of-the-file");
+        let p = s.mirror_pane_mut(KEY, 1).unwrap();
+        p.set_kitty(true);
+        p.process_output(format!("\x1b_Ga=T,f=100,i=7,c=4,q=2;{}\x1b\\after", kitty::base64_encode(&png)).as_bytes());
+        let received = std::mem::take(&mut p.graphics.received);
+        assert_eq!(received.len(), 1);
+        let images_dir = s.images_dir();
+        for r in received {
+            s.images.put(&images_dir, r);
+        }
+        // On disk once it has lasted (or when the server goes, as here).
+        s.images_flush();
+        assert_eq!(std::fs::read_dir(&images_dir).unwrap().count(), 1, "kept on disk by its hash");
+        // As text (capture-pane, an agent reading the screen) the picture is
+        // blank; the cursor went on after it.
+        assert_eq!(text(&mut s, 1), "\n    after");
+        // With colours (`capture-pane -e`, the phone page) blank too; what is
+        // saved for a resume keeps the cells, which bring the picture back.
+        let p = s.mirror_pane_mut(KEY, 1).unwrap();
+        let shown = p.lines_from(0, true, false, false).join("\n");
+        let saved = p.lines_from(0, true, false, true).join("\n");
+        assert!(!shown.contains(kitty::PLACEHOLDER) && shown.contains("after"), "{shown:?}");
+        assert_eq!(saved.matches(kitty::PLACEHOLDER).count(), 8, "{saved:?}");
+        let mut rxs = Vec::new();
+        for (cid, kitty) in [(7, true), (8, false)] {
+            let (tx, rx) = mpsc::channel(256);
+            s.client_connected(cid, tx);
+            let c = s.clients.get_mut(&cid).unwrap();
+            (c.cols, c.rows, c.interactive, c.session) = (80, 7, true, Some(sid));
+            c.graphics = kitty::ClientImages::new(kitty);
+            rxs.push(rx);
+        }
+        s.fit_session(sid, Some(7));
+        s.render_client(7);
+        s.render_client(8);
+        let shows = drawn(&mut rxs[0]);
+        let first_cell = shows.find(kitty::PLACEHOLDER).expect("placeholders drawn");
+        let picture = shows.find("\x1b_Ga=t,t=d,f=100,i=").expect("the picture sent");
+        assert!(picture < first_cell, "the picture before its cells");
+        assert!(shows.contains(",c=4,r=2,q=2\x1b\\"), "a virtual placement of 4 × 2 cells");
+        let label = drawn(&mut rxs[1]);
+        assert!(!label.contains("\x1b_G") && !label.contains(kitty::PLACEHOLDER), "no picture, no placeholder");
+        assert!(label.contains("▧ im"), "the label, cut to the picture's 4 columns");
+        // Drawn again: the picture is not sent again.
+        s.clients.get_mut(&7).unwrap().last_grid = None;
+        s.render_client(7);
+        let again = drawn(&mut rxs[0]);
+        assert!(again.contains(kitty::PLACEHOLDER) && !again.contains("\x1b_Ga=t"), "sent once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // `kitty-graphics` turned off halfway through a picture: the rest of it
+    // is taken to its end and dropped, not shown as text; then the
+    // sequences go to the model again (which drops them), as before.
+    #[test]
+    fn a_picture_cut_off_by_turning_them_off_shows_no_text() {
+        let (mut s, _typed) = copying();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "", 0)])).unwrap();
+        let p = s.mirror_pane_mut(KEY, 1).unwrap();
+        p.set_kitty(true);
+        p.process_output(b"\x1b_Ga=t,f=100,i=3,q=2,m=1;iVBORw0KGgo");
+        p.set_kitty(false);
+        p.process_output(b"AAAANSUhEUg\x1b\\tail\r\n\x1b_Ga=t;QUJD\x1b\\more");
+        assert_eq!(text(&mut s, 1), "tail\nmore");
+        assert!(s.mirror_pane_mut(KEY, 1).unwrap().graphics.images.is_empty());
+    }
+
+    // A pane that is sent a picture tells its journal what the picture is,
+    // before the placeholders that show it (a copy elsewhere follows both).
+    #[test]
+    fn a_picture_is_noted_for_copies_before_its_cells() {
+        use crate::server::journal::PaneChange as C;
+        use crate::server::kitty;
+        let (mut s, _typed) = copying();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "", 0)])).unwrap();
+        let p = s.mirror_pane_mut(KEY, 1).unwrap();
+        p.set_kitty(true);
+        let _ = p.changes.take();
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08\0\0\0\x08\x08\x06\0\0\0 the rest".to_vec();
+        p.process_output(format!("\x1b_Ga=T,f=100,i=5,c=4,q=2;{}\x1b\\", kitty::base64_encode(&png)).as_bytes());
+        let got = p.changes.take();
+        let note = got.iter().position(|c| matches!(c, C::Image { id: 5, image } if image.cells == Some((4, 2))));
+        let cells = got.iter().position(
+            |c| matches!(c, C::Output { bytes, .. } if String::from_utf8_lossy(bytes).contains(kitty::PLACEHOLDER)),
+        );
+        assert!(note.is_some() && cells.is_some() && note < cells, "{got:?}");
+        assert!(
+            got.iter().all(|c| !matches!(c, C::Output { bytes, .. } if bytes.windows(3).any(|w| w == b"\x1b_G"))),
+            "no picture bytes in the journal"
+        );
+    }
+
+    // A copy that starts from a snapshot takes each pane's pictures from it.
+    #[test]
+    fn a_snapshot_brings_each_panes_pictures() {
+        use crate::server::kitty;
+        let (mut s, _typed) = copying();
+        let image =
+            kitty::Image { hash: "b".repeat(64), format: kitty::Format::Gif, width: 3, height: 2, cells: Some((6, 2)) };
+        let mut snap = snapshot(10, &[(1, "", 0)]);
+        if let Some(to_client::Kind::Snapshot(sn)) = snap.kind.as_mut() {
+            sn.panes[0].images = vec![(9, &image).into()];
+        }
+        s.mirror_apply(KEY, snap).unwrap();
+        assert_eq!(s.mirror_pane_mut(KEY, 1).unwrap().graphics.images.get(&9), Some(&image));
+    }
+
+    // A copy keeps track of as many pictures a pane as the original does.
+    #[test]
+    fn a_copy_keeps_track_of_a_panes_latest_pictures_only() {
+        use crate::server::kitty;
+        let (mut s, _typed) = copying();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "", 0)])).unwrap();
+        let image = kitty::Image { hash: "a".repeat(64), format: kitty::Format::Png, width: 1, height: 1, cells: None };
+        for i in 0..(kitty::MOST_IMAGES as u32 + 10) {
+            let note = PaneChange { pane: 1, kind: Some(pane_change::Kind::Image((i, &image).into())) };
+            let e = Entry { seq: 11 + u64::from(i), at: 0, change: Some(entry::Change::Pane(note)) };
+            s.mirror_apply(KEY, ToClient { kind: Some(to_client::Kind::Entry(e)) }).unwrap();
+        }
+        let images = &s.mirror_pane_mut(KEY, 1).unwrap().graphics.images;
+        assert_eq!(images.len(), kitty::MOST_IMAGES);
+        assert!(!images.contains_key(&0) && images.contains_key(&(kitty::MOST_IMAGES as u32 + 9)));
+    }
+
+    // The machine copied answers a picture asked for: its bytes when a pane
+    // of its own has it, "missing" when none has; nothing to a machine it
+    // does not feed.
+    #[test]
+    fn a_machine_fed_is_sent_the_pictures_its_panes_have() {
+        use crate::server::kitty;
+        use crate::server::link_feed::FeedItem;
+        let (mut s, _typed) = copying();
+        let dir = std::env::temp_dir().join(format!("kp-kitty-feed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        s.opts.sessions_dir = dir.to_string_lossy().into_owned();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "", 0)])).unwrap();
+        let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08\0\0\0\x08\x08\x06\0\0\0 the rest".to_vec();
+        let p = s.mirror_pane_mut(KEY, 1).unwrap();
+        p.set_kitty(true);
+        p.process_output(format!("\x1b_Ga=t,f=100,i=3,q=2;{}\x1b\\", kitty::base64_encode(&png)).as_bytes());
+        let hash = p.graphics.images[&3].hash.clone();
+        let received = std::mem::take(&mut p.graphics.received);
+        let images_dir = s.images_dir();
+        for r in received {
+            s.images.put(&images_dir, r);
+        }
+        // This machine's own session now (as a pane of its own would be).
+        s.session_mut(sid).unwrap().remote = None;
+        let peer =
+            crate::link::Peer { key: "c".into(), addr: "10.0.0.3:7681".into(), full: true, lan: true, off: false };
+        s.link = Some(crate::server::link_state::LinkHost {
+            dir: dir.clone(),
+            id: crate::link::Identity::make(&dir.join("key")).unwrap(),
+            peers: vec![peer],
+            nonces: Default::default(),
+            seen: Default::default(),
+            origin: Default::default(),
+            refused: Default::default(),
+            sent: Default::default(),
+            made: Default::default(),
+            incoming: Default::default(),
+        });
+        let mut fed = s.feed_for_test("c");
+        s.stream_image("c", &hash);
+        match fed.try_recv() {
+            Ok(FeedItem::Image(d)) => assert_eq!(
+                (d.hash.as_str(), d.format.as_str(), d.data.as_slice(), d.missing),
+                (hash.as_str(), "png", png.as_slice(), false)
+            ),
+            _ => panic!("no picture sent"),
+        }
+        s.stream_image("c", &"0".repeat(64));
+        assert!(matches!(fed.try_recv(), Ok(FeedItem::Image(d)) if d.missing && d.data.is_empty()));
+        s.stream_image("z", &hash);
+        assert!(fed.try_recv().is_err(), "nothing for a machine not fed");
+        // A picture too big for a feed's room: said missing, not sent (a
+        // bigger one would end the feed it goes on, again and again).
+        let big = vec![b'x'; crate::server::link_feed::PICTURE_MOST + 1];
+        let p = s.find_pane_mut(s.sessions[0].windows[0].panes[0].id).unwrap();
+        p.process_output(format!("\x1b_Ga=t,f=100,i=4,q=2;{}\x1b\\", kitty::base64_encode(&big)).as_bytes());
+        let big_hash = p.graphics.images[&4].hash.clone();
+        for r in std::mem::take(&mut p.graphics.received) {
+            s.images.put(&images_dir, r);
+        }
+        s.stream_image("c", &big_hash);
+        assert!(matches!(fed.try_recv(), Ok(FeedItem::Image(d)) if d.missing && d.data.is_empty()), "too big: missing");
+        // Fed, but no longer given all of this machine: nothing either.
+        if let Some(l) = s.link.as_mut() {
+            l.peers[0].full = false;
+        }
+        s.stream_image("c", &hash);
+        assert!(fed.try_recv().is_err(), "nothing for a machine no longer let copy this one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A picture in a pane of the machine copied: its note and placeholders
+    // come with the changes; its bytes are asked for when a client is shown
+    // it, and kept once their hash checks.
+    #[test]
+    fn a_copy_asks_for_a_picture_it_shows_and_keeps_it_when_its_bytes_check() {
+        use crate::server::kitty;
+        let (mut s, mut typed) = copying();
+        let dir = std::env::temp_dir().join(format!("kp-kitty-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        s.opts.sessions_dir = dir.to_string_lossy().into_owned();
+        if let Some(m) = s.mirrors.get_mut(KEY) {
+            m.state = State::Live(Instant::now());
+        }
+        s.mirror_apply(KEY, snapshot(10, &[(1, "", 0)])).unwrap();
+        let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08\0\0\0\x08\x08\x06\0\0\0 the rest".to_vec();
+        use sha2::Digest as _;
+        let hash: String = sha2::Sha256::digest(&png).iter().map(|b| format!("{b:02x}")).collect();
+        let image =
+            kitty::Image { hash: hash.clone(), format: kitty::Format::Png, width: 8, height: 8, cells: Some((4, 2)) };
+        let note = PaneChange { pane: 1, kind: Some(pane_change::Kind::Image((7, &image).into())) };
+        s.mirror_apply(
+            KEY,
+            ToClient {
+                kind: Some(to_client::Kind::Entry(Entry { seq: 11, at: 0, change: Some(entry::Change::Pane(note)) })),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.mirror_pane_mut(KEY, 1).unwrap().graphics.images.get(&7), Some(&image));
+        let cells = kitty::placeholders(7, (4, 2), 0, kitty::Cursor::Moves);
+        s.mirror_apply(KEY, output(12, 1, 0, &cells)).unwrap();
+        let (tx, mut rx) = mpsc::channel(256);
+        s.client_connected(7, tx);
+        let c = s.clients.get_mut(&7).unwrap();
+        (c.cols, c.rows, c.interactive, c.session) = (80, 7, true, Some(sid));
+        c.graphics = kitty::ClientImages::new(true);
+        s.fit_session(sid, Some(7));
+        s.render_client(7);
+        let first = drawn(&mut rx);
+        assert!(first.contains("▧ im") && !first.contains("\x1b_G"), "a label until its bytes come");
+        let mut asked = Vec::new();
+        while let Ok(m) = typed.try_recv() {
+            if let Some(to_server::Kind::ImageWanted(w)) = m.kind {
+                asked.push(w.hash);
+            }
+        }
+        assert_eq!(asked, std::slice::from_ref(&hash), "asked for once");
+        // Bytes that are not what was asked for: not kept.
+        let wrong =
+            proto::ImageData { hash: hash.clone(), format: "png".into(), data: b"other".to_vec(), missing: false };
+        s.mirror_receive(KEY, ToClient { kind: Some(to_client::Kind::ImageData(wrong)) });
+        let kept = std::fs::read_dir(dir.join("images")).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(kept, 0, "bytes that are not what was asked for are not kept at all");
+        // "Missing": not asked again at once (only after a while).
+        let gone = proto::ImageData { hash: hash.clone(), missing: true, ..Default::default() };
+        s.mirror_receive(KEY, ToClient { kind: Some(to_client::Kind::ImageData(gone)) });
+        while typed.try_recv().is_ok() {}
+        s.mirror_want_pictures(KEY, vec![hash.clone()]);
+        assert!(typed.try_recv().is_err(), "a missing picture is not asked for again at once");
+        // Asked again after a while, then the right bytes.
+        if let Some(m) = s.mirrors.get_mut(KEY) {
+            m.pictures_asked.insert(hash.clone(), Instant::now() - ASK_PICTURE_AGAIN);
+        }
+        s.mirror_want_pictures(KEY, vec![hash.clone()]);
+        assert!(matches!(typed.try_recv().ok().and_then(|m| m.kind), Some(to_server::Kind::ImageWanted(_))));
+        let right = proto::ImageData { hash: hash.clone(), format: "png".into(), data: png.clone(), missing: false };
+        s.mirror_receive(KEY, ToClient { kind: Some(to_client::Kind::ImageData(right)) });
+        s.images_flush();
+        assert!(dir.join("images").join(format!("{hash}.png")).exists(), "kept on disk here");
+        s.render_client(7);
+        let then = drawn(&mut rx);
+        assert!(then.contains("\x1b_Ga=t,t=d,f=100,i=") && then.contains(kitty::PLACEHOLDER), "the picture now");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

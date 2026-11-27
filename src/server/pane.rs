@@ -628,6 +628,11 @@ pub struct Pane {
     /// Bumped by `respawn`; events from an older generation are ignored.
     pub generation: u32,
     pub parser: vt100::Parser<Callbacks>,
+    /// kitty's graphics protocol (kitty.rs): the pictures its program sent,
+    /// and the sequences being taken out of its output.
+    pub graphics: super::kitty::PaneGraphics,
+    /// `kitty-graphics`, as the server last said (`set_kitty`).
+    kitty: bool,
     /// None for a pane of another machine (`remote`): no console here.
     master: Option<Box<dyn MasterPty + Send>>,
     writer: Box<dyn Write + Send>,
@@ -1037,6 +1042,8 @@ impl Pane {
             id,
             generation,
             parser: vt100::Parser::new_with_callbacks(rows, cols, history, Callbacks::default()),
+            graphics: Default::default(),
+            kitty: false,
             master: Some(pair.master),
             writer,
             killer: Some(killer),
@@ -1121,6 +1128,8 @@ impl Pane {
             id,
             generation: 0,
             parser,
+            graphics: Default::default(),
+            kitty: false,
             master: None,
             writer,
             killer: None,
@@ -1431,8 +1440,52 @@ impl Pane {
         self.parser.callbacks_mut().colours = c;
     }
 
+    /// `kitty-graphics`: whether pictures in its output are taken (kitty.rs).
+    pub fn set_kitty(&mut self, on: bool) {
+        self.kitty = on;
+    }
+
     /// Feed process output into the terminal model; answer any queries.
+    /// With `kitty-graphics` on, kitty's graphics commands are taken out
+    /// first and what they place goes in as placeholders (kitty.rs): the
+    /// model, and the journal after it, see only text.
     pub fn process_output(&mut self, bytes: &[u8]) {
+        // Off, the sequences go to the model, which drops them, as before;
+        // one already begun is taken to its end first (and dropped), or its
+        // rest would show as text.
+        if (!self.kitty && self.graphics.idle()) || bytes.is_empty() {
+            self.process_text(bytes);
+            return;
+        }
+        for piece in self.graphics.scan(bytes) {
+            match piece {
+                super::kitty::Piece::Text(text) => self.process_text(&text),
+                super::kitty::Piece::Graphics(_) if !self.kitty => {}
+                super::kitty::Piece::Graphics(body) => {
+                    let (_, col) = self.parser.screen().cursor_position();
+                    let (_, width) = self.parser.screen().size();
+                    let effects = self.graphics.command(&body, col, width, super::kitty::CELL);
+                    // Which pictures there are, for a copy elsewhere: told
+                    // before the placeholders that show them.
+                    for id in std::mem::take(&mut self.graphics.changed) {
+                        if let Some(image) = self.graphics.images.get(&id).cloned() {
+                            self.note(super::journal::PaneChange::Image { id, image });
+                        }
+                    }
+                    for effect in effects {
+                        match effect {
+                            super::kitty::Effect::Reply(answer) => {
+                                let _ = self.writer.write_all(&answer);
+                            }
+                            super::kitty::Effect::Output(placed) => self.process_text(&placed),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn process_text(&mut self, bytes: &[u8]) {
         // Cut where a command starts and where one ends (`split_at_marks`):
         // what was typed, and where its output ends, are known exactly.
         let pieces = split_at_marks(bytes);
@@ -2270,8 +2323,10 @@ impl Pane {
     /// trailing blanks dropped; with `escapes`, colours and attributes are
     /// kept as escape sequences (`capture-pane -e`, `save-history`). One
     /// pass, for the same reason as `search`: `capture-pane -S -` and
-    /// `save-history all` ask for thousands of lines.
-    pub fn lines_from(&mut self, start: usize, escapes: bool, join: bool) -> Vec<String> {
+    /// `save-history all` ask for thousands of lines. A picture's cells
+    /// (kitty.rs) are blanks unless `pictures` (`save-history`: they come
+    /// back with the output on a resume).
+    pub fn lines_from(&mut self, start: usize, escapes: bool, join: bool, pictures: bool) -> Vec<String> {
         let total = self.scrollback_len();
         let rows = self.rows as usize;
         let cols = self.cols;
@@ -2285,7 +2340,10 @@ impl Pane {
             let (offset, row) = if abs < total { (total - abs, 0usize) } else { (0, abs - total) };
             s.set_scrollback(offset);
             let mut text = if escapes {
-                forward_as_spaces(&String::from_utf8_lossy(&s.rows_formatted(0, cols).nth(row).unwrap_or_default()))
+                let row = forward_as_spaces(&String::from_utf8_lossy(
+                    &s.rows_formatted(0, cols).nth(row).unwrap_or_default(),
+                ));
+                if pictures { row } else { super::kitty::blank_placeholders(&row) }
             } else {
                 s.rows(0, cols).nth(row).unwrap_or_default()
             };
@@ -2960,6 +3018,7 @@ mod tests {
                 C::Size { cols, rows } => Some(format!("size {cols}x{rows}")),
                 C::Reset { .. } => Some("reset".into()),
                 C::Screen { .. } => Some("screen".into()),
+                C::Image { id, .. } => Some(format!("picture {id}")),
             })
             .collect();
         assert_eq!(

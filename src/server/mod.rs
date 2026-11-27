@@ -18,10 +18,12 @@ mod envvars;
 mod feishu;
 mod gitstate;
 mod hints;
+mod images;
 pub mod import;
 pub mod input;
 pub(crate) mod journal;
 mod keyhint;
+pub mod kitty;
 pub mod layout;
 mod link_agents;
 mod link_attach;
@@ -138,6 +140,8 @@ enum Event {
     /// A command a machine fed sends about one of this machine's sessions
     /// (its key, the command's number, the line): `link_feed`.
     StreamCommand(String, u64, String),
+    /// A machine fed asks for a picture's bytes, by its hash (`ImageWanted`).
+    StreamImage(String, String),
     Connected(ClientId, mpsc::Sender<ServerMsg>),
     Msg(ClientId, ClientMsg),
     Gone(ClientId),
@@ -825,6 +829,9 @@ struct Client {
     selecting: Option<Selecting>,
     /// Virtual keys whose key-down we consumed; drop the matching key-up.
     swallow_up: HashSet<u16>,
+    /// The pictures its terminal was given (kitty.rs), and whether it
+    /// shows them at all (`ClientMsg::Terminal`).
+    graphics: kitty::ClientImages,
     /// A bell from a background window, to ring at the next render.
     pending_bell: bool,
     /// Control messages that did not fit in the output queue yet.
@@ -1258,6 +1265,11 @@ pub struct Server {
     started: Instant,
     /// When old history log files were last cleared out (once a day).
     history_pruned: Option<Instant>,
+    /// The pictures panes were sent, on disk and while seen in memory
+    /// (images.rs).
+    images: images::Store,
+    /// When the pictures' folder was last cleaned (`images_disk_tick`).
+    images_swept: Option<Instant>,
     /// `log-history` at the last tick, to tell when it was turned on.
     history_was_on: bool,
     /// What `kill-pane` / `kill-window` took in the last `undo-kill-time`
@@ -1816,6 +1828,8 @@ impl Server {
             had_session: false,
             started: Instant::now(),
             history_pruned: None,
+            images: images::Store::default(),
+            images_swept: None,
             history_was_on: true,
             killed: Vec::new(),
             quit: false,
@@ -2017,6 +2031,75 @@ impl Server {
         }
     }
 
+    /// Every picture a pane here names: in a window (another machine's
+    /// copied ones too), kept for undo-kill, in a popup.
+    fn live_pictures(&self) -> HashSet<String> {
+        let mut named: HashSet<String> = HashSet::new();
+        let mut take = |p: &Pane| named.extend(p.graphics.images.values().map(|i| i.hash.clone()));
+        for s in &self.sessions {
+            for w in &s.windows {
+                w.panes.iter().for_each(&mut take);
+            }
+        }
+        for k in &self.killed {
+            match k {
+                Killed::Pane { pane, .. } => take(pane),
+                Killed::Window { window, .. } => window.panes.iter().for_each(&mut take),
+            }
+        }
+        for c in self.clients.values() {
+            if let Some(p) = &c.popup {
+                take(&p.pane);
+            }
+        }
+        named
+    }
+
+    /// Every second (images.rs `settle`): a picture no pane names leaves
+    /// memory, never written if it was not yet (an animation's frames); one
+    /// that lasted is written.
+    fn images_settle(&mut self) {
+        let named = self.live_pictures();
+        let dir = self.images_dir();
+        self.images.settle(&dir, &named, Instant::now());
+    }
+
+    /// The pictures panes name, written now (images.rs `flush`): for tests,
+    /// which look at the disk without waiting for `settle`.
+    #[cfg(test)]
+    fn images_flush(&mut self) {
+        let named = self.live_pictures();
+        let dir = self.images_dir();
+        self.images.flush(&dir, &named);
+    }
+
+    /// Every ten minutes: the pictures' folder cleaned (images.rs). What is
+    /// named: every picture a pane here has (in a window, kept for
+    /// undo-kill, in a popup) and every one a saved file names (the saved
+    /// sessions, their previous saves, the killed ones put aside).
+    fn images_disk_tick(&mut self) {
+        const EVERY: Duration = Duration::from_secs(600);
+        if self.images_swept.is_some_and(|t| t.elapsed() < EVERY) {
+            return;
+        }
+        self.images_swept = Some(Instant::now());
+        let dir = self.images_dir();
+        if !dir.is_dir() {
+            return;
+        }
+        let mut named = self.live_pictures();
+        named.extend(images::named_in_saves(&self.sessions_dir()));
+        let gone = self.images.sweep_disk(&dir, &named, self.opts.image_disk_limit, SystemTime::now());
+        if gone > 0 {
+            log::info!("pictures: {gone} file(s) no longer needed went from {}", dir.display());
+        }
+    }
+    /// Where the pictures panes were sent are kept (images.rs): beside the
+    /// saved sessions, which name them.
+    fn images_dir(&self) -> PathBuf {
+        self.sessions_dir().join("images")
+    }
+
     /// Describe one live session. `history` holds what each pane had on
     /// screen, collected beforehand because reading it needs `&mut`.
     fn snapshot(&self, s: &Session, history: &HashMap<PaneId, Vec<String>>) -> crate::resurrect::SavedSession {
@@ -2041,6 +2124,11 @@ impl Server {
                             shared: self.shared_keys(link_share::Spot::Pane(id)),
                             made_by: p.made_by.clone(),
                             id: Some(id),
+                            images: {
+                                let mut v: Vec<_> = p.graphics.images.iter().map(|(k, v)| (*k, v.clone())).collect();
+                                v.sort_by_key(|(k, _)| *k);
+                                v
+                            },
                         })
                     };
                     let order = w.layout.panes();
@@ -2075,7 +2163,8 @@ impl Server {
         for id in ids {
             let Some(p) = self.find_pane_mut(id) else { continue };
             let total = p.scrollback_len() + p.rows as usize;
-            let lines = p.lines_from(total.saturating_sub(want), true, false);
+            // With the pictures' cells: they come back with the output.
+            let lines = p.lines_from(total.saturating_sub(want), true, false, true);
             if !lines.is_empty() {
                 out.insert(id, lines);
             }
@@ -2095,6 +2184,16 @@ impl Server {
         // The change key covers the structure only: pane output changes every
         // second and must not make the file be rewritten every second.
         let key = serde_json::to_string(&self.snapshot(s, &HashMap::new())).unwrap_or_default();
+        // The pictures it names are on disk before a file names them (one
+        // just received waits two seconds otherwise: images.rs `settle`).
+        let pictures: HashSet<String> = saved
+            .windows
+            .iter()
+            .flat_map(|w| w.layout.panes())
+            .flat_map(|p| p.images.iter().map(|(_, i)| i.hash.clone()))
+            .collect();
+        let images_dir = self.images_dir();
+        self.images.flush(&images_dir, &pictures);
         let path = crate::resurrect::file_for(&self.sessions_dir(), &saved.name);
         // A window or a pane came or went: the save before, kept (`resume
         // --prev` brings it back).
@@ -2389,6 +2488,11 @@ impl Server {
             }
             self.restore_shared(link_share::Spot::Pane(pane.id), &saved.shared);
             pane.made_by = saved.made_by.clone();
+            // Its pictures: the placeholders come back with the output it
+            // replays; these say which file each one is.
+            for (id, image) in &saved.images {
+                pane.graphics.keep(*id, image.clone());
+            }
             panes.push(pane);
         }
         let mut ids = panes.iter().map(|p| p.id);
@@ -2724,16 +2828,24 @@ impl Server {
             }
             Event::Pane(PaneEvent::Output(id, generation, bytes)) => {
                 let colours = query_colours(&self.opts);
+                let kitty_on = self.opts.kitty_graphics;
+                let images_dir = self.images_dir();
                 if let Some(p) = self.find_pane_mut(id)
                     && p.generation == generation
                 {
                     p.set_query_colours(colours);
+                    p.set_kitty(kitty_on);
                     // pipe-pane and a recording see what the program wrote,
                     // not the screen.
                     let slow = p.pipe_write(&bytes);
                     p.record_write(&bytes);
                     p.output_bytes = p.output_bytes.wrapping_add(bytes.len() as u64);
                     p.process_output(&bytes);
+                    let received = std::mem::take(&mut p.graphics.received);
+                    for r in received {
+                        self.images.put(&images_dir, r);
+                    }
+                    let Some(p) = self.find_pane_mut(id) else { return };
                     let prompted = std::mem::take(&mut p.prompted);
                     // Commands that ended; not those a resumed pane prints back.
                     let finished = std::mem::take(&mut p.finished);
@@ -2949,6 +3061,7 @@ impl Server {
             Event::LinkStream(ask) => self.link_stream_ask(ask),
             Event::StreamInput(key, pane, bytes) => self.stream_input(&key, pane, &bytes),
             Event::StreamCommand(key, id, line) => self.stream_command(&key, id, &line),
+            Event::StreamImage(key, hash) => self.stream_image(&key, &hash),
             Event::Mirror(round, key, news) => self.mirror_news(round, key, news),
             Event::WebStopped(cid) => self.reply(cid, Outcome::Ok),
             Event::LinkAnswer(a) => self.link_answered(*a),
@@ -2980,6 +3093,9 @@ impl Server {
             }
             Event::Tick => {
                 self.autosave_changed();
+                // Pictures: what no pane names leaves memory, what lasted is written.
+                self.images_settle();
+                self.images_disk_tick();
                 self.history_tick();
                 self.mail_tick();
                 self.chat_tick();
@@ -3065,6 +3181,7 @@ impl Server {
                 drag: None,
                 selecting: None,
                 swallow_up: HashSet::new(),
+                graphics: kitty::ClientImages::unknown(),
                 pending_bell: false,
                 pending: std::collections::VecDeque::new(),
                 window_hits: Vec::new(),
@@ -3163,6 +3280,14 @@ impl Server {
                 }
             }
             ClientMsg::Detach => self.detach(cid, "detached"),
+            ClientMsg::Terminal { kitty } => {
+                let Some(c) = self.clients.get_mut(&cid) else { return };
+                if c.graphics.kitty != Some(kitty) {
+                    // Pictures drawn as labels (or the other way): all again.
+                    c.graphics = kitty::ClientImages::new(kitty);
+                    c.last_grid = None;
+                }
+            }
         }
     }
 
@@ -3808,13 +3933,17 @@ impl Server {
             env.push(("TERM".into(), self.opts.default_terminal.clone()));
         }
         // Who they draw on, as tmux says it is tmux: a program that picks how
-        // to draw by the terminal (`ut view`: kitty's pictures for UnifyTerm,
-        // sixel for Windows Terminal, both of which keepane drops) picks what
-        // keepane draws. And its 24-bit colour (kept, and brought down for a
-        // terminal without it).
+        // to draw by the terminal (`ut view`: sixel for Windows Terminal,
+        // which keepane drops) picks what keepane draws. And its 24-bit
+        // colour (kept, and brought down for a terminal without it).
         env.push(("TERM_PROGRAM".into(), "keepane".into()));
         env.push(("TERM_PROGRAM_VERSION".into(), env!("CARGO_PKG_VERSION").into()));
         env.push(("COLORTERM".into(), "truecolor".into()));
+        // `kitty-graphics`: kitty's pictures are taken (kitty.rs), so a
+        // program that goes by names may send them. Off, not said.
+        if self.opts.kitty_graphics {
+            env.push(("KEEPANE_GRAPHICS".into(), "kitty".into()));
+        }
         env.extend(self.env_hook_vars());
         #[cfg(windows)]
         if let Some(start) = crate::platform::shell::wsl_start() {
@@ -7048,7 +7177,7 @@ impl Server {
                 };
                 let Some(p) = self.find_pane_mut(pid) else { return Outcome::Error("no such pane".into()) };
                 let from = p.scrollback_len().saturating_sub(history);
-                Outcome::Text(p.lines_from(from, escapes, join).join("\n"))
+                Outcome::Text(p.lines_from(from, escapes, join, false).join("\n"))
             }
             Cmd::ClearHistory => {
                 let (_, _, pid) = match self.resolve(None, cid) {
@@ -10820,6 +10949,7 @@ impl Server {
         // and the zooming pane over it at its size of the moment (below).
         let zooming = self.zoom_frame(spos);
         let stamps_on = self.opts.pane_timestamps && zooming.is_none();
+        let images_dir = self.images_dir();
         let s = &mut self.sessions[spos];
         let Some(w) = s.window_mut() else { return };
         let active = w.active;
@@ -10848,8 +10978,11 @@ impl Server {
             }
         }
         let mut views = Vec::new();
+        // Where each pane is in the grid, for its pictures (kitty.rs).
+        let mut pane_rects: Vec<(PaneId, Rect)> = Vec::new();
         for (id, rect) in zooming.as_ref().map_or(&w.rects, |z| &z.layout) {
             let Some(p) = w.pane(*id) else { continue };
+            pane_rects.push((*id, *rect));
             views.push(PaneView {
                 rect: *rect,
                 screen: p.screen(),
@@ -10956,6 +11089,46 @@ impl Server {
                 render::draw_frame(&mut grid, frame_around(z.rect, area), frame_style);
             }
             cursor = None;
+        }
+        // kitty's pictures (kitty.rs): each placeholder cell the panes drew
+        // gets this client's number for its picture, or a label when its
+        // terminal shows none. Before anything is drawn over the panes, and
+        // before the theme's colours, which must not take the numbers for
+        // colours.
+        {
+            let w = &self.sessions[spos].windows[self.sessions[spos].cur];
+            let mut regions: Vec<kitty::Region> = pane_rects
+                .iter()
+                .filter_map(|(id, rect)| {
+                    w.pane(*id).map(|p| kitty::Region { pane: *id, rect: *rect, images: &p.graphics.images })
+                })
+                .collect();
+            if let Some(z) = &zooming
+                && let Some(p) = w.pane(z.pane)
+            {
+                regions.push(kitty::Region { pane: z.pane, rect: z.rect, images: &p.graphics.images });
+            }
+            // A pane of another machine's copy: a picture not on disk here is
+            // asked of that machine (link_mirror), and labelled until it comes.
+            let remote = self.sessions[spos].remote.as_ref().map(|r| r.key.clone());
+            let mut wanted: Vec<String> = Vec::new();
+            if let Some(c) = self.clients.get_mut(&cid) {
+                let store = &mut self.images;
+                kitty::map(&mut grid, &regions, &mut c.graphics, &mut |image| {
+                    let has = store.has(&images_dir, image);
+                    if !has && remote.is_some() {
+                        wanted.push(image.hash.clone());
+                    }
+                    has
+                });
+            }
+            if let Some(key) = remote
+                && !wanted.is_empty()
+            {
+                wanted.sort();
+                wanted.dedup();
+                self.mirror_want_pictures(&key, wanted);
+            }
         }
         // `clock-mode`: a big clock over the panes that asked for one, under
         // it what is worth a glance (`clock-mode-info`, `clock`) and, below,
@@ -11272,6 +11445,10 @@ impl Server {
         if let Some(p) = c.popup.as_ref() {
             let hint = p.finished.then_some("press any key");
             cursor = render::draw_popup(&mut grid, p.rect, p.pane.screen(), active_fg, hint);
+            // Its pictures, as the panes' above.
+            let region = [kitty::Region { pane: p.pane.id, rect: p.rect, images: &p.pane.graphics.images }];
+            let store = &mut self.images;
+            kitty::map(&mut grid, &region, &mut c.graphics, &mut |image| store.has(&images_dir, image));
         }
         // The prefix waits for its next key, `prefix-hint-delay` already: what
         // each key does. Last, over a popup too: the next key is keepane's.
@@ -11288,11 +11465,16 @@ impl Server {
         // The theme's colours, over everything drawn.
         let bar = (opts_status && rows > 1).then(|| if status_top { 0 } else { rows - 1 });
         render::recolor(&mut grid, bar, self.opts.window_fg, self.opts.window_bg, &self.opts.pane_colours);
+        // The pictures the frame shows that its terminal does not have yet go
+        // first; those not shown for a while are taken out of it.
+        let store = &mut self.images;
+        let pictures = kitty::transmit(&grid, &mut c.graphics, &mut |image| store.get(&images_dir, image));
         let changed = c.last_grid.as_ref() != Some(&grid) || c.last_cursor != cursor;
-        if !changed && !bell {
+        if !changed && !bell && pictures.is_empty() {
             return;
         }
         let mut bytes = render::diff(c.last_grid.as_ref(), &grid, cursor);
+        bytes.splice(0..0, pictures);
         if bell {
             bytes.insert(0, 0x07);
         }
@@ -12937,6 +13119,7 @@ mod tests {
             drag: None,
             selecting: None,
             swallow_up: HashSet::new(),
+            graphics: kitty::ClientImages::unknown(),
             pending_bell: false,
             pending: std::collections::VecDeque::new(),
             window_hits: Vec::new(),

@@ -153,7 +153,7 @@ keepane chat read DFINE/#review
 
 ## dashboard
 
-按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组（这里有别的机器的 session 时，先按机器分组：每台机器一行，写它的名字和地址，下面是它的 session），列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序（跑 agent 的写 agent 的花费和上下文，标题里是总花费）。每列上方写着列名；颜色各表达一个意思（空闲绿、忙黄、有消息排队蓝、上下文越满越红）；窗口窄时，最不要紧的列先让位；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[4]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件、agent 的 trace、它所在目录的 git 情况（Git 标签页：分支和上游、改了哪些文件、最近的提交和分支；不在仓库里的目录，显示两层文件树），或光标所在的消息、任务：在 `[2]`、`[3]` 里移到哪一条，右边立刻排好版显示它（状态用颜色标出，谁发给谁，每一步的时间，然后是正文和执行输出；任务则把每条消息按时间连成一列）。Tab、`0 1 2 3 4`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`g`/`G`（或 Home/End）跳到第一行 / 最后一行（右边是到顶 / 到底），`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。窗口宽 150 列以上时，最左边多一列：上面是 `[0]` 所选 pane 的目录，下面每秒显示本机的状态：CPU（总占用、最近 24 秒的曲线、每个核）、内存、交换区、每秒磁盘和网络流量、温度、功率、电池、进程数，系统给得出哪些就显示哪些。在 `[0]` 里像 mini.files 那样走：`j`/`k` 移动，`h` 回上级目录，`l` 进入目录；光标所在的东西显示在右边（目录列出内容，文件显示带行号的文本，最多前 256 KiB；二进制文件只显示大小；这台机器上有 [UnifyTerm](https://github.com/newdee/unifyterm) 的 `ut` 时，图片（PNG、JPEG、GIF、WebP、BMP）用 `ut view` 画成彩色半格方块，Markdown 用 `ut md` 显示成带样式的文字），在文件上按 `l` 可以滚动它；`.` 显示或隐藏隐藏文件，`-` 回到 pane 的目录。换了所选 pane、或这个 pane 换了目录，`[0]` 跟着走。每个条目前面有表示类型的 emoji：📁 文件夹（内容正显示在右边的那个是 📂），🐍 Python，🦀 Rust，📄 不认识的文件；Git 标签页的文件树也一样（下面列出了内容的文件夹是 📂）；终端用的是 Nerd Font 时，`set -g dashboard-icons nerd` 换成 Nerd Font 的图标。窗口更窄时，按 `0` 让 `[0]` 临时占据左边那一栏。（0.60 及以前右边是 `[0]`，现在是 `[4]`。）
+按 `C-b v`（弹窗）或运行 `keepane dashboard`（任意终端），像 lazygit 那样分面板显示。左边：`[1]` 所有 pane，按 session 分组（这里有别的机器的 session 时，先按机器分组：每台机器一行，写它的名字和地址，下面是它的 session），列出工作模式、空闲与否、收件箱、安静了多久、在跑的程序（跑 agent 的写 agent 的花费和上下文，标题里是总花费）。每列上方写着列名；颜色各表达一个意思（空闲绿、忙黄、有消息排队蓝、上下文越满越红）；窗口窄时，最不要紧的列先让位；`[2]` 所选 pane 的收件箱；`[3]` 任务。右边 `[4]` 是所选 pane：地址、目录、pid、跑了多久、它说自己在做什么，下面是它此刻的屏幕（带颜色）、回滚、事件、agent 的 trace、它所在目录的 git 情况（Git 标签页：分支和上游、改了哪些文件、最近的提交和分支；不在仓库里的目录，显示两层文件树），或光标所在的消息、任务：在 `[2]`、`[3]` 里移到哪一条，右边立刻排好版显示它（状态用颜色标出，谁发给谁，每一步的时间，然后是正文和执行输出；任务则把每条消息按时间连成一列）。Tab、`0 1 2 3 4`、`h`/`l` 换面板，`j`/`k` 在面板里移动，`g`/`G`（或 Home/End）跳到第一行 / 最后一行（右边是到顶 / 到底），`[`/`]` 切换右边的内容；鼠标可以点选和滚动；`?` 列出所有按键。窗口宽 150 列以上时，最左边多一列：上面是 `[0]` 所选 pane 的目录，下面每秒显示本机的状态：CPU（总占用、最近 24 秒的曲线、每个核）、内存、交换区、每秒磁盘和网络流量、温度、功率、电池、进程数，系统给得出哪些就显示哪些。在 `[0]` 里像 mini.files 那样走：`j`/`k` 移动，`h` 回上级目录，`l` 进入目录；光标所在的东西显示在右边（目录列出内容，文件显示带行号的文本，最多前 256 KiB；二进制文件只显示大小；这台机器上有 [UnifyTerm](https://github.com/newdee/unifyterm) 的 `ut` 时，图片（JPEG、GIF、WebP、BMP）用 `ut view` 画成彩色半格方块，Markdown 用 `ut md` 显示成带样式的文字；PNG 在能显示图片的终端里用 kitty 协议画出原图，见下文“pane 里的图片”），在文件上按 `l` 可以滚动它；`.` 显示或隐藏隐藏文件，`-` 回到 pane 的目录。换了所选 pane、或这个 pane 换了目录，`[0]` 跟着走。每个条目前面有表示类型的 emoji：📁 文件夹（内容正显示在右边的那个是 📂），🐍 Python，🦀 Rust，📄 不认识的文件；Git 标签页的文件树也一样（下面列出了内容的文件夹是 📂）；终端用的是 Nerd Font 时，`set -g dashboard-icons nerd` 换成 Nerd Font 的图标。窗口更窄时，按 `0` 让 `[0]` 临时占据左边那一栏。（0.60 及以前右边是 `[0]`，现在是 `[4]`。）
 
 按 `>` 翻到下一页，`<` 翻回上一页（底栏写着 `page 2/3` 这样的页码，窗口窄得放不下所有按键时也保留它）。打开 dashboard 时，回到上次离开时的那一页和选中的那一行（pane 按编号、分享按序号记；server 记着，`board-pick`，重启 server 后从第 1 页开始）；记住的 pane 已经不在了，就选打开它的那个 pane。第 3 页：`[0]` 和系统信息不变，`[1]` 列出这台机器分享出去的东西（`keepane share`，见下文），每个标出 `active`、`missing`（文件暂时不在）、`stopped`、`expired` 或 `used`（一次性，已被下载），还有剩余时间和下载次数；`[2]` 是这些分享经历的事，最新的在前；`[4]` 是所选的那个：链接、谁打开过、经历的事、扫码用的二维码。在 `[0]` 按 `S` 分享光标所在的东西（选时长、是否一次性，要确认）；在 `[1]` 上 `x` 停止一个（`X` 全部）、`e` 延长（链接不变）、`r` 换新链接重新分享、`y` 复制链接、`a` 显示或隐藏已结束的。分享、停止、重新分享都要先确认。
 
@@ -438,6 +438,22 @@ copy mode 的常用操作：
 set -g hint-open "new-window hx '{file}:{line}:{col}'"
 set -g hint-open "run-shell 'idea --line {line} {file}'"
 ```
+
+## pane 里的图片
+
+pane 里的程序可以用 kitty 图形协议发图片，keepane 像保存 pane 的文字一样保存它：图片跟着文字滚动、进历史、分屏时被裁，`restart-server` 或重启电脑后也还在。能显示这类图片的终端（UnifyTerm、kitty、WezTerm、ghostty）在图片第一次进入视野时收到它；别的终端（Windows Terminal、conhost）在那里显示 `▧ image 640×480`。两种终端同时 attach，各画各的。
+
+```tmux
+set -g kitty-graphics on     # 默认开；off 时照旧丢掉
+set -g image-disk-limit 1G   # 保存的图片在磁盘上最多占多少
+```
+
+- 每张图片只存一份，放在保存的会话旁边（`images/<sha256>.<扩展名>`），收到后过两秒还在才写盘（动画的帧一帧接一帧替换，不会写盘）；只在发送时放在内存里：一分钟没画到的图片，keepane 和终端都会释放，再进入视野时重新读。同一个编号再发一张，终端里替换掉上一张。
+- 当作文字时它是空白：`capture-pane`、复制模式和读屏幕的 agent 在那里看到的是空格。
+- dashboard 在 `[0]` 和频道的群文件里用它画 PNG。
+- 别的机器的 pane（`link-mirror`）里的图片也能显示：显示时向那台机器要，存到本机（每张最多 8 MiB；更大的在那边显示成标签）。
+- 开着时 pane 里有 `KEEPANE_GRAPHICS=kitty`，给按环境变量判断的程序看；向终端询问的程序会得到回答。
+- Windows 上，pane 里程序发的图片要经过新版控制台宿主（`keepane.exe` 旁边的 `conpty.dll` 和 `OpenConsole.exe`）才到得了 keepane，Windows 自带的会把它丢掉。
 
 ## 命令时间和历史
 
@@ -1138,7 +1154,7 @@ bind A run-shell "pwsh -NoProfile -Command Get-Content $env:TEMP\agent.log -Tail
 
 每个 pane 使用一个伪终端（Windows 上是 ConPTY）。server 用 `vt100` 维护终端画面，将可见 pane、边框和状态栏合成一帧，只向客户端发送变化的格子；客户端再用 VT 序列写入控制台。最后一个 session 结束后，server 退出。Windows 上，server 启动时会尽可能脱离创建它的 job，避免从 SSH 启动时随连接断开而退出；Linux 和 macOS 上，server 自成一个会话，终端或 SSH 连接挂断的信号到不了它。
 
-pane 里能看到两个环境变量：`KEEPANE`（socket 名）和 `KEEPANE_PANE`（pane 编号）。pane 里还有 `TERM_PROGRAM=keepane`、`TERM_PROGRAM_VERSION`（keepane 的版本）和 `COLORTERM=truecolor`；启动 server 的那个终端留下的身份变量（`WT_SESSION`、`WT_PROFILE_ID`、`KITTY_WINDOW_ID`、`KITTY_PID`、`ITERM_SESSION_ID`、`LC_TERMINAL`、`LC_TERMINAL_VERSION`）在 pane 里会去掉，和 tmux 设 `TERM_PROGRAM=tmux` 一个道理：pane 里的程序画在 keepane 上，不是外面的终端上，所以 `ut view` 这类按终端选画法的程序会画半格方块，而不是 keepane 显示不了的 kitty 或 sixel 图片。`set-environment` 设了它们的话以那个为准。在 pane 里敲 `keepane` 命令会自动连到管着这个 pane 的 server（和 tmux 用 `$TMUX` 一个道理），所以 `keepane ls` 之类不用再写 `-L`。server 日志位于 `%LOCALAPPDATA%\keepane\server.log`，`KEEPANE_LOG=debug` 会记得更详细。超过 5 MB 会改名为 `server.log.1` 再开新文件，跑几个月的 server 日志也最多占 10 MB 左右。
+pane 里能看到两个环境变量：`KEEPANE`（socket 名）和 `KEEPANE_PANE`（pane 编号）。pane 里还有 `TERM_PROGRAM=keepane`、`TERM_PROGRAM_VERSION`（keepane 的版本）和 `COLORTERM=truecolor`；启动 server 的那个终端留下的身份变量（`WT_SESSION`、`WT_PROFILE_ID`、`KITTY_WINDOW_ID`、`KITTY_PID`、`ITERM_SESSION_ID`、`LC_TERMINAL`、`LC_TERMINAL_VERSION`）在 pane 里会去掉，和 tmux 设 `TERM_PROGRAM=tmux` 一个道理：pane 里的程序画在 keepane 上，不是外面的终端上，所以 `ut view` 这类按终端选画法的程序不会发 keepane 会丢掉的 sixel 图片；`KEEPANE_GRAPHICS=kitty` 表示 kitty 图片会被保存（见“pane 里的图片”）。`set-environment` 设了它们的话以那个为准。在 pane 里敲 `keepane` 命令会自动连到管着这个 pane 的 server（和 tmux 用 `$TMUX` 一个道理），所以 `keepane ls` 之类不用再写 `-L`。server 日志位于 `%LOCALAPPDATA%\keepane\server.log`，`KEEPANE_LOG=debug` 会记得更详细。超过 5 MB 会改名为 `server.log.1` 再开新文件，跑几个月的 server 日志也最多占 10 MB 左右。
 
 如果按键没有响应（例如前缀键），可在同一终端运行 `keepane show-keys` 再按它：每按一个键，会打印控制台交过来的是什么、keepane 把它认成哪个键，按 `q` 退出。什么都没打印，说明是外面托管终端的程序自己把键吃掉了（比如 VS Code 自己绑了 `Ctrl+B`）。有些宿主把输入当字节转交而不是键盘事件（SSH、一些远程工具），`Ctrl+B` 到这里只是字符 0x02、不带 Ctrl 标志；keepane 按 tmux 的读法解读控制字符，所以它照样是 `C-b`。
 

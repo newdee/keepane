@@ -13524,7 +13524,33 @@ async fn an_agent_from_a_definition_file_is_known_busy_free_and_waiting() {
     // Started in the pane: known by its program's name.
     let toy = toy_agent();
     h.cli(&["send-keys", "-t", &t, &toy.display().to_string(), "Enter"]).await;
-    h.wait_for_cli("the toy agent seen", &["list-agents"], |_, out| out.contains(&format!("%{p} d:0.0 toy "))).await;
+    // Waited for as `wait_for_cli` does, saying what the pane shows when it
+    // is not seen (did the program start at all?).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut tried_again = false;
+    loop {
+        let (_, out, _) = h.cli(&["list-agents"]).await;
+        if out.contains(&format!("%{p} d:0.0 toy ")) {
+            break;
+        }
+        // Linux: the copy just written can still be open for writing in a
+        // child another test's thread forked at that moment, and the shell
+        // is refused ("Text file busy"); once more, then it is not.
+        if !tried_again {
+            let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", &t]).await;
+            if screen.contains("Text file busy") {
+                tried_again = true;
+                h.cli(&["send-keys", "-t", &t, &toy.display().to_string(), "Enter"]).await;
+            }
+        }
+        if Instant::now() > deadline {
+            let (_, screen, _) = h.cli(&["capture-pane", "-p", "-t", &t]).await;
+            let (_, panes, _) =
+                h.cli(&["list-panes", "-t", "d", "-F", "#{pane_id} #{pane_current_command} #{pane_pid}"]).await;
+            panic!("the toy agent not seen: {out:?}\npane:\n{screen}\npanes: {panes}");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     h.cli(&["set-work-mode", "-t", &t, "ai"]).await;
     // Its screen says it asks: a wait, told. (First: a pane's notices come
     // a few seconds apart at the closest, and its turn's end below is one.)
@@ -16884,4 +16910,61 @@ async fn another_machines_old_save_is_put_aside_not_warned_of() {
     assert!(h.sessions_dir.join("killed").join("work_10.0.0.2_7681-12345678.json").exists(), "put aside");
     assert!(!h.cli(&["list-sessions"]).await.1.contains("work@"), "and not made a session here");
     h.cli(&["kill-server"]).await;
+}
+
+/// kitty's pictures (docs/design/kitty-graphics.md), with the real server on
+/// every system: a program prints one; the server keeps it on disk once by
+/// its hash; as text it is blank; a client that says its terminal shows
+/// pictures is sent it, before its cells.
+#[tokio::test]
+async fn a_kitty_picture_is_kept_and_sent_to_a_terminal_that_shows_them() {
+    let h = Harness::start("kitty_picture").await;
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08\0\0\0\x08".to_vec();
+    png.extend_from_slice(b"\x08\x06\0\0\0rest-of-the-file");
+    let file = std::env::temp_dir().join(format!("keepane-kitty-picture-{}.txt", std::process::id()));
+    let data = keepane::server::kitty::base64_encode(&png);
+    std::fs::write(&file, format!("before\r\n\x1b_Ga=T,f=100,i=7,c=4,q=2;{data}\x1b\\after\r\n")).unwrap();
+    let shown = file.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    let argv = ["cmd.exe".to_string(), "/q".into(), "/k".into(), "type".into(), shown];
+    #[cfg(unix)]
+    let argv = ["/bin/sh".to_string(), "-c".into(), format!("cat '{shown}'; exec /bin/sh")];
+    let (code, _, err) = h.cli(&args(&["new", "-d", "-s", "k"], &argv)).await;
+    assert_eq!(code, 0, "{err}");
+    let text = h.wait_capture("k", "the text after the picture", |t| t.contains("after")).await;
+    assert!(text.contains("before") && !text.contains('\u{10EEEE}'), "blank as text: {text:?}");
+    let (_, coloured, _) = h.cli(&["capture-pane", "-p", "-e", "-t", "k"]).await;
+    assert!(coloured.contains("after") && !coloured.contains('\u{10EEEE}'), "blank with -e too: {coloured:?}");
+    // On disk once it has lasted two seconds, once.
+    let images = h.sessions_dir.join("images");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let kept = loop {
+        let kept: Vec<_> =
+            std::fs::read_dir(&images).map(|d| d.flatten().map(|e| e.file_name()).collect()).unwrap_or_default();
+        if !kept.is_empty() || Instant::now() > deadline {
+            break kept;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(kept.len(), 1, "kept once: {kept:?}");
+    let mut c = h.connect().await;
+    c.attach(&["attach", "-t", "k"]).await;
+    c.send(ClientMsg::Terminal { kitty: true }).await;
+    let mut raw = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let s = String::from_utf8_lossy(&raw);
+        if let (Some(picture), Some(cell)) = (s.find("\x1b_Ga=t,t=d,f=100,i="), s.find('\u{10EEEE}')) {
+            assert!(picture < cell, "the picture before its cells");
+            assert!(s.contains(",c=4,r=2,q=2\x1b\\"), "its virtual placement");
+            break;
+        }
+        assert!(Instant::now() < deadline, "no picture sent: {s:?}");
+        if let Ok(Ok(Some(ServerMsg::Output(b)))) =
+            tokio::time::timeout(Duration::from_millis(500), read_frame::<_, ServerMsg>(&mut c.rd)).await
+        {
+            raw.extend(b);
+        }
+    }
+    let _ = std::fs::remove_file(&file);
 }

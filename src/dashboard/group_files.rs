@@ -177,7 +177,9 @@ impl Board {
         };
         let title = format!("[4] {}", g.name);
         let line = format!("#{} {}", g.seq, g.day).trim_end().to_string();
-        let preview = |p: &Path| files::preview(p, w, false, self.files.icons, self.files.ut.as_ref());
+        let preview = |p: &Path| {
+            files::preview(p, w, false, self.files.icons, self.files.ut.as_ref(), Some(&self.files.pictures))
+        };
         let lines = match (&g.missing, &g.path, &g.url) {
             (Some(why), _, _) => vec![paint("2", why)],
             (None, Some(p), _) => preview(Path::new(p)),

@@ -395,7 +395,11 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
                         None => format!("keepane: {session}"),
                     };
                     c.set_title(&title);
-                    match attached(Arc::clone(&c), &session, rd, &mut wr, &mut input).await {
+                    // What the terminal shows, told only to a server of this
+                    // version: an older one does not know the message.
+                    let kitty =
+                        mismatch.is_none().then(|| crate::server::kitty::outer_has_kitty(|k| std::env::var(k).ok()));
+                    match attached(Arc::clone(&c), &session, rd, &mut wr, &mut input, kitty).await {
                         Ok(Detach::Restarting) => match reattach(&socket, &session, &c).await {
                             Ok((r, w, s)) => {
                                 (rd, wr, session) = (r, w, s);
@@ -547,6 +551,7 @@ async fn attached<R, W>(
     rd: R,
     wr: &mut W,
     rx: &mut mpsc::UnboundedReceiver<ClientMsg>,
+    kitty: Option<bool>,
 ) -> Result<Detach>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -556,6 +561,9 @@ where
     // window changed while connecting.
     let s = console.size();
     write_frame(wr, &ClientMsg::Resize { cols: s.0, rows: s.1 }).await?;
+    if let Some(kitty) = kitty {
+        write_frame(wr, &ClientMsg::Terminal { kitty }).await?;
+    }
 
     let reason: Option<String>;
     // Poll the window size too: not every host reports WINDOW_BUFFER_SIZE_EVENT.

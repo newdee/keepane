@@ -96,6 +96,13 @@ impl Cell {
         self.len() > 0
     }
 
+    /// keepane: whether the cell is a cell of a picture (kitty's Unicode
+    /// placeholder, U+10EEEE), which plain text reads as a blank.
+    #[must_use]
+    pub fn is_image(&self) -> bool {
+        self.contents().starts_with('\u{10EEEE}')
+    }
+
     /// Returns whether the text data in the cell represents a wide character.
     #[must_use]
     pub fn is_wide(&self) -> bool {

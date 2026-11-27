@@ -267,12 +267,12 @@ mod tests {
         std::fs::write(&png, b"\x89PNG\x00\x00").unwrap();
         let icons = super::super::files::Icons::Emoji;
         let strip = |v: Vec<String>| v.iter().map(|l| super::super::strip(l)).collect::<Vec<_>>();
-        let p = strip(super::super::files::preview(&md, 60, false, icons, Some(&ut)));
+        let p = strip(super::super::files::preview(&md, 60, false, icons, Some(&ut), None));
         assert!(p.iter().any(|l| l == "as ut md shows it") && p.iter().any(|l| l == "styled"), "{p:?}");
-        let p = strip(super::super::files::preview(&png, 60, false, icons, Some(&ut)));
+        let p = strip(super::super::files::preview(&png, 60, false, icons, Some(&ut), None));
         assert!(p.iter().any(|l| l.contains("ut could not show it")), "said why: {p:?}");
         assert!(p.iter().any(|l| l.contains("binary")), "the plain preview after it: {p:?}");
-        let p = strip(super::super::files::preview(&md, 60, false, icons, None));
+        let p = strip(super::super::files::preview(&md, 60, false, icons, None, None));
         assert!(p.iter().any(|l| l.contains("# a")), "no ut: the text as it is: {p:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }

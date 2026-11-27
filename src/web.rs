@@ -663,6 +663,7 @@ async fn link_stream(mut stream: TcpStream, peer: IpAddr, state: &State, req: &R
                         FeedItem::Entry(e) => to_client::Kind::Entry(e.into()),
                         FeedItem::Snapshot(s) => to_client::Kind::Snapshot(s.into()),
                         FeedItem::Reply(r) => to_client::Kind::Reply(r.clone()),
+                        FeedItem::Image(d) => to_client::Kind::ImageData(d.clone()),
                         FeedItem::End(why) => {
                             log::info!("link stream to {peer} ends: {why}");
                             return Ok(());
@@ -678,6 +679,7 @@ async fn link_stream(mut stream: TcpStream, peer: IpAddr, state: &State, req: &R
                         match msg.kind {
                             Some(to_server::Kind::Input(i)) => (feed.input)(i.pane, i.bytes),
                             Some(to_server::Kind::Command(c)) => (feed.command)(c.id, c.line),
+                            Some(to_server::Kind::ImageWanted(w)) => (feed.image)(w.hash),
                             _ => {}
                         }
                     }

@@ -131,7 +131,9 @@ impl Row {
 
             // we limit the number of cols to a u16 (see Size)
             let col: u16 = col.try_into().unwrap();
-            if cell.has_contents() {
+            // keepane: a cell of a picture (kitty's placeholder) is no text;
+            // as plain text it reads as a blank.
+            if cell.has_contents() && !cell.is_image() {
                 for _ in 0..(col - prev_col) {
                     contents.push(' ');
                 }

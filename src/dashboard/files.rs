@@ -135,6 +135,9 @@ pub struct Files {
     pub icons: Icons,
     /// UnifyTerm's `ut`, when this machine has it (`super::ut`).
     pub ut: Option<super::ut::Ut>,
+    /// PNG pictures drawn with kitty's protocol, in a keepane pane that
+    /// takes it (`super::pictures`).
+    pub pictures: super::pictures::Pictures,
     /// Why the directory could not be read.
     pub error: Option<String>,
     /// The pane followed and its directory then: a new pane or a `cd`
@@ -342,7 +345,14 @@ pub fn size_text(b: u64) -> String {
 /// `icons`, as on the left), a file's text with its line numbers (at most
 /// `PREVIEW_MAX` of it), or what it is when it is not text. With `ut`
 /// (UnifyTerm's), a picture as it draws it and markdown styled.
-pub fn preview(path: &Path, width: usize, hidden: bool, icons: Icons, ut: Option<&super::ut::Ut>) -> Vec<String> {
+pub fn preview(
+    path: &Path,
+    width: usize,
+    hidden: bool,
+    icons: Icons,
+    ut: Option<&super::ut::Ut>,
+    pictures: Option<&super::pictures::Pictures>,
+) -> Vec<String> {
     let name = path.to_string_lossy();
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -377,6 +387,12 @@ pub fn preview(path: &Path, width: usize, hidden: bool, icons: Icons, ut: Option
     }
     let size = meta.len();
     let mut head = vec![format!("{}  {}", paint("1", &name), paint("2", &size_text(size)))];
+    // A PNG picture itself, in a keepane pane that takes kitty's pictures.
+    if let Some(lines) = pictures.and_then(|p| p.lines(path, width)) {
+        head.push(String::new());
+        head.extend(lines);
+        return head;
+    }
     // A picture or markdown, as UnifyTerm's `ut` shows it; when it cannot,
     // the plain preview, and why.
     match ut.and_then(|u| u.preview(path, width)) {
@@ -578,7 +594,7 @@ mod tests {
         let d = tree();
         let text = d.join("t.txt");
         std::fs::write(&text, "a\tb\r\nescape \x1b[31mred\n中文\n").unwrap();
-        let p = preview(&text, 40, false, Icons::Emoji, None);
+        let p = preview(&text, 40, false, Icons::Emoji, None, None);
         let body: Vec<String> = p.iter().map(|l| super::super::strip(l)).collect();
         assert!(body[1].contains("3 lines"), "{body:?}");
         assert_eq!(body[3], "1 a   b");
@@ -586,18 +602,18 @@ mod tests {
         assert_eq!(body[5], "3 中文");
         let bin = d.join("b.bin");
         std::fs::write(&bin, [0u8, 1, 2, 3]).unwrap();
-        assert!(preview(&bin, 40, false, Icons::Emoji, None).iter().any(|l| l.contains("binary")));
+        assert!(preview(&bin, 40, false, Icons::Emoji, None, None).iter().any(|l| l.contains("binary")));
         let big = d.join("big.txt");
         std::fs::write(&big, "x\n".repeat((PREVIEW_MAX as usize) / 2 + 100)).unwrap();
-        let p = preview(&big, 40, false, Icons::Emoji, None);
+        let p = preview(&big, 40, false, Icons::Emoji, None, None);
         assert!(super::super::strip(&p[1]).contains("the first 256.0K shown"), "{:?}", p[1]);
         assert_eq!(p.len(), 3 + (PREVIEW_MAX as usize) / 2, "only what was read");
         std::fs::write(d.join("src/.secret"), "").unwrap();
-        let dirp = preview(&d.join("src"), 40, false, Icons::Emoji, None);
+        let dirp = preview(&d.join("src"), 40, false, Icons::Emoji, None, None);
         assert!(super::super::strip(&dirp[1]).contains("1 directories, 1 files"), "{dirp:?}");
-        let all = preview(&d.join("src"), 40, true, Icons::Emoji, None);
+        let all = preview(&d.join("src"), 40, true, Icons::Emoji, None, None);
         assert!(super::super::strip(&all[1]).contains("1 directories, 2 files"), "hidden as on the left: {all:?}");
-        assert!(preview(&d.join("nope"), 40, false, Icons::Emoji, None)[1].contains("cannot read"));
+        assert!(preview(&d.join("nope"), 40, false, Icons::Emoji, None, None)[1].contains("cannot read"));
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -750,7 +766,7 @@ mod tests {
         }
         // The right side's listing of a directory marks its entries too.
         let p: Vec<String> =
-            preview(&d, 40, false, Icons::Emoji, None).iter().map(|l| super::super::strip(l)).collect();
+            preview(&d, 40, false, Icons::Emoji, None, None).iter().map(|l| super::super::strip(l)).collect();
         assert!(p.contains(&"📁 Docs/".to_string()) && p.contains(&"📝 A.md  4B".to_string()), "{p:?}");
         let _ = std::fs::remove_dir_all(d);
     }

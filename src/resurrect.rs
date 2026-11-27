@@ -44,6 +44,13 @@ pub struct SavedPane {
     /// have none: a new number then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u32>,
+    /// The pictures its saved output shows (kitty.rs), each with its number
+    /// in the pane: the placeholders come back with the output, and these
+    /// say which file on disk each is. Older files have none. A list of
+    /// pairs, not a map: a map's keys are strings in JSON, and a pane is read
+    /// inside a tagged `SavedNode`, where a string is never read as a number.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<(u32, crate::server::kitty::Image)>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -413,6 +420,27 @@ mod tests {
         assert!(!v.to_string().contains("\"id\""));
         let old = SavedFile::from_json(&v.to_string()).unwrap();
         assert!(old.session.ids().is_empty());
+    }
+
+    #[test]
+    fn a_panes_pictures_are_saved_and_read_back_deep_in_its_layout() {
+        let mut f = sample();
+        let image = crate::server::kitty::Image {
+            hash: "e".repeat(64),
+            format: crate::server::kitty::Format::Png,
+            width: 640,
+            height: 480,
+            cells: Some((30, 11)),
+        };
+        // A pane two splits deep: read inside the tagged `SavedNode`.
+        if let SavedNode::Split { children, .. } = &mut f.session.windows[0].layout
+            && let SavedNode::Split { children, .. } = &mut children[1]
+            && let SavedNode::Pane { pane } = &mut children[0]
+        {
+            pane.images = vec![(7, image.clone()), (0x00F0_0001, image)];
+        }
+        let back = SavedFile::from_json(&f.to_json()).expect("a pane with pictures reads back");
+        assert_eq!(back, f);
     }
 
     #[test]

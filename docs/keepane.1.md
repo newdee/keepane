@@ -24,6 +24,8 @@ a pane waits in its inbox until the pane is free, then goes in; a pane in
 AI agent in a pane in *ai* work mode reads it and answers. Everything a
 message does is in an event log.
 
+Pictures a program in a pane sends with kitty's graphics protocol are kept by the server with the pane's text: they scroll with it, go into its history and come back after a server restart. A client in a terminal that shows them (UnifyTerm, kitty, WezTerm, ghostty) is sent each one when it first comes into view; any other terminal shows a label, `▧ image 640×480`, in its place. As text (`capture-pane`, an agent reading the screen) a picture is blank. `set -g kitty-graphics off` drops them, as before. On Windows they reach the server only through the newer console host (`conpty.dll` and `OpenConsole.exe` beside `keepane.exe`); Windows' own drops them.
+
 With no command, `keepane` goes into what is there (`new-session -A` with no
 name): the session used last; with none running, every saved session back
 (not those killed by hand) and the one saved last; with nothing at all, a
@@ -1025,6 +1027,8 @@ Set with `set -g` (`set -gu` back to the default) or on the settings board (pref
 | `window-size` | `latest` | Whose size a session takes: `latest`, `smallest`, `largest`, `manual`. |
 | `default-terminal` | `xterm-256color` | `TERM` in panes on Linux and macOS. |
 | `pane-timestamps` | `off` | When each command ran, and how it went, at its line's end. |
+| `kitty-graphics` | `on` | Pictures programs send with kitty's protocol: shown where the terminal can, a label elsewhere. |
+| `image-disk-limit` | `1G` | The most the kept pictures take on disk; the ones not shown longest go first. |
 | `log-history` | `on` | Keep what panes print on disk (`choose-history`). |
 | `log-history-days` | `30` | Days kept; 0 all. |
 | `log-history-dir` | *(data directory)*`/history` | Where. |
@@ -1122,7 +1126,10 @@ flags are `1` or `0`. `#{?name,yes,no}` chooses, `#{=N:name}` cuts,
 : The pane's id (the *N* of `%`*N*), set in every pane.
 
 `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `COLORTERM`
-: `keepane`, its version and `truecolor` in every pane (what its programs draw on is keepane, as tmux says `tmux`), and what says which terminal the server was started from is taken away there: `WT_SESSION`, `WT_PROFILE_ID`, `KITTY_WINDOW_ID`, `KITTY_PID`, `ITERM_SESSION_ID`, `LC_TERMINAL`, `LC_TERMINAL_VERSION`. So a program that picks how to draw by the terminal (`ut view`) draws what keepane shows, not kitty's or sixel pictures it drops. `set-environment` of any of them still wins.
+: `keepane`, its version and `truecolor` in every pane (what its programs draw on is keepane, as tmux says `tmux`), and what says which terminal the server was started from is taken away there: `WT_SESSION`, `WT_PROFILE_ID`, `KITTY_WINDOW_ID`, `KITTY_PID`, `ITERM_SESSION_ID`, `LC_TERMINAL`, `LC_TERMINAL_VERSION`. So a program that picks how to draw by the terminal (`ut view`) does not send sixel pictures, which keepane drops. `set-environment` of any of them still wins.
+
+`KEEPANE_GRAPHICS`
+: `kitty` in every pane while `kitty-graphics` is on: kitty's pictures are kept and shown (a program that goes by names may send them). Not set when it is off.
 
 `KEEPANE_CONFIG`
 : The config file to read instead of `~/.keepane.conf`.
@@ -1201,7 +1208,7 @@ flags are `1` or `0`. `#{?name,yes,no}` chooses, `#{=N:name}` cuts,
   the saved sessions, `environment/`*socket*`.json` keeps
   `set-environment`'s table, and `.ps1`, `.sh` and `.fish` beside it its
   changes for the shells' prompt hook. `shell/` holds the start files that
-  give bash, zsh, fish and a `wsl.exe` pane's shell keepane's hook.
+  give bash, zsh, fish and a `wsl.exe` pane's shell keepane's hook. `images/` beside the saved sessions keeps the pictures panes were sent (`kitty-graphics`), each once, named by its SHA-256.
 
 `$XDG_RUNTIME_DIR/keepane-`*uid*`/`*socket-name* (or under `/tmp`)
 : A server's socket; only its user can open the directory.

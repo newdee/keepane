@@ -26,6 +26,7 @@ mod files;
 mod gitview;
 mod group_files;
 mod machine;
+mod pictures;
 mod shares;
 pub(crate) mod ut;
 
@@ -1012,7 +1013,14 @@ impl Board {
     pub fn local_main(&self, git: Option<&std::path::Path>) -> Option<Vec<String>> {
         if let Some(path) = self.shown_file() {
             let width = self.layout().main.map_or(80, |r| r.inner_w());
-            return Some(files::preview(path, width, self.files.hidden, self.files.icons, self.files.ut.as_ref()));
+            return Some(files::preview(
+                path,
+                width,
+                self.files.hidden,
+                self.files.icons,
+                self.files.ut.as_ref(),
+                Some(&self.files.pictures),
+            ));
         }
         if self.tab != Tab::Git {
             return None;
@@ -3622,6 +3630,8 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
     // UnifyTerm's `ut`, when this machine has it: pictures and markdown in
     // the preview.
     board.files.ut = ut::find().map(ut::Ut::new);
+    // kitty's pictures, when this board's pane takes them.
+    board.files.pictures = pictures::Pictures::from_env();
     // The Git tab asks git on this machine, as the pane's shell would.
     let git = crate::git::command("");
     let result = (|| -> anyhow::Result<()> {
@@ -3686,7 +3696,13 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                 }
             }
             keep_place(&mut board, ask);
-            console.write_str(&board.frame());
+            let frame = board.frame();
+            // The pictures it shows for the first time go before it.
+            let sent = board.files.pictures.take();
+            if !sent.is_empty() {
+                console.write_bytes(&sent);
+            }
+            console.write_str(&frame);
             // A key, or a second without one: then the board is read again.
             let first = match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(e) => Some(e),

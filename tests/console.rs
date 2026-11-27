@@ -810,3 +810,151 @@ fn a_server_started_inside_a_job_outlives_it_when_the_job_allows() {
         let _ = keepane().args(["-L", &socket, "kill-server"]).output();
     }
 }
+
+/// kitty's pictures (docs/design/kitty-graphics.md) through both consoles,
+/// as keepane runs under UnifyTerm on Windows: a program in a pane writes a
+/// picture into the pane's console, the server keeps it, and the client
+/// writes it on through its own console to a terminal that says it shows
+/// them; one that does not gets a label. As text the picture is blank.
+#[test]
+fn a_kitty_picture_goes_through_both_consoles() {
+    let socket = format!("console-kitty-{}", std::process::id());
+    let dir = own_dir("kitty");
+    std::fs::create_dir_all(&dir).unwrap();
+    let _stop = StopServer(dir.clone(), socket.clone());
+    // 8×8 pixels on 4 columns: 2 rows.
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08\0\0\0\x08".to_vec();
+    png.extend_from_slice(b"\x08\x06\0\0\0rest-of-the-file");
+    let picture = std::path::Path::new(&dir).join("picture.txt");
+    let data = keepane::server::kitty::base64_encode(&png);
+    std::fs::write(&picture, format!("before\r\n\x1b_Ga=T,f=100,i=7,c=4,q=2;{data}\x1b\\after\r\n")).unwrap();
+    let shown = picture.to_string_lossy().into_owned();
+    let mut t = Term::spawn_env(
+        &["-L", &socket, "new", "-s", "k", "cmd.exe", "/q", "/k", "type", &shown],
+        80,
+        24,
+        &[("KEEPANE_SESSIONS_DIR", &dir), ("TERM_PROGRAM", "WezTerm")],
+    );
+    t.wait_for("the text after the picture", |s| s.contents().contains("after"));
+    t.pump(Duration::from_millis(500));
+    let raw = String::from_utf8_lossy(&t.raw).into_owned();
+    let cell = raw.find('\u{10EEEE}').unwrap_or_else(|| panic!("no placeholder reached the terminal: {raw:?}"));
+    let sent = raw.find("\x1b_Ga=t,t=d,f=100,i=").unwrap_or_else(|| panic!("the picture never reached the terminal"));
+    assert!(sent < cell, "the picture before its cells");
+    assert!(raw.contains(",c=4,r=2,q=2\x1b\\"), "the virtual placement");
+    // On disk once it has lasted two seconds.
+    let images = std::path::Path::new(&dir).join("images");
+    wait_until("the picture on disk", || std::fs::read_dir(&images).map(|d| d.count()).unwrap_or(0) == 1);
+    let (code, text, _) = run_in(&dir, &socket, &["capture-pane", "-p", "-t", "k"]);
+    assert_eq!(code, 0);
+    assert!(text.contains("before") && text.contains("after"), "{text}");
+    assert!(!text.contains('\u{10EEEE}'), "as text the picture is blank: {text:?}");
+    t.send("\x02d");
+    t.wait_exit();
+    // A terminal that shows no pictures: a label, no picture sent.
+    let mut t = Term::spawn_env(
+        &["-L", &socket, "attach", "-t", "k"],
+        80,
+        24,
+        &[("KEEPANE_SESSIONS_DIR", &dir), ("TERM_PROGRAM", "plain"), ("KITTY_WINDOW_ID", ""), ("TERM", "")],
+    );
+    t.wait_for("the label", |s| s.contents().contains("▧ im"));
+    let raw = String::from_utf8_lossy(&t.raw).into_owned();
+    assert!(!raw.contains("\x1b_G") && !raw.contains('\u{10EEEE}'), "no picture, no placeholder: {raw:?}");
+    t.send("\x02d");
+    t.wait_exit();
+}
+
+/// A picture comes back after `restart-server`: the pane's saved output
+/// brings its placeholders back, its saved table which file each is, and
+/// the client attached again is sent the picture again.
+#[test]
+fn a_kitty_picture_comes_back_after_a_server_restart() {
+    let socket = format!("console-kitty-restart-{}", std::process::id());
+    let dir = own_dir("kitty-restart");
+    std::fs::create_dir_all(&dir).unwrap();
+    let _stop = StopServer(dir.clone(), socket.clone());
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08\0\0\0\x08".to_vec();
+    png.extend_from_slice(b"\x08\x06\0\0\0rest-of-the-file");
+    let picture = std::path::Path::new(&dir).join("picture.txt");
+    let data = keepane::server::kitty::base64_encode(&png);
+    std::fs::write(&picture, format!("before\r\n\x1b_Ga=T,f=100,i=7,c=4,q=2;{data}\x1b\\after\r\n")).unwrap();
+    let shown = picture.to_string_lossy().into_owned();
+    let run = |args: &[&str]| run_in(&dir, &socket, args);
+    run(&["new", "-d", "-s", "k", "cmd.exe", "/q", "/k", "type", &shown]);
+    wait_until("the text after the picture", || run(&["capture-pane", "-p", "-t", "k"]).1.contains("after"));
+    let mut t = Term::spawn_env(
+        &["-L", &socket, "attach", "-t", "k"],
+        80,
+        24,
+        &[("KEEPANE_SESSIONS_DIR", &dir), ("TERM_PROGRAM", "WezTerm")],
+    );
+    t.wait_for("attached", |s| s.contents().contains("after"));
+    // The file goes: a resumed pane runs its command again, and that must not
+    // be what brings the picture back (its saved output and table must).
+    std::fs::remove_file(&picture).unwrap();
+    let (code, out, err) = run(&["restart-server"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let notice = b"server restarting: attaching to k again";
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !t.raw.windows(notice.len()).any(|w| w == notice) {
+        assert!(Instant::now() < deadline, "no restart notice:\n{}", t.parser.screen().contents());
+        t.pump(Duration::from_millis(100));
+    }
+    let sent = b"\x1b_Ga=t,t=d,f=100,i=";
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let at = t.raw.windows(notice.len()).rposition(|w| w == notice).unwrap();
+        let after = &t.raw[at + notice.len()..];
+        if after.windows(sent.len()).any(|w| w == sent) && String::from_utf8_lossy(after).contains('\u{10EEEE}') {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the picture never came back: {:?}",
+            String::from_utf8_lossy(&t.raw[at..]).chars().take(3000).collect::<String>()
+        );
+        t.pump(Duration::from_millis(100));
+    }
+    t.send("\x02d");
+    t.wait_exit();
+}
+
+/// The board draws a PNG with kitty's protocol in its preview ([0] Files):
+/// keepane takes it from the board's pane and sends it to a terminal that
+/// shows pictures.
+#[test]
+fn the_board_shows_a_png_with_kitty_pictures() {
+    let socket = format!("console-kitty-board-{}", std::process::id());
+    let dir = own_dir("kitty-board");
+    let files = std::path::Path::new(&dir).join("pics");
+    std::fs::create_dir_all(&files).unwrap();
+    let _stop = StopServer(dir.clone(), socket.clone());
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x40\0\0\0\x20".to_vec();
+    png.extend_from_slice(b"\x08\x06\0\0\0rest-of-the-file");
+    std::fs::write(files.join("a.png"), &png).unwrap();
+    let cwd = files.to_string_lossy().into_owned();
+    let mut t = Term::spawn_env(
+        &["-L", &socket, "new", "-s", "b", "-c", &cwd, "cmd.exe", "/q", "/k", "prompt keepane$g"],
+        120,
+        34,
+        &[("KEEPANE_SESSIONS_DIR", &dir), ("TERM_PROGRAM", "WezTerm")],
+    );
+    t.wait_for("prompt", |s| s.contents().contains("keepane>"));
+    let before = t.raw.len();
+    t.send("\x02v");
+    t.wait_for("the dashboard", |s| s.contents().contains("[1] Panes"));
+    t.send("0");
+    let sent = b"\x1b_Ga=t,t=d,f=100,i=";
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let after = &t.raw[before..];
+        if after.windows(sent.len()).any(|w| w == sent) && String::from_utf8_lossy(after).contains('\u{10EEEE}') {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no picture from the board:\n{}", t.parser.screen().contents());
+        t.pump(Duration::from_millis(100));
+    }
+    t.send("q");
+    t.wait_for("the dashboard gone", |s| !s.contents().contains("[1] Panes"));
+}

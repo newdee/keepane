@@ -139,6 +139,14 @@ pub struct Options {
     /// its line (tmux has no such thing): needs a shell that reports its
     /// commands, which keepane's PowerShell hook does.
     pub pane_timestamps: bool,
+    /// kitty's graphics protocol in panes (docs/design/kitty-graphics.md):
+    /// pictures a program sends are kept and shown in terminals that show
+    /// them, a label in the others. Off: the sequences are dropped, as
+    /// before.
+    pub kitty_graphics: bool,
+    /// The most the pictures kept on disk take (`image-disk-limit`): past
+    /// it the ones not shown longest go (images.rs).
+    pub image_disk_limit: u64,
     /// Keep what panes print on disk, a file per pane position per day,
     /// for choose-history (see histlog.rs).
     pub log_history: bool,
@@ -561,6 +569,8 @@ pub const SHOWABLE: &[&str] = &[
     "window-size",
     "default-terminal",
     "pane-timestamps",
+    "kitty-graphics",
+    "image-disk-limit",
     "log-history",
     "log-history-days",
     "log-history-dir",
@@ -699,6 +709,8 @@ impl Default for Options {
             window_size: "latest".into(),
             default_terminal: "xterm-256color".into(),
             pane_timestamps: false,
+            kitty_graphics: true,
+            image_disk_limit: 1024 * 1024 * 1024,
             log_history: true,
             log_history_days: 30,
             log_history_dir: String::new(),
@@ -930,7 +942,9 @@ pub const KNOWN: &[&str] = &[
     "git-command",
     "hint-open",
     "history-limit",
+    "image-disk-limit",
     "keep-zoom",
+    "kitty-graphics",
     "link-agents-limit",
     "link-clone-dir",
     "link-push-limit",
@@ -1027,6 +1041,7 @@ const BOOLEAN: &[&str] = &[
     "event-log",
     "feishu-notify",
     "keep-zoom",
+    "kitty-graphics",
     "log-history",
     "notify",
     "monitor-activity",
@@ -1390,6 +1405,10 @@ impl Options {
             "restore-on-start" => self.restore_on_start = parse_bool(value)?,
             "sessions-dir" => self.sessions_dir = value.to_string(),
             "pane-timestamps" => self.pane_timestamps = parse_bool(value)?,
+            "kitty-graphics" => self.kitty_graphics = parse_bool(value)?,
+            "image-disk-limit" => {
+                self.image_disk_limit = parse_size(name, value, 1024 * 1024, 1024 * 1024 * 1024 * 1024)?
+            }
             "log-history" => self.log_history = parse_bool(value)?,
             "keep-zoom" => self.keep_zoom = parse_bool(value)?,
             "animation" => self.animation = parse_bool(value)?,
@@ -1646,6 +1665,8 @@ impl Options {
             "window-size" => self.window_size.clone(),
             "default-terminal" => self.default_terminal.clone(),
             "pane-timestamps" => onoff(self.pane_timestamps),
+            "kitty-graphics" => onoff(self.kitty_graphics),
+            "image-disk-limit" => size_name(self.image_disk_limit),
             "log-history" => onoff(self.log_history),
             "keep-zoom" => onoff(self.keep_zoom),
             "animation" => onoff(self.animation),

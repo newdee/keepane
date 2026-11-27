@@ -60,6 +60,12 @@ pub enum ClientMsg {
         rows: u16,
     },
     Detach,
+    /// What the attached client's terminal can do: whether it shows kitty's
+    /// pictures (kitty.rs). Sent only to a server of the client's own
+    /// version (an older one does not know this message), after `Attached`.
+    Terminal {
+        kitty: bool,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

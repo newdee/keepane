@@ -345,8 +345,10 @@ move, `h` goes up a directory and `l` into one, as in mini.files; what is
 under the cursor shows on the right (a directory's entries, a file's text
 with its line numbers, the first 256 KiB of it; a binary file only by its
 size; where [UnifyTerm](https://github.com/newdee/unifyterm)'s `ut` is on
-this machine, a picture (PNG, JPEG, GIF, WebP, BMP) as `ut view` draws it,
-in coloured half blocks, and markdown styled as `ut md` shows it), and `l`
+this machine, a picture (JPEG, GIF, WebP, BMP) as `ut view` draws it,
+in coloured half blocks, and markdown styled as `ut md` shows it; a PNG
+itself, with kitty's protocol, in a terminal that shows pictures:
+Pictures in panes, below), and `l`
 on a file scrolls it; `.` shows hidden entries and `-`
 goes back to the pane's directory, which `[0]` follows when another pane
 is chosen or this one changes directory. Each entry is marked by its kind
@@ -969,6 +971,39 @@ set -g hint-open "new-window hx '{file}:{line}:{col}'"
 set -g hint-open "run-shell 'idea --line {line} {file}'"
 ```
 
+## Pictures in panes
+
+A program in a pane can send pictures with kitty's graphics protocol, and
+keepane keeps them as it keeps the pane's text: a picture scrolls with the text, goes into
+the history, is cut by a split, and comes back after `restart-server` or a
+reboot. A terminal that shows such pictures (UnifyTerm, kitty, WezTerm,
+ghostty) is sent each one when it first comes into view; any other
+(Windows Terminal, conhost) shows `▧ image 640×480` in its place. Attach
+from one of each and each draws its own.
+
+```tmux
+set -g kitty-graphics on     # the default; off drops them, as before
+set -g image-disk-limit 1G   # the most the kept pictures take on disk
+```
+
+- A picture is kept once, on disk beside the saved sessions
+  (`images/<sha256>.<ending>`), once it has lasted two seconds (an
+  animation's frames, each replaced by the next, never reach the disk), and
+  held in memory only while it is being sent: one not drawn for a minute is
+  let go of, in keepane and in the terminal, and read again when it comes
+  back into view. A picture sent again under the same number replaces the
+  last in the terminal.
+- As text it is blank: `capture-pane`, copy mode and an agent reading the
+  screen see spaces where it is.
+- The dashboard draws a PNG in `[0]` and in a channel's files with it.
+- A pane of another machine (`link-mirror`) shows its pictures too: they are
+  asked of that machine when shown, and kept here (up to 8 MiB a picture; a
+  bigger one shows as a label there).
+- A pane says `KEEPANE_GRAPHICS=kitty` while it is on, for a program that
+  decides by the environment; one that asks the terminal is answered.
+- On Windows a pane's pictures reach keepane only through the newer console
+  host, `conpty.dll` and `OpenConsole.exe` beside `keepane.exe` (Windows'
+  own drops them).
 ## Command times and history
 
 <p align="center">
@@ -2660,8 +2695,9 @@ started from is taken away in it (`WT_SESSION`, `WT_PROFILE_ID`,
 `KITTY_WINDOW_ID`, `KITTY_PID`, `ITERM_SESSION_ID`, `LC_TERMINAL`,
 `LC_TERMINAL_VERSION`), as tmux says `TERM_PROGRAM=tmux`: its programs draw on
 keepane, not on that terminal, so one that picks how to draw by the terminal
-(`ut view`) draws half blocks, not kitty's or sixel pictures keepane does not
-show. A `set-environment` of any of them wins.
+(`ut view`) sends no sixel pictures, which keepane drops. `KEEPANE_GRAPHICS=kitty`
+says kitty's pictures are kept (Pictures in panes). A `set-environment` of any of
+them wins.
 Server log: `%LOCALAPPDATA%\keepane\server.log` (`KEEPANE_LOG=debug` for more).
 Past 5 MB it becomes `server.log.1` and a new one starts, so a server that
 runs for months keeps at most about 10 MB of log.

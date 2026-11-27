@@ -49,7 +49,7 @@ pub struct Answer {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct ToServer {
-    #[prost(oneof = "to_server::Kind", tags = "1, 2, 3")]
+    #[prost(oneof = "to_server::Kind", tags = "1, 2, 3, 4")]
     pub kind: Option<to_server::Kind>,
 }
 
@@ -62,12 +62,14 @@ pub mod to_server {
         Input(super::Input),
         #[prost(message, tag = "3")]
         Command(super::Command),
+        #[prost(message, tag = "4")]
+        ImageWanted(super::ImageWanted),
     }
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct ToClient {
-    #[prost(oneof = "to_client::Kind", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "to_client::Kind", tags = "1, 2, 3, 4, 5")]
     pub kind: Option<to_client::Kind>,
 }
 
@@ -82,6 +84,8 @@ pub mod to_client {
         Ping(super::Ping),
         #[prost(message, tag = "4")]
         Reply(super::Reply),
+        #[prost(message, tag = "5")]
+        ImageData(super::ImageData),
     }
 }
 
@@ -222,7 +226,7 @@ pub struct PaneShape {
 pub struct PaneChange {
     #[prost(uint32, tag = "1")]
     pub pane: u32,
-    #[prost(oneof = "pane_change::Kind", tags = "2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "pane_change::Kind", tags = "2, 3, 4, 5, 6, 7, 8, 9")]
     pub kind: Option<pane_change::Kind>,
 }
 
@@ -243,6 +247,8 @@ pub mod pane_change {
         CommandStart(super::CommandStart),
         #[prost(message, tag = "8")]
         CommandEnd(super::CommandEnd),
+        #[prost(message, tag = "9")]
+        Image(super::ImageNote),
     }
 }
 
@@ -334,8 +340,84 @@ pub struct PaneScreen {
     pub deflated: Vec<u8>,
     #[prost(uint64, tag = "4")]
     pub at: u64,
+    /// The pictures it has (`ImageNote`): a keepane before 0.99 sends none.
+    #[prost(message, repeated, tag = "5")]
+    pub images: Vec<ImageNote>,
 }
 
+/// A picture a pane was sent (kitty.rs), by its number in the pane: which
+/// file it is (its SHA-256), its kind (the file ending it is kept under),
+/// its size in pixels and the cells its placement takes (0: not placed).
+/// Not its bytes: the copy asks for those (`ImageWanted`) when it shows it.
+#[derive(Clone, PartialEq, Message)]
+pub struct ImageNote {
+    #[prost(uint32, tag = "1")]
+    pub id: u32,
+    #[prost(string, tag = "2")]
+    pub hash: String,
+    #[prost(string, tag = "3")]
+    pub format: String,
+    #[prost(uint32, tag = "4")]
+    pub width: u32,
+    #[prost(uint32, tag = "5")]
+    pub height: u32,
+    #[prost(uint32, tag = "6")]
+    pub cols: u32,
+    #[prost(uint32, tag = "7")]
+    pub rows: u32,
+}
+
+/// The copy shows a picture it does not have: its bytes, please.
+#[derive(Clone, PartialEq, Message)]
+pub struct ImageWanted {
+    #[prost(string, tag = "1")]
+    pub hash: String,
+}
+
+/// A picture's bytes, for an `ImageWanted`; `missing`: this machine no
+/// longer has it (the copy shows a label).
+#[derive(Clone, PartialEq, Message)]
+pub struct ImageData {
+    #[prost(string, tag = "1")]
+    pub hash: String,
+    #[prost(string, tag = "2")]
+    pub format: String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub data: Vec<u8>,
+    #[prost(bool, tag = "4")]
+    pub missing: bool,
+}
+
+impl From<(u32, &crate::server::kitty::Image)> for ImageNote {
+    fn from((id, i): (u32, &crate::server::kitty::Image)) -> Self {
+        let (cols, rows) = i.cells.map_or((0, 0), |(c, r)| (c.into(), r.into()));
+        ImageNote {
+            id,
+            hash: i.hash.clone(),
+            format: i.format.ext().into(),
+            width: i.width,
+            height: i.height,
+            cols,
+            rows,
+        }
+    }
+}
+
+impl ImageNote {
+    /// The picture it names, or None for a kind this keepane does not know.
+    pub fn image(&self) -> Option<crate::server::kitty::Image> {
+        let format = crate::server::kitty::Format::from_ext(&self.format)?;
+        let cells = (self.cols > 0 && self.rows > 0)
+            .then(|| (u16::try_from(self.cols).unwrap_or(u16::MAX), u16::try_from(self.rows).unwrap_or(u16::MAX)));
+        Some(crate::server::kitty::Image {
+            hash: self.hash.clone(),
+            format,
+            width: self.width,
+            height: self.height,
+            cells,
+        })
+    }
+}
 pub fn deflate(bytes: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -418,6 +500,7 @@ impl PaneChange {
             journal::PaneChange::CommandEnd { command, exit, secs, at } => {
                 Kind::CommandEnd(CommandEnd { command: command.clone(), exit: *exit, secs: *secs, at: *at })
             }
+            journal::PaneChange::Image { id, image } => Kind::Image((*id, image).into()),
         };
         PaneChange { pane, kind: Some(kind) }
     }
@@ -441,7 +524,13 @@ impl From<&journal::Snapshot> for Snapshot {
             panes: s
                 .panes
                 .iter()
-                .map(|p| PaneScreen { id: p.id, fullscreen: p.fullscreen, deflated: deflate(&p.screen), at: p.at })
+                .map(|p| PaneScreen {
+                    id: p.id,
+                    fullscreen: p.fullscreen,
+                    deflated: deflate(&p.screen),
+                    at: p.at,
+                    images: p.images.iter().map(|(id, i)| (*id, i).into()).collect(),
+                })
                 .collect(),
         }
     }
@@ -455,6 +544,36 @@ pub fn framed(msg: &impl Message) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_note_goes_and_comes_back_the_same() {
+        let image = crate::server::kitty::Image {
+            hash: "c".repeat(64),
+            format: crate::server::kitty::Format::Webp,
+            width: 640,
+            height: 480,
+            cells: Some((30, 11)),
+        };
+        let e = journal::Entry {
+            seq: 2,
+            at: 0,
+            change: journal::Change::Pane {
+                pane: 4,
+                change: journal::PaneChange::Image { id: 9, image: image.clone() },
+            },
+        };
+        let wire = ToClient { kind: Some(to_client::Kind::Entry((&e).into())) };
+        let back = ToClient::decode_length_delimited(&framed(&wire)[..]).unwrap();
+        let Some(to_client::Kind::Entry(Entry { change: Some(entry::Change::Pane(pc)), .. })) = back.kind else {
+            panic!("{back:?}")
+        };
+        let Some(pane_change::Kind::Image(note)) = pc.kind else { panic!("{pc:?}") };
+        assert_eq!((pc.pane, note.id, note.image()), (4, 9, Some(image.clone())));
+        // Not placed: no cells; a kind not known: none.
+        let unplaced = crate::server::kitty::Image { cells: None, ..image };
+        assert_eq!(ImageNote::from((1, &unplaced)).image(), Some(unplaced));
+        assert_eq!(ImageNote { format: "tiff".into(), ..Default::default() }.image(), None);
+    }
 
     #[test]
     fn a_change_goes_and_comes_back_the_same() {
