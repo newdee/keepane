@@ -7161,3 +7161,19 @@ UnifyTerm 维护者 2026-11-24 在 #unifyterm-keepane 请求（用户让做的�
 | 4 | 边界与退化输入（真程序）+ 范围内测试 | `edges-244.ps1`，server 从"像 Windows Terminal 启动的 shell"的环境起（`WT_SESSION`、`WT_PROFILE_ID`，`WSLENV=WT_SESSION:WT_PROFILE_ID::`）：E3 pane 里 `TP=keepane`、`CT=truecolor`、`WT` 空，`WSLENV` 带上了 `TERM_PROGRAM`、`TERM_PROGRAM_VERSION`、`COLORTERM`；E1+E2 `set-environment -u TERM_PROGRAM`、`-u COLORTERM` 之后新 pane 里两个都空。都过。`WSLENV` 里仍列着没有值的名字（`WT_SESSION`，`-u` 后的 `TERM_PROGRAM`）：WSL 对没有值的名字什么都不传，无害（推断，没在 WSL 里实测；原来对别的 `-u` 名字也是这样）。临时 server 已关、剩 0 个进程，临时目录已删。范围内测试：fmt 干净、`clippy exit 0`；Windows lib 812、console 12、e2e 6；真 `ut view` 128；Linux lib 796、e2e 6；全过；C 盘 308.1 GB。 | 干净（3/3），验收通过 |
 
 0.98.1 发布（第 243–244 条：发版说明手写、pane 里 `TERM_PROGRAM=keepane`）：发版前 Windows 全量 lib 812 / console 12 / e2e 198 全过（共 1022，首页数字从 1020 改），web `npm run check` 通过；08f6dbb 的 CI 45948895284 四个 job 通过（全量，含 macOS）；同一提交的 Pages 45948895367 失败（GitHub 的 "Fetching artifact metadata failed"，已知的平台问题，不是代码的问题），下一个提交 1a9ebc4 的 Pages 45949274357 通过，网站已是新的；tag v0.98.1（带注释）；Release 45949633776 四个 job 通过，正文就是 `docs/releases/v0.98.1.md`（逐字比对相同，新流程第一次用）；manifests b64f23b；winget PR #490782；Homebrew formula 45950734562 通过，三个 tar.gz 的 sha256 与 release 一致。
+## 245. 网站左上角的品牌字换成动画：`>_` 变成 k，`eepane` 靠过来
+
+用户 2026-11-27 提出：终端提示符 `>_` 顺时针转 90° 变成躺着的 k，再转成 k，`eepane` 靠过来拼成 keepane；本地 demo 看过后说"logo 没问题"，"换左上角的品牌吧，每次打开都放"。
+
+- **做了什么。** `docs/site.js` 的 `brandMark()`：用 SVG 画 k（两笔：竖笔和 `<`），其余字母用 JetBrains Mono；k 的粗细、高度、x 高在 canvas 上按字体实测。顺序：`>_` 光标闪两下 → `>` 顺时针转 90° 落到 `_` 上（躺着的 k；整体转 90° 得到的不是 k，所以第一步只转 `>`）→ 整体顺时针转 90° → `eepane` 从右边靠过来，末尾光标闪三次后常亮（7.3 秒）。k 用朱红强调色。减少动态效果时直接画最后一帧；没有脚本时保留原来的 `keepane.`；建标记失败也保留原文字。`style.css` 加 `.brand-*`（高 26px），`index.html` 预加载 JetBrains Mono。
+- 评估：只改网站，不动 keepane 程序，没有在范围内的 Rust 或 web 测试；检查全部在真浏览器（ego lite）里对本地服务的 `docs/` 做。原有行为：语言、主题按钮照常（第 2 轮实测），页头高度不变（第 5 轮实测）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 机制通路存活（截图）+ 读代码 | 1.7 秒截到躺着的 k、6.5 秒截到完整的 `keepane_`；360px 宽时品牌 18–128px、导航 183–327px，不重叠，`scrollWidth` 345 不超过视口。**发现 2 个：** ① 字母继承了 `.brand` 的 700，只有 400 的字体被假加粗，和细的 k 不配：`.brand-letter` 设 400；② `document.fonts` 不存在的浏览器会在 `document.fonts.load` 抛异常，而它在跟随系统主题的监听之前，监听就注册不上：挪到文件最后，`document.fonts` 不存在时不等，`brandMark()` 包在 try 里。 | 有发现，不计数 |
+| 2 | 边界与退化输入 | 在真页面里重跑 `brandMark()`：E1 减少动态效果 → 光标亮、6 个字母都不透明、位移 0；E2 没有 2D canvas → 用备用尺寸（笔宽 11.90），标记完整；E3 没有 `document.fonts` 时同样的 race 2 ms 就过去；E4 主题按钮仍能切换（文件后面的代码都跑了）。没有发现。 | 干净（1/3） |
+| 3 | 可复现性 + 深色主题 | 同一页面加载 3 次，最后的品牌 HTML 1061 字节、SHA-256 前 6 字节 3 次都是 `f7bf5013ba58`；深色下 k `rgb(221,98,94)`、字母 `rgb(219,215,202)`、底 `rgb(18,18,18)`，截图看过。没有发现。 | 干净（2/3） |
+| 4 | 静态一致性 | **发现 1 个：** 注释说结尾光标"闪了三次"，代码在 5.8 秒停，只灭了一次。改成真的闪三次（4.8、5.8、6.8 秒各灭 0.5 秒），`STOP` 改为 7300，注释写清时间。 | 有发现，不计数 |
+| 5 | 机制通路存活（看真动画跑）+ CSS 注释的说法 | 每 40 ms 采样一次共 202 次：光标亮了以后灭 3 次、最后亮；竖笔角度从 -90° 到 0°，中间 21 个不同值；最后一个字母不透明。页头高度：新标记 66.09px，换回原来的文字也是 66.09px（"栏不会动"成立）。没有发现。 | 干净（1/3） |
+| 6 | 代码正确性（资源）+ 退化输入重跑 | 结束后 1.5 秒内 `requestAnimationFrame` 0 次；播放时 41 次（比 60 fps 少：推断是 ego 的页面在后台被降帧，动画按真实时间算，不受影响）。E1、E2 重跑结果和第 2 轮一样。中途 ego 页面数到了上限 8（环境，不是代码），关掉多余的后在同一页重跑。没有发现。 | 干净（2/3） |
+| 7 | 可复现性（`STOP` 改后）+ 复查 diff | 3 次加载最后一帧哈希仍是 `f7bf5013ba58`；diff 3 个文件 +207 行，只新增；原来的 `.brand .dot` 仍给没有脚本时的文字用。没有发现。 | 干净（3/3），验收通过 |

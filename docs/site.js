@@ -244,6 +244,167 @@ document.getElementById("theme").addEventListener("click", () => {
   }
 });
 
+// The brand: the prompt ">_" turns into k and "eepane" comes in. ">"
+// turns a quarter clockwise onto "_" (a k lying down), then the whole k
+// turns a quarter clockwise and stands up. Plays on every visit; the
+// plain "keepane." stays for a browser without scripts, and a visitor who
+// asked for less motion gets the last frame.
+function brandMark() {
+  const a = document.querySelector("a.brand");
+  if (!a) return;
+  const NS = "http://www.w3.org/2000/svg";
+  const F = 140;
+  const WORD = "keepane";
+  // ms: the cursor after the word comes on at 4.3 s, blinks three times
+  // (off at 4.8, 5.8 and 6.8 s, 0.5 s each) and then stays on.
+  const STOP = 7300;
+  const CURSOR = 0.86; // the cursor after the word, in cells
+
+  // The mono font's metrics, so the drawn k matches the letters beside it
+  // (fallbacks: JetBrains Mono's proportions).
+  function measure() {
+    const c = document.createElement("canvas");
+    c.width = 400;
+    c.height = 300;
+    const g = c.getContext("2d");
+    const m = { adv: F * 0.6, asc: F * 0.73, xh: F * 0.55, left: F * 0.08, right: F * 0.53, w: F * 0.085 };
+    if (!g) return m;
+    g.font = `400 ${F}px "JetBrains Mono", "Cascadia Mono", Consolas, monospace`;
+    const mk = g.measureText("k");
+    const mx = g.measureText("x");
+    m.adv = mk.width || m.adv;
+    m.asc = mk.actualBoundingBoxAscent || m.asc;
+    m.xh = mx.actualBoundingBoxAscent || m.xh;
+    if (mk.actualBoundingBoxRight) {
+      m.left = -mk.actualBoundingBoxLeft;
+      m.right = mk.actualBoundingBoxRight;
+    }
+    // The stem's width: a row above the x-height, where only the stem is.
+    g.fillStyle = "#000";
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = "#fff";
+    g.fillText("k", 50, 250);
+    const row = g.getImageData(0, Math.round(250 - (m.asc + m.xh) / 2), c.width, 1).data;
+    let n = 0;
+    for (let i = 0; i < row.length; i += 4) n += row[i] / 255;
+    if (n > 2 && n < F * 0.2) m.w = n;
+    return m;
+  }
+
+  const M = measure();
+  const w = M.w;
+  const B = 0;
+  const X0 = 0;
+  const cell = M.adv;
+  const stemX = X0 + M.left + w / 2;
+  const chevH = M.xh - w;
+  const rightX = X0 + M.right - w / 2;
+  // The mitred point of the arms lands on the stem's middle, not past it.
+  let vertexX = stemX;
+  for (let i = 0; i < 4; i++) vertexX = stemX + w / 2 / Math.sin(Math.atan2(chevH / 2, rightX - vertexX));
+  const chevW = rightX - vertexX;
+  const P = { x: X0 + (M.left + M.right) / 2, y: B - M.asc / 2 };
+  const turn = (p, deg) => {
+    const r = (deg * Math.PI) / 180;
+    const dx = p.x - P.x;
+    const dy = p.y - P.y;
+    return { x: P.x + dx * Math.cos(r) - dy * Math.sin(r), y: P.y + dx * Math.sin(r) + dy * Math.cos(r) };
+  };
+  const k = { stem: { x: stemX, y: B - M.asc / 2 }, chev: { x: vertexX + chevW / 2, y: B - M.xh / 2 } };
+  const lying = { stem: turn(k.stem, -90), chev: turn(k.chev, -90) };
+  const prompt = {
+    chev: { x: P.x - cell * 0.5, y: P.y },
+    stem: { x: P.x + cell * 0.55, y: P.y + chevH / 2 + w * 0.5, len: cell * 0.72 },
+  };
+
+  // The box is the finished word with its cursor; the prompt starts in its middle.
+  const width = cell * (WORD.length + CURSOR);
+  const top = B - M.asc - w;
+  const height = M.asc + F * 0.24 + 2 * w;
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `${(X0 - w).toFixed(1)} ${top.toFixed(1)} ${(width + 2 * w).toFixed(1)} ${height.toFixed(1)}`);
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("brand-mark");
+  const all = document.createElementNS(NS, "g");
+  const mark = document.createElementNS(NS, "g");
+  mark.setAttribute("class", "brand-k");
+  mark.setAttribute("stroke-width", w.toFixed(2));
+  const stem = document.createElementNS(NS, "path");
+  const chev = document.createElementNS(NS, "path");
+  chev.setAttribute("d", `M${chevW / 2},${-chevH / 2} L${-chevW / 2},0 L${chevW / 2},${chevH / 2}`);
+  mark.append(stem, chev);
+  const letters = [...WORD.slice(1)].map((ch, i) => {
+    const t = document.createElementNS(NS, "text");
+    t.textContent = ch;
+    t.setAttribute("class", "brand-letter");
+    t.setAttribute("font-size", F);
+    t.setAttribute("y", B);
+    return { el: t, x: X0 + cell * (i + 1) };
+  });
+  all.append(mark, ...letters.map((l) => l.el));
+  const cursor = document.createElementNS(NS, "rect");
+  cursor.setAttribute("class", "brand-cursor");
+  cursor.setAttribute("x", (X0 + cell * WORD.length + cell * 0.14).toFixed(1));
+  cursor.setAttribute("y", (B - w).toFixed(1));
+  cursor.setAttribute("width", (cell * 0.72).toFixed(1));
+  cursor.setAttribute("height", w.toFixed(1));
+  svg.append(all, cursor);
+
+  const clamp = (v) => Math.min(1, Math.max(0, v));
+  const span = (t, from, to) => clamp((t - from) / (to - from));
+  const inOut = (u) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
+  const out = (u) => 1 - Math.pow(1 - u, 3);
+  const lerp = (x, y, u) => x + (y - x) * u;
+  const place = (el, s, deg) => el.setAttribute("transform", `translate(${s.x.toFixed(2)} ${s.y.toFixed(2)}) rotate(${deg.toFixed(2)})`);
+
+  function draw(t) {
+    let s, c, sd, cd, len;
+    if (t < 2300) {
+      const u = inOut(span(t, 1200, 2100)); // ">" turns onto "_"
+      s = { x: lerp(prompt.stem.x, lying.stem.x, u), y: lerp(prompt.stem.y, lying.stem.y, u) };
+      c = { x: lerp(prompt.chev.x, lying.chev.x, u), y: lerp(prompt.chev.y, lying.chev.y, u) };
+      len = lerp(prompt.stem.len, M.asc, u);
+      sd = -90;
+      cd = lerp(180, 270, u);
+    } else {
+      const deg = 90 * inOut(span(t, 2300, 3200)); // the k stands up
+      s = turn(lying.stem, deg);
+      c = turn(lying.chev, deg);
+      len = M.asc;
+      sd = -90 + deg;
+      cd = 270 + deg;
+    }
+    stem.setAttribute("d", `M0,${(-len / 2).toFixed(2)} V${(len / 2).toFixed(2)}`);
+    place(stem, s, sd);
+    place(chev, c, cd);
+    stem.style.opacity = t < 1200 && Math.floor(t / 300) % 2 === 1 ? 0 : 1;
+    const dx = lerp(X0 + width / 2 - P.x, 0, out(span(t, 3300, 4100)));
+    all.setAttribute("transform", `translate(${dx.toFixed(2)} 0)`);
+    letters.forEach((l, i) => {
+      const u = out(span(t, 3300 + i * 70, 3300 + i * 70 + 650));
+      l.el.setAttribute("x", lerp(l.x + cell * (i + 1) * 0.9 + 60, l.x, u).toFixed(2));
+      l.el.style.opacity = u.toFixed(3);
+    });
+    // Blinks after the word, then stays.
+    cursor.style.opacity = t >= STOP || (t >= 4300 && Math.floor((t - 4300) / 500) % 2 === 0) ? 1 : 0;
+  }
+
+  a.replaceChildren(svg);
+  a.setAttribute("aria-label", "keepane");
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    draw(STOP);
+    return;
+  }
+  draw(0);
+  const start = performance.now();
+  const frame = (now) => {
+    const t = now - start;
+    draw(Math.min(t, STOP));
+    if (t < STOP) requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+}
+
 // No pick yet: the page follows the system when it changes.
 matchMedia("(prefers-color-scheme: light)").addEventListener("change", (e) => {
   if (picked) return;
@@ -257,3 +418,20 @@ matchMedia("(prefers-color-scheme: light)").addEventListener("change", (e) => {
   theme = e.matches ? "light" : "dark";
   showTheme();
 });
+
+// Last, so nothing above waits for it or breaks with it. The drawn k is
+// measured against the mono font, so wait for it (at most a second; then
+// the fallback metrics are used). A browser that cannot draw it keeps the
+// plain "keepane." (brandMark swaps it only once the mark is built).
+Promise.race([
+  document.fonts ? document.fonts.load('400 140px "JetBrains Mono"') : null,
+  new Promise((r) => setTimeout(r, 1000)),
+])
+  .catch(() => {})
+  .then(() => {
+    try {
+      brandMark();
+    } catch {
+      /* the plain wordmark stays */
+    }
+  });

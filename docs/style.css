@@ -166,6 +166,34 @@ code {
   color: var(--accent);
 }
 
+/* The animated wordmark (site.js brandMark): the same height as the text
+   it replaces, so the bar does not move when it comes in. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+}
+.brand-mark {
+  display: block;
+  height: 26px;
+  width: auto;
+  overflow: hidden;
+}
+.brand-k {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: butt;
+  stroke-linejoin: miter;
+}
+.brand-letter {
+  fill: var(--text);
+  font-family: var(--mono);
+  /* the k is drawn to the regular weight; .brand's 700 would be a faked bold */
+  font-weight: 400;
+}
+.brand-cursor {
+  fill: var(--faint);
+}
+
 .top nav {
   display: flex;
   align-items: center;
