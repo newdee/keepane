@@ -502,7 +502,7 @@ PS C:\src> cargo test                                      14:04:10 12s ✗
   </picture>
 </p>
 
-Enter 跳到连着这台机器的 pane，没有就新开一个以它命名的窗口运行 `ssh`；`s` 在旁边分屏连接，`y` 复制命令，`d` 把它从列表里去掉，`f` 过滤。
+Enter 跳到连着这台机器的 pane，没有就新开一个以它命名的窗口运行 `ssh`；`s` 在旁边分屏连接，`y` 复制命令，`d` 把它从列表里去掉，`f` 过滤。`ssh` 连不上时（马上以它自己的错误码 255 退出，或 10 秒内以别的错误码退出），窗口照旧关掉，同时弹出一个框，写着 ssh 说了什么：`r` 在新窗口里再连一次，`q` 关掉这个框。任何程序本身就是 `ssh` 的窗口或 pane 都这样。
 
 列表来自四处：keepane 在 pane 里看到的每个新 `ssh`（每次记一次，带时间）、`~/.ssh/config` 的 `Host` 行、`~/.ssh/known_hosts` 里的名字（哈希过的看不出名字，跳过），以及第一次时从各 shell 历史文件里读到的 `ssh` 命令。连接过的机器存在 `%LOCALAPPDATA%\keepane\ssh-hosts.json`：名字、用户、端口、时间和次数。不读也不存任何密码或密钥。`keepane ssh-hosts` 打印这个列表（`-J` 输出 JSON，MCP 工具 `list_ssh_hosts` 给 agent 的就是它）；`#{pane_ssh_host}` 给出 pane 里的 `ssh` 连到哪，dashboard 把它显示成这个 pane 在运行的东西。
 

@@ -2996,7 +2996,13 @@ impl Server {
                         return;
                     }
                 }
+                // An `ssh` that could not connect closes its window at once:
+                // what it said is shown in a box once the pane is gone.
+                let failed = self.ssh_failure(id, code);
                 self.pane_gone(id, code);
+                if let Some(f) = failed {
+                    self.show_ssh_failure(f);
+                }
             }
             Event::Connected(id, tx) => self.client_connected(id, tx),
             Event::Gone(id) => self.client_gone(id),

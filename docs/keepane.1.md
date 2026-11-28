@@ -143,7 +143,8 @@ pane: drawn where that pane is shown, its window the current one),
 `choose-ssh` (prefix `@`: the machines `ssh` reached, connected ones first,
 then by last use; Enter goes to the pane on one, else connects in a new
 window named after it; `s` connects in a split, `y` copies the command,
-`d` removes one, `f` filters), `ssh-hosts` (the same list; `-J` as JSON).
+`d` removes one, `f` filters; an `ssh` that cannot connect, its window
+gone, leaves a box with what it said: `r` again, `q` close), `ssh-hosts` (the same list; `-J` as JSON).
 
 ### Panes that pass messages
 

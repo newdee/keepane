@@ -8,11 +8,32 @@
 use super::agents::PaneInfo;
 use super::layout::PaneId;
 use super::shellhist::{self, Shell};
-use super::{Outcome, Server};
+use super::{Chooser, ChooserItem, ChooserKind, Outcome, Server, SessionId};
+use crate::command::Cmd;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// The code `ssh` exits with for an error of its own (not the remote
+/// command's): no connection, refused, timed out, a key or host key refused.
+const SSH_ERROR: u32 = 255;
+/// A pane's `ssh` ending in another failure this soon after it started is
+/// taken as not having connected either.
+const SSH_FAILED_SOON: std::time::Duration = std::time::Duration::from_secs(10);
+/// How many of its last lines the box shows, and how wide each at most.
+const SSH_FAILED_LINES: usize = 6;
+const SSH_FAILED_WIDTH: usize = 72;
+
+/// An `ssh` pane that failed (`ssh_failure`): its session, where it went,
+/// how it ended, its last lines, and its command to start again.
+pub(super) struct SshFailure {
+    sid: SessionId,
+    host: String,
+    code: u32,
+    said: Vec<String>,
+    argv: Vec<String>,
+}
 
 /// Where `ssh` was pointed: the name typed (an alias of `~/.ssh/config`, a
 /// host name or an address), and the user and port when given.
@@ -709,6 +730,76 @@ impl Server {
         };
         let out = self.exec(cmd, Some(cid));
         self.reply(cid, out);
+    }
+
+    /// A pane whose own program is `ssh`, ended in failure: `ssh`'s own
+    /// error (255: no connection, refused, timed out, a key or a host key
+    /// not taken), or any other failure within `SSH_FAILED_SOON` of its
+    /// start (a remote shell left with `exit 1` later is no failure to
+    /// show). What it said, read before the pane goes; None otherwise.
+    pub(super) fn ssh_failure(&self, id: PaneId, code: u32) -> Option<SshFailure> {
+        let p = self.find_pane(id)?;
+        let argv = p.argv.clone();
+        if code == 0
+            || argv.first().is_none_or(|a| super::done::program_name(a) != "ssh")
+            || (code != SSH_ERROR && p.spawned_at.elapsed() > SSH_FAILED_SOON)
+        {
+            return None;
+        }
+        let sid = self.session_of_pane(id)?;
+        // Where it went: the last word that is not an option (`ssh -p 2222 user@host`).
+        let host = argv.iter().skip(1).rev().find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
+        Some(SshFailure { sid, host, code, said: p.last_lines(SSH_FAILED_LINES, false), argv })
+    }
+
+    /// The box for an `ssh` that failed, on each client looking at its
+    /// session with nothing else open: what it said, then `r` to connect
+    /// again (in a new window) and `q` to close.
+    pub(super) fn show_ssh_failure(&mut self, f: SshFailure) {
+        let item = |name: &str, key: &str, cmd: Cmd| crate::command::MenuItem {
+            name: name.into(),
+            key: Some(key.into()),
+            cmd: Some(Box::new(cmd)),
+        };
+        let again = Cmd::NewWindow {
+            name: (!f.host.is_empty()).then(|| f.host.clone()),
+            cwd: None,
+            target: None,
+            argv: f.argv.clone(),
+            detached: false,
+        };
+        let entries = vec![item("connect again", "r", again), item("close", "q", Cmd::RefreshClient { pan: None })];
+        let title = format!("ssh to {} failed (exit {})", if f.host.is_empty() { "?" } else { &f.host }, f.code);
+        let said: Vec<String> = if f.said.is_empty() { vec!["(it said nothing)".into()] } else { f.said.clone() };
+        let mut items = vec![ChooserItem::Separator];
+        let mut lines = vec![title];
+        for l in &said {
+            // A space first: a line of its own that reads `(x) ...` or
+            // `---` is shown as it is, not taken for an item or a rule.
+            items.push(ChooserItem::Separator);
+            lines.push(format!(" {}", l.chars().take(SSH_FAILED_WIDTH).collect::<String>()));
+        }
+        items.push(ChooserItem::Separator);
+        lines.push(String::new());
+        for (i, e) in entries.iter().enumerate() {
+            items.push(ChooserItem::Menu(i));
+            lines.push(format!("({}) {}", e.key.as_deref().unwrap_or_default(), e.name));
+        }
+        let looking: Vec<super::ClientId> = self
+            .clients
+            .values()
+            .filter(|c| c.session == Some(f.sid) && c.popup.is_none() && c.chooser.is_none())
+            .map(|c| c.id)
+            .collect();
+        for cid in looking {
+            let Some(c) = self.clients.get_mut(&cid) else { continue };
+            c.prompt = None;
+            c.overlay = None;
+            let mut ch = Chooser::new(ChooserKind::Menu(entries.clone()), items.clone(), lines.clone(), 0);
+            ch.settle(1);
+            c.chooser = Some(ch);
+            c.last_grid = None;
+        }
     }
 
     /// `choose-ssh`, `d`: the machine off the list (the picker stays).

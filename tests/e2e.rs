@@ -244,8 +244,13 @@ fn test_process_env() {
         // Agent definitions: the test's own (`toy`), never the developer's
         // ~/.keepane/agents. Every server here reads the same directory.
         let agents = std::env::temp_dir().join(format!("keepane-test-agents-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&agents);
-        let _ = std::fs::write(agents.join("toy.toml"), TOY_AGENT);
+        // Written once: rewritten as each test starts, another test's server
+        // could read it half written (empty), and that test fail.
+        static AGENTS: std::sync::Once = std::sync::Once::new();
+        AGENTS.call_once(|| {
+            let _ = std::fs::create_dir_all(&agents);
+            let _ = std::fs::write(agents.join("toy.toml"), TOY_AGENT);
+        });
         unsafe { std::env::set_var("KEEPANE_AGENTS_DIR", agents) };
         keep_history_out();
         // `PROMPT_SHELL`'s prompt, and none of the user's start-up file.
@@ -10838,6 +10843,107 @@ async fn choose_ssh_lists_the_machines_the_panes_reach() {
     assert!(err.contains("not attached"), "{err}");
     h.cli(&["kill-server"]).await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A window whose `ssh` cannot connect (a port nothing listens on: ssh
+/// ends at once with 255) closes as before, and a box says what ssh said;
+/// `q` closes the box, `r` connects again in a new window. A program that
+/// is not ssh failing shows no box. The real ssh, by its full path on
+/// Windows (`choose_ssh_connects_in_a_window_and_a_split` puts a stand-in
+/// first on this process's PATH).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ssh_that_cannot_connect_says_why_in_a_box() {
+    let ssh = if cfg!(windows) {
+        std::path::PathBuf::from(std::env::var("WINDIR").unwrap()).join(r"System32\OpenSSH\ssh.exe")
+    } else {
+        std::path::PathBuf::from("ssh")
+    };
+    let h = Harness::start("sshfail").await;
+    // Each pane gone, a line in a file: how many have exited, to know a
+    // window really came and went (a box on the screen may be the last one).
+    let gone = h.sessions_dir.join("panes-gone.txt");
+    let write = if cfg!(windows) {
+        format!("Add-Content -LiteralPath '{}' -Value x", gone.display())
+    } else {
+        format!("echo x >> '{}'", gone.display())
+    };
+    assert_eq!(h.cli(&["set-hook", "-g", "pane-exited", "run-shell", &write]).await.0, 0);
+    let exits = || std::fs::read_to_string(&gone).map(|t| t.lines().count()).unwrap_or(0);
+    let wait_exits = |n: usize| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while exits() < n {
+            assert!(Instant::now() < deadline, "{} pane(s) gone, not {n}", exits());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let mut c = h.connect().await;
+    c.attach(&["new", "-s", "f"]).await;
+    c.wait_for("prompt", |s| s.contents().contains("keepane>")).await;
+    let ssh = ssh.to_string_lossy().into_owned();
+    let argv = [ssh.as_str(), "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", "1", "127.0.0.1"];
+    let (code, _, err) = h.cli(&[&["new-window", "-t", "f", "-n", "far"][..], &argv[..]].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    wait_exits(1);
+    c.wait_for("the box", |s| {
+        let t = s.contents();
+        t.contains("ssh to 127.0.0.1 failed (exit 255)") && t.contains("connect again") && t.contains("refused")
+    })
+    .await;
+    // Its window is gone, as before.
+    let wins = h.cli(&["list-windows", "-t", "f"]).await.1;
+    assert!(!wins.contains("far"), "{wins}");
+    // q closes the box; nothing else happens.
+    c.type_str("q").await;
+    c.wait_for("the box closed", |s| !s.contents().contains("connect again")).await;
+    assert_eq!(h.cli(&["list-windows", "-t", "f"]).await.1.lines().count(), 1);
+    // Again, then r: a new window runs the same ssh (and, failing again, the box again).
+    let (code, _, err) = h.cli(&[&["new-window", "-t", "f", "-n", "far"][..], &argv[..]].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    wait_exits(2);
+    c.wait_for("the box again", |s| s.contents().contains("connect again")).await;
+    // r: a third window runs the same ssh and goes; only then is its box the one up.
+    c.type_str("r").await;
+    wait_exits(3);
+    c.wait_for("connected again, failed again", |s| {
+        s.contents().contains("ssh to 127.0.0.1 failed (exit 255)") && s.contents().contains("connect again")
+    })
+    .await;
+    c.type_str("q").await;
+    c.wait_for("closed", |s| !s.contents().contains("connect again")).await;
+    // Not ssh: a failing program shows no box.
+    let fail: &[&str] = if cfg!(windows) { &["cmd.exe", "/c", "exit 3"] } else { &["sh", "-c", "exit 3"] };
+    let (code, _, err) = h.cli(&[&["new-window", "-t", "f"][..], fail].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    wait_exits(4);
+    // An ssh failing at once with a code of its own (not 255): a box too.
+    // A stand-in by that name (cmd.exe as ssh.exe; a script named ssh).
+    let fake = h.sessions_dir.join(if cfg!(windows) { "ssh.exe" } else { "ssh" });
+    let fake_argv: Vec<String> = if cfg!(windows) {
+        std::fs::copy(std::path::PathBuf::from(std::env::var("WINDIR").unwrap()).join(r"System32\cmd.exe"), &fake)
+            .unwrap();
+        vec![fake.display().to_string(), "/c".into(), "echo boom-from-ssh& exit /b 1".into()]
+    } else {
+        std::fs::write(&fake, "#!/bin/sh\necho boom-from-ssh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        vec![fake.display().to_string(), "box9".into()]
+    };
+    let fake_argv: Vec<&str> = fake_argv.iter().map(String::as_str).collect();
+    let (code, _, err) = h.cli(&[&["new-window", "-t", "f"][..], &fake_argv[..]].concat()).await;
+    assert_eq!(code, 0, "{err}");
+    wait_exits(5);
+    c.wait_for("a box for exit 1", |s| {
+        s.contents().contains("failed (exit 1)") && s.contents().contains("boom-from-ssh")
+    })
+    .await;
+    c.type_str("q").await;
+    c.wait_for("closed", |s| !s.contents().contains("connect again")).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!c.screen.screen().contents().contains("failed (exit"), "{}", c.screen.screen().contents());
+    h.cli(&["kill-server"]).await;
 }
 
 /// `choose-ssh` on a machine no pane is on: Enter opens a window named

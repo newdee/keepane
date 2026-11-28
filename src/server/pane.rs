@@ -627,6 +627,8 @@ pub struct Pane {
     pub id: PaneId,
     /// Bumped by `respawn`; events from an older generation are ignored.
     pub generation: u32,
+    /// What its console's reader has read, for the exit to wait on (`Drain`).
+    drain: std::sync::Arc<Drain>,
     pub parser: vt100::Parser<Callbacks>,
     /// kitty's graphics protocol (kitty.rs): the pictures its program sent,
     /// and the sequences being taken out of its output.
@@ -916,12 +918,71 @@ fn launch(
     Ok((child, pid, killer, job))
 }
 
-/// Report the process's exit as an event, from its own thread.
-fn watch(mut child: Child, id: PaneId, generation: u32, tx: Sender<PaneEvent>) -> Result<()> {
+/// After a program exits, how long its console must stay quiet before the
+/// exit is told, and the most that is waited for that.
+const EXIT_QUIET: std::time::Duration = std::time::Duration::from_millis(50);
+const EXIT_DRAIN_MOST: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// What a pane's reader has read, for its waiter: when it last read
+/// something, and whether its console has ended. The exit and the output
+/// come from two threads; without this the exit could be told before the
+/// last of what the program printed (an `ssh` that could not connect said
+/// why after its window was gone).
+#[derive(Debug)]
+pub(super) struct Drain {
+    since: std::time::Instant,
+    last_ms: std::sync::atomic::AtomicU64,
+    ended: std::sync::atomic::AtomicBool,
+}
+
+impl Drain {
+    fn new() -> std::sync::Arc<Drain> {
+        std::sync::Arc::new(Drain {
+            since: std::time::Instant::now(),
+            last_ms: std::sync::atomic::AtomicU64::new(0),
+            ended: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Something was read (told before it is passed on).
+    fn read(&self) {
+        let ms = self.since.elapsed().as_millis() as u64;
+        self.last_ms.store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn end(&self) {
+        self.ended.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Wait until the console has ended or stayed quiet for `EXIT_QUIET`,
+    /// at most `EXIT_DRAIN_MOST`: what the program printed last is then
+    /// passed on before its exit.
+    fn settle(&self) {
+        let started = std::time::Instant::now();
+        while !self.ended.load(std::sync::atomic::Ordering::SeqCst) && started.elapsed() < EXIT_DRAIN_MOST {
+            let last = std::time::Duration::from_millis(self.last_ms.load(std::sync::atomic::Ordering::SeqCst));
+            if self.since.elapsed().saturating_sub(last) >= EXIT_QUIET {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+/// Report the process's exit as an event, from its own thread, once what it
+/// printed has been read (`Drain::settle`).
+fn watch(
+    mut child: Child,
+    id: PaneId,
+    generation: u32,
+    tx: Sender<PaneEvent>,
+    drain: std::sync::Arc<Drain>,
+) -> Result<()> {
     std::thread::Builder::new()
         .name(format!("pane-{id}-wait"))
         .spawn(move || {
             let code = child.wait().map(|s| s.exit_code()).unwrap_or(1);
+            drain.settle();
             let _ = tx.send(PaneEvent::Exit(id, generation, code));
         })
         .context("spawn waiter thread")?;
@@ -983,6 +1044,8 @@ impl Pane {
         // printer never finishes.
         let mut reader = pair.master.try_clone_reader().context("pty reader")?;
         let tx_out = tx.clone();
+        let drain = Drain::new();
+        let read_drain = drain.clone();
         std::thread::Builder::new()
             .name(format!("pane-{id}-read"))
             .spawn(move || {
@@ -991,12 +1054,14 @@ impl Pane {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
+                            read_drain.read();
                             if tx_out.send(PaneEvent::Output(id, generation, buf[..n].to_vec())).is_err() {
                                 break;
                             }
                         }
                     }
                 }
+                read_drain.end();
             })
             .context("spawn reader thread")?;
         let dir = cwd.filter(|d| std::path::Path::new(d).is_dir()).map(str::to_string);
@@ -1030,12 +1095,13 @@ impl Pane {
         };
         let (child, pid, killer, job) = launch(pair.slave.as_ref(), id, &run, dir.as_deref(), env)?;
         // The printer's exit is tagged apart: it is not the pane's program.
-        watch(child, id, if pending.is_some() { HELPER_GEN } else { generation }, tx.clone())?;
+        watch(child, id, if pending.is_some() { HELPER_GEN } else { generation }, tx.clone(), drain.clone())?;
         // The slave side stays open while a program is still to be started in it.
         let slave = pending.is_some().then_some(pair.slave);
         let writer = pair.master.take_writer().context("pty writer")?;
 
         let mut pane = Pane {
+            drain,
             slave,
             pending,
             tx,
@@ -1122,6 +1188,7 @@ impl Pane {
     ) -> Pane {
         let (rows, cols) = parser.screen().size();
         Pane {
+            drain: Drain::new(),
             slave: None,
             pending: None,
             tx,
@@ -1253,7 +1320,7 @@ impl Pane {
         let Some(slave) = self.slave.take() else { anyhow::bail!("no console to start in") };
         let run = crate::config::with_shell_integration(&p.argv);
         let (child, pid, killer, job) = launch(slave.as_ref(), self.id, &run, p.dir.as_deref(), &p.env)?;
-        watch(child, self.id, self.generation, self.tx.clone())?;
+        watch(child, self.id, self.generation, self.tx.clone(), self.drain.clone())?;
         // The program is in; the printer may go (it waits for this).
         let _ = std::fs::remove_file(&p.path);
         self.pid = pid;
@@ -2437,6 +2504,58 @@ impl Drop for Pane {
 mod tests {
     use super::*;
 
+    /// The exit waits for the output: quiet for `EXIT_QUIET`, or the console
+    /// ended, at most `EXIT_DRAIN_MOST`.
+    #[test]
+    fn an_exit_waits_until_the_output_is_read() {
+        use std::time::{Duration, Instant};
+        // Nothing read lately: about the quiet time.
+        let d = Drain::new();
+        std::thread::sleep(Duration::from_millis(60));
+        let t = Instant::now();
+        d.settle();
+        assert!(t.elapsed() < EXIT_QUIET, "quiet already: {:?}", t.elapsed());
+        // Still reading for 150 ms: waits that out, then the quiet time.
+        let d = Drain::new();
+        let reader = d.clone();
+        let feed = std::thread::spawn(move || {
+            for _ in 0..15 {
+                reader.read();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        std::thread::sleep(Duration::from_millis(5));
+        let t = Instant::now();
+        d.settle();
+        let took = t.elapsed();
+        feed.join().unwrap();
+        assert!(took >= Duration::from_millis(140) && took < EXIT_DRAIN_MOST, "{took:?}");
+        // The console ended: at once.
+        let d = Drain::new();
+        d.read();
+        d.end();
+        let t = Instant::now();
+        d.settle();
+        assert!(t.elapsed() < Duration::from_millis(20), "{:?}", t.elapsed());
+        // Output that never stops: no longer than the most.
+        let d = Drain::new();
+        let reader = d.clone();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        let feed = std::thread::spawn(move || {
+            while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                reader.read();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let t = Instant::now();
+        d.settle();
+        let took = t.elapsed();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        feed.join().unwrap();
+        assert!(took >= EXIT_DRAIN_MOST && took < EXIT_DRAIN_MOST + Duration::from_millis(200), "{took:?}");
+    }
+
     /// A message's Enter for an agent: never sooner than 300 ms after the
     /// paste, and only once the pane has been quiet 150 ms, but at 2 s
     /// however busy it is; taken once the pane prints anything; pressed
@@ -2498,6 +2617,36 @@ mod tests {
             vec!["cmd.exe".into(), "/q".into(), "/k".into(), "prompt $g".into()]
         } else {
             vec!["/bin/sh".into(), "-c".into(), "PS1='> ' exec /bin/sh -i".into()]
+        }
+    }
+
+    /// A program that prints a line and exits at once (an `ssh` that could
+    /// not connect): its exit comes after that line, every time of 20. The
+    /// race it guards against is rare here (an exit told without waiting
+    /// failed 1 run of 3 on Linux); `an_exit_waits_until_the_output_is_read`
+    /// holds the waiting itself.
+    #[test]
+    fn the_last_line_comes_before_the_exit() {
+        let argv: Vec<String> = if cfg!(windows) {
+            vec!["cmd.exe".into(), "/c".into(), "echo last-line-printed".into()]
+        } else {
+            vec!["/bin/sh".into(), "-c".into(), "echo last-line-printed".into()]
+        };
+        for round in 0..20 {
+            let (tx, rx) = channel();
+            let _pane = Pane::spawn(40 + round, &argv, None, 80, 5, 10, &[], tx).unwrap();
+            let mut seen = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                assert!(Instant::now() < deadline, "round {round}: no exit");
+                match rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(PaneEvent::Output(_, _, b)) => seen.extend_from_slice(&b),
+                    Ok(PaneEvent::Exit(..)) => break,
+                    _ => {}
+                }
+            }
+            let text = String::from_utf8_lossy(&seen);
+            assert!(text.contains("last-line-printed"), "round {round}: the exit came first; read: {text:?}");
         }
     }
 

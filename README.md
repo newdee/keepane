@@ -1096,7 +1096,11 @@ no pane has connected to it yet (`config`, `seen`, `history`).
 
 Enter goes to the pane connected to it, else opens a window named after
 it that runs `ssh`; `s` connects in a split beside the pane, `y` copies
-the command, `d` takes the machine off the list, `f` filters.
+the command, `d` takes the machine off the list, `f` filters. When the
+`ssh` cannot connect (it ends at once, with its own error, 255, or with
+another within 10 seconds), its window closes as before and a box says
+what ssh said: `r` connects again in a new window, `q` closes the box.
+This holds for any window or pane whose program is `ssh` itself.
 
 The list comes from four places: each `ssh` keepane sees start in a pane
 (one use each, with its time), the `Host` lines of `~/.ssh/config`, the
