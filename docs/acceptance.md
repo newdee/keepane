@@ -7327,3 +7327,19 @@ deslop-please（Windows 配置，默认特性）报 193 条，全是结构问题
 | 4 | 代码正确性（`forget_saved` 的错误路径）+ 范围内测试 | `.prev` 不存在（`NotFound`）不算失败；一个删不掉不影响其余的删除，返回第一个失败（`get_or_insert`）；`delete-saved` 找不到存档仍报 `no saved session named`，删除失败报路径和原因，和原来一样；另 3 处调用（chooser 的 D、10 s 后遗忘、`name_unsaved`）原来就不报错，现在照旧只记日志。网站测试数 1072 → 1073。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 202（+1）；Linux lib 839、e2e 197（+1）；全过。 | 干净（1/3） |
 | 5 | 可复现性 + 范围内测试 | 相关 e2e 5 个（新测试、choose-tree、`resume --prev`、两个 remain-on-exit）连跑 5 次：5/5 通过，11.19–11.38 s。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 202；Linux lib 839、e2e 197；全过。 | 干净（2/3） |
 | 6 | 逻辑正确与不变量 + 范围内测试 | 删除存档的路径只剩一个：server 和 resurrect 里的 `remove_file` 只有 `forget_saved` 那两处（另外两处分别是 shell 历史 `.txt`、写入失败后的临时文件）；`delete-saved`、chooser 的 D、10 s 后遗忘、`name_unsaved` 都调用它。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 202；Linux lib 839、e2e 197；全过。 | 干净（3/3），验收通过 |
+
+## 253. 打进另一台机器 pane 的按键按那台机器的系统编码
+
+用户 2026-11-29："为啥我在远程的keepane里，比如那个blog里，没法打命令，所有的按键都变成这种 6;38;108;1;0;1_…"；"但是远程的mac电脑上，可以远程这个电脑的pane，在里面输入命令"；"要考虑同类问题，比如linux的bash也会不会有这种问题"。
+
+- 原因：在本机打进镜像 pane 的键由**本机**的 `Pane::key_bytes` 编码，再把字节原样送到对方。本机是 Windows，编码是 win32-input-mode（`ESC[76;38;108;1;0;1_` = `l` 按下）；Mac 上 zsh 吃掉 `ESC[7`，其余印成文字（用户看到的三组正是 `l`、`s`、回车）。反方向能用：Mac 编出 VT，ConPTY 也读 VT。
+- 定性：结构缺陷——`key_bytes` 假设 pane 的程序在本机。共性检查（按"谁编码、谁接收"列全组合）：Windows→Mac/Linux（zsh、bash 一样）坏；Mac/Linux→Windows、Mac↔Linux 是 VT，正常；Windows→Windows 用 win32 正常，若一律改 VT 会丢 Shift+Enter（Claude Code 换行）。其它输入路径：鼠标 SGR、粘贴、`send-keys` 都是 VT，任何系统都读；`link watch`/`link attach` 发按键记录、由对方编码，本来就对；飞书/网页发文字。只有 `key_bytes` 一处。
+- 修：规则是"按 pane 所在机器的系统编码"。link 握手的 `Answer` 加可选字段 `system`（tag 5，`std::env::consts::OS`）；镜像记下 `windows`，带到 `RemotePane.windows`（新建的 pane 和已有的 pane 都设）；`key_bytes`：远程且是 Windows → `encode_key_record`，远程其它 → `vt_key`，本机 → 平台编码。VT 编码器从 `platform::unix` 移到共享的 `server::input::vt_key`（Unix 照旧调用它）。
+- 新 bug 评估：本机 pane 编码不变（`None` 分支原样）；老版本对方不发 `system` → VT（对方是老 Windows 时少了 Shift+Enter 之类，和今天 Mac→Windows 一样，能用）；只需更新**打字的一方**，Mac 仍是 0.99.2 也修好。
+- 测试：单元 `a_pane_of_another_machine_is_sent_vt`（VT、应用光标键、key-up、Windows 时的 win32 与 Shift+Enter）；`link_stream` 测试断言 `system` 过线；e2e `another_machines_sessions_are_under_it...` 加一段：附着的客户端在镜像会话里打 `echo typed-by-keys` 回车，对方 pane 出现那一行、没有 `;1_`。变异"远程一律 win32"在 Linux 上让单元测试和这个 e2e 都失败（e2e 等那一行超时）——这正是本 bug 的形态（Windows 主机上两边都是 Windows，测不出，所以靠 Linux 那一份）。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 范围内测试 | fmt、`clippy exit 0`；Windows lib 856 / 2 ignored（+1）、console 16 / 1 ignored、e2e 202；Linux lib 840 / 2 ignored（+1）、e2e 197；全过；C 盘 184.9 GB。 | 干净（1/3） |
+| 2 | 静态一致性（文档对代码）+ 范围内测试 | README（英、中）原先只说"Windows 上用 win32-input-mode"，补一句：打进另一台机器的 pane 按那台机器的方式送；`docs/design/link.md` 第 3 条补上 `Answer.system` 的规则。`Answer` 的 tag 5 是新号，没有复用（文件头"Field numbers are for good"）。fmt、`clippy exit 0`；Windows lib 856、console 16、e2e 202；Linux lib 840、e2e 197；全过。 | 干净（2/3） |
+| 3 | 边界与退化输入（新旧版本互读）+ 范围内测试 | 新单元测试 `the_system_in_the_answer_reads_both_ways`：1.0.0 形状的 `Answer` 读新应答，`version`/`epoch`/`commands` 不变；新版读老应答，`system` 为 `None`（→ VT）。`windows` 的两个入口：新建的 pane 取镜像当时的值，`Live` 到来时已有的 pane 一起改（重连到升级或降级的对方会更新）。fmt、`clippy exit 0`；Windows lib 857（+1）、console 16、e2e 202；Linux lib 841（+1）、e2e 197；全过。 | 干净（3/3），验收通过 |
