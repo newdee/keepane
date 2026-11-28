@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A pull request's newer push cancels its older run; every push to master
+# runs in a group of its own, so no commit there goes untested.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   web:
     # The page `keepane web` serves is built from web/ into web/dist, which is
@@ -15,6 +21,7 @@ jobs:
     # out the same, byte for byte.
     name: web page (types, build = committed)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -31,18 +38,40 @@ jobs:
       - name: the committed page is what the source builds
         run: git diff --exit-code --stat -- web/dist
 
-  test:
-    name: fmt, clippy, test (${{ matrix.os }})
+  lint:
+    # Beside the tests, not before them: the wait is the longer of the two.
+    # rustfmt reads the same on every system, so once, on Linux; clippy
+    # sees each system's own code (cfg(windows), cfg(unix)), so on each.
+    name: fmt, clippy (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: the console host shipped beside keepane.exe (Windows)
         # The panes' console host the release ships (third-party/conpty):
@@ -50,17 +79,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: pwsh -File tools/fetch-conpty.ps1
-      - name: rustfmt
-        run: cargo fmt --all -- --check
-      - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
       - name: test
         # The suite spawns shell panes (cmd.exe/pwsh through ConPTY on Windows,
         # sh/bash through a pty elsewhere); keep autosave out of the runner profile.
+        # The e2e tests mostly wait on those shells and servers, not on the
+        # CPU: on 4 cores, 12 threads ran them in 78 s against 152 s for the
+        # default 4 (one per core), every test passing.
         env:
           KEEPANE_SESSIONS_DIR: ${{ runner.temp }}/keepane-sessions
-          # The e2e tests mostly wait on those shells and servers, not on the
-          # CPU: on 4 cores, 12 threads ran them in 78 s against 152 s for the
-          # default 4 (one per core), every test passing.
           RUST_TEST_THREADS: 12
         run: cargo test --all-targets
