@@ -59,4 +59,8 @@ jobs:
         # sh/bash through a pty elsewhere); keep autosave out of the runner profile.
         env:
           KEEPANE_SESSIONS_DIR: ${{ runner.temp }}/keepane-sessions
+          # The e2e tests mostly wait on those shells and servers, not on the
+          # CPU: on 4 cores, 12 threads ran them in 78 s against 152 s for the
+          # default 4 (one per core), every test passing.
+          RUST_TEST_THREADS: 12
         run: cargo test --all-targets
