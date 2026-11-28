@@ -24,9 +24,11 @@ check the lists are whole:
 - **JSON**: the fields of every `-J` answer, of the event log
   (`list-events`, the files a day), of the done-events' webhook and
   `pane-done` hook; new fields may be added, none removed or renamed.
-- **Files**: the config, saved sessions, the history and event logs, the
-  link keys and tables, `feishu-users`; a 1.x reads what any earlier 1.x
-  (and 0.77) wrote.
+- **Files**: the config and the settings file (`settings-file`), themes of
+  your own (`NAME.conf` in `theme-path`, their `@` tokens), agent
+  definitions (`~/.keepane/agents/*.toml`), saved sessions, the history
+  and event logs, the link keys and tables, `feishu-users`; a 1.x reads
+  what any earlier 1.x (and 0.77) wrote.
 - **Environment**: every `KEEPANE_*` variable under ENVIRONMENT.
 - **Between machines**: any two 1.x talk to each other (`link`); a newer
   one says plainly what an older one cannot do yet, as now.
@@ -36,10 +38,9 @@ check the lists are whole:
 
 - **Words meant for people**: what a command prints without `-J`, the
   status line's and the dashboard's layout, error messages. Read `-J`.
-- **Experimental**: the group chat (`chat-*`, its MCP tools and its
-  files under `chat/`), until a release says it is not. Its second phase
-  (panes of other machines in a channel) may change its commands and its
-  files.
+- **Experimental**: the group chat (`chat-*`, its MCP tools, its group
+  files and its files under `chat/`, panes of other machines in a
+  channel included), until a release says it is not.
 - **Judgements**: what an agent's screen is read as (screen rules), the
   cost of its tokens (a public price list), how its transcript is found.
   These get better; they are not a format.

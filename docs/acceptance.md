@@ -7310,3 +7310,20 @@ deslop-please（Windows 配置，默认特性）报 193 条，全是结构问题
 | 4 | 代码正确性（修复的错误路径）+ 范围内测试 | 改动只在 `remain-on-exit` 分支：其它选项的 `bad boolean` 不变（`config.rs:802` 和 server `:6634` 两处原样；e2e `:773` 测的是 `mouse maybe`，仍通过）；diff 9 个文件 +141/−16，server 只有 3 处（`keeps(code)` 1、`mark_exited` 2）。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 201；Linux lib 839、e2e 196；全过。 | 干净（1/3） |
 | 5 | 可复现性 + 范围内测试 | `remain_on_exit` + `ssh` 相关 e2e（5 个）连跑 5 次：5/5 通过，耗时 9.07–9.45 s。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 201；Linux lib 839、e2e 196；全过。 | 干净（2/3） |
 | 6 | 逻辑正确与不变量 + 范围内测试 | 程序退出只有一个入口（`PaneEvent::Exit` 在 server `mod.rs:2923` 处理；`pane.rs:2685` 是测试辅助）；入口里的顺序：popup 先走，`keeps(code)` 在系统关机宽限和 ssh 框之前，所以开着 `on`/`failed` 时 ssh 失败窗口留下、不弹框（README 已写明）。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 201；Linux lib 839、e2e 196；全过。 | 干净（3/3），验收通过 |
+
+## 252. 1.0.0：兼容性承诺更新，版本号
+
+用户 2026-11-28："都按推荐来吧，可以都做"（含"考虑发 1.0"一项：先过一遍 compatibility.md 和 man）。
+
+- `docs/compatibility.md`：0.77 之后加入、由用户自己写的文件列进"Kept"：`settings-file`、主题（`theme-path` 里的 `NAME.conf` 及其 `@` 标记）、`~/.keepane/agents/*.toml`。群聊仍是实验性的；"第二阶段可能改"一句已过时（0.85.0 发了），改为把跨机器的频道和群文件一起列进实验性。
+- 版本号会不会让 1.0 出问题：`takeover::parse_version` 是三元组比较；`update::newer` 和 `server::newer::is_newer` 按数字比较，已有测试 `newer("v1.0.0", "0.99.9")`、`is_newer("1.0.0", "0.99.99")`；CI 和打包脚本里没有写死 `0.` 的地方（`rg` 只有旧的 wmux 清单）。
+- `Cargo.toml` 0.99.2 → 1.0.0；网站测试数 1070 → 1072；`docs/releases/v1.0.0.md`。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 范围内测试（1.0.0 版本号下全量）| `keepane -V` → `keepane 1.0.0`。fmt、`clippy exit 0`；Windows lib 855 / 2 ignored、console 16 / 1 ignored、e2e 201；Linux lib 839 / 2 ignored、e2e 196；全过；C 盘 194.2 GB。 | 干净（1/3） |
+| 2 | 静态一致性（文档的说法对代码）+ 范围内测试 | compatibility.md 说"测试检查清单完整"：`man.rs` 5 个断言（命令 `:157`、选项 `:168`、环境变量 `:202`、格式变量 `:221`、MCP 工具 `:229`）都在且通过；"任意两个 1.x 能互连"：link 握手比的是 `link::PROTOCOL`（`link_in.rs:116-124`），不比版本号，0.99.x 与 1.0 不受影响。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 201；Linux lib 839、e2e 196；全过。 | 干净（2/3） |
+| 3 | 范围内测试 + 失败定性 | Windows e2e 200/201：`choose_tree_kills_or_forgets_a_session` 在 `:2161` 失败，主目录里有 `keepme-76938fae.json.prev`；单独重跑 3 次都过（11.2–11.3 s）。定性：(a) 这次失败是测试的期望错了——autosave 先存了一个窗口、`save-session -a` 再存两个窗口，留下 `.prev`（时序决定，所以偶发）；被杀会话的 `.prev` 留在原处是设计（`resume --prev` 的提示 "its earlier one stays"，查找时先看主目录），测试改为只看 `.json`。(b) 排查中**发现真 bug**：忘掉会话（`delete-saved`、choose-tree 的 `D`、自己结束 10 s 后的遗忘）不删 `.prev`，`resume --prev` 仍能带回，与 "resume will not bring it back" 相反。共性：删除存档有两份实现（`forget_saved` 与 `delete-saved` 内联），都漏了——结构缺陷，收敛为一个 `forget_saved`（删两个目录的存档和 `.prev`，返回第一个失败）。新 e2e `forgetting_a_session_forgets_its_earlier_save`；变异"不删 .prev"使它在 `:17075` 失败。man、发布说明补上。 | 有发现，重新计数 |
+| 4 | 代码正确性（`forget_saved` 的错误路径）+ 范围内测试 | `.prev` 不存在（`NotFound`）不算失败；一个删不掉不影响其余的删除，返回第一个失败（`get_or_insert`）；`delete-saved` 找不到存档仍报 `no saved session named`，删除失败报路径和原因，和原来一样；另 3 处调用（chooser 的 D、10 s 后遗忘、`name_unsaved`）原来就不报错，现在照旧只记日志。网站测试数 1072 → 1073。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 202（+1）；Linux lib 839、e2e 197（+1）；全过。 | 干净（1/3） |
+| 5 | 可复现性 + 范围内测试 | 相关 e2e 5 个（新测试、choose-tree、`resume --prev`、两个 remain-on-exit）连跑 5 次：5/5 通过，11.19–11.38 s。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 202；Linux lib 839、e2e 197；全过。 | 干净（2/3） |
+| 6 | 逻辑正确与不变量 + 范围内测试 | 删除存档的路径只剩一个：server 和 resurrect 里的 `remove_file` 只有 `forget_saved` 那两处（另外两处分别是 shell 历史 `.txt`、写入失败后的临时文件）；`delete-saved`、chooser 的 D、10 s 后遗忘、`name_unsaved` 都调用它。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 202；Linux lib 839、e2e 197；全过。 | 干净（3/3），验收通过 |
