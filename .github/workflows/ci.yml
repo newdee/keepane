@@ -83,9 +83,11 @@ jobs:
         # The suite spawns shell panes (cmd.exe/pwsh through ConPTY on Windows,
         # sh/bash through a pty elsewhere); keep autosave out of the runner profile.
         # The e2e tests mostly wait on those shells and servers, not on the
-        # CPU: on 4 cores, 12 threads ran them in 78 s against 152 s for the
-        # default 4 (one per core), every test passing.
+        # CPU, so more threads than libtest's one per core: 12 on Linux and
+        # macOS (110 s -> 52 s for the e2e suite on 4 Linux cores); 6 on
+        # Windows, where at 12 two e2e tests timed out under the load of the
+        # 4-core runner (run 46118911546).
         env:
           KEEPANE_SESSIONS_DIR: ${{ runner.temp }}/keepane-sessions
-          RUST_TEST_THREADS: 12
+          RUST_TEST_THREADS: ${{ runner.os == 'Windows' && '6' || '12' }}
         run: cargo test --all-targets
