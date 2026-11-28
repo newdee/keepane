@@ -318,7 +318,7 @@ impl Server {
                 w.last_pane = Some(w.active);
                 w.active = local;
             }
-            super::mirrored::zoom_on_active(w);
+            w.zoom_on_active();
         }
         if let Some(cid) = ask.cid {
             let out = match (r.ok, r.text.trim_end().is_empty()) {

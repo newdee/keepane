@@ -393,7 +393,7 @@ fn pick_from(accent: &str, paper: &str) -> String {
 pub fn theme_settings(text: &str) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        match crate::command::tokenize(line)?.as_slice() {
+        match crate::words::tokenize(line)?.as_slice() {
             [set, g, name, value] if set == "set" && g == "-g" => out.push((name.clone(), value.clone())),
             _ => return Err(format!("a theme line is `set -g <option> <value>`: {line}")),
         }
@@ -1314,7 +1314,7 @@ impl Options {
         match name.as_str() {
             "prefix" => self.prefix = Key::parse(value).ok_or_else(|| format!("bad key '{value}'"))?,
             "default-shell" => self.default_shell = value.to_string(),
-            "default-command" => self.default_command = crate::command::tokenize(value)?,
+            "default-command" => self.default_command = crate::words::tokenize(value)?,
             "mouse" => self.mouse = parse_bool(value)?,
             "history-limit" => self.history_limit = value.parse().map_err(|_| format!("bad number '{value}'"))?,
             "status" => {

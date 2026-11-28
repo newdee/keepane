@@ -265,12 +265,7 @@ pub async fn run(socket: &str, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-/// The address `web-status` (or `web-start`) gives on its first line, when
-/// serving: `serving <url> · ...`.
-pub fn status_url(status: &str) -> Option<&str> {
-    let first = status.lines().next()?.strip_prefix("serving ")?;
-    Some(first.split(" · ").next().unwrap_or(first))
-}
+pub use crate::ipc::status_url;
 
 /// Answer HTTP on `listener` until the task is dropped: the connections go
 /// with it (a watching phone included).

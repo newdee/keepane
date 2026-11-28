@@ -151,8 +151,6 @@ pub struct ChatPage {
     /// The channel `group_files` were read for: until the picked one's
     /// are read, none are shown (nor deleted).
     pub files_for: Option<String>,
-    /// Other machines' group files fetched to be shown.
-    pub fetches: super::group_files::Fetches,
     pub channels: Vec<ChanRow>,
     pub pick: usize,
     pub members: Vec<MemberRow>,
@@ -952,22 +950,12 @@ impl Board {
         boxed(&title, &key, lines, r, focused)
     }
 
-    /// `[4]` on page 3: the picked channel, its topic in the title, its
-    /// lines with the latest at the bottom (scrolled up by `scroll`).
+    /// `[4]` on page 2: the picked channel, its topic in the title, its
+    /// lines with the latest at the bottom (scrolled up by `scroll`); the
+    /// picked group file instead while `[0]` has them (`group_file_box`).
     pub(super) fn chat_box(&self, r: Rect) -> Vec<String> {
         let focused = self.focus == Panel::Main;
         let w = r.inner_w();
-        // [0] has the group files: the picked one, from its top; while a
-        // line is typed (`s` in [4]), the chat, to see it.
-        let typing_any = matches!(&self.input, Some((Input::ChatSay { .. }, _)));
-        if self.left == Panel::GroupFiles && !typing_any {
-            let (title, line, all) = self.group_file_shown(w);
-            let rows = r.inner_h();
-            let most = all.len().saturating_sub(rows);
-            self.scroll_most.set(most);
-            let start = self.scroll.min(most);
-            return boxed(&title, &line, all.into_iter().skip(start).take(rows).collect(), r, focused);
-        }
         let Some(c) = self.chat.picked() else {
             return boxed("[4] Chat", "", vec![paint("2", "no channel")], r, focused);
         };

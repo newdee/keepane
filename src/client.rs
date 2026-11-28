@@ -316,7 +316,7 @@ async fn restart_server_here(socket: &str, pipe: &str, old: &str) -> Result<(i32
     // not yet.
     if let Ok((0, said, _)) = query(socket, &["web-resume"]).await {
         let first = said.lines().next().unwrap_or("");
-        if let Some(url) = crate::web::status_url(&said) {
+        if let Some(url) = crate::ipc::status_url(&said) {
             lines.push(format!("the phone page is served again: {url}"));
         } else if first.starts_with("off: to be served again") {
             lines.push(format!("the phone page is {}", &first["off: ".len()..]));
@@ -397,8 +397,7 @@ pub async fn run(socket: String, argv: Vec<String>) -> Result<i32> {
                     c.set_title(&title);
                     // What the terminal shows, told only to a server of this
                     // version: an older one does not know the message.
-                    let kitty =
-                        mismatch.is_none().then(|| crate::server::kitty::outer_has_kitty(|k| std::env::var(k).ok()));
+                    let kitty = mismatch.is_none().then(|| outer_has_kitty(|k| std::env::var(k).ok()));
                     match attached(Arc::clone(&c), &session, rd, &mut wr, &mut input, kitty).await {
                         Ok(Detach::Restarting) => match reattach(&socket, &session, &c).await {
                             Ok((r, w, s)) => {
@@ -606,9 +605,37 @@ where
     Ok(Detach::Reason(reason.unwrap_or_else(|| "detached".into())))
 }
 
+/// Whether the terminal a client runs in shows kitty's pictures, from the
+/// names it sets (as `ut view` decides): UnifyTerm, kitty, WezTerm,
+/// ghostty, or a keepane pane that has them on. The client tells the
+/// server (`ClientMsg::Terminal`).
+pub fn outer_has_kitty(get: impl Fn(&str) -> Option<String>) -> bool {
+    let program = get("TERM_PROGRAM").unwrap_or_default();
+    let term = get("TERM").unwrap_or_default();
+    matches!(program.to_ascii_lowercase().as_str(), "unifyterm" | "wezterm" | "ghostty")
+        || get("KITTY_WINDOW_ID").is_some_and(|v| !v.is_empty())
+        || matches!(term.as_str(), "xterm-kitty" | "xterm-ghostty")
+        || (program == "keepane" && get("KEEPANE_GRAPHICS").as_deref() == Some("kitty"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_terminal_outside_is_known_by_its_names() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        };
+        assert!(outer_has_kitty(env(&[("TERM_PROGRAM", "unifyterm")])));
+        assert!(outer_has_kitty(env(&[("TERM_PROGRAM", "WezTerm")])));
+        assert!(outer_has_kitty(env(&[("KITTY_WINDOW_ID", "3")])));
+        assert!(outer_has_kitty(env(&[("TERM", "xterm-ghostty")])));
+        assert!(outer_has_kitty(env(&[("TERM_PROGRAM", "keepane"), ("KEEPANE_GRAPHICS", "kitty")])));
+        assert!(!outer_has_kitty(env(&[("TERM_PROGRAM", "keepane")])), "a keepane pane with them off");
+        assert!(!outer_has_kitty(env(&[("WT_SESSION", "x")])), "Windows Terminal has none");
+        assert!(!outer_has_kitty(env(&[])));
+    }
 
     #[test]
     fn a_pane_counts_only_for_its_own_server() {

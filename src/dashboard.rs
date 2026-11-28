@@ -686,6 +686,8 @@ pub struct Board {
     pub machines: Vec<MachineRow>,
     /// The chat's page: the group chat.
     pub chat: chat::ChatPage,
+    /// Other machines' group files fetched to be shown (the chat page's `[0]`).
+    pub group_fetches: group_files::Fetches,
     /// Where the last board was left, as the server keeps it (`board-pick`),
     /// read at the start or told since: told again only when it moves.
     place_kept: Option<(u8, String)>,
@@ -772,6 +774,11 @@ pub(crate) fn clip(s: &str, width: usize) -> (String, usize) {
 pub(crate) fn paint(sgr: &str, text: &str) -> String {
     if text.is_empty() { String::new() } else { format!("\x1b[{sgr}m{text}\x1b[0m") }
 }
+
+/// The most of a file read for its preview (`files::preview`); markdown
+/// longer than it is left to the plain preview, not `ut md` (`ut`). Here,
+/// above both, so neither needs the other for it.
+pub const PREVIEW_MAX: u64 = 256 * 1024;
 
 /// Reverse video: a picked line before `mode-style` is read, or when it
 /// names no colour.
@@ -963,6 +970,7 @@ impl Board {
             page: 1,
             machines: Vec::new(),
             chat: chat::ChatPage::default(),
+            group_fetches: group_files::Fetches::default(),
             shares: Vec::new(),
             share_pick: 0,
             shares_ended: true,
@@ -2763,7 +2771,11 @@ impl Board {
         place(layout.channels, layout.channels.map(|r| self.channels_box(r)).unwrap_or_default());
         place(layout.members, layout.members.map(|r| self.members_box(r)).unwrap_or_default());
         if self.page == CHAT_PAGE {
-            place(m, m.map(|r| self.chat_box(r)).unwrap_or_default());
+            // [0] has the group files: [4] the picked one; while a line is
+            // typed (`s` in [4]), the chat, to see it.
+            let typing = matches!(&self.input, Some((Input::ChatSay { .. }, _)));
+            let file = self.left == Panel::GroupFiles && !typing;
+            place(m, m.map(|r| if file { self.group_file_box(r) } else { self.chat_box(r) }).unwrap_or_default());
         } else if self.page == SHARES_PAGE {
             place(m, m.map(|r| self.share_box(r)).unwrap_or_default());
         } else {
@@ -5250,16 +5262,16 @@ mod tests {
         // Its files by their links, fetched first.
         let url = "http://192.0.2.1:7681/s/abc";
         let now = std::time::Duration::ZERO;
-        b.chat.fetches.put(url, None, now);
+        b.group_fetches.put(url, None, now);
         b.chat.set_group_files(&format!(
             r#"{{"group_files":[{{"file":"2026-11-27/4/far.md","name":"far.md","size":5,"from":"blog","seq":4,"at":"","url":"{url}"}}]}}"#
         ));
         assert!(screen(&b).join("\n").contains("fetching it from its machine"));
         std::fs::write(dir.join("far.md"), "from afar\n").unwrap();
-        b.chat.fetches.put(url, Some(Ok(dir.join("far.md"))), now);
+        b.group_fetches.put(url, Some(Ok(dir.join("far.md"))), now);
         let text = screen(&b).join("\n");
         assert!(text.contains(&format!("from {url}")) && text.contains("1 from afar"), "{text}");
-        b.chat.fetches.put(url, Some(Err("couldn't connect".into())), now);
+        b.group_fetches.put(url, Some(Err("couldn't connect".into())), now);
         assert!(screen(&b).join("\n").contains("could not fetch it: couldn't connect"));
         let _ = std::fs::remove_dir_all(&dir);
         // A fetch that failed is tried again 10 seconds on, not before;

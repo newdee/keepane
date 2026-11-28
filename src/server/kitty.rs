@@ -756,21 +756,6 @@ fn number_of(fg: Color) -> Option<u32> {
 }
 
 // ---------------------------------------------------------------------------
-// The terminal outside: whether it speaks the protocol.
-
-/// Whether the terminal a client runs in shows kitty's pictures, from the
-/// names it sets (as `ut view` decides): UnifyTerm, kitty, WezTerm,
-/// ghostty, or a keepane pane that has them on.
-pub fn outer_has_kitty(get: impl Fn(&str) -> Option<String>) -> bool {
-    let program = get("TERM_PROGRAM").unwrap_or_default();
-    let term = get("TERM").unwrap_or_default();
-    matches!(program.to_ascii_lowercase().as_str(), "unifyterm" | "wezterm" | "ghostty")
-        || get("KITTY_WINDOW_ID").is_some_and(|v| !v.is_empty())
-        || matches!(term.as_str(), "xterm-kitty" | "xterm-ghostty")
-        || (program == "keepane" && get("KEEPANE_GRAPHICS").as_deref() == Some("kitty"))
-}
-
-// ---------------------------------------------------------------------------
 // Each client's side: numbers in its terminal, what it was sent.
 
 /// A picture as a client's terminal knows it.
@@ -1231,21 +1216,6 @@ mod tests {
             "row and column read back"
         );
         assert_eq!(place_of("x"), None);
-    }
-
-    #[test]
-    fn the_terminal_outside_is_known_by_its_names() {
-        let env = |pairs: &'static [(&'static str, &'static str)]| {
-            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
-        };
-        assert!(outer_has_kitty(env(&[("TERM_PROGRAM", "unifyterm")])));
-        assert!(outer_has_kitty(env(&[("TERM_PROGRAM", "WezTerm")])));
-        assert!(outer_has_kitty(env(&[("KITTY_WINDOW_ID", "3")])));
-        assert!(outer_has_kitty(env(&[("TERM", "xterm-ghostty")])));
-        assert!(outer_has_kitty(env(&[("TERM_PROGRAM", "keepane"), ("KEEPANE_GRAPHICS", "kitty")])));
-        assert!(!outer_has_kitty(env(&[("TERM_PROGRAM", "keepane")])), "a keepane pane with them off");
-        assert!(!outer_has_kitty(env(&[("WT_SESSION", "x")])), "Windows Terminal has none");
-        assert!(!outer_has_kitty(env(&[])));
     }
 
     fn grid_with(text: &str, fg: Color) -> Grid {

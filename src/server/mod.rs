@@ -1066,6 +1066,18 @@ impl Window {
         }
     }
 
+    /// A zoomed window of another machine draws the pane chosen here, at its
+    /// size, where the zoomed pane is drawn.
+    fn zoom_on_active(&mut self) {
+        if !self.zoomed {
+            return;
+        }
+        if let (Some(&(_, r)), Some(p)) = (self.rects.first(), self.pane(self.active)) {
+            self.rects = vec![(self.active, Rect { x: r.x, y: r.y, w: p.cols, h: p.rows })];
+            self.layout_rects = self.rects.clone();
+        }
+    }
+
     fn relayout(&mut self, area: Rect, chrome: Chrome) {
         // Placed as it is on its machine (`mirrored`), whatever the size here:
         // zoomed as it is there, on the pane chosen here.
@@ -1075,7 +1087,7 @@ impl Window {
             // here.
             self.rects = mirrored::place(&r.placed, r.zoomed_pane.filter(|_| r.zoomed), area, chrome);
             self.layout_rects = self.rects.clone();
-            mirrored::zoom_on_active(self);
+            self.zoom_on_active();
             return;
         }
         self.rects.clear();

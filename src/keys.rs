@@ -1,8 +1,21 @@
 //! Logical keys: tmux-style names (`C-b`, `M-x`, `S-Up`, `F5`), parsing,
 //! and conversion from raw Windows key records.
 
-use crate::ipc::KeyRecord;
+use serde::{Deserialize, Serialize};
 use std::fmt;
+
+/// Raw Windows `KEY_EVENT_RECORD`, forwarded verbatim so the server can hand it
+/// to ConPTY in win32-input-mode without loss of fidelity. Here, where keys
+/// are read from it, and passed on by `ipc` (which only carries it).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyRecord {
+    pub down: bool,
+    pub repeat: u16,
+    pub vk: u16,
+    pub sc: u16,
+    pub ch: u16,
+    pub ctrl: u32,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum KeyCode {

@@ -2811,73 +2811,7 @@ pub fn quote(s: &str) -> String {
     out
 }
 
-/// Split a command line into words, honouring double/single quotes and
-/// backslash escapes. A `#` at the start of a word begins a comment.
-///
-/// Backslashes are only escapes before a quote, another backslash,
-/// whitespace, `#` or `;`, so Windows paths like `C:\src` survive unquoted.
-pub fn tokenize(line: &str) -> Result<Vec<String>, String> {
-    let mut words = Vec::new();
-    let mut cur = String::new();
-    let mut in_word = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            c if c.is_whitespace() => {
-                if in_word {
-                    words.push(std::mem::take(&mut cur));
-                    in_word = false;
-                }
-            }
-            '#' if !in_word => break,
-            '"' => {
-                in_word = true;
-                loop {
-                    match chars.next() {
-                        None => return Err("unterminated double quote".into()),
-                        Some('"') => break,
-                        Some('\\') => match chars.peek() {
-                            Some(&e @ ('"' | '\\')) => {
-                                chars.next();
-                                cur.push(e);
-                            }
-                            _ => cur.push('\\'),
-                        },
-                        Some(o) => cur.push(o),
-                    }
-                }
-            }
-            '\'' => {
-                in_word = true;
-                loop {
-                    match chars.next() {
-                        None => return Err("unterminated single quote".into()),
-                        Some('\'') => break,
-                        Some(o) => cur.push(o),
-                    }
-                }
-            }
-            '\\' => {
-                in_word = true;
-                match chars.peek() {
-                    Some(&e) if e == '"' || e == '\'' || e == '\\' || e == '#' || e == ';' || e.is_whitespace() => {
-                        chars.next();
-                        cur.push(e);
-                    }
-                    _ => cur.push('\\'),
-                }
-            }
-            _ => {
-                in_word = true;
-                cur.push(c);
-            }
-        }
-    }
-    if in_word {
-        words.push(cur);
-    }
-    Ok(words)
-}
+pub use crate::words::tokenize;
 
 struct Args<'a> {
     words: &'a [String],
@@ -5566,7 +5500,7 @@ pub fn parse(words: &[String]) -> Result<Cmd, String> {
                 }
                 "link-keys" => {
                     let keys = words.next().ok_or_else(|| format!("{n}: the keys (JSON) required"))?;
-                    if serde_json::from_str::<Vec<crate::ipc::KeyRecord>>(&keys).is_err() {
+                    if serde_json::from_str::<Vec<crate::keys::KeyRecord>>(&keys).is_err() {
                         return Err(format!("{n}: the keys are a JSON list of key records"));
                     }
                     Cmd::LinkKeys { target, keys, client }

@@ -64,18 +64,6 @@ pub(super) struct Placed {
     pub rows: u16,
 }
 
-/// A zoomed window of another machine draws the pane chosen here, at its
-/// size, where the zoomed pane is drawn.
-pub(super) fn zoom_on_active(w: &mut Window) {
-    if !w.zoomed {
-        return;
-    }
-    if let (Some(&(_, r)), Some(p)) = (w.rects.first(), w.pane(w.active)) {
-        w.rects = vec![(w.active, Rect { x: r.x, y: r.y, w: p.cols, h: p.rows })];
-        w.layout_rects = w.rects.clone();
-    }
-}
-
 /// Where the keys typed into a pane of another machine go: that machine's
 /// copy's connection (`link_mirror`), which sends them on while it is up and
 /// lets them go while it is down (keys typed into a dead link are never

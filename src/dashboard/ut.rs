@@ -57,7 +57,7 @@ impl Ut {
         // Markdown past what the plain preview reads is left to it (its
         // first `PREVIEW_MAX`): `ut md` would give every line of it. A
         // picture's lines are as many as its width makes them.
-        if what == What::Markdown && meta.len() > super::files::PREVIEW_MAX {
+        if what == What::Markdown && meta.len() > super::PREVIEW_MAX {
             return None;
         }
         let shown: Shown = (path.to_path_buf(), meta.modified().ok(), meta.len(), width);
@@ -406,12 +406,12 @@ mod tests {
         assert!(ut.preview(&dir.join("main.rs"), 40).is_none(), "not one ut shows");
         let big = dir.join("big.md");
         let line = "some markdown text\n";
-        std::fs::write(&big, line.repeat(super::super::files::PREVIEW_MAX as usize / line.len() + 1)).unwrap();
+        std::fs::write(&big, line.repeat(super::super::PREVIEW_MAX as usize / line.len() + 1)).unwrap();
         let before = asked();
         assert!(ut.preview(&big, 40).is_none(), "markdown past PREVIEW_MAX: left to the plain preview");
         assert_eq!(asked(), before, "ut not asked for it");
         let at = dir.join("at.md");
-        std::fs::write(&at, "x".repeat(super::super::files::PREVIEW_MAX as usize)).unwrap();
+        std::fs::write(&at, "x".repeat(super::super::PREVIEW_MAX as usize)).unwrap();
         assert!(ut.preview(&at, 40).is_some(), "markdown of PREVIEW_MAX itself: ut's");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -35,6 +35,7 @@ pub mod takeover;
 pub mod truecolor;
 pub mod vtinput;
 pub mod web;
+pub mod words;
 
 // Where these lived before the platform split, so their paths stay.
 #[cfg(windows)]

@@ -15,16 +15,13 @@ pub fn pipe_name(socket_name: &str) -> String {
     crate::platform::ipc::address(socket_name)
 }
 
-/// Raw Windows `KEY_EVENT_RECORD`, forwarded verbatim so the server can hand it
-/// to ConPTY in win32-input-mode without loss of fidelity.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KeyRecord {
-    pub down: bool,
-    pub repeat: u16,
-    pub vk: u16,
-    pub sc: u16,
-    pub ch: u16,
-    pub ctrl: u32,
+pub use crate::keys::KeyRecord;
+
+/// The address `web-status` (or `web-start`) answers on its first line, when
+/// the page is served: `serving <url> · ...`.
+pub fn status_url(status: &str) -> Option<&str> {
+    let first = status.lines().next()?.strip_prefix("serving ")?;
+    Some(first.split(" · ").next().unwrap_or(first))
 }
 
 /// Raw Windows `MOUSE_EVENT_RECORD`.

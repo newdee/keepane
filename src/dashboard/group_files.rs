@@ -168,10 +168,21 @@ impl Board {
         boxed(&title, "", lines, r, focused)
     }
 
+    /// `[4]` while `[0]` has the group files: the picked one, from its top
+    /// (scrolled by `scroll`).
+    pub(super) fn group_file_box(&self, r: Rect) -> Vec<String> {
+        let (title, line, all) = self.group_file_shown(r.inner_w());
+        let rows = r.inner_h();
+        let most = all.len().saturating_sub(rows);
+        self.scroll_most.set(most);
+        let start = self.scroll.min(most);
+        boxed(&title, &line, all.into_iter().skip(start).take(rows).collect(), r, self.focus == Panel::Main)
+    }
+
     /// `[4]` while `[0]` has the group files: its title, the line it came
     /// with (on the right: `#9 2026-11-27`), and the picked one as `[0]
     /// Files` shows a file; another machine's, once fetched by its link.
-    pub(super) fn group_file_shown(&self, w: usize) -> (String, String, Vec<String>) {
+    fn group_file_shown(&self, w: usize) -> (String, String, Vec<String>) {
         let Some(g) = self.chat.picked_file() else {
             return ("[4] Group files".into(), String::new(), vec![paint("2", "no group file")]);
         };
@@ -183,7 +194,7 @@ impl Board {
         let lines = match (&g.missing, &g.path, &g.url) {
             (Some(why), _, _) => vec![paint("2", why)],
             (None, Some(p), _) => preview(Path::new(p)),
-            (None, None, Some(url)) => match self.chat.fetches.get_or_start(url, &g.name) {
+            (None, None, Some(url)) => match self.group_fetches.get_or_start(url, &g.name) {
                 Some(Ok(p)) => {
                     let mut v = vec![paint("2", &fit(&format!("from {url}"), w))];
                     v.extend(preview(&p));

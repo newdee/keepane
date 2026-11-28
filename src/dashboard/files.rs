@@ -10,8 +10,7 @@ use super::{clip, paint, width_of};
 
 /// The most entries a directory is listed with (the rest are counted).
 pub const LIST_MAX: usize = 5000;
-/// The most of a file read for its preview.
-pub const PREVIEW_MAX: u64 = 256 * 1024;
+pub use super::PREVIEW_MAX;
 /// How much of a file is looked at to tell text from binary.
 const SNIFF: usize = 8 * 1024;
 

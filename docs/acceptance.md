@@ -7274,3 +7274,20 @@ UnifyTerm 维护者 2026-11-24 在 #unifyterm-keepane 请求（用户让做的�
 | 3 | 代码正确性：并发与资源 + 范围内测试 | 读代码：`Drain` 两个原子量都是 SeqCst，读线程先记时间再发送（等待线程看到的时间不会早于已发出的输出），读到结束才 `end`；`settle` 最多 500 ms、每 10 ms 看一次，不会卡住；远程 pane（`Pane::remote`）有自己的 `Drain` 但不启动等待线程，不用它；ssh 框只发给看着那个 session、没开别的框或弹窗的客户端，`r` 的新窗口开在按键那个客户端当前的 session。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored、e2e 200；Linux lib 838 / 2 ignored、e2e 195；全过；C 盘 219.8 GB。 | 干净（1/3） |
 | 4 | 边界与退化输入 + 范围内测试 | 临时 server、真 ssh（Windows 连被拒的端口要 1–3 秒才退出：先按 2 秒查以为没退，查 pane 状态后是等得不够，检查脚本的问题）：只有一个 ssh 窗口的 session，ssh 失败后 session 结束，server 照常（`keep` 还在），没有看着的客户端，不出框；`remain-on-exit on`：窗口留下，屏幕上有 ssh 的原话（"refused"），其后是 `exited with 255` 的说明（`Drain` 让说明在原话之后），`pane_dead=1`，这条路不弹框。读代码：ssh 只打印很长的一行时，框里每行最多 72 列；`said` 为空时写 "(it said nothing)"。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored、e2e 200；Linux lib 838 / 2 ignored、e2e 195；全过；C 盘 219.8 GB。 | 干净（2/3） |
 | 5 | 可复现性 + 静态一致性 + 范围内测试 | 新测试连跑 3 次：Windows（ssh e2e、中文 console、`an_exit_waits…`+`the_last_line…`+vtinput 共 10 个）3 次相同、全过；Linux（ssh e2e、同 10 个）3 次相同、全过。常量和文档：`SSH_ERROR` 255、`SSH_FAILED_SOON` 10 s、6 行、72 列、`HALF_CHARACTER_WAIT_MS` 500、`EXIT_QUIET` 50 ms、`EXIT_DRAIN_MOST` 500 ms，README en/zh、man 写的 "255 或 10 秒内" 一致。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored；Linux lib 838 / 2 ignored、e2e 195；**Windows e2e 199 过 1 失败：`an_agent_from_a_definition_file_is_known_busy_free_and_waiting` 读到空的 `toy.toml`（"TOML parse error at line 1, column 1 … missing field `name`"）**。依据：`test_process_env()` 在每个测试开始时都用 `std::fs::write`（先清空再写）重写同一个共享的 `toy.toml`，别的测试的 server 正在读时读到空文件；这是测试框架自 0.91.0 起的竞争，和这次改动无关（agent 定义的代码没动）。不是代码的问题：加固成每个测试进程只写一次（`Once`），单独重跑这个测试过，整个 Windows e2e 重跑 200 全过。 | 干净（3/3），验收通过 |
+
+## 250. 第一档架构清理（deslop-please）：打断小循环，把东西放回它的模块
+
+用户 2026-11-28："使用 deslop 查看一下当前代码是否有问题……检查一下代码是否可以优化"；选了"第一档：打断小循环"。
+
+deslop-please（Windows 配置，默认特性）报 193 条，全是结构问题：字段外泄 172、过长文件 11、宽目录 4、模块循环 4 条报告（3 组）、纠缠 2。只做第一档，纯移动，行为不变：
+
+- `dashboard`：`ut` ↔ `files` 只因 `PREVIEW_MAX` 一个常量互相依赖：常量放到上级 `dashboard.rs`（`files` 再导出）。`chat` ↔ `group_files`：`ChatPage` 里存的 `fetches` 挪到 `Board.group_fetches`；[4] 里群文件那段从 `chat_box` 移到 `group_files::group_file_box`，由 `dashboard.rs` 决定画哪个。
+- `server`：`Window` ↔ `mirrored::zoom_on_active` 纠缠：函数只动 `Window` 自己的字段，改成 `Window::zoom_on_active`。
+- crate 层面：`outer_has_kitty` 从 `server::kitty` 移到 `client.rs`（只有客户端用，测试一起移）；`status_url`（读 `web-status` 的回复）移到 `ipc.rs`（`web` 再导出）；`KeyRecord` 移到 `keys.rs`（`ipc` 再导出，`command` 不再用 `ipc`）；`tokenize` 移到新的底层模块 `words.rs`（`command` 再导出，`config` 直接用 `words`）。
+- 结果：189 条；dashboard 的两个循环、`Window` 的纠缠没了；crate 的大循环 22 → 21 个模块、依赖 86 → 75 条——没有拆开（`completion`、`dashboard` 等经 `client::query`、`platform`、`config` 互连，要拆得重新划分这几个模块，属第三档）。server 的 35 模块循环（`impl Server` 分到几十个文件，设计如此）、字段外泄、长文件、宽目录都没动。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性 + 范围内测试 | 旧路径还在用的地方（`tests/` 里 `keepane::web::status_url` 23 处、`command::tokenize`、`ipc::KeyRecord` 等）经再导出照旧可用，对外写法不变；`cargo test --lib -- --list` 856 个（854 + 2 ignored），和改前相同；被移的测试 `the_terminal_outside_is_known_by_its_names` 在 `client::tests`。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored、e2e 200；Linux lib 838 / 2 ignored、e2e 195；全过；C 盘 214.7 GB。 | 干净（1/3） |
+| 2 | 可复现性 + 范围内测试 | deslop-please 连跑两次，输出逐字相同（189 条）。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored、e2e 200；Linux lib 838 / 2 ignored、e2e 195；全过；C 盘 211.8 GB。 | 干净（2/3） |
+| 3 | 代码正确性（搬动前后逐字比对）+ 范围内测试 | 和 HEAD 里的原文比：`tokenize`（2041 字符）、`outer_has_kitty`、`status_url`、`KeyRecord` 的字段逐字相同；`zoom_on_active` 只是 `w.` 换成 `self.`，步骤相同；`PREVIEW_MAX` 仍是 `256 * 1024`；群文件 [4] 的判断（`[0]` 是群文件且不在打字）、滚动和焦点和原来的分支相同，只是从 `chat_box` 移到 `dashboard.rs` 决定、`group_file_box` 画。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored、e2e 200；Linux lib 838 / 2 ignored、e2e 195；全过；C 盘 211.4 GB。 | 干净（3/3），验收通过 |
