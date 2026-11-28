@@ -20,7 +20,9 @@ $Package = 'microsoft.windows.console.conpty'
 $Url = "https://api.nuget.org/v3-flatcontainer/$Package/$Version/$Package.$Version.nupkg"
 
 $root = Split-Path $PSScriptRoot
-$download = Join-Path $root "target\conpty-download"
+# Not under target: a target directory made before cargo first runs gets no
+# CACHEDIR.TAG, by which keepane tells a cargo build from an install.
+$download = Join-Path $root "vendor\conpty\.download"
 $nupkg = Join-Path $download "conpty.$Version.nupkg"
 New-Item -ItemType Directory -Force $download | Out-Null
 

@@ -182,11 +182,14 @@ pub(crate) fn installed_self() -> Option<PathBuf> {
 }
 
 /// Whether `exe` is in cargo's build output: a folder above it has the
-/// `CACHEDIR.TAG` cargo writes into every target directory.
+/// `CACHEDIR.TAG` cargo writes into a target directory it makes, or the
+/// `.rustc_info.json` it writes into every one (a target directory made
+/// before cargo first ran, by a script, has no tag).
 pub(crate) fn is_cargo_build(exe: &Path) -> bool {
     exe.ancestors().skip(1).any(|d| {
-        std::fs::read_to_string(d.join("CACHEDIR.TAG"))
-            .is_ok_and(|t| t.starts_with("Signature: 8a477f597d28d172789f06886806bc55") && t.contains("cargo"))
+        d.join(".rustc_info.json").is_file()
+            || std::fs::read_to_string(d.join("CACHEDIR.TAG"))
+                .is_ok_and(|t| t.starts_with("Signature: 8a477f597d28d172789f06886806bc55") && t.contains("cargo"))
     })
 }
 
@@ -376,6 +379,14 @@ mod tests {
         std::fs::write(dir.join("CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n# by another tool\n")
             .unwrap();
         assert!(!is_cargo_build(&dir.join("keepane.exe")));
+        // A target directory made before cargo ran (no tag): its
+        // `.rustc_info.json` says it is cargo's, from deep below too.
+        let made = scratch("made-first");
+        std::fs::create_dir_all(made.join("debug").join("deps")).unwrap();
+        assert!(!is_cargo_build(&made.join("debug").join("deps").join("keepane.exe")));
+        std::fs::write(made.join(".rustc_info.json"), "{}").unwrap();
+        assert!(is_cargo_build(&made.join("debug").join("deps").join("keepane.exe")));
+        let _ = std::fs::remove_dir_all(&made);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
