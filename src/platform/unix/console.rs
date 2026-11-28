@@ -64,6 +64,11 @@ fn watch_resizes() {
 /// How long an unfinished escape sequence may wait for the rest before
 /// what came is taken as it is (a lone Escape key).
 const ESCAPE_WAIT_MS: libc::c_int = 30;
+/// How long half a UTF-8 character may wait for the rest: its bytes can
+/// come in two reads well apart over SSH (issue #2: a Chinese character
+/// typed through an input method). After it, its bytes as they are (a
+/// Latin-1 terminal's lone `é` byte is still read as `é`).
+const HALF_CHARACTER_WAIT_MS: libc::c_int = 500;
 
 pub struct Console {
     saved: libc::termios,
@@ -172,14 +177,18 @@ impl Console {
     /// Blocking read of a batch of input events.
     pub fn read_events(&self) -> Result<Vec<InputEvent>> {
         loop {
-            let waiting = self.parser.lock().unwrap_or_else(|e| e.into_inner()).waiting();
+            let (waiting, half) = {
+                let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
+                (p.waiting(), p.half_character())
+            };
+            let wait = if half { HALF_CHARACTER_WAIT_MS } else { ESCAPE_WAIT_MS };
             let winch = WINCH_R.load(Ordering::SeqCst);
             let mut fds = [
                 libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 },
                 libc::pollfd { fd: winch, events: libc::POLLIN, revents: 0 },
             ];
             let nfds = if winch >= 0 { 2 } else { 1 };
-            let r = unsafe { libc::poll(fds.as_mut_ptr(), nfds, if waiting { ESCAPE_WAIT_MS } else { -1 }) };
+            let r = unsafe { libc::poll(fds.as_mut_ptr(), nfds, if waiting { wait } else { -1 }) };
             if r < 0 {
                 if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                     continue;

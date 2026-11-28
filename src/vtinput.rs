@@ -157,6 +157,14 @@ impl Parser {
         !self.pending.is_empty() && !self.pasting
     }
 
+    /// Whether what waits is only a UTF-8 character not all there yet: its
+    /// rest may come in the next read, later than an escape sequence's
+    /// (over SSH, a character an input method sent split in two), so it is
+    /// worth a longer pause before `flush` takes its bytes as they are.
+    pub fn half_character(&self) -> bool {
+        self.waiting() && utf8_tail(&self.pending) == self.pending.len()
+    }
+
     fn one(&mut self, b: &[u8]) -> Seq {
         if self.pasting {
             return self.pasted(b);
@@ -317,6 +325,22 @@ impl Parser {
         }
         Some(Input::Mouse(MouseRecord { x, y, buttons: self.held, ctrl, flags: if motion { MOUSE_MOVED } else { 0 } }))
     }
+}
+
+/// How many bytes at the end of `b` are a UTF-8 character not all there:
+/// its first byte and fewer of the bytes after it than it needs; 0 for none.
+fn utf8_tail(b: &[u8]) -> usize {
+    for back in 1..=b.len().min(3) {
+        let need = match b[b.len() - back] {
+            0x80..=0xbf => continue,
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            _ => return 0,
+        };
+        return if back < need { back } else { 0 };
+    }
+    0
 }
 
 /// One character of text (a control byte included) at the start of `b`.
@@ -480,10 +504,30 @@ mod tests {
             })
             .collect();
         assert_eq!(flushed, vec![k(KeyCode::Escape, false, false, false)]);
-        // Half a UTF-8 character waits for the rest.
+        // Half a UTF-8 character waits for the rest, and says so (the
+        // console then waits longer before taking its bytes as they are).
         let bytes = "é".as_bytes();
         assert!(keys(&mut p, &bytes[..1]).is_empty());
+        assert!(p.waiting() && p.half_character());
         assert_eq!(keys(&mut p, &bytes[1..]), vec![k(KeyCode::Char('é'), false, false, false)]);
+        assert!(!p.waiting() && !p.half_character());
+        // A Chinese character in two reads (issue #2), after other text.
+        let sheng = "生".as_bytes();
+        assert_eq!(keys(&mut p, &[b'a', sheng[0], sheng[1]]), vec![k(KeyCode::Char('a'), false, false, false)]);
+        assert!(p.half_character(), "two of its three bytes");
+        assert_eq!(keys(&mut p, &sheng[2..]), vec![k(KeyCode::Char('生'), false, false, false)]);
+        // An escape sequence cut short is not half a character: the short wait.
+        assert!(keys(&mut p, b"\x1b[1;").is_empty());
+        assert!(p.waiting() && !p.half_character());
+        assert_eq!(keys(&mut p, b"5A"), vec![k(KeyCode::Up, true, false, false)]);
+        // Half a character after an ESC: the ESC's short wait.
+        assert!(keys(&mut p, &[0x1b, sheng[0]]).is_empty());
+        assert!(p.waiting() && !p.half_character());
+        p.flush();
+        assert_eq!(utf8_tail(&[0xe7, 0x94]), 2);
+        assert_eq!(utf8_tail(&[0xe7, 0x94, 0x9f]), 0, "whole");
+        assert_eq!(utf8_tail(b"ab"), 0);
+        assert_eq!(utf8_tail(&[0x9f]), 0, "a stray continuation byte is not a character's start");
         // Replies the terminal sends that are not keys come to nothing.
         assert!(keys(&mut p, b"\x1b[12;40R\x1b[I").is_empty());
     }

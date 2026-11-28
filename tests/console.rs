@@ -185,6 +185,46 @@ impl Term {
     }
 }
 
+/// Chinese typed into the client, as a terminal hands an input method's
+/// text to a console (UTF-8 through ConPTY, key records to the client),
+/// reaches the pane as typed: sent whole, as a phrase is committed, or a
+/// character at a time (issue #2: characters came out as 翻).
+#[test]
+fn chinese_typed_into_the_client_reaches_the_pane_as_typed() {
+    let socket = format!("console-zh-{}", std::process::id());
+    let mut t = Term::spawn(&["-L", &socket, "new", "-s", "z", "cmd.exe", "/q", "/k", "prompt keepane$g"], 100, 24);
+    t.wait_for("prompt", |s| s.contents().contains("keepane>"));
+    let pane = |socket: &str| {
+        let out = keepane().args(["-L", socket, "capture-pane", "-p", "-t", "z"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let text = "生产的严重及高危漏洞，并复现，将存在的";
+    let wait_echo = |t: &mut Term, mark: &str| {
+        let want = format!("{mark}{text}");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let shown = pane(&socket);
+            if shown.matches(&want).count() >= 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{want:?} not echoed as typed; the pane:\n{shown}");
+            t.pump(Duration::from_millis(100));
+        }
+    };
+    // A phrase at once.
+    t.send(&format!("echo A{text}\r"));
+    wait_echo(&mut t, "A");
+    // A character at a time.
+    t.send("echo B");
+    for c in text.chars() {
+        t.send(&c.to_string());
+        t.pump(Duration::from_millis(20));
+    }
+    t.send("\r");
+    wait_echo(&mut t, "B");
+    let _ = keepane().args(["-L", &socket, "kill-server"]).output();
+}
+
 #[test]
 fn real_client_in_conpty() {
     let socket = format!("console-{}", std::process::id());
