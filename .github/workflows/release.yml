@@ -12,6 +12,8 @@ jobs:
   build:
     name: build and publish (windows x86_64)
     runs-on: windows-latest
+    # Up to 25 minutes waiting for CI, then the build and the packages.
+    timeout-minutes: 50
     # A secret cannot be tested in `if:`; its value in the job's env can
     # (empty when the secret is not set).
     env:
@@ -156,10 +158,11 @@ jobs:
           git push origin master
 
   unix:
-    # After the Windows job: it waited for CI and created the release; the
-    # Linux and macOS archives are added to it.
+    # Built beside the Windows job, not after it; uploaded once that job
+    # (which waits for CI) has created the release. Should it fail, no
+    # release comes and these stop.
     name: build and publish (${{ matrix.name }})
-    needs: build
+    timeout-minutes: 60
     strategy:
       matrix:
         include:
@@ -181,9 +184,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: build
         run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: package and upload
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: package
         run: |
           tag="${{ github.ref_name }}"
           name="keepane-$tag-${{ matrix.name }}"
@@ -191,4 +192,31 @@ jobs:
           cp "target/${{ matrix.target }}/release/keepane" README.md README.zh-CN.md keepane.conf.example LICENSE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" && cat "$name.tar.gz.sha256")
-          gh release upload "$tag" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256"
+      - name: wait for the release
+        # The Windows job creates it once CI has passed on this commit; if
+        # that job ends any other way, there is none to add to.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          deadline=$(( $(date +%s) + 50 * 60 ))
+          until gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; do
+            windows=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
+              --jq '.jobs[] | select(.name == "build and publish (windows x86_64)") | "\(.status) \(.conclusion)"')
+            case "$windows" in
+              "completed success") ;;
+              completed*) echo "the Windows job ended: $windows; no release"; exit 1 ;;
+            esac
+            if [ "$(date +%s)" -gt "$deadline" ]; then echo "no release after 50 minutes"; exit 1; fi
+            echo "no release yet (Windows job: $windows); waiting"
+            sleep 20
+          done
+      - name: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          name="keepane-$TAG-${{ matrix.name }}"
+          gh release upload "$TAG" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256"
