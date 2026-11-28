@@ -113,9 +113,6 @@ pub struct RemotePane {
     /// The bytes of its output its model here has been fed: where the next
     /// output starts.
     pub at: u64,
-    /// That machine is Windows (`link_mirror::Mirror::windows`): keys go
-    /// as win32-input-mode; else as VT.
-    pub windows: bool,
 }
 
 /// vt100 callbacks: collects terminal replies ConPTY expects from a real
@@ -771,6 +768,9 @@ pub struct Pane {
     /// comes over the link stream (`link_mirror`), and keys typed into it
     /// go there.
     pub remote: Option<RemotePane>,
+    /// For a pane of another machine: where keys typed into it go, as
+    /// typed (`press`).
+    keys_to: Option<super::mirrored::RemoteKeys>,
     /// Where the output of a command that ends in the piece being taken
     /// ends (`split_at_marks`): the byte the shell's word of it starts at.
     output_end: Option<u64>,
@@ -1169,6 +1169,7 @@ impl Pane {
             changes: super::journal::PaneChanges::new(cols, rows),
             output_end: None,
             remote: None,
+            keys_to: None,
         };
         // Before anything the program prints: the server reads that only
         // after this returns.
@@ -1182,11 +1183,12 @@ impl Pane {
     /// copy of the one there; `writer` takes what is typed into it there.
     /// What it is told about itself (`command`, `title`, `cwd`) comes from
     /// that machine's shape.
-    pub fn remote(
+    pub(super) fn remote(
         id: PaneId,
         remote: RemotePane,
         parser: vt100::Parser<Callbacks>,
         writer: Box<dyn Write + Send>,
+        keys_to: super::mirrored::RemoteKeys,
         tx: Sender<PaneEvent>,
     ) -> Pane {
         let (rows, cols) = parser.screen().size();
@@ -1253,6 +1255,7 @@ impl Pane {
             changes: super::journal::PaneChanges::new(cols, rows),
             output_end: None,
             remote: Some(remote),
+            keys_to: Some(keys_to),
         }
     }
 
@@ -2222,17 +2225,45 @@ impl Pane {
         s.scrolled_total() + u64::from(s.cursor_position().0)
     }
 
-    /// Input from a person or a command acting for one (keys, a paste,
+    /// Input from a person or a command acting for one (a paste,
     /// `send-keys`): it also makes the pane busy for its messages.
     pub fn type_input(&mut self, bytes: &[u8]) {
+        self.typed(typed_enter(bytes));
+        self.write_input(bytes);
+    }
+
+    /// Someone typed into the pane (`enter`: an Enter that sends the line
+    /// was among it): busy for its messages.
+    fn typed(&mut self, enter: bool) {
         // Someone is at the keys: the Enter a message waits for is theirs.
         self.enter = None;
         // Someone sets a free agent to work: where its repository stood.
         if self.actor.mode == super::actor::WorkMode::Ai && self.actor.idle() {
             self.git_base = self.git_head();
         }
-        self.actor.input(typed_enter(bytes));
-        self.write_input(bytes);
+        self.actor.input(enter);
+    }
+
+    /// A key typed into the pane (`typing`: a key pressed, not one let go
+    /// or a modifier alone, which makes the pane busy). Made into bytes for
+    /// the system the pane's program runs on: here by this one's encoding
+    /// (`key_bytes`); for a pane of another machine, sent as typed and made
+    /// into bytes there (a Windows encoding reached a Mac's shell as text).
+    /// Whether it is the Enter that sends the line is read from the key,
+    /// not its bytes (win32-input-mode's Enter holds no `\r`).
+    pub fn press(&mut self, rec: &crate::ipc::KeyRecord, typing: bool) {
+        if typing {
+            let enter_key = rec.vk == crate::keys::VK_RETURN || (rec.vk == 0 && rec.ch == 13);
+            self.typed(rec.down && enter_key && rec.ctrl & crate::keys::SHIFT_PRESSED == 0);
+        }
+        match &self.keys_to {
+            Some(keys) if self.exit_code.is_none() => keys.send(rec),
+            Some(_) => {}
+            None => {
+                let bytes = self.key_bytes(rec);
+                self.write_input(&bytes);
+            }
+        }
     }
 
     /// Type a message into the pane and press Enter: as a paste when the
@@ -2265,20 +2296,13 @@ impl Pane {
         }
         self.write_input(&bytes);
     }
-    /// The bytes a typed key is to this pane's program, encoded for the
-    /// system it runs on: win32-input-mode for ConPTY on Windows (every
-    /// modifier and Shift+Enter as typed), VT elsewhere, following the
-    /// program's cursor-key mode. A pane of another machine is encoded for
-    /// that machine, not this one (a shell on a Mac printed a Windows
-    /// encoding as text); one whose system is not known gets VT, which
-    /// ConPTY reads too.
-    pub fn key_bytes(&self, rec: &crate::ipc::KeyRecord) -> Vec<u8> {
-        let app_cursor = self.parser.screen().application_cursor();
-        match self.remote {
-            Some(r) if r.windows => crate::server::input::encode_key_record(rec),
-            Some(_) => crate::server::input::vt_key(rec, app_cursor),
-            None => crate::platform::keys::to_pane(rec, app_cursor),
-        }
+    /// The bytes a typed key is to this pane's program, by this system's
+    /// encoding: win32-input-mode for ConPTY on Windows (every modifier and
+    /// Shift+Enter as typed), VT elsewhere, following the program's
+    /// cursor-key mode. Only for a pane whose program runs here: one of
+    /// another machine is sent the key itself (`press`).
+    fn key_bytes(&self, rec: &crate::ipc::KeyRecord) -> Vec<u8> {
+        crate::platform::keys::to_pane(rec, self.parser.screen().application_cursor())
     }
 
     pub fn write_input(&mut self, bytes: &[u8]) {
@@ -2525,34 +2549,46 @@ impl Drop for Pane {
 mod tests {
     use super::*;
 
-    /// A key typed into a pane of another machine is sent as VT, not as this
-    /// system's encoding: on Windows `l` was `ESC[76;38;108;1;0;1_`, which
-    /// a shell on a Mac printed as text (2026-11-29). VT follows the remote
-    /// program's cursor-key mode; a key-up is nothing.
+    /// A key typed into a pane of another machine goes as typed, a record,
+    /// for that machine to make into bytes: made into bytes here, on Windows
+    /// `l` was `ESC[76;38;108;1;0;1_`, which a Mac's shell printed as text
+    /// (2026-11-29). Key-ups go too (that machine decides); nothing once its
+    /// program ended. Whether the line was sent is read from the key: Enter
+    /// sends it, Shift+Enter and a letter do not.
     #[test]
-    fn a_pane_of_another_machine_is_sent_vt() {
+    fn a_key_into_a_pane_of_another_machine_goes_as_typed() {
+        use crate::link_proto::to_server::Kind;
         let parser = vt100::Parser::new_with_callbacks(24, 80, 0, Callbacks::default());
         let (tx, _rx) = std::sync::mpsc::channel();
-        let mut p = Pane::remote(7, RemotePane { id: 3, at: 0, windows: false }, parser, Box::new(std::io::sink()), tx);
+        let (keys_tx, mut sent) = tokio::sync::mpsc::unbounded_channel();
+        let keys = super::super::mirrored::RemoteKeys { pane: 3, tx: keys_tx };
+        let mut p = Pane::remote(7, RemotePane { id: 3, at: 0 }, parser, Box::new(std::io::sink()), keys, tx);
         let key =
             |vk: u16, sc: u16, ch: u16, down: bool| crate::ipc::KeyRecord { down, repeat: 1, vk, sc, ch, ctrl: 0 };
-        assert_eq!(p.key_bytes(&key(0x4C, 38, 'l' as u16, true)), b"l");
-        assert_eq!(p.key_bytes(&key(0x0D, 28, 13, true)), b"\r");
-        assert_eq!(p.key_bytes(&key(0, 0, '中' as u16, true)), "中".as_bytes());
-        assert!(p.key_bytes(&key(0x4C, 38, 'l' as u16, false)).is_empty(), "a key-up is nothing");
-        let up = key(crate::keys::VK_UP, 72, 0, true);
-        assert_eq!(p.key_bytes(&up), b"\x1b[A");
-        p.process_output(b"\x1b[?1h");
-        assert_eq!(p.key_bytes(&up), b"\x1bOA", "application cursor keys, as the program there asked");
-        // That machine is Windows: as its ConPTY reads them, Shift+Enter and
-        // key-ups as typed (VT has no Shift+Enter).
-        p.remote.as_mut().unwrap().windows = true;
-        assert_eq!(p.key_bytes(&key(0x4C, 38, 'l' as u16, true)), b"\x1b[76;38;108;1;0;1_");
+        let mut next = || match sent.try_recv().ok().and_then(|m| m.kind) {
+            Some(Kind::Keys(k)) => {
+                Some((k.pane, k.keys.iter().filter_map(crate::link_proto::Key::record).collect::<Vec<_>>()))
+            }
+            other => panic!("{other:?}"),
+        };
+        let l = key(0x4C, 38, 'l' as u16, true);
+        p.press(&l, true);
+        assert_eq!(next(), Some((3, vec![l])));
+        assert!(p.actor.typing(), "a letter: someone is at the line");
+        let l_up = key(0x4C, 38, 'l' as u16, false);
+        p.press(&l_up, false);
+        assert_eq!(next(), Some((3, vec![l_up])), "a key-up goes too");
         let shift_enter = crate::ipc::KeyRecord { ctrl: crate::keys::SHIFT_PRESSED, ..key(0x0D, 28, 13, true) };
-        assert_eq!(p.key_bytes(&shift_enter), b"\x1b[13;28;13;1;16;1_");
-        assert_eq!(p.key_bytes(&key(0x4C, 38, 'l' as u16, false)), b"\x1b[76;38;108;0;0;1_");
+        p.press(&shift_enter, true);
+        assert_eq!(next(), Some((3, vec![shift_enter])));
+        assert!(p.actor.typing(), "Shift+Enter is a line break, not the line sent");
+        p.press(&key(0x0D, 28, 13, true), true);
+        assert!(next().is_some());
+        assert!(!p.actor.typing(), "Enter sent the line");
+        p.exit_code = Some(0);
+        p.press(&l, true);
+        assert!(sent.try_recv().is_err(), "its program ended: nothing goes");
     }
-
     /// The exit waits for the output: quiet for `EXIT_QUIET`, or the console
     /// ended, at most `EXIT_DRAIN_MOST`.
     #[test]

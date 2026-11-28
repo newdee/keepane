@@ -137,6 +137,7 @@ enum Event {
     /// Keys a machine fed typed into a copy of one of this machine's panes
     /// (its key, the pane's id, the bytes): `link_feed`.
     StreamInput(String, u32, Vec<u8>),
+    StreamKeys(String, u32, Vec<KeyRecord>),
     /// A command a machine fed sends about one of this machine's sessions
     /// (its key, the command's number, the line): `link_feed`.
     StreamCommand(String, u64, String),
@@ -3076,6 +3077,7 @@ impl Server {
             Event::Web(generation, seen) => self.web_seen(generation, seen),
             Event::LinkStream(ask) => self.link_stream_ask(ask),
             Event::StreamInput(key, pane, bytes) => self.stream_input(&key, pane, &bytes),
+            Event::StreamKeys(key, pane, recs) => self.stream_keys(&key, pane, &recs),
             Event::StreamCommand(key, id, line) => self.stream_command(&key, id, &line),
             Event::StreamImage(key, hash) => self.stream_image(&key, &hash),
             Event::Mirror(round, key, news) => self.mirror_news(round, key, news),
@@ -7929,14 +7931,8 @@ impl Server {
                         return;
                     }
                     match self.clients.get_mut(&cid).and_then(|c| c.popup.as_mut()).filter(|p| !p.finished) {
-                        Some(p) => {
-                            let bytes = p.pane.key_bytes(&rec);
-                            p.pane.write_input(&bytes)
-                        }
-                        None => {
-                            let bytes = self.active_key_bytes(sid, &rec);
-                            self.write_active(sid, &bytes, typing(&rec))
-                        }
+                        Some(p) => p.pane.press(&rec, false),
+                        None => self.press_active(cid, sid, &rec),
                     }
                     return;
                 }
@@ -8047,8 +8043,7 @@ impl Server {
             c.view_pinned = false;
             c.view_follow = true;
         }
-        let bytes = self.active_key_bytes(sid, &rec);
-        self.write_active(sid, &bytes, typing(&rec));
+        self.press_active(cid, sid, &rec);
     }
 
     /// A key while a popup is open: it goes to the popup's program, or closes
@@ -8063,8 +8058,7 @@ impl Server {
             }
             return;
         }
-        let bytes = p.pane.key_bytes(rec);
-        p.pane.write_input(&bytes);
+        p.pane.press(rec, false);
     }
 
     /// Keep a popup centred and sized as it was asked for. Called before
@@ -8087,27 +8081,26 @@ impl Server {
         p.pane.resize(rect.w - 2, rect.h - 2);
     }
 
-    /// Input for the current window: the active pane, or every pane when
-    /// `synchronize-panes` is on. `typing` is whether it counts as someone
-    /// typing (a key pressed, not a key let go or a modifier on its own),
-    /// which makes the pane busy for its messages.
-    /// A typed key as the session's active pane is to get it.
-    fn active_key_bytes(&self, sid: SessionId, rec: &KeyRecord) -> Vec<u8> {
-        match self.session(sid).and_then(|s| s.window()).and_then(|w| w.active_pane()) {
-            Some(p) => p.key_bytes(rec),
-            None => crate::platform::keys::to_pane(rec, false),
+    /// A key typed into the current window: the active pane, or every pane
+    /// when `synchronize-panes` is on, each making it into bytes for its own
+    /// program (`Pane::press`). Into a session of a machine whose keepane
+    /// takes no keys as records (before 1.0.2), nothing goes: said once a
+    /// connection, to update that machine.
+    fn press_active(&mut self, cid: ClientId, sid: SessionId, rec: &KeyRecord) {
+        if let Err(note) = self.mirror_takes_keys(sid) {
+            if let Some(note) = note {
+                self.message(cid, &note);
+            }
+            return;
         }
-    }
-
-    fn write_active(&mut self, sid: SessionId, bytes: &[u8], typing: bool) {
+        let typing = typing(rec);
         let Some(w) = self.session_mut(sid).and_then(|s| s.window_mut()) else { return };
-        let write = |p: &mut Pane| if typing { p.type_input(bytes) } else { p.write_input(bytes) };
         if w.synchronized {
             for p in &mut w.panes {
-                write(p);
+                p.press(rec, typing);
             }
         } else if let Some(p) = w.active_pane_mut() {
-            write(p);
+            p.press(rec, typing);
         }
     }
 

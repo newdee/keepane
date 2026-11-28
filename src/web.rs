@@ -673,6 +673,9 @@ async fn link_stream(mut stream: TcpStream, peer: IpAddr, state: &State, req: &R
                     for msg in opener.open::<ToServer>(&frame?)? {
                         match msg.kind {
                             Some(to_server::Kind::Input(i)) => (feed.input)(i.pane, i.bytes),
+                            Some(to_server::Kind::Keys(k)) => {
+                                (feed.keys)(k.pane, k.keys.iter().filter_map(crate::link_proto::Key::record).collect())
+                            }
                             Some(to_server::Kind::Command(c)) => (feed.command)(c.id, c.line),
                             Some(to_server::Kind::ImageWanted(w)) => (feed.image)(w.hash),
                             _ => {}

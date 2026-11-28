@@ -478,8 +478,7 @@ impl Server {
             return self.link_answer(nonce, 404, format!("{to}: no such pane"));
         };
         for k in keys.iter().filter(|k| k.down).flat_map(|k| crate::keys::each_press(*k)) {
-            let bytes = p.key_bytes(&k);
-            p.write_input(&bytes);
+            p.press(&k, false);
         }
         self.link_answer(nonce, 200, String::new())
     }

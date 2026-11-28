@@ -56,11 +56,11 @@ struct Ask {
 pub(super) enum MirrorNews {
     Connecting,
     /// Connected; whether that machine runs commands sent to it
-    /// (`link_proto::Answer::commands`), and whether it is Windows
-    /// (`Answer::system`; unknown from a keepane before 1.0.1: not).
+    /// (`link_proto::Answer::commands`), and whether it takes keys as
+    /// records (`Answer::keys`, 1.0.2 on).
     Live {
         commands: bool,
-        windows: bool,
+        keys: bool,
     },
     Down(String),
     Msg(Box<ToClient>, usize),
@@ -87,9 +87,11 @@ pub(super) struct Mirror {
     dropped: Arc<AtomicU64>,
     /// That machine runs the commands sent to it (keepane 0.63 on).
     commands: bool,
-    /// That machine is Windows: keys typed into its panes go as
-    /// win32-input-mode, as its ConPTY reads them (`Pane::key_bytes`).
-    pub windows: bool,
+    /// That machine takes keys typed into its panes as records and makes
+    /// them into bytes itself (keepane 1.0.2 on); an older one is said to
+    /// need an update when typed into (`told_old`, once a connection).
+    pub keys: bool,
+    pub told_old: bool,
     /// Commands sent there, by number, waiting for their replies.
     asks: HashMap<u64, Ask>,
     next_ask: u64,
@@ -360,6 +362,21 @@ impl Server {
             }
         }
     }
+    /// Whether keys typed into session `sid` may go: one of this machine,
+    /// or of a machine whose keepane takes them as records (1.0.2 on). Else
+    /// the note to show, once a connection (then none).
+    pub(super) fn mirror_takes_keys(&mut self, sid: super::SessionId) -> Result<(), Option<String>> {
+        let Some(key) = self.session(sid).and_then(|s| s.remote.as_ref()).map(|r| r.key.clone()) else {
+            return Ok(());
+        };
+        let Some(m) = self.mirrors.get_mut(&key).filter(|m| !m.keys) else { return Ok(()) };
+        if m.told_old {
+            return Err(None);
+        }
+        m.told_old = true;
+        Err(Some(format!("{} runs an older keepane: update it to type into its panes", m.addr)))
+    }
+
     /// What a mirror's task says.
     pub(super) fn mirror_news(&mut self, round: u64, key: String, news: MirrorNews) {
         let Some(m) = self.mirrors.get_mut(&key).filter(|m| m.round == round) else { return };
@@ -369,21 +386,11 @@ impl Server {
                     m.state = State::Connecting;
                 }
             }
-            MirrorNews::Live { commands, windows } => {
+            MirrorNews::Live { commands, keys } => {
                 m.connects += 1;
                 m.commands = commands;
-                m.windows = windows;
+                (m.keys, m.told_old) = (keys, false);
                 m.state = State::Live(Instant::now());
-                // Its panes kept here from before take it too.
-                for s in self.sessions.iter_mut().filter(|s| s.remote.as_ref().is_some_and(|r| r.key == key)) {
-                    for w in &mut s.windows {
-                        for p in &mut w.panes {
-                            if let Some(r) = p.remote.as_mut() {
-                                r.windows = windows;
-                            }
-                        }
-                    }
-                }
             }
             MirrorNews::Down(why) => {
                 if !matches!(&m.state, State::Down(w, _) if *w == why) {
@@ -663,7 +670,8 @@ impl Mirror {
             input,
             dropped: Arc::default(),
             commands: false,
-            windows: false,
+            keys: false,
+            told_old: false,
             asks: HashMap::new(),
             next_ask: 0,
             pictures_asked: HashMap::new(),
@@ -882,7 +890,7 @@ async fn connect_once(
     // Keys typed while there was no connection are let go: typed into a
     // copy that was not there, they are never typed later.
     typed.let_go();
-    tell(MirrorNews::Live { commands: answer.commands, windows: answer.system.as_deref() == Some("windows") });
+    tell(MirrorNews::Live { commands: answer.commands, keys: answer.keys });
     let (sealer, mut opener) = link_stream::split(keys);
     let (mut rd, mut wr) = s.into_split();
     let (frames_tx, mut frames) = tokio::sync::mpsc::channel::<anyhow::Result<Vec<u8>>>(64);
@@ -1639,6 +1647,34 @@ mod tests {
         assert_eq!(ys(&s), [(0, 0), (21, 0)]);
         let session = s.session(sid).unwrap();
         assert_eq!((session.cols, session.rows, session.windows[0].panes[0].cols), (80, 6, 20));
+    }
+
+    /// Keys into a session of that machine go when its keepane takes them
+    /// as records (1.0.2 on); from an older one, nothing goes and it is said
+    /// once a connection, to update it. This machine's own sessions always
+    /// take them.
+    #[test]
+    fn keys_go_only_to_a_machine_that_takes_them() {
+        let (mut s, mut typed) = copying();
+        s.mirror_apply(KEY, snapshot(10, &[(1, "a", 1)])).unwrap();
+        let sid = s.mirror_session("10.0.0.2:7681", "work").unwrap();
+        let note = s.mirror_takes_keys(sid).unwrap_err().expect("said the first time");
+        assert!(note.contains("10.0.0.2:7681") && note.contains("update it"), "{note}");
+        assert_eq!(s.mirror_takes_keys(sid), Err(None), "said once");
+        let rec = crate::ipc::KeyRecord { down: true, repeat: 1, vk: 0x4C, sc: 38, ch: 'l' as u16, ctrl: 0 };
+        s.press_active(7, sid, &rec);
+        assert!(typed.try_recv().is_err(), "nothing goes to an older one");
+        // It answers that it takes them (a reconnect after its update).
+        s.mirror_news(s.mirrors[KEY].round, KEY.into(), MirrorNews::Live { commands: true, keys: true });
+        assert_eq!(s.mirror_takes_keys(sid), Ok(()));
+        s.press_active(7, sid, &rec);
+        match typed.try_recv().ok().and_then(|m| m.kind) {
+            Some(crate::link_proto::to_server::Kind::Keys(k)) => assert_eq!(k.keys[0].record(), Some(rec)),
+            other => panic!("{other:?}"),
+        }
+        // One that loses it again (a downgrade) is said once more.
+        s.mirror_news(s.mirrors[KEY].round, KEY.into(), MirrorNews::Live { commands: true, keys: false });
+        assert!(matches!(s.mirror_takes_keys(sid), Err(Some(_))));
     }
 
     /// Live, taking commands (as a keepane of 0.63 on answers).

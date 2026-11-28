@@ -313,17 +313,11 @@ mod tests {
         assert_eq!(opening.remote, x25519_public(&b.public()).unwrap(), "who called");
         assert_eq!(opening.hello, hello);
         let (msg2, keys_a) = opening
-            .answer(&Answer {
-                version: "2.0".into(),
-                refused: None,
-                epoch: 7,
-                commands: true,
-                system: Some("linux".into()),
-            })
+            .answer(&Answer { version: "2.0".into(), refused: None, epoch: 7, commands: true, keys: true })
             .unwrap();
         let (answer, keys_b) = calling.read(&msg2).unwrap();
         assert_eq!(answer.version, "2.0");
-        assert_eq!(answer.system.as_deref(), Some("linux"), "the system goes across");
+        assert!(answer.keys, "it takes keys");
         // Messages both ways, one bigger than a frame.
         let (seal_a, _) = split(keys_a.unwrap());
         let (_, mut open_b) = split(keys_b);

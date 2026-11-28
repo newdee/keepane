@@ -45,16 +45,18 @@ pub struct Answer {
     /// from the copy. A keepane of 0.62 or before leaves it unset.
     #[prost(bool, tag = "4")]
     pub commands: bool,
-    /// The system it runs on (`std::env::consts::OS`: `windows`, `macos`,
-    /// `linux`), so keys typed into its panes are sent as its programs read
-    /// them (keepane 1.0.1 on; unset before: VT, which every system reads).
-    #[prost(string, optional, tag = "5")]
-    pub system: Option<String>,
+    // Tag 5 was `system` (keepane 1.0.1 only), for keys made into bytes by
+    // the machine typing; not used again.
+    /// It takes keys as records (`ToServer::Keys`, keepane 1.0.2 on) and
+    /// makes them into bytes itself. One that leaves it unset cannot be
+    /// typed into from here: it is said so, to update it.
+    #[prost(bool, tag = "6")]
+    pub keys: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct ToServer {
-    #[prost(oneof = "to_server::Kind", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "to_server::Kind", tags = "1, 2, 3, 4, 5")]
     pub kind: Option<to_server::Kind>,
 }
 
@@ -69,6 +71,60 @@ pub mod to_server {
         Command(super::Command),
         #[prost(message, tag = "4")]
         ImageWanted(super::ImageWanted),
+        #[prost(message, tag = "5")]
+        Keys(super::Keys),
+    }
+}
+
+/// Keys typed into a machine's copy of a pane, as typed (keepane 1.0.2 on):
+/// the machine the pane runs on makes them into bytes, by its own system
+/// and the pane's modes (win32-input-mode for ConPTY, VT elsewhere). Made
+/// into bytes by the machine typing instead, a Windows encoding reached a
+/// Mac's shell as text (2026-11-29).
+#[derive(Clone, PartialEq, Message)]
+pub struct Keys {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub keys: Vec<Key>,
+}
+
+/// One key event, as a console reads it (`keys::KeyRecord`).
+#[derive(Clone, PartialEq, Message)]
+pub struct Key {
+    #[prost(bool, tag = "1")]
+    pub down: bool,
+    #[prost(uint32, tag = "2")]
+    pub repeat: u32,
+    #[prost(uint32, tag = "3")]
+    pub vk: u32,
+    #[prost(uint32, tag = "4")]
+    pub sc: u32,
+    #[prost(uint32, tag = "5")]
+    pub ch: u32,
+    #[prost(uint32, tag = "6")]
+    pub ctrl: u32,
+}
+
+impl From<&crate::keys::KeyRecord> for Key {
+    fn from(r: &crate::keys::KeyRecord) -> Key {
+        Key { down: r.down, repeat: r.repeat.into(), vk: r.vk.into(), sc: r.sc.into(), ch: r.ch.into(), ctrl: r.ctrl }
+    }
+}
+
+impl Key {
+    /// The record it stands for; none when a field is out of a record's
+    /// range (no console sends that).
+    pub fn record(&self) -> Option<crate::keys::KeyRecord> {
+        let small = |v: u32| u16::try_from(v).ok();
+        Some(crate::keys::KeyRecord {
+            down: self.down,
+            repeat: small(self.repeat)?,
+            vk: small(self.vk)?,
+            sc: small(self.sc)?,
+            ch: small(self.ch)?,
+            ctrl: self.ctrl,
+        })
     }
 }
 
@@ -127,10 +183,10 @@ pub struct Reply {
     #[prost(uint32, optional, tag = "4")]
     pub pane: Option<u32>,
 }
-/// What is typed into a pane of the copy, for the pane it copies (by its
-/// id there): bytes as the program reads them, put in by the copy's own
-/// keys (the copy's model has the same modes as the original's). A keepane
-/// of 0.61 or before reads it as nothing.
+/// Bytes put into a pane of the copy, for the pane it copies (by its id
+/// there): a paste, the mouse, `send-keys`, a message typed in, as the
+/// program reads them on every system (VT). Keys typed go as `Keys`,
+/// made into bytes there. A keepane of 0.61 or before reads it as nothing.
 #[derive(Clone, PartialEq, Message)]
 pub struct Input {
     #[prost(uint32, tag = "1")]
@@ -550,12 +606,12 @@ pub fn framed(msg: &impl Message) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// The handshake's `system` (1.0.1): a keepane before it reads the
-    /// answer as before, and one that sends none is read as not saying
-    /// (its panes then get VT).
+    /// The handshake's `keys` (1.0.2): a keepane before it reads the answer
+    /// as before; one that sends none (1.0.1 sent `system` at tag 5) is read
+    /// as not taking keys.
     #[test]
-    fn the_system_in_the_answer_reads_both_ways() {
-        /// `Answer` as keepane 0.63 to 1.0.0 have it.
+    fn the_keys_flag_in_the_answer_reads_both_ways() {
+        /// `Answer` as keepane 1.0.1 has it.
         #[derive(Clone, PartialEq, Message)]
         struct Before {
             #[prost(string, tag = "1")]
@@ -566,16 +622,30 @@ mod tests {
             epoch: u64,
             #[prost(bool, tag = "4")]
             commands: bool,
+            #[prost(string, optional, tag = "5")]
+            system: Option<String>,
         }
-        let now =
-            Answer { version: "1.0.1".into(), refused: None, epoch: 5, commands: true, system: Some("windows".into()) };
+        let now = Answer { version: "1.0.2".into(), refused: None, epoch: 5, commands: true, keys: true };
         let old = Before::decode(&now.encode_to_vec()[..]).unwrap();
-        assert_eq!((old.version.as_str(), old.epoch, old.commands), ("1.0.1", 5, true));
-        let from_old = Before { version: "1.0.0".into(), refused: None, epoch: 3, commands: true };
+        assert_eq!((old.version.as_str(), old.epoch, old.commands), ("1.0.2", 5, true));
+        let from_old =
+            Before { version: "1.0.1".into(), refused: None, epoch: 3, commands: true, system: Some("macos".into()) };
         let read = Answer::decode(&from_old.encode_to_vec()[..]).unwrap();
-        assert_eq!((read.system, read.epoch, read.commands), (None, 3, true));
+        assert_eq!((read.keys, read.epoch, read.commands), (false, 3, true));
     }
 
+    /// A key goes across as typed and comes back the same record; one out
+    /// of a record's range is none.
+    #[test]
+    fn a_key_goes_across_as_typed() {
+        let rec = crate::keys::KeyRecord { down: true, repeat: 2, vk: 0x0D, sc: 28, ch: 13, ctrl: 0x10 };
+        let wire = ToServer { kind: Some(to_server::Kind::Keys(Keys { pane: 4, keys: vec![(&rec).into()] })) };
+        let back = ToServer::decode(&wire.encode_to_vec()[..]).unwrap();
+        let Some(to_server::Kind::Keys(k)) = back.kind else { panic!("{back:?}") };
+        assert_eq!((k.pane, k.keys.len()), (4, 1));
+        assert_eq!(k.keys[0].record(), Some(rec));
+        assert_eq!(Key { vk: 70_000, ..(&rec).into() }.record(), None);
+    }
     #[test]
     fn a_picture_note_goes_and_comes_back_the_same() {
         let image = crate::server::kitty::Image {

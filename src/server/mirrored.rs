@@ -64,10 +64,11 @@ pub(super) struct Placed {
     pub rows: u16,
 }
 
-/// Where the keys typed into a pane of another machine go: that machine's
-/// copy's connection (`link_mirror`), which sends them on while it is up and
-/// lets them go while it is down (keys typed into a dead link are never
-/// typed minutes later).
+/// Where bytes put into a pane of another machine go (a paste, the mouse,
+/// `send-keys`; keys typed go as `RemoteKeys`): that machine's copy's
+/// connection (`link_mirror`), which sends them on while it is up and lets
+/// them go while it is down (input into a dead link is never typed minutes
+/// later).
 pub(super) struct RemoteInput {
     pub pane: u32,
     pub tx: UnboundedSender<ToServer>,
@@ -81,6 +82,21 @@ impl Write for RemoteInput {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// Where the keys typed into a pane of another machine go, as typed
+/// (`link_proto::Keys`): that machine makes them into bytes, by its system
+/// and the pane's modes there. Sent and let go as `RemoteInput` is.
+pub(super) struct RemoteKeys {
+    pub pane: u32,
+    pub tx: UnboundedSender<ToServer>,
+}
+
+impl RemoteKeys {
+    pub fn send(&self, rec: &crate::keys::KeyRecord) {
+        let keys = proto::Keys { pane: self.pane, keys: vec![rec.into()] };
+        let _ = self.tx.send(ToServer { kind: Some(to_server::Kind::Keys(keys)) });
     }
 }
 
@@ -160,8 +176,6 @@ impl Server {
         mut models: HashMap<u32, Model>,
     ) {
         let mine = |s: &Session| s.remote.as_ref().is_some_and(|r| r.key == key);
-        // That machine is Windows: its panes' keys go as win32-input-mode.
-        let on_windows = self.mirrors.get(key).is_some_and(|m| m.windows);
         // What is there now, taken out, to go back where the shape has it.
         let mut panes: HashMap<u32, Pane> = HashMap::new();
         let mut windows: HashMap<u32, Window> = HashMap::new();
@@ -203,12 +217,14 @@ impl Server {
                             let (c, r) = (dim(rp.cols).unwrap_or(80), dim(rp.rows).unwrap_or(24));
                             let parser = vt100::Parser::new_with_callbacks(r, c, history, Callbacks::default());
                             let writer = Box::new(RemoteInput { pane: rp.id, tx: input.clone() });
+                            let keys = RemoteKeys { pane: rp.id, tx: input.clone() };
                             let id = self.alloc_id();
                             Pane::remote(
                                 id,
-                                RemotePane { id: rp.id, at: 0, windows: on_windows },
+                                RemotePane { id: rp.id, at: 0 },
                                 parser,
                                 writer,
+                                keys,
                                 self.pane_tx.clone(),
                             )
                         }

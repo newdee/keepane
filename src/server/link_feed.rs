@@ -106,9 +106,12 @@ pub struct Feed {
     pub rx: mpsc::UnboundedReceiver<FeedItem>,
     /// What waits in `rx`, as `FeedItem::cost` counts it.
     pub queued: Arc<AtomicUsize>,
-    /// What the machine typed into its copy of a pane (`link_proto::Input`):
+    /// Bytes the machine put into its copy of a pane (`link_proto::Input`):
     /// to the server, which puts it into the pane.
     pub input: Box<dyn Fn(u32, Vec<u8>) + Send + Sync>,
+    /// Keys it typed into its copy of a pane, as typed (`link_proto::Keys`):
+    /// to the server, which makes them into bytes for the pane here.
+    pub keys: Box<dyn Fn(u32, Vec<crate::keys::KeyRecord>) + Send + Sync>,
     /// A command it sends about one of this machine's sessions
     /// (`link_proto::Command`): to the server, which runs it if it is one
     /// that changes a session's shape, and replies on this feed.
@@ -207,7 +210,7 @@ impl Server {
             refused: refused.clone(),
             epoch: self.journal.epoch,
             commands: true,
-            system: Some(std::env::consts::OS.into()),
+            keys: true,
         };
         let (msg2, keys) = match opening.answer(&answer) {
             Ok(a) => a,
@@ -261,6 +264,10 @@ impl Server {
             let _ = events.send(super::Event::StreamInput(key.clone(), pane, bytes));
         });
         let (events, key) = (self.events.clone(), peer.key.clone());
+        let typed = Box::new(move |pane, recs| {
+            let _ = events.send(super::Event::StreamKeys(key.clone(), pane, recs));
+        });
+        let (events, key) = (self.events.clone(), peer.key.clone());
         let command = Box::new(move |id, line| {
             let _ = events.send(super::Event::StreamCommand(key.clone(), id, line));
         });
@@ -268,7 +275,9 @@ impl Server {
         let image = Box::new(move |hash| {
             let _ = events.send(super::Event::StreamImage(key.clone(), hash));
         });
-        let _ = ask.reply.send(StreamReply { msg2, open: Some((keys, Feed { rx, queued, input, command, image })) });
+        let _ = ask
+            .reply
+            .send(StreamReply { msg2, open: Some((keys, Feed { rx, queued, input, keys: typed, command, image })) });
     }
 
     /// Send every feed what changed since it was last sent to; end those
@@ -316,7 +325,7 @@ impl Server {
         Some(sub.addr.clone())
     }
 
-    /// Keys typed into a machine's copy of pane `pane` (`link_proto::Input`):
+    /// Bytes put into a machine's copy of pane `pane` (`link_proto::Input`):
     /// into the pane, as if typed here, while that machine is fed (it has
     /// all of this one: `stream_push` ends the feed of one that no longer
     /// has). A pane of a third machine copied here is not this one's to
@@ -328,6 +337,20 @@ impl Server {
         let Some(p) = self.find_pane_mut(pane).filter(|p| p.remote.is_none()) else { return };
         if p.exit_code.is_none() {
             p.type_input(bytes);
+        }
+    }
+
+    /// Keys typed into a machine's copy of pane `pane`, as typed
+    /// (`link_proto::Keys`): made into bytes here, as this system and the
+    /// pane's modes have them, as if typed here; under the same terms as
+    /// `stream_input`.
+    pub(super) fn stream_keys(&mut self, key: &str, pane: u32, recs: &[crate::keys::KeyRecord]) {
+        if self.fed_addr(key).is_none() {
+            return;
+        }
+        let Some(p) = self.find_pane_mut(pane).filter(|p| p.remote.is_none()) else { return };
+        for rec in recs {
+            p.press(rec, super::typing(rec));
         }
     }
 
