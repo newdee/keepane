@@ -1315,6 +1315,14 @@ impl Pane {
     /// Start the pane's program in the same console the printer just
     /// filled. Same generation: the reader thread tags output with the one
     /// it was started with, and the printer, having exited, has no more.
+    /// Its program ended with `code` and the pane stays (`remain-on-exit`,
+    /// or a system shutdown's grace): the code and when, together, as
+    /// `#{pane_dead}` and `#{pane_dead_time}` read them.
+    pub fn mark_exited(&mut self, code: u32) {
+        self.exit_code = Some(code);
+        self.died_at = Some(std::time::Instant::now());
+    }
+
     pub fn start_pending(&mut self) -> Result<()> {
         let Some(p) = self.pending.take() else { anyhow::bail!("nothing pending") };
         let Some(slave) = self.slave.take() else { anyhow::bail!("no console to start in") };

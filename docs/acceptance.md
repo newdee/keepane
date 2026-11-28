@@ -7291,3 +7291,22 @@ deslop-please（Windows 配置，默认特性）报 193 条，全是结构问题
 | 1 | 静态一致性 + 范围内测试 | 旧路径还在用的地方（`tests/` 里 `keepane::web::status_url` 23 处、`command::tokenize`、`ipc::KeyRecord` 等）经再导出照旧可用，对外写法不变；`cargo test --lib -- --list` 856 个（854 + 2 ignored），和改前相同；被移的测试 `the_terminal_outside_is_known_by_its_names` 在 `client::tests`。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored、e2e 200；Linux lib 838 / 2 ignored、e2e 195；全过；C 盘 214.7 GB。 | 干净（1/3） |
 | 2 | 可复现性 + 范围内测试 | deslop-please 连跑两次，输出逐字相同（189 条）。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored、e2e 200；Linux lib 838 / 2 ignored、e2e 195；全过；C 盘 211.8 GB。 | 干净（2/3） |
 | 3 | 代码正确性（搬动前后逐字比对）+ 范围内测试 | 和 HEAD 里的原文比：`tokenize`（2041 字符）、`outer_has_kitty`、`status_url`、`KeyRecord` 的字段逐字相同；`zoom_on_active` 只是 `w.` 换成 `self.`，步骤相同；`PREVIEW_MAX` 仍是 `256 * 1024`；群文件 [4] 的判断（`[0]` 是群文件且不在打字）、滚动和焦点和原来的分支相同，只是从 `chat_box` 移到 `dashboard.rs` 决定、`group_file_box` 画。范围内测试：fmt、`clippy exit 0`；Windows lib 854 / 2 ignored、console 16 / 1 ignored、e2e 200；Linux lib 838 / 2 ignored、e2e 195；全过；C 盘 211.4 GB。 | 干净（3/3），验收通过 |
+
+## 251. `remain-on-exit failed`；`Pane::mark_exited`；工具链升到 1.100.1
+
+用户 2026-11-28："都按推荐来吧，可以都做"（升级 Rust、删 demo、remain-on-exit failed、第二档收拢 Pane 状态、发 1.0 前过兼容性）。
+
+- 定性：一闪而过不只 ssh 有（共性）：任何程序一启动就出错，窗口都立刻关掉。ssh 的框是 0.99.2 的就地办法；共性的办法是 tmux 已有的 `remain-on-exit failed`——属边界遗漏（选项缺一档），就地补。
+- `remain-on-exit` 从 bool 改为 `RemainOnExit { Off, On, Failed }`；`keeps(code)` 是唯一判断（server 那一处读它）。`show` 读回 `off`/`on`/`failed`；不带值仍在 on/off 间翻（failed 翻成 on）；Tab 候选 `failed off on`；settings 看板成为选项（←/→）。man、两份 README 同步。
+- 新 bug 评估：原值 `on`/`off`/`1`/`0`/`true` 仍按 `parse_bool` 走，行为不变（测试 `remain_on_exit_is_off_on_or_failed` 和原有的 `remain_on_exit_keeps_the_pane...` e2e 覆盖）；读这个字段的只有 server 一处，已改。
+- 第二档：数据（pane.rs 外的写入）显示只有 7 个字段在 2 个以上模块里写，没有一个出过漏改。只收了确实成对写的 `exit_code` + `died_at`：两处改为 `Pane::mark_exited(code)`。`actor` 在 6 个模块写 12 次，但每处写的是不同子字段、各有各的校验，收拢要改语义，不做。
+- 工具链：本机和 WSL 都升到 stable 1.100.1（和 CI 相同）；删掉了旧的 `1.100.1` 独立工具链和 `target\tc-1.100.1`；升级后全量测试先跑过一遍：Windows lib 854 / console 16 / e2e 200，Linux lib 838 / e2e 195，全过。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 静态一致性 + 范围内测试 | `remain_on_exit` 的读者只有 server 一处（`rg` 1 处，已改为 `keeps(code)`）；man 表、`optinfo` 文案一致（`each_option_says_what_the_man_page_says` 通过）；`died_at =` 只剩 pane.rs 内 2 处（`mark_exited` 与 `start_pending` 清空）。fmt、`clippy exit 0`；Windows lib 855 / 2 ignored（+1 新测试）、console 16 / 1 ignored、e2e 201（+1）；Linux lib 839 / 2 ignored、e2e 196；全过；C 盘 195.9 GB。 | 干净（1/3） |
+| 2 | 机制通路存活（变异）+ 范围内测试 | 4 个变异：`Failed => true`、`Failed => code == 0` 被单元测试和新 e2e 都抓到；大小写不敏感去掉（`== "failed"`）被单元测试抓到（e2e 用小写，预期抓不到）；server 改回"非 Off 就留"被新 e2e 抓到（20 s 超时）。4/4。还原后 `cargo build --tests` 重建。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 201；Linux lib 839、e2e 196；全过。 | 干净（2/3） |
+| 3 | 边界与退化输入（scratch server）| `' failed '`、`Failed` → `failed`；空值从 failed 翻到 on、从 on 翻到 off；`save-settings remain-on-exit` 写出 `set -g remain-on-exit failed`，`source-file` 读回 `failed`。**发现**：错值 `maybe` 报 `bad boolean 'maybe'`，可它现在不只是布尔。修：报 `bad value 'maybe' (on, off or failed)`，单元测试改为精确比较这句。 | 有发现，重新计数 |
+| 4 | 代码正确性（修复的错误路径）+ 范围内测试 | 改动只在 `remain-on-exit` 分支：其它选项的 `bad boolean` 不变（`config.rs:802` 和 server `:6634` 两处原样；e2e `:773` 测的是 `mouse maybe`，仍通过）；diff 9 个文件 +141/−16，server 只有 3 处（`keeps(code)` 1、`mark_exited` 2）。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 201；Linux lib 839、e2e 196；全过。 | 干净（1/3） |
+| 5 | 可复现性 + 范围内测试 | `remain_on_exit` + `ssh` 相关 e2e（5 个）连跑 5 次：5/5 通过，耗时 9.07–9.45 s。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 201；Linux lib 839、e2e 196；全过。 | 干净（2/3） |
+| 6 | 逻辑正确与不变量 + 范围内测试 | 程序退出只有一个入口（`PaneEvent::Exit` 在 server `mod.rs:2923` 处理；`pane.rs:2685` 是测试辅助）；入口里的顺序：popup 先走，`keeps(code)` 在系统关机宽限和 ssh 框之前，所以开着 `on`/`failed` 时 ssh 失败窗口留下、不弹框（README 已写明）。fmt、`clippy exit 0`；Windows lib 855、console 16、e2e 201；Linux lib 839、e2e 196；全过。 | 干净（3/3），验收通过 |

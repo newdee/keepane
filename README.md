@@ -1100,7 +1100,8 @@ the command, `d` takes the machine off the list, `f` filters. When the
 `ssh` cannot connect (it ends at once, with its own error, 255, or with
 another within 10 seconds), its window closes as before and a box says
 what ssh said: `r` connects again in a new window, `q` closes the box.
-This holds for any window or pane whose program is `ssh` itself.
+This holds for any window or pane whose program is `ssh` itself; with
+`remain-on-exit` (`on`, or `failed`) the window stays instead, what ssh said on it.
 
 The list comes from four places: each `ssh` keepane sees start in a pane
 (one use each, with its time), the `Host` lines of `~/.ssh/config`, the
@@ -1609,7 +1610,7 @@ shell runs them at its prompt, ai hands them to its agent. The view menu also
 finds text in the output (the lines with it marked, ↑ ↓ between them), copies
 the screen's text, and sizes the text (pinching the screen does too; each
 device keeps its own). The + at the top starts a new session in your home
-directory. A pane whose program ended (with `remain-on-exit` on) says how it
+directory. A pane whose program ended (kept by `remain-on-exit`) says how it
 ended, and Run it again starts the program again. A full-screen program (Codex
 or pi as they come, vim) keeps no history: a drag up or down on its screen
 scrolls it instead, as the wheel does on the computer, and the pane's bar says
@@ -2281,7 +2282,7 @@ set -g repeat-time 500            # how long a `bind -r` key keeps working; 0 di
 set -g prefix-hint on             # a panel of what the keys do, when the key after the prefix is late
 set -g prefix-hint-delay 500      # how late, in ms (0: at once)
 
-set -g remain-on-exit on          # keep a pane whose program exited, showing why
+set -g remain-on-exit on          # keep a pane whose program exited, showing why (failed: only when it failed)
 set -g save-history 500           # lines of each pane saved for `resume`; 0 saves none, all saves the whole scrollback
 set -g monitor-activity on        # flag a background window that prints (`#` on the status line)
 set -g monitor-bell on            # and one that rings the bell (`!`); on by default

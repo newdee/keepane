@@ -1009,7 +1009,7 @@ Set with `set -g` (`set -gu` back to the default) or on the settings board (pref
 | `clock-mode-animation` | `random` | What moves under the clock (a name, `random`, `cycle`, `off`). |
 | `clock-mode-look` | `plain` | The characters it is drawn in: `plain`, `dots`, `blocks`, `binary`. |
 | `base-index` | `0` | The first window's number. |
-| `remain-on-exit` | `off` | A pane stays, saying why, when its program exits. |
+| `remain-on-exit` | `off` | A pane stays, saying why, when its program exits: `on`, or `failed` only when it ended with an error. |
 | `save-history` | `500` | Scrollback lines saved with a session (`all`, or 0 for none). |
 | `monitor-activity` | `off` | Mark a background window that prints (`#`). |
 | `monitor-bell` | `on` | Mark a window that rings the bell (`!`). |

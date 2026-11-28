@@ -2979,12 +2979,11 @@ impl Server {
                     format!("{name} exited with {code}"),
                     done::Ended { ok: Some(code == 0), exit: Some(code as i32), ..Default::default() },
                 );
-                if self.opts.remain_on_exit {
+                if self.opts.remain_on_exit.keeps(code) {
                     // Keep the pane and what it printed; say why it stopped.
                     // `respawn-pane` starts it again, `kill-pane` closes it.
                     if let Some(p) = self.find_pane_mut(id) {
-                        p.exit_code = Some(code);
-                        p.died_at = Some(Instant::now());
+                        p.mark_exited(code);
                         let note =
                             format!("\r\n\x1b[7m[{command} exited with {code}; respawn-pane or kill-pane]\x1b[0m\r\n");
                         p.process_output(note.as_bytes());
@@ -2999,8 +2998,7 @@ impl Server {
                 // when no shutdown came (2026-11-23: eight windows lost).
                 if system_ended(code) {
                     let generation = self.find_pane_mut(id).map(|p| {
-                        p.exit_code = Some(code);
-                        p.died_at = Some(Instant::now());
+                        p.mark_exited(code);
                         p.generation
                     });
                     if let Some(g) = generation {

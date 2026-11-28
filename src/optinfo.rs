@@ -123,7 +123,12 @@ pub const OPTIONS: &[OptInfo] = &[
     o("history-limit", 3, Number(1000), "Lines of scrollback a pane keeps."),
     o("base-index", 3, Number(1), "The first window's number."),
     o("pane-base-index", 3, Number(1), "The first pane's number."),
-    o("remain-on-exit", 3, Bool, "A pane stays, saying why, when its program exits."),
+    o(
+        "remain-on-exit",
+        3,
+        Choice,
+        "A pane stays, saying why, when its program exits: `on`, or `failed` only when it ended with an error.",
+    ),
     o("keep-zoom", 3, Bool, "A zoomed window stays zoomed when another of its panes is selected."),
     o("undo-kill-time", 3, Number(5), "Seconds a killed pane or window waits for `undo-kill`."),
     o("window-size", 3, Choice, "Whose size a session takes: `latest`, `smallest`, `largest`, `manual`."),

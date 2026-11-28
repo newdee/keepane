@@ -20,7 +20,7 @@ pub struct Options {
     pub status_bg: Color,
     /// Keep a pane after its program exits, showing why, so a background job
     /// that died leaves its output and can be restarted (tmux `remain-on-exit`).
-    pub remain_on_exit: bool,
+    pub remain_on_exit: RemainOnExit,
     /// Lines of each pane's scrollback written into the session file, so
     /// `resume` brings the output back too. 0 saves nothing; `all`
     /// (`usize::MAX`) saves everything the pane still holds.
@@ -658,7 +658,7 @@ impl Default for Options {
             // (#171716), so it reads as its own strip.
             status_fg: Color::Rgb(0xa5, 0xa2, 0x9a),
             status_bg: Color::Rgb(0x12, 0x12, 0x12),
-            remain_on_exit: false,
+            remain_on_exit: RemainOnExit::Off,
             save_history: 500,
             monitor_activity: false,
             monitor_bell: true,
@@ -1139,10 +1139,42 @@ pub fn option_candidates(name: &str) -> Vec<&'static str> {
     Vec::new()
 }
 
+/// `remain-on-exit`: whether a pane whose program ended stays, its output
+/// and why it stopped on it (`respawn-pane` starts it again); as tmux,
+/// `failed` keeps only one that ended with an error (a code other than 0),
+/// so a program that fails at once is not gone before it is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemainOnExit {
+    Off,
+    On,
+    Failed,
+}
+
+impl RemainOnExit {
+    /// Whether a pane whose program ended with `code` stays.
+    pub fn keeps(self, code: u32) -> bool {
+        match self {
+            RemainOnExit::Off => false,
+            RemainOnExit::On => true,
+            RemainOnExit::Failed => code != 0,
+        }
+    }
+
+    /// As `show` reads it.
+    pub fn name(self) -> &'static str {
+        match self {
+            RemainOnExit::Off => "off",
+            RemainOnExit::On => "on",
+            RemainOnExit::Failed => "failed",
+        }
+    }
+}
+
 /// The values an option takes when they are a fixed few, for a Tab after
 /// the option's name; empty when the value is free (a number, a format).
 pub fn option_values(name: &str) -> &'static [&'static str] {
     match name {
+        "remain-on-exit" => &["failed", "off", "on"],
         n if BOOLEAN.contains(&n) && n != "status" => &["off", "on"],
         "status" => &["bottom", "off", "on", "top"],
         "status-position" => &["bottom", "top"],
@@ -1394,7 +1426,17 @@ impl Options {
                 }
             }
             "base-index" => self.base_index = value.parse().map_err(|_| format!("bad number '{value}'"))?,
-            "remain-on-exit" => self.remain_on_exit = parse_bool(value)?,
+            "remain-on-exit" => {
+                self.remain_on_exit = if value.trim().eq_ignore_ascii_case("failed") {
+                    RemainOnExit::Failed
+                } else {
+                    match parse_bool(value) {
+                        Ok(true) => RemainOnExit::On,
+                        Ok(false) => RemainOnExit::Off,
+                        Err(_) => return Err(format!("bad value '{value}' (on, off or failed)")),
+                    }
+                }
+            }
             "save-history" => {
                 self.save_history = match value.trim() {
                     v if v.eq_ignore_ascii_case("all") => usize::MAX,
@@ -1673,7 +1715,7 @@ impl Options {
             "window-status-format" => self.window_status_format.clone(),
             "window-status-current-format" => self.window_status_current_format.clone(),
             "base-index" => self.base_index.to_string(),
-            "remain-on-exit" => onoff(self.remain_on_exit),
+            "remain-on-exit" => self.remain_on_exit.name().into(),
             "save-history" => {
                 if self.save_history == usize::MAX {
                     "all".to_string()
@@ -2192,6 +2234,31 @@ mod tests {
             }
             assert!(matches!(o.get(n).as_deref(), Some("on" | "off")), "{n} should read back on or off");
         }
+    }
+
+    /// `remain-on-exit`: off (the default), on, or tmux's `failed`, which
+    /// keeps only a pane whose program ended with an error; no value flips
+    /// it between on and off, as before.
+    #[test]
+    fn remain_on_exit_is_off_on_or_failed() {
+        let mut o = Options::default();
+        assert_eq!(o.get("remain-on-exit").as_deref(), Some("off"));
+        assert!(!o.remain_on_exit.keeps(1));
+        o.set("remain-on-exit", "failed").unwrap();
+        assert_eq!(o.get("remain-on-exit").as_deref(), Some("failed"));
+        assert!(o.remain_on_exit.keeps(3) && o.remain_on_exit.keeps(255) && !o.remain_on_exit.keeps(0));
+        o.set("remain-on-exit", "FAILED").unwrap();
+        assert_eq!(o.remain_on_exit, RemainOnExit::Failed);
+        o.set("remain-on-exit", "on").unwrap();
+        assert!(o.remain_on_exit.keeps(0) && o.remain_on_exit.keeps(1));
+        assert_eq!(o.set("remain-on-exit", "sometimes"), Err("bad value 'sometimes' (on, off or failed)".into()));
+        assert_eq!(o.get("remain-on-exit").as_deref(), Some("on"), "a bad value leaves it");
+        o.set("remain-on-exit", "").unwrap();
+        assert_eq!(o.get("remain-on-exit").as_deref(), Some("off"), "flipped");
+        o.set("remain-on-exit", "failed").unwrap();
+        o.set("remain-on-exit", "").unwrap();
+        assert_eq!(o.get("remain-on-exit").as_deref(), Some("on"), "from failed, a flip turns it on");
+        assert_eq!(option_values("remain-on-exit"), ["failed", "off", "on"]);
     }
 
     #[test]

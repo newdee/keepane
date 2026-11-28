@@ -10845,6 +10845,36 @@ async fn choose_ssh_lists_the_machines_the_panes_reach() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `remain-on-exit failed`: a window whose program ends well closes; one
+/// whose program fails stays, its output and why on it (tmux's value).
+#[tokio::test(flavor = "multi_thread")]
+async fn remain_on_exit_failed_keeps_only_what_failed() {
+    let h = Harness::start("remainfailed").await;
+    h.cli(&["new", "-d", "-s", "r"]).await;
+    let (code, _, err) = h.cli(&["set", "-g", "remain-on-exit", "failed"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (ok, bad): (&[&str], &[&str]) = if cfg!(windows) {
+        (&["cmd.exe", "/c", "exit 0"], &["cmd.exe", "/c", "echo it-fell-over& exit 3"])
+    } else {
+        (&["sh", "-c", "exit 0"], &["sh", "-c", "echo it-fell-over; exit 3"])
+    };
+    assert_eq!(h.cli(&[&["new-window", "-d", "-t", "r", "-n", "fine"][..], ok].concat()).await.0, 0);
+    assert_eq!(h.cli(&[&["new-window", "-d", "-t", "r", "-n", "broke"][..], bad].concat()).await.0, 0);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let wins = h.cli(&["list-windows", "-t", "r"]).await.1;
+        let dead = h.cli(&["display-message", "-p", "-t", "r:broke", "#{pane_dead}"]).await.1;
+        if !wins.contains("fine") && wins.contains("broke") && dead.trim() == "1" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the fine one should go, the broken one stay dead: {wins} / {dead}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let shown = h.cli(&["capture-pane", "-p", "-t", "r:broke"]).await.1;
+    assert!(shown.contains("it-fell-over") && shown.contains("exited with 3"), "{shown}");
+    h.cli(&["kill-server"]).await;
+}
+
 /// A window whose `ssh` cannot connect (a port nothing listens on: ssh
 /// ends at once with 255) closes as before, and a box says what ssh said;
 /// `q` closes the box, `r` connects again in a new window. A program that
