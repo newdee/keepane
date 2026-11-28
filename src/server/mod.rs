@@ -5326,18 +5326,13 @@ impl Server {
                     // Autosave would write it right back on the next tick.
                     return Outcome::Error(format!("session {name} is running; kill it first (or set autosave off)"));
                 }
-                match self.saved_file(&name).map(|(p, _)| p) {
-                    Some(p) => match std::fs::remove_file(&p) {
-                        Ok(()) => {
-                            self.last_saved.remove(&p.to_string_lossy().into_owned());
-                            // An older one put aside under that name goes too,
-                            // or it would be listed (and resumed) in its place.
-                            if let Some(k) = crate::resurrect::find(&self.killed_dir(), &name) {
-                                let _ = std::fs::remove_file(&k);
-                            }
-                            Outcome::Ok
-                        }
-                        Err(e) => Outcome::Error(format!("{}: {e}", p.display())),
+                // An older one put aside under that name goes too, or it
+                // would be listed (and resumed) in its place; and the
+                // earlier ones `resume --prev` reads.
+                match self.saved_file(&name) {
+                    Some(_) => match self.forget_saved(&name) {
+                        Ok(()) => Outcome::Ok,
+                        Err(e) => Outcome::Error(e),
                     },
                     None => Outcome::Error(format!("no saved session named {name}")),
                 }
@@ -9525,7 +9520,7 @@ impl Server {
             }
             // Its save goes too (none there, say with autosave off: nothing to do).
             if let Some(name) = forget_name {
-                self.forget_saved(&name);
+                let _ = self.forget_saved(&name); // logged there
             }
         }
     }
@@ -9573,7 +9568,7 @@ impl Server {
         self.forget_after = wait;
         for (name, _) in due {
             if self.opts.autosave && !self.sessions.iter().any(|s| s.name == name) {
-                self.forget_saved(&name);
+                let _ = self.forget_saved(&name); // logged there
             }
         }
     }
@@ -9616,7 +9611,7 @@ impl Server {
     fn name_unsaved(&mut self, name: &str) -> Result<(), String> {
         if let Some(i) = self.forget_after.iter().position(|(n, _)| n == name) {
             self.forget_after.remove(i);
-            self.forget_saved(name);
+            let _ = self.forget_saved(name); // logged there
             return Ok(());
         }
         match crate::resurrect::find(&self.sessions_dir(), name) {
@@ -9627,21 +9622,33 @@ impl Server {
         }
     }
 
-    /// Remove a session's save file, so that `resume` does not bring it back.
-    fn forget_saved(&mut self, name: &str) {
-        // Put aside by a kill too: that goes as well.
-        if let Some(p) = crate::resurrect::find(&self.killed_dir(), name) {
-            let _ = std::fs::remove_file(&p);
-        }
-        if let Some(p) = crate::resurrect::find(&self.sessions_dir(), name) {
+    /// Remove a session's saves, so that neither `resume` nor `resume --prev`
+    /// brings it back: the save, one put aside by a kill, and the earlier
+    /// ones kept beside either (`resurrect::prev_for`; a kill leaves the
+    /// earlier one where it was). The first that could not be removed, if any.
+    fn forget_saved(&mut self, name: &str) -> Result<(), String> {
+        let mut failed = None;
+        for dir in [self.killed_dir(), self.sessions_dir()] {
+            let prev = crate::resurrect::prev_for(&crate::resurrect::file_for(&dir, name));
+            if let Err(e) = std::fs::remove_file(&prev)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                log::warn!("forget {}: {e}", prev.display());
+                failed.get_or_insert(format!("{}: {e}", prev.display()));
+            }
+            let Some(p) = crate::resurrect::find(&dir, name) else { continue };
             match std::fs::remove_file(&p) {
                 Ok(()) => {
                     self.last_saved.remove(&p.to_string_lossy().into_owned());
                     log::info!("forgot the save of session {name}");
                 }
-                Err(e) => log::warn!("forget {}: {e}", p.display()),
+                Err(e) => {
+                    log::warn!("forget {}: {e}", p.display());
+                    failed.get_or_insert(format!("{}: {e}", p.display()));
+                }
             }
         }
+        failed.map_or(Ok(()), Err)
     }
 
     /// What `command` printed (`text`, `cut` short or not), to a new paste

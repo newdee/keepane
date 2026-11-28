@@ -2158,7 +2158,11 @@ async fn choose_tree_kills_or_forgets_a_session() {
             .unwrap_or_default()
     };
     let (out, aside) = (files(&h.sessions_dir), files(&h.sessions_dir.join("killed")));
-    assert!(out.iter().any(|f| f.starts_with("here")) && !out.iter().any(|f| f.starts_with("keepme")), "{out:?}");
+    // keepme's save is aside; an earlier save of it (`.json.prev`, kept when
+    // an autosave of one window came before the save of two) stays here, as
+    // `resume --prev` reads it.
+    let saves = |fs: &[String], name: &str| fs.iter().any(|f| f.starts_with(name) && f.ends_with(".json"));
+    assert!(saves(&out, "here") && !saves(&out, "keepme"), "{out:?}");
     assert!(aside.iter().any(|f| f.starts_with("keepme")), "{aside:?}");
     assert!(!out.iter().chain(&aside).any(|f| f.starts_with("gone")), "{out:?} {aside:?}");
 }
@@ -17029,6 +17033,48 @@ async fn resume_prev_brings_back_the_save_before_a_window_went() {
     assert_eq!(windows.lines().count(), 2, "both windows back: {windows}");
     let (code, _, err) = h.cli(&["resume", "--prev", "nosuch"]).await;
     assert!(code != 0 && err.contains("no earlier save of nosuch"), "{err}");
+    h.cli(&["kill-server"]).await;
+}
+
+/// Forgetting a session (`delete-saved`, `D` in choose-tree) forgets the
+/// save before it too: `resume --prev` does not bring it back. Its earlier
+/// save stays where it was when the session is killed, the save put aside.
+#[tokio::test(flavor = "multi_thread")]
+async fn forgetting_a_session_forgets_its_earlier_save() {
+    let h = Harness::start("forgetprev").await;
+    h.cli(&["new", "-d", "-s", "stay"]).await;
+    let files = |name: &str| {
+        let list = |d: &std::path::Path| {
+            std::fs::read_dir(d)
+                .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        let mut all = list(&h.sessions_dir);
+        all.extend(list(&h.sessions_dir.join("killed")).into_iter().map(|f| format!("killed/{f}")));
+        all.retain(|f| f.trim_start_matches("killed/").starts_with(&format!("{name}-")));
+        all.sort();
+        all
+    };
+    let ext = |fs: &[String]| {
+        fs.iter().map(|f| f.rsplit_once('-').unwrap().1.split_once('.').unwrap().1.to_string()).collect::<Vec<_>>()
+    };
+    // One window saved, then two: the one-window save is kept as `.prev`.
+    h.cli(&["new", "-d", "-s", "two"]).await;
+    h.cli(&["save-session", "-t", "two"]).await;
+    h.cli(&["new-window", "-d", "-t", "two"]).await;
+    h.cli(&["save-session", "-t", "two"]).await;
+    assert_eq!(ext(&files("two")), ["json", "json.prev"], "{:?}", files("two"));
+    // Killed by hand: the save put aside, the earlier one where it was.
+    h.cli(&["kill-session", "-t", "two"]).await;
+    let killed = files("two");
+    assert!(killed.iter().any(|f| f.starts_with("killed/") && f.ends_with(".json")), "{killed:?}");
+    assert!(killed.iter().any(|f| !f.starts_with("killed/") && f.ends_with(".json.prev")), "{killed:?}");
+    // Forgotten: all of it, and resume --prev says there is none.
+    let (code, _, err) = h.cli(&["delete-saved", "two"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(files("two").is_empty(), "{:?}", files("two"));
+    let (code, _, err) = h.cli(&["resume", "--prev", "two"]).await;
+    assert!(code != 0 && err.contains("no earlier save of two"), "{err}");
     h.cli(&["kill-server"]).await;
 }
 
