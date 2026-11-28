@@ -702,7 +702,9 @@ input, and vim and htop under WSL all work. It runs in Windows Terminal,
 the classic console, VS Code's terminal and other Windows console hosts. On
 Linux and macOS it reads what the terminal sends (xterm keys with their
 modifiers, bracketed paste, SGR mouse) and passes it on as a terminal
-would, so it runs in any xterm-compatible terminal and over SSH.
+would, so it runs in any xterm-compatible terminal and over SSH. Keys typed
+into a pane of another machine go as that machine's programs read them:
+win32-input-mode to Windows, xterm keys to macOS and Linux.
 
 ```bash
 keepane                      # the session used last; else resume; else new

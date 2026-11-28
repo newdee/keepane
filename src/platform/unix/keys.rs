@@ -2,34 +2,11 @@
 //! sends for it (xterm's), text as UTF-8.
 
 use crate::ipc::KeyRecord;
-use std::cell::Cell;
-
-thread_local! {
-    /// The first half of a character outside the BMP, which arrives as two
-    /// records (as a Windows console gives it).
-    static HIGH: Cell<Option<u16>> = const { Cell::new(None) };
-}
 
 /// The bytes that give `rec` to a pane whose program is in cursor-key
 /// application mode or not (`ESC O A` or `ESC [ A` for Up).
 pub fn to_pane(rec: &KeyRecord, app_cursor: bool) -> Vec<u8> {
-    if !rec.down {
-        return Vec::new();
-    }
-    if (0xD800..0xDC00).contains(&rec.ch) {
-        HIGH.with(|h| h.set(Some(rec.ch)));
-        return Vec::new();
-    }
-    if (0xDC00..0xE000).contains(&rec.ch) {
-        let Some(hi) = HIGH.with(|h| h.take()) else { return Vec::new() };
-        return char::decode_utf16([hi, rec.ch])
-            .next()
-            .and_then(|r| r.ok())
-            .map(|c| c.to_string().into_bytes())
-            .unwrap_or_default();
-    }
-    let Some(key) = crate::keys::key_from_record(rec) else { return Vec::new() };
-    crate::server::input::encode_key(key, app_cursor)
+    crate::server::input::vt_key(rec, app_cursor)
 }
 
 #[cfg(test)]

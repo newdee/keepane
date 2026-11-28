@@ -8717,6 +8717,15 @@ async fn another_machines_sessions_are_under_it_and_it_is_disconnected_and_conne
     c.enter().await;
     let status = |s: &vt100::Screen| s.rows(0, COLS).last().unwrap_or_default();
     c.wait_for("in wb there", |s| status(s).contains(&format!("wb@{addr_b}"))).await;
+    // Keys typed into its pane go as that machine's programs read them (its
+    // system, from the handshake): the shell there runs the line. Encoded
+    // as this machine's instead, a Mac's shell printed `6;38;108;1;0;1_`
+    // for `l` (2026-11-29).
+    c.type_str("echo typed-by-keys").await;
+    c.enter().await;
+    b.wait_capture("wb:0", "the line ran there", |t| t.lines().any(|l| l.trim_end() == "typed-by-keys")).await;
+    let screen = b.cli(&["capture-pane", "-p", "-t", "wb:0"]).await.1;
+    assert!(!screen.contains(";1_"), "no key encoding printed as text: {screen}");
     // Its pane closed by the key: asked, with the machine it is done on.
     c.prefix('x').await;
     c.wait_for("kill-pane there, said so", |s| {

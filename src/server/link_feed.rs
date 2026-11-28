@@ -207,6 +207,7 @@ impl Server {
             refused: refused.clone(),
             epoch: self.journal.epoch,
             commands: true,
+            system: Some(std::env::consts::OS.into()),
         };
         let (msg2, keys) = match opening.answer(&answer) {
             Ok(a) => a,

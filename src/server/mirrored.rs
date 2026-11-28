@@ -160,6 +160,8 @@ impl Server {
         mut models: HashMap<u32, Model>,
     ) {
         let mine = |s: &Session| s.remote.as_ref().is_some_and(|r| r.key == key);
+        // That machine is Windows: its panes' keys go as win32-input-mode.
+        let on_windows = self.mirrors.get(key).is_some_and(|m| m.windows);
         // What is there now, taken out, to go back where the shape has it.
         let mut panes: HashMap<u32, Pane> = HashMap::new();
         let mut windows: HashMap<u32, Window> = HashMap::new();
@@ -202,7 +204,13 @@ impl Server {
                             let parser = vt100::Parser::new_with_callbacks(r, c, history, Callbacks::default());
                             let writer = Box::new(RemoteInput { pane: rp.id, tx: input.clone() });
                             let id = self.alloc_id();
-                            Pane::remote(id, RemotePane { id: rp.id, at: 0 }, parser, writer, self.pane_tx.clone())
+                            Pane::remote(
+                                id,
+                                RemotePane { id: rp.id, at: 0, windows: on_windows },
+                                parser,
+                                writer,
+                                self.pane_tx.clone(),
+                            )
                         }
                     };
                     if let Some((parser, at)) = models.remove(&rp.id) {

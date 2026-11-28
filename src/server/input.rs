@@ -8,6 +8,36 @@ pub fn encode_key_record(r: &KeyRecord) -> Vec<u8> {
     format!("\x1b[{};{};{};{};{};{}_", r.vk, r.sc, r.ch, u8::from(r.down), r.ctrl, r.repeat.max(1)).into_bytes()
 }
 
+thread_local! {
+    /// The first half of a character outside the BMP, which arrives as two
+    /// records (as a Windows console gives it).
+    static HIGH: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
+}
+
+/// A key record as the VT sequence a terminal sends for it (xterm's), text
+/// as UTF-8; in cursor-key application mode or not (`ESC O A` or `ESC [ A`
+/// for Up). What a Unix pane's program reads, and what is sent for a pane of
+/// another machine, whatever system it runs on (ConPTY reads VT too).
+pub fn vt_key(rec: &KeyRecord, app_cursor: bool) -> Vec<u8> {
+    if !rec.down {
+        return Vec::new();
+    }
+    if (0xD800..0xDC00).contains(&rec.ch) {
+        HIGH.with(|h| h.set(Some(rec.ch)));
+        return Vec::new();
+    }
+    if (0xDC00..0xE000).contains(&rec.ch) {
+        let Some(hi) = HIGH.with(|h| h.take()) else { return Vec::new() };
+        return char::decode_utf16([hi, rec.ch])
+            .next()
+            .and_then(|r| r.ok())
+            .map(|c| c.to_string().into_bytes())
+            .unwrap_or_default();
+    }
+    let Some(key) = crate::keys::key_from_record(rec) else { return Vec::new() };
+    encode_key(key, app_cursor)
+}
+
 /// Plain VT (xterm) encoding of a logical key, for `send-keys` and keys
 /// synthesized by keepane itself.
 pub fn encode_key(k: Key, app_cursor: bool) -> Vec<u8> {

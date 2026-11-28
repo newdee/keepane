@@ -113,6 +113,9 @@ pub struct RemotePane {
     /// The bytes of its output its model here has been fed: where the next
     /// output starts.
     pub at: u64,
+    /// That machine is Windows (`link_mirror::Mirror::windows`): keys go
+    /// as win32-input-mode; else as VT.
+    pub windows: bool,
 }
 
 /// vt100 callbacks: collects terminal replies ConPTY expects from a real
@@ -2262,10 +2265,20 @@ impl Pane {
         }
         self.write_input(&bytes);
     }
-    /// The bytes a typed key is to this pane's program (the platform's
-    /// encoding; VT sequences follow the program's cursor-key mode).
+    /// The bytes a typed key is to this pane's program, encoded for the
+    /// system it runs on: win32-input-mode for ConPTY on Windows (every
+    /// modifier and Shift+Enter as typed), VT elsewhere, following the
+    /// program's cursor-key mode. A pane of another machine is encoded for
+    /// that machine, not this one (a shell on a Mac printed a Windows
+    /// encoding as text); one whose system is not known gets VT, which
+    /// ConPTY reads too.
     pub fn key_bytes(&self, rec: &crate::ipc::KeyRecord) -> Vec<u8> {
-        crate::platform::keys::to_pane(rec, self.parser.screen().application_cursor())
+        let app_cursor = self.parser.screen().application_cursor();
+        match self.remote {
+            Some(r) if r.windows => crate::server::input::encode_key_record(rec),
+            Some(_) => crate::server::input::vt_key(rec, app_cursor),
+            None => crate::platform::keys::to_pane(rec, app_cursor),
+        }
     }
 
     pub fn write_input(&mut self, bytes: &[u8]) {
@@ -2511,6 +2524,34 @@ impl Drop for Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key typed into a pane of another machine is sent as VT, not as this
+    /// system's encoding: on Windows `l` was `ESC[76;38;108;1;0;1_`, which
+    /// a shell on a Mac printed as text (2026-11-29). VT follows the remote
+    /// program's cursor-key mode; a key-up is nothing.
+    #[test]
+    fn a_pane_of_another_machine_is_sent_vt() {
+        let parser = vt100::Parser::new_with_callbacks(24, 80, 0, Callbacks::default());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut p = Pane::remote(7, RemotePane { id: 3, at: 0, windows: false }, parser, Box::new(std::io::sink()), tx);
+        let key =
+            |vk: u16, sc: u16, ch: u16, down: bool| crate::ipc::KeyRecord { down, repeat: 1, vk, sc, ch, ctrl: 0 };
+        assert_eq!(p.key_bytes(&key(0x4C, 38, 'l' as u16, true)), b"l");
+        assert_eq!(p.key_bytes(&key(0x0D, 28, 13, true)), b"\r");
+        assert_eq!(p.key_bytes(&key(0, 0, '中' as u16, true)), "中".as_bytes());
+        assert!(p.key_bytes(&key(0x4C, 38, 'l' as u16, false)).is_empty(), "a key-up is nothing");
+        let up = key(crate::keys::VK_UP, 72, 0, true);
+        assert_eq!(p.key_bytes(&up), b"\x1b[A");
+        p.process_output(b"\x1b[?1h");
+        assert_eq!(p.key_bytes(&up), b"\x1bOA", "application cursor keys, as the program there asked");
+        // That machine is Windows: as its ConPTY reads them, Shift+Enter and
+        // key-ups as typed (VT has no Shift+Enter).
+        p.remote.as_mut().unwrap().windows = true;
+        assert_eq!(p.key_bytes(&key(0x4C, 38, 'l' as u16, true)), b"\x1b[76;38;108;1;0;1_");
+        let shift_enter = crate::ipc::KeyRecord { ctrl: crate::keys::SHIFT_PRESSED, ..key(0x0D, 28, 13, true) };
+        assert_eq!(p.key_bytes(&shift_enter), b"\x1b[13;28;13;1;16;1_");
+        assert_eq!(p.key_bytes(&key(0x4C, 38, 'l' as u16, false)), b"\x1b[76;38;108;0;0;1_");
+    }
 
     /// The exit waits for the output: quiet for `EXIT_QUIET`, or the console
     /// ended, at most `EXIT_DRAIN_MOST`.

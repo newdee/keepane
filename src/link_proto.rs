@@ -45,6 +45,11 @@ pub struct Answer {
     /// from the copy. A keepane of 0.62 or before leaves it unset.
     #[prost(bool, tag = "4")]
     pub commands: bool,
+    /// The system it runs on (`std::env::consts::OS`: `windows`, `macos`,
+    /// `linux`), so keys typed into its panes are sent as its programs read
+    /// them (keepane 1.0.1 on; unset before: VT, which every system reads).
+    #[prost(string, optional, tag = "5")]
+    pub system: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -544,6 +549,32 @@ pub fn framed(msg: &impl Message) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The handshake's `system` (1.0.1): a keepane before it reads the
+    /// answer as before, and one that sends none is read as not saying
+    /// (its panes then get VT).
+    #[test]
+    fn the_system_in_the_answer_reads_both_ways() {
+        /// `Answer` as keepane 0.63 to 1.0.0 have it.
+        #[derive(Clone, PartialEq, Message)]
+        struct Before {
+            #[prost(string, tag = "1")]
+            version: String,
+            #[prost(string, optional, tag = "2")]
+            refused: Option<String>,
+            #[prost(uint64, tag = "3")]
+            epoch: u64,
+            #[prost(bool, tag = "4")]
+            commands: bool,
+        }
+        let now =
+            Answer { version: "1.0.1".into(), refused: None, epoch: 5, commands: true, system: Some("windows".into()) };
+        let old = Before::decode(&now.encode_to_vec()[..]).unwrap();
+        assert_eq!((old.version.as_str(), old.epoch, old.commands), ("1.0.1", 5, true));
+        let from_old = Before { version: "1.0.0".into(), refused: None, epoch: 3, commands: true };
+        let read = Answer::decode(&from_old.encode_to_vec()[..]).unwrap();
+        assert_eq!((read.system, read.epoch, read.commands), (None, 3, true));
+    }
 
     #[test]
     fn a_picture_note_goes_and_comes_back_the_same() {

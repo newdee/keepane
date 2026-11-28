@@ -314,7 +314,7 @@ pwsh -File installer/build-msi.ps1        # 产物在 target\keepane-<版本>-wi
   </picture>
 </p>
 
-Windows 上，keepane 以 Windows 原生的 win32-input-mode 转发键盘事件，支持 PSReadLine 组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法，以及 WSL 中的 vim 和 htop。可在 Windows Terminal、传统控制台、VS Code 终端和其他 Windows 控制台宿主中运行。Linux 和 macOS 上，它读取终端发来的按键序列（带修饰键的 xterm 按键、括号粘贴、SGR 鼠标），再像终端一样转给程序，所以任何兼容 xterm 的终端和 SSH 里都能用。
+Windows 上，keepane 以 Windows 原生的 win32-input-mode 转发键盘事件，支持 PSReadLine 组合键、`Ctrl+Space`、`Shift+Enter`、带修饰键的方向键、中文输入法，以及 WSL 中的 vim 和 htop。可在 Windows Terminal、传统控制台、VS Code 终端和其他 Windows 控制台宿主中运行。Linux 和 macOS 上，它读取终端发来的按键序列（带修饰键的 xterm 按键、括号粘贴、SGR 鼠标），再像终端一样转给程序，所以任何兼容 xterm 的终端和 SSH 里都能用。打进另一台机器的 pane 的按键，按那台机器的程序读得懂的方式送过去：发给 Windows 的用 win32-input-mode，发给 macOS 和 Linux 的用 xterm 按键。
 
 ```bash
 keepane                      # 进最近用的 session；没有在跑的就恢复存档；都没有才新开

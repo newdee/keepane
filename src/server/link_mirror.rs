@@ -56,8 +56,12 @@ struct Ask {
 pub(super) enum MirrorNews {
     Connecting,
     /// Connected; whether that machine runs commands sent to it
-    /// (`link_proto::Answer::commands`).
-    Live(bool),
+    /// (`link_proto::Answer::commands`), and whether it is Windows
+    /// (`Answer::system`; unknown from a keepane before 1.0.1: not).
+    Live {
+        commands: bool,
+        windows: bool,
+    },
     Down(String),
     Msg(Box<ToClient>, usize),
 }
@@ -83,6 +87,9 @@ pub(super) struct Mirror {
     dropped: Arc<AtomicU64>,
     /// That machine runs the commands sent to it (keepane 0.63 on).
     commands: bool,
+    /// That machine is Windows: keys typed into its panes go as
+    /// win32-input-mode, as its ConPTY reads them (`Pane::key_bytes`).
+    pub windows: bool,
     /// Commands sent there, by number, waiting for their replies.
     asks: HashMap<u64, Ask>,
     next_ask: u64,
@@ -362,10 +369,21 @@ impl Server {
                     m.state = State::Connecting;
                 }
             }
-            MirrorNews::Live(commands) => {
+            MirrorNews::Live { commands, windows } => {
                 m.connects += 1;
                 m.commands = commands;
+                m.windows = windows;
                 m.state = State::Live(Instant::now());
+                // Its panes kept here from before take it too.
+                for s in self.sessions.iter_mut().filter(|s| s.remote.as_ref().is_some_and(|r| r.key == key)) {
+                    for w in &mut s.windows {
+                        for p in &mut w.panes {
+                            if let Some(r) = p.remote.as_mut() {
+                                r.windows = windows;
+                            }
+                        }
+                    }
+                }
             }
             MirrorNews::Down(why) => {
                 if !matches!(&m.state, State::Down(w, _) if *w == why) {
@@ -645,6 +663,7 @@ impl Mirror {
             input,
             dropped: Arc::default(),
             commands: false,
+            windows: false,
             asks: HashMap::new(),
             next_ask: 0,
             pictures_asked: HashMap::new(),
@@ -863,7 +882,7 @@ async fn connect_once(
     // Keys typed while there was no connection are let go: typed into a
     // copy that was not there, they are never typed later.
     typed.let_go();
-    tell(MirrorNews::Live(answer.commands));
+    tell(MirrorNews::Live { commands: answer.commands, windows: answer.system.as_deref() == Some("windows") });
     let (sealer, mut opener) = link_stream::split(keys);
     let (mut rd, mut wr) = s.into_split();
     let (frames_tx, mut frames) = tokio::sync::mpsc::channel::<anyhow::Result<Vec<u8>>>(64);
