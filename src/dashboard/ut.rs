@@ -277,6 +277,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A picture `ut` draws takes the frame a PNG takes: `ut` is asked for
+    /// the width that fits it (a tall JPEG: narrower), and what it draws is
+    /// put in the frame's middle, the room around in the theme's ground.
+    #[test]
+    fn a_picture_ut_draws_takes_the_frame() {
+        let dir = std::env::temp_dir().join(format!("keepane-ut-frame-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // It prints the width it was asked for (its fifth argument), twice.
+        let ut = Ut::new(fake(
+            &dir,
+            "ut",
+            "if \"%1\"==\"view\" (echo w%5& echo w%5)",
+            "if [ \"$1\" = view ]; then echo \"w$5\"; echo \"w$5\"; fi",
+        ));
+        // A JPEG's start: its frame says 1170 × 2532 (a phone's screenshot).
+        let jpg = dir.join("tall.jpg");
+        std::fs::write(
+            &jpg,
+            [0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x09, 0xe4, 0x04, 0x92, 0x03, 0x01, 0x22, 0x00, 0xff, 0xd9],
+        )
+        .unwrap();
+        let mut pictures = super::super::pictures::Pictures::new(false);
+        pictures.fill = super::super::pictures::ground("#121212");
+        let icons = super::super::files::Icons::Emoji;
+        let lines = super::super::files::preview(&jpg, 40, false, icons, Some(&ut), Some(&pictures));
+        // The name, "as ut view shows it", a blank, then the frame: 40 × 15.
+        let frame = &lines[3..];
+        assert_eq!(frame.len(), 15, "{lines:?}");
+        assert!(frame.iter().all(|l| super::super::width_of(l) == 40), "{frame:?}");
+        let drawn: Vec<&String> = frame.iter().filter(|l| l.contains("w13")).collect();
+        assert_eq!(drawn.len(), 2, "asked 13 wide (15 rows × 20 × 1170 / 2532 / 10): {frame:?}");
+        assert!(drawn[0].starts_with(&format!("{}{}\x1b[0mw13", pictures.fill, " ".repeat(13))), "{:?}", drawn[0]);
+        assert!(frame[0].contains("\x1b[0;48;2;18;18;18m"), "the room in the ground: {:?}", frame[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A `ut` that hangs is stopped at `TIMEOUT`, said so; the preview goes
     /// on without it.
     #[test]

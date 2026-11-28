@@ -779,7 +779,8 @@ file each time (a built-in name there is not taken), so `theme-path` is set befo
 every theme; `pick-theme` lists them and shows each as the cursor (or the
 mouse) reaches it, Enter keeps it, Esc puts back the look it opened on.
 Each theme names its colours once at its top (`@paper`, `@ink`, `@bar`,
-`@soft`, `@muted`, `@line`, `@accent`, `@warn`) and writes `#{@accent}`
+`@soft`, `@muted`, `@line`, `@accent`, `@warn`, `@pick`; a user's theme that sets its
+paper or accent but no `@pick` gets one made of them) and writes `#{@accent}`
 below: `#{@name}` in an option's value is put as that `@` option is when
 the option is set (one not set stays as written; a secret is kept as typed).
 Each draws the panes with `window-style` and `pane-colours`, whatever the
@@ -791,8 +792,10 @@ is not `normal`, and on a client narrower than 120 columns leave out CPU,
 memory and the battery, under 100 the directory too; the default
 `pane-border-format` adds what an `ai` or `shell` pane, or one whose
 program has exited, is up to (`pane_state`, in the dashboard's colours). keepane's own colours have
-options apart from the 16: `mode-style` (a picked line, the selected
-block), `message-style` (a prompt, a message), `popup-border-style` (a
+options apart from the 16: `mode-style` (a picked line, in keepane's
+lists and menus, the dashboard and the settings board, and the selected
+block; each theme's is its ink on `@pick`, its text at 4.5:1 or more),
+`message-style` (a prompt, a message), `popup-border-style` (a
 popup's, a menu's, a panel's frame; empty: each its own), in tmux's style
 words. The lines between panes are heavy
 (`┃` `━`); `set -g pane-border-lines single` draws tmux's thin ones,
@@ -993,7 +996,7 @@ Set with `set -g` (`set -gu` back to the default) or on the settings board (pref
 | `pane-border-lines` | `heavy` | `heavy`, `single`, `double` or `simple` (ASCII). |
 | `pane-frames` | `off` | Each pane in a rounded frame of its own. |
 | `pane-dim` | `on` | The panes the keys are not in on a background a shade off the theme's. |
-| `mode-style` | `fg=yellow,bg=black,bold` | keepane's highlight: a picked line, the selected block (its colours swapped). |
+| `mode-style` | `fg=#cecabe,bg=#3f2624,bold` | keepane's highlight: a picked line (keepane's lists, the dashboard, the settings board), the selected block (its colours swapped). |
 | `message-style` | `fg=brightwhite,bg=black` | A prompt or a message on the status line. |
 | `popup-border-style` | *(empty)* | The frame of a popup, a menu or a panel (empty: each its own colour). |
 | `display-panes-colour` | `blue` | `display-panes`: the other panes' numbers. |

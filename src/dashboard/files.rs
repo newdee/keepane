@@ -394,13 +394,24 @@ pub fn preview(
         return head;
     }
     // A picture or markdown, as UnifyTerm's `ut` shows it; when it cannot,
-    // the plain preview, and why.
-    match ut.and_then(|u| u.preview(path, width)) {
+    // the plain preview, and why. A picture in the same frame a PNG takes:
+    // drawn as wide as it fits there, then put in its middle.
+    let picture = super::ut::what(path) == Some(super::ut::What::Picture);
+    let frame = super::pictures::Frame::for_width(width);
+    let fitted = picture.then(|| super::pictures::size_of(path).map_or(frame.cols, |size| frame.fit(size).0));
+    match ut.and_then(|u| u.preview(path, fitted.map_or(width, usize::from))) {
         Some(Ok(lines)) => {
-            let what = if super::ut::what(path) == Some(super::ut::What::Picture) { "ut view" } else { "ut md" };
+            let what = if picture { "ut view" } else { "ut md" };
             head.push(paint("2", &format!("as {what} shows it")));
             head.push(String::new());
-            head.extend(lines);
+            match fitted {
+                Some(cols) => {
+                    // `ut view` draws 10 columns at least.
+                    let fill = pictures.map_or("", |p| p.fill.as_str());
+                    head.extend(frame.place(lines, cols.max(super::pictures::LEAST_COLUMNS as u16), fill));
+                }
+                None => head.extend(lines),
+            }
             return head;
         }
         Some(Err(e)) => head.push(paint("33", &format!("ut could not show it: {e}"))),

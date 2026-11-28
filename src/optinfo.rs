@@ -80,7 +80,12 @@ pub const OPTIONS: &[OptInfo] = &[
     o("pane-border-format", 0, Format, "That line (a format)."),
     o("pane-frames", 0, Bool, "Each pane in a rounded frame of its own."),
     o("pane-dim", 0, Bool, "The panes the keys are not in on a background a shade off the theme's."),
-    o("mode-style", 0, Style, "keepane's highlight: a picked line, the selected block (its colours swapped)."),
+    o(
+        "mode-style",
+        0,
+        Style,
+        "keepane's highlight: a picked line (keepane's lists, the dashboard, the settings board), the selected block (its colours swapped).",
+    ),
     o("message-style", 0, Style, "A prompt or a message on the status line."),
     o("popup-border-style", 0, Style, "The frame of a popup, a menu or a panel (empty: each its own colour)."),
     o("display-panes-colour", 0, Colour, "`display-panes`: the other panes' numbers."),

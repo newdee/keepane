@@ -1009,7 +1009,7 @@ impl Board {
             let off = if m.online { String::new() } else { paint("90", " offline") };
             let role = if m.role.is_empty() { String::new() } else { format!(" {}", paint("2", &m.role)) };
             let line = format!(" @{}{role}{off}", paint(&format!("1;{}", self.chat.colour(&m.handle)), &m.handle));
-            out.push(if i == pick { format!("\x1b[7m{}\x1b[0m", fit(&super::strip(&line), w)) } else { fit(&line, w) });
+            out.push(if i == pick { super::picked(&fit(&super::strip(&line), w)) } else { fit(&line, w) });
         }
         out.push(paint("90", &"─".repeat(w)));
         out.push(match typing {

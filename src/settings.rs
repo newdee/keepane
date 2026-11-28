@@ -204,6 +204,10 @@ impl Board {
                     .collect()
             })
             .unwrap_or_default();
+        // The picked line in the theme's highlight, as keepane's lists draw it.
+        if let Some((_, row)) = self.rows.iter().find(|(n, _)| n.as_str() == "mode-style") {
+            crate::dashboard::set_pick(crate::dashboard::pick_sgr(&row.value));
+        }
     }
 
     /// `show-bindings -J`, read; an answer that does not read (an older
@@ -737,11 +741,11 @@ impl Board {
         }
     }
 
-    /// A list line: reversed when picked in the box the keys are in, bold
-    /// when picked in another.
+    /// A list line: highlighted (`mode-style`, as the dashboard draws it)
+    /// when picked in the box the keys are in, bold when picked in another.
     fn picked_line(line: &str, picked: bool, here: bool, width: usize) -> String {
         if picked && here {
-            format!("\x1b[7m{}\x1b[0m", fit(&strip(line), width))
+            crate::dashboard::picked(&fit(&strip(line), width))
         } else if picked {
             format!("\x1b[1m{}\x1b[0m", fit(line, width))
         } else {

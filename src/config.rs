@@ -371,6 +371,23 @@ pub(crate) fn theme_options() -> &'static [&'static str] {
     })
 }
 
+/// How much of the accent a built-in theme's `@pick` holds (the rest its
+/// paper), for a user's theme that sets no `@pick` of its own.
+const PICK_TINT: f64 = 0.2;
+
+/// A picked line's ground from a theme's accent and paper: the accent
+/// `PICK_TINT` into the paper; `default` (reverse video) when either is
+/// not an RGB colour.
+fn pick_from(accent: &str, paper: &str) -> String {
+    match (parse_color(accent.trim()), parse_color(paper.trim())) {
+        (Ok(Color::Rgb(ar, ag, ab)), Ok(Color::Rgb(pr, pg, pb))) => {
+            let mix = |a: u8, p: u8| (f64::from(a) * PICK_TINT + f64::from(p) * (1.0 - PICK_TINT)).round() as u8;
+            format!("#{:02x}{:02x}{:02x}", mix(ar, pr), mix(ag, pg), mix(ab, pb))
+        }
+        _ => "default".into(),
+    }
+}
+
 /// The `set -g <option> <value>` lines of a theme file, comments and blank
 /// lines left out.
 pub fn theme_settings(text: &str) -> Result<Vec<(String, String)>, String> {
@@ -677,7 +694,8 @@ impl Default for Options {
             pane_border_lines: "heavy".into(),
             pane_frames: false,
             pane_dim: true,
-            mode_style: "fg=yellow,bg=black,bold".into(),
+            // paper-dark's: ink on a tint of cinnabar (`@pick`).
+            mode_style: "fg=#cecabe,bg=#3f2624,bold".into(),
             message_style: "fg=brightwhite,bg=black".into(),
             popup_border_style: String::new(),
             pane_border_fg: Color::Rgb(0x66, 0x66, 0x64),
@@ -1242,7 +1260,20 @@ impl Options {
             // lines, which use them: one that sets only colours is a look.
             let token = |(n, _): &(String, String)| n.starts_with('@');
             let (base_tokens, base_rest): (Vec<_>, Vec<_>) = settings.into_iter().partition(token);
-            let (own_tokens, own_rest): (Vec<_>, Vec<_>) = own.into_iter().partition(token);
+            let (mut own_tokens, own_rest): (Vec<_>, Vec<_>) = own.into_iter().partition(token);
+            // Its own paper or accent but no `@pick`: the picked line's ground
+            // made from them, not paper-dark's (dark brown under black ink).
+            let has = |n: &str| own_tokens.iter().any(|(k, _)| k == n);
+            if !has("@pick") && (has("@paper") || has("@accent")) {
+                // Its own (the last it sets), else paper-dark's.
+                let value = |n: &str| {
+                    let find =
+                        |list: &[(String, String)]| list.iter().rev().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+                    find(&own_tokens).or_else(|| find(&base_tokens))
+                };
+                let pick = pick_from(&value("@accent").unwrap_or_default(), &value("@paper").unwrap_or_default());
+                own_tokens.push(("@pick".into(), pick));
+            }
             settings = base_tokens.into_iter().chain(own_tokens).chain(base_rest).chain(own_rest).collect();
         }
         let mut next = self.clone();
@@ -1993,7 +2024,11 @@ mod tests {
         for (theme, text) in THEMES {
             let names: Vec<String> =
                 theme_settings(text).unwrap().into_iter().map(|(n, _)| n).filter(|n| n.starts_with('@')).collect();
-            assert_eq!(names, ["@paper", "@ink", "@bar", "@soft", "@muted", "@line", "@accent", "@warn"], "{theme}");
+            assert_eq!(
+                names,
+                ["@paper", "@ink", "@bar", "@soft", "@muted", "@line", "@accent", "@warn", "@pick"],
+                "{theme}"
+            );
             assert!(
                 !text.lines().any(|l| l.starts_with("set -g ") && !l.contains("@") && l.contains("window-style")),
                 "{theme} names its paper"
@@ -2010,19 +2045,52 @@ mod tests {
         assert_eq!(o.pane_border_active_fg, Color::Rgb(0, 0xaa, 0xaa));
         assert!(o.status_left.contains("bg=#00aaaa"), "{}", o.status_left);
         assert_eq!(o.status_bg, Options::default().status_bg, "what it leaves: paper-dark's");
+        // No `@pick` of its own: the picked line's ground made of its accent
+        // in its paper, not paper-dark's dark brown.
+        assert_eq!(o.ui().mode.bg, Color::Rgb(0, 0x4b, 0x4b), "#00aaaa a fifth into #003333");
+        // Light paper and black ink: a light tint the ink reads on.
+        std::fs::write(
+            dir.join("light.conf"),
+            "set -g @paper \"#ffffff\"\nset -g @ink \"#000000\"\nset -g @accent \"#0055aa\"\n",
+        )
+        .unwrap();
+        o.set("theme", "light").unwrap();
+        assert_eq!(
+            o.ui().mode,
+            crate::server::render::Style {
+                bold: true,
+                ..crate::server::render::Style::colors(Color::Rgb(0, 0, 0), Color::Rgb(0xcc, 0xdd, 0xee))
+            }
+        );
+        // Its own `@pick` kept; colours not touched: paper-dark's.
+        std::fs::write(dir.join("own.conf"), "set -g @accent \"#0055aa\"\nset -g @pick \"#123456\"\n").unwrap();
+        o.set("theme", "own").unwrap();
+        assert_eq!(o.ui().mode.bg, Color::Rgb(0x12, 0x34, 0x56));
+        std::fs::write(dir.join("bar.conf"), "set -g status-left \"[#S] \"\n").unwrap();
+        o.set("theme", "bar").unwrap();
+        assert_eq!(o.ui().mode.bg, Options::default().ui().mode.bg);
+        // Not RGB (the terminal's own): reverse video on the boards.
+        assert_eq!(pick_from("green", "default"), "default");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// `mode-style`, `message-style`, `popup-border-style`: their defaults
-    /// are the look keepane drew before (`Ui::default()`); a bad one is
-    /// refused and the old value stays; `popup-border-style` may be empty
-    /// (each frame its own colour) and others give `ui()` what they say.
+    /// `mode-style`, `message-style`, `popup-border-style`: `message-style`
+    /// and `popup-border-style` default to the look keepane drew before
+    /// (`Ui::default()`), `mode-style` to paper-dark's picked line (ink on
+    /// `@pick`; tmux's yellow is `plain.conf`'s); a bad one is refused and
+    /// the old value stays; `popup-border-style` may be empty (each frame
+    /// its own colour) and others give `ui()` what they say.
     #[test]
     fn keepanes_own_colours_are_options() {
         use crate::server::render::{Style, Ui};
         let mut o = Options::default();
-        assert_eq!(o.ui(), Ui::default());
-        assert_eq!(o.get("mode-style").as_deref(), Some("fg=yellow,bg=black,bold"));
+        assert_eq!(o.ui().message, Ui::default().message);
+        assert_eq!(o.ui().border, Ui::default().border);
+        assert_eq!(o.get("mode-style").as_deref(), Some("fg=#cecabe,bg=#3f2624,bold"));
+        assert_eq!(
+            o.ui().mode,
+            Style { bold: true, ..Style::colors(Color::Rgb(0xce, 0xca, 0xbe), Color::Rgb(0x3f, 0x26, 0x24)) }
+        );
         assert_eq!(o.get("popup-border-style").as_deref(), Some(""));
         let err = o.set("mode-style", "fg=nocolour").unwrap_err();
         assert!(err.contains("nocolour"), "{err}");
@@ -2432,6 +2500,16 @@ mod tests {
             for (name, c) in [("white", p[7]), ("yellow", p[3]), ("bright white", p[15])] {
                 assert!(ratio(c, p[0]) >= 4.5, "{theme}: {name} on black (a hint row): {:.2}:1", ratio(c, p[0]));
             }
+            // The picked line (`mode-style`, ink on `@pick`): its text at 4.5:1,
+            // its ground a tint the eye finds on the panes; the copy-mode
+            // block (its colours swapped) the same.
+            let picked = o.ui().mode;
+            assert!(
+                ratio(picked.fg, picked.bg) >= 4.5,
+                "{theme}: the picked line: {:.2}:1",
+                ratio(picked.fg, picked.bg)
+            );
+            assert!(ratio(picked.bg, pane) >= 1.1, "{theme}: the picked line's ground on the panes");
             let border = ratio(o.pane_border_fg, pane);
             assert!(border >= 3.0, "{theme}: the border: {border:.2}:1");
             assert!(ratio(o.pane_border_active_fg, pane) >= 3.0, "{theme}: the active border");
@@ -2558,6 +2636,8 @@ mod tests {
         assert!(o.pane_colours.is_empty(), "the terminal's own palette");
         assert_eq!((o.status_fg, o.status_bg), (Color::Default, Color::Default));
         assert_eq!((o.pane_border_fg, o.pane_border_active_fg), (Color::Idx(8), Color::Idx(2)));
+        // The picked line: black on the terminal's green.
+        assert_eq!(o.ui().mode.bg, Color::Idx(2));
         // No colour given as RGB anywhere it sets.
         for (name, value) in theme_settings(include_str!("../themes/terminal.conf")).unwrap() {
             let rgb = value.match_indices('#').any(|(i, _)| {

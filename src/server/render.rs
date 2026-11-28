@@ -21,7 +21,8 @@ impl Style {
     pub const fn colors(fg: Color, bg: Color) -> Style {
         Style { fg, bg, bold: false, dim: false, italic: false, underline: false, inverse: false }
     }
-    fn sgr(&self) -> String {
+    /// The SGR sequence that draws in this style (from plain: it starts with a reset).
+    pub(crate) fn sgr(&self) -> String {
         let mut s = String::from("\x1b[0");
         if self.bold {
             s.push_str(";1");

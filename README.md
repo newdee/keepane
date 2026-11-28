@@ -380,7 +380,10 @@ machine stay, `[1]` lists what this machine shares (`keepane share`,
 below), each `active`, `missing` (its file gone for now), `stopped`,
 `expired` or `used` (for once, and it went), with its time left and how
 often it went; `[2]` what happened to them, the latest first; `[4]` the
-one picked: its link, who opened it, its story and the code to scan. `S`
+one picked, in two tabs (`[` / `]`): `Preview`, its file (a picture in
+the frame every picture takes, a text's lines, a folder's list) over how it
+stands and its link; `Details`, its link, who opened it, its story and the
+code to scan. `S`
 in `[0]` shares what is under the cursor (for how long, once or not,
 asked); on `[1]`, `x` stops one (`X` every one), `e` extends it on the
 same link, `r` shares it again on a new link, `y` copies its link, `a`
@@ -1002,7 +1005,11 @@ set -g image-disk-limit 1G   # the most the kept pictures take on disk
   last in the terminal.
 - As text it is blank: `capture-pane`, copy mode and an agent reading the
   screen see spaces where it is.
-- The dashboard draws a PNG in `[0]` and in a channel's files with it.
+- The dashboard draws a PNG in `[0]`, in a channel's files and in a share's
+  preview with it, in a frame the same size for every picture (as wide as
+  the panel, up to 64 columns, and 4:3): a wide picture and a tall one take
+  the same room, centred, the rest in the theme's `@bar`. Other pictures,
+  drawn by UnifyTerm's `ut view`, take the same frame.
 - A pane of another machine (`link-mirror`) shows its pictures too: they are
   asked of that machine when shown, and kept here (up to 8 MiB a picture; a
   bigger one shows as a label there).
@@ -1725,7 +1732,10 @@ whose time ran out meanwhile has ended. `share extend` brings an expired
 one back on its link; a stopped one, or one that went once, is shared
 again only on a new link (`share again`). The last 100 ended shares stay
 listed, each with how it ended and what happened to it. Page 3 of the
-dashboard (`prefix v`, then `<`) shows them all. Plain HTTP, like the page:
+dashboard (`prefix v`, then `<`) shows them all; its `[4]` previews the one
+picked (`Preview`: a picture, a text's lines, a folder's list, over how it
+stands and its link) or tells it in full (`Details`, with the code to scan;
+`[` / `]` change it). Plain HTTP, like the page:
 across a network you do not trust, use Tailscale. The design:
 [docs/design/share.md](docs/design/share.md).
 
@@ -2433,7 +2443,9 @@ the phone's page offer the user's themes too.
 
 Each theme names its colours once, at its top: `@paper` (the panes),
 `@ink` (their text), `@bar` and `@soft` (the status line and its text),
-`@muted`, `@line` (the borders), `@accent` and `@warn`; its other lines
+`@muted`, `@line` (the borders), `@accent`, `@warn` and `@pick` (the ground of a
+picked line, a tint of the accent the theme's text reads on; a theme of your
+own that sets its paper or accent but no `@pick` gets one made of them); its other lines
 write `#{@accent}` and so on. `#{@name}` in an option's value is put as
 that `@` option is when the option is set (a name not set stays as it is;
 a secret is kept as typed; setting a colour alone leaves `theme` as it was),
@@ -2541,8 +2553,9 @@ none). The built-in status lines say the work mode only when it is not
 memory and the battery under 120 columns, the directory too under 100.
 
 keepane's own colours are options of their own, apart from the 16 a
-program draws in: `mode-style` (a picked line in a list or a menu, the
-selected block; `fg=yellow,bg=black,bold`), `message-style` (a prompt or
+program draws in: `mode-style` (a picked line in a list, a menu, the
+dashboard and the settings board, the selected block; each theme sets it,
+ink on `@pick`: paper-dark's is `fg=#cecabe,bg=#3f2624,bold`), `message-style` (a prompt or
 a message; `fg=brightwhite,bg=black`) and `popup-border-style` (the frame
 of a popup, a menu or a panel; empty, the default: each its own colour).
 They take tmux's style words (`fg=`, `bg=`, `bold`, `dim`, `italics`,

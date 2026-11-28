@@ -639,12 +639,15 @@ fn prefix_v_opens_the_dashboard_on_the_current_pane() {
     kp(&["split-window", "-h", "-t", "t", "cmd.exe", "/q", "/k", "prompt keepane$g"]);
     kp(&["rename-pane", "-t", "t:0.0", "alpha"]);
     kp(&["rename-pane", "-t", "t:0.1", "beta"]);
-    // The reversed row: the chosen pane in the focused list.
+    // The highlighted row: the chosen pane in the focused list, in the
+    // default theme's `mode-style` (paper-dark's `@pick` ground; reverse
+    // video where a theme names no colour).
+    let lit = |c: &vt100::Cell| c.inverse() || c.bgcolor() == vt100::Color::Rgb(0x3f, 0x26, 0x24);
     let picked = |s: &vt100::Screen| -> Option<String> {
         let (rows, cols) = s.size();
         (0..rows)
-            .find(|&y| (0..cols).any(|x| s.cell(y, x).is_some_and(|c| c.inverse())))
-            .map(|y| (0..cols).filter_map(|x| s.cell(y, x)).filter(|c| c.inverse()).map(|c| c.contents()).collect())
+            .find(|&y| (0..cols).any(|x| s.cell(y, x).is_some_and(lit)))
+            .map(|y| (0..cols).filter_map(|x| s.cell(y, x)).filter(|c| lit(c)).map(|c| c.contents()).collect())
     };
     let only =
         |s: &vt100::Screen, name: &str, other: &str| picked(s).is_some_and(|r| r.contains(name) && !r.contains(other));

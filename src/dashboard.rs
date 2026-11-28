@@ -43,7 +43,8 @@ pub const QUERIES: &[&str] = &[
     "web-status",
     // `share -l -J`: the shares' page (3).
     "share",
-    // `show-options -gv dashboard-icons`: what marks [0]'s entries.
+    // `show-options -gv dashboard-icons`: what marks [0]'s entries;
+    // `mode-style`: how a picked line is drawn; `@bar`: a picture frame's ground.
     "show-options",
     // `link-list -J`: the paired machines, while `L` lists them.
     "link-list",
@@ -677,6 +678,9 @@ pub struct Board {
     pub shares: Vec<shares::ShareRow>,
     pub share_pick: usize,
     pub shares_ended: bool,
+    /// Page 3's [4]: everything of the share (`Details`) rather than its
+    /// file (`Preview`, the first); `[` / `]` change it.
+    pub share_details: bool,
     pub activity_top: usize,
     /// The paired machines, read while `L` lists them.
     pub machines: Vec<MachineRow>,
@@ -767,6 +771,38 @@ pub(crate) fn clip(s: &str, width: usize) -> (String, usize) {
 /// theme reads as well as a dark one.
 pub(crate) fn paint(sgr: &str, text: &str) -> String {
     if text.is_empty() { String::new() } else { format!("\x1b[{sgr}m{text}\x1b[0m") }
+}
+
+/// Reverse video: a picked line before `mode-style` is read, or when it
+/// names no colour.
+const REVERSE: &str = "\x1b[7m";
+
+thread_local! {
+    /// How a picked line is drawn (`pick_sgr` of `mode-style`), as the board
+    /// last read it: the same highlight as keepane's own lists, so it
+    /// follows the theme.
+    static PICK: std::cell::RefCell<String> = std::cell::RefCell::new(REVERSE.to_string());
+}
+
+/// The picked line's look from `mode-style`: its colours and attributes;
+/// reverse video when it names neither a colour nor `reverse` (empty,
+/// `default`, unreadable).
+pub(crate) fn pick_sgr(mode_style: &str) -> String {
+    match crate::config::parse_ui_style(mode_style.trim()) {
+        Ok(s) if s.fg != vt100::Color::Default || s.bg != vt100::Color::Default || s.inverse => s.sgr(),
+        _ => REVERSE.to_string(),
+    }
+}
+
+/// Draw picked lines with `sgr` from now on (`pick_sgr`).
+pub(crate) fn set_pick(sgr: String) {
+    PICK.with(|p| *p.borrow_mut() = sgr);
+}
+
+/// `text` as the picked line, then plain. Its own styles must be gone: a
+/// reset inside it would end the highlight.
+pub(crate) fn picked(text: &str) -> String {
+    PICK.with(|p| format!("{}{text}\x1b[0m", p.borrow()))
 }
 
 /// Keys and what they do (`j/k pane  Enter screen`, two spaces between),
@@ -930,6 +966,7 @@ impl Board {
             shares: Vec::new(),
             share_pick: 0,
             shares_ended: true,
+            share_details: false,
             activity_top: 0,
             place_kept: None,
             keeps_place: false,
@@ -1330,6 +1367,12 @@ impl Board {
     }
 
     fn switch_tab(&mut self, by: isize) {
+        // Page 3's [4] has two: the share's file, and everything of it.
+        if self.page == SHARES_PAGE {
+            self.share_details = !self.share_details;
+            self.scroll = 0;
+            return;
+        }
         let at = TABS.iter().position(|t| *t == self.tab).unwrap_or(0) as isize;
         self.tab = TABS[(at + by).rem_euclid(TABS.len() as isize) as usize];
         self.scroll = 0;
@@ -2362,10 +2405,37 @@ impl Board {
             return boxed("[4] Share", "", lines, r, focused);
         };
         let title = format!("[4] share {} · {} ── {}", s.id, s.name, strip(&s.state_styled()));
-        let all = s.detail(self.now * 1000, r.inner_w());
-        let most = all.len().saturating_sub(r.inner_h());
+        let (now, width) = (self.now * 1000, r.inner_w());
+        // The tabs on a row of their own, as on page 1: the one shown bold green.
+        let tab = |word: &str, on: bool| if on { paint("1;32", word) } else { paint("2", word) };
+        let mut lines =
+            vec![format!("{}  {}", tab("Preview", !self.share_details), tab("Details", self.share_details))];
+        let room = r.inner_h().saturating_sub(1);
+        // What scrolls (the file, or everything of the share), and what stays
+        // at the bottom (under the file: how it stands and its link).
+        let (body, foot) = if self.share_details {
+            (s.detail(now, width), Vec::new())
+        } else {
+            let file = files::preview(
+                std::path::Path::new(&s.path),
+                width,
+                false,
+                self.files.icons,
+                self.files.ut.as_ref(),
+                Some(&self.files.pictures),
+            );
+            (file, s.summary(now, width))
+        };
+        let room = room.saturating_sub(foot.len());
+        let most = body.len().saturating_sub(room);
         self.scroll_most.set(most);
-        let lines = all.into_iter().skip(self.scroll.min(most)).take(r.inner_h()).collect();
+        let shown: Vec<String> = body.into_iter().skip(self.scroll.min(most)).take(room).collect();
+        let gap = room - shown.len();
+        lines.extend(shown);
+        if !foot.is_empty() {
+            lines.extend(std::iter::repeat_n(String::new(), gap));
+            lines.extend(foot);
+        }
         boxed(&title, "", lines, r, focused)
     }
     fn inbox_box(&self, r: Rect) -> Vec<String> {
@@ -2559,7 +2629,7 @@ impl Board {
                 let modes = MODES
                     .iter()
                     .enumerate()
-                    .map(|(i, m)| if i == *pick { format!("\x1b[7m {m} \x1b[0m") } else { format!(" {m} ") })
+                    .map(|(i, m)| if i == *pick { picked(&format!(" {m} ")) } else { format!(" {m} ") })
                     .collect::<String>();
                 return format!("\x1b[1mwork mode for {to}:\x1b[0m{modes}  j/k · Enter · Esc");
             }
@@ -2601,7 +2671,7 @@ impl Board {
                             (false, None) => String::new(),
                         };
                         let text = format!(" {name} · {state}{has} ");
-                        if i == *pick { format!("\x1b[7m{text}\x1b[0m") } else { text }
+                        if i == *pick { picked(&text) } else { text }
                     })
                     .collect::<String>();
                 // The keys first: the machines, however many, are what the
@@ -2621,7 +2691,7 @@ impl Board {
             }
             Panel::Files => "j/k move  h/l up/into  g/G first/last  . show hidden  - pane's directory  S share",
             Panel::Shares => {
-                "j/k pick  g/G first/last  Enter detail  x stop  X stop all  e extend  r again  y copy link  a ended"
+                "j/k pick  g/G first/last  Enter scroll it  [/] preview/details  x stop  X stop all  e extend  r again  y copy link  a ended"
             }
             Panel::Activity => "j/k scroll  g/G latest/oldest",
             Panel::Channels => "j/k pick  s say  n new  t topic  # tags  Enter its lines",
@@ -2989,25 +3059,24 @@ pub(crate) fn window_start(at: usize, len: usize, rows: usize) -> usize {
     at.saturating_sub(rows - 1).min(len - rows)
 }
 
-/// The times a share is given for, as a menu line, `pick` reversed.
+/// The times a share is given for, as a menu line, `pick` highlighted.
 fn choices(pick: usize) -> String {
     shares::FOR
         .iter()
         .enumerate()
-        .map(|(i, (said, _))| if i == pick { format!("\x1b[7m {said} \x1b[0m") } else { format!(" {said} ") })
+        .map(|(i, (said, _))| if i == pick { picked(&format!(" {said} ")) } else { format!(" {said} ") })
         .collect()
 }
 
-/// A list line, marked when it is the one picked: reversed in the focused
-/// panel, bold with a marker otherwise.
-fn row_line(line: &str, picked: bool, focused: bool, width: usize) -> String {
-    let text = format!("{}{line}", if picked && !focused { ">" } else { " " });
-    if picked && focused {
-        // Reverse video through the whole row; a reset inside the line
+/// A list line, marked when it is the one picked: highlighted
+/// (`mode-style`) in the focused panel, bold with a marker otherwise.
+fn row_line(line: &str, is_picked: bool, focused: bool, width: usize) -> String {
+    let text = format!("{}{line}", if is_picked && !focused { ">" } else { " " });
+    if is_picked && focused {
+        // The highlight through the whole row; a reset inside the line
         // would end it, so the line's own styles go.
-        let plain = strip(&text);
-        format!("\x1b[7m{}\x1b[0m", fit(&plain, width))
-    } else if picked {
+        picked(&fit(&strip(&text), width))
+    } else if is_picked {
         format!("\x1b[1m{}\x1b[0m", fit(&text, width))
     } else {
         fit(&text, width)
@@ -3159,7 +3228,9 @@ fn help_lines() -> Vec<String> {
         "  y          copy its link           a       show / hide the ended ones",
         "  states: active, missing (its file is gone), stopped, expired, used (for once, it went)",
         "[2] Activity: what happened to the shares, the latest first; j / k scroll",
-        "[4] The share picked: its link, time, who opened it, its story, the code to scan",
+        "[4] The share picked, two tabs ([ / ]): Preview, its file (a picture in a frame the same",
+        "  size for every one, a text's lines, a folder's list) over how it stands and its link;",
+        "  Details, its link, time, who opened it, its story, the code to scan",
         "",
         "System (under [0], from 150 columns): CPU, each core, memory, swap, disk, network,",
         "  temperature, power, battery, processes: this machine, every second",
@@ -3670,8 +3741,14 @@ pub fn run(socket: &str, rt: &tokio::runtime::Runtime, popup: bool, here: Option
                 }
                 keep_pick(&mut board, ask);
             }
-            // Asked each time, so a `set` while the board is open shows.
+            // Asked each time, so a `set` (a theme) while the board is open shows.
             board.files.icons = files::Icons::parse(&ask(&owned(&["show-options", "-gv", "dashboard-icons"])).1);
+            // The picked line as keepane's lists draw it, and the ground of a
+            // picture's frame: the theme's (an older server: reverse, none).
+            let (code, mode, _) = ask(&owned(&["show-options", "-gv", "mode-style"]));
+            set_pick(if code == 0 { pick_sgr(&mode) } else { REVERSE.to_string() });
+            let (code, bar, _) = ask(&owned(&["show-options", "-gv", "@bar"]));
+            board.files.pictures.fill = if code == 0 { pictures::ground(&bar) } else { String::new() };
             // The window's size, every time: a resize can pass unannounced
             // (a popup laid out again).
             let (cols, rows) = console.size();
@@ -5685,6 +5762,77 @@ mod tests {
         assert!(strip(&b.foot()).contains("say in #review: x"), "{}", strip(&b.foot()));
     }
 
+    /// Page 3's [4]: Preview first, the share's file (a text's lines here)
+    /// over how it stands and its link, kept at the bottom; `]` Details,
+    /// everything of it; a folder its list; a file gone says so.
+    #[test]
+    fn a_share_is_previewed_then_told_in_full() {
+        let dir = std::env::temp_dir().join(format!("kp-share-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("shots")).unwrap();
+        std::fs::write(dir.join("notes.md"), "first line of the notes\nsecond line\n").unwrap();
+        std::fs::write(dir.join("shots").join("a.png"), b"x").unwrap();
+        let share = |id: u32, kind: &str, path: &std::path::Path| {
+            let path = serde_json::to_string(&path.to_string_lossy()).unwrap();
+            format!(
+                r#"{{"id":{id},"state":"active","kind":"{kind}","name":"n{id}","path":{path},"created":1000000,
+                "until":null,"once":false,"sent":4,"seen":["phone"],"from":"%1","links":["http://10.0.0.5:7681/s/abc"],
+                "port":7681,"port_moved":false,"ended":null,"events":[[1000000,"shared"]]}}"#
+            )
+        };
+        let json = format!(
+            r#"{{"shares":[{},{},{}]}}"#,
+            share(3, "file", &dir.join("notes.md")),
+            share(2, "folder", &dir.join("shots")),
+            share(1, "file", &dir.join("gone.txt"))
+        );
+        let mut b = board();
+        b.resize(160, 30);
+        b.key(Key::ch('<'));
+        b.set_shares(&json);
+        let rows = |b: &Board| strip(&screen(b).join("\n"));
+        let text = rows(&b);
+        assert!(text.contains("Preview  Details") && text.contains("first line of the notes"), "{text}");
+        assert!(text.contains("active · until stopped · sent 4× · opened by phone"), "{text}");
+        // Kept at the bottom of [4]: the link on its last row inside.
+        let link_row = screen(&b).iter().position(|l| strip(l).contains("http://10.0.0.5:7681/s/abc")).unwrap();
+        assert_eq!(link_row, 30 - 3, "the last row inside [4] (the board's foot under it)");
+        // Details: everything of it, and not the file.
+        b.key(Key::ch(']'));
+        let text = rows(&b);
+        assert!(text.contains("what happened") && !text.contains("first line of the notes"), "{text}");
+        b.key(Key::ch(']'));
+        // The next: a folder's list; then a file gone.
+        b.key(Key::ch('j'));
+        assert!(rows(&b).contains("a.png"), "{}", rows(&b));
+        b.key(Key::ch('j'));
+        assert!(rows(&b).contains("cannot read"), "{}", rows(&b));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The picked line is drawn as `mode-style` says (as keepane's own lists
+    /// draw it), so it follows the theme; reverse video when it names no
+    /// colour.
+    #[test]
+    fn the_picked_line_follows_mode_style() {
+        assert_eq!(pick_sgr("fg=#cecabe,bg=#3f2624,bold"), "\x1b[0;1;38;2;206;202;190;48;2;63;38;36m");
+        assert_eq!(pick_sgr("fg=black,bg=green,bold"), "\x1b[0;1;30;42m");
+        assert_eq!(pick_sgr("reverse"), "\x1b[0;7m");
+        for none in ["", "default", "bold", "fg=nocolour"] {
+            assert_eq!(pick_sgr(none), REVERSE, "{none:?}");
+        }
+        assert_eq!(row_line("\x1b[32ma\x1b[0m b", true, true, 6), "\x1b[7m a b  \x1b[0m", "reverse before it is read");
+        set_pick(pick_sgr("fg=black,bg=green,bold"));
+        assert_eq!(
+            row_line("\x1b[32ma\x1b[0m b", true, true, 6),
+            "\x1b[0;1;30;42m a b  \x1b[0m",
+            "its own styles gone"
+        );
+        assert_eq!(row_line("a", true, false, 3), "\x1b[1m>a \x1b[0m", "another panel's pick: bold, marked");
+        assert!(choices(1).contains("\x1b[0;1;30;42m 24 hours \x1b[0m"));
+        set_pick(REVERSE.to_string());
+    }
+
     /// Page 3 (`<` / `>`): [0] and the machine as on page 1, the shares and
     /// what happened to them in the middle, the one picked on the right;
     /// each change asks first but extending, and sharing from [0] turns to it.
@@ -5720,10 +5868,17 @@ mod tests {
         let foot = strip(&b.foot());
         assert!(foot.ends_with("│  </> page 3/3") && width_of(&foot) == 50, "{foot:?}");
         b.resize(160, 30);
-        // [4] reads from the top: j goes down it.
+        // [4] reads from the top: j goes down it (Details, longer than the
+        // file there is none of here).
         b.key(Key::ch('4'));
+        b.key(Key::ch(']'));
+        assert!(b.share_details);
+        // Drawn (as after every key), so j knows how far it goes.
+        screen(&b);
         b.key(Key::ch('j'));
         assert_eq!(b.scroll, 1, "scrolled down");
+        b.key(Key::ch('['));
+        assert!(!b.share_details && b.scroll == 0, "back on Preview, at its top");
         b.key(Key::ch('g'));
         // Numbers and Tab go round page 3's panels.
         b.key(Key::ch('2'));

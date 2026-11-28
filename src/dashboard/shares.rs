@@ -116,7 +116,29 @@ impl ShareRow {
         format!("{head} {} {tail}", fit(&name, room))
     }
 
-    /// [4]: everything of it, labelled, and the code to scan for its link.
+    /// [4]'s Preview, under the file itself: a rule, how it stands (its
+    /// state, the time it has left or when it ended, how often it was
+    /// sent), and its link.
+    pub fn summary(&self, now_ms: i64, width: usize) -> Vec<String> {
+        let time = match (self.ended, self.until) {
+            (Some(e), _) => format!("ended {}", at(e)),
+            (None, _) if !self.running() => String::new(),
+            (None, None) => "until stopped".into(),
+            (None, Some(_)) => format!("{} left", self.left(now_ms)),
+        };
+        let seen = if self.seen.is_empty() { String::new() } else { format!(" · opened by {}", self.seen.join(", ")) };
+        let mut how = vec![self.state_styled()];
+        how.extend((!time.is_empty()).then_some(time));
+        how.push(format!("sent {}×{seen}", self.sent));
+        let link = match self.links.first() {
+            Some(l) => paint("36", l),
+            None if self.running() => paint("2", "no link: the phone page is off"),
+            None => paint("2", "its link has ended"),
+        };
+        vec![paint("2", &"─".repeat(width)), how.join(&paint("2", " · ")), link]
+    }
+
+    /// [4]'s Details: everything of it, labelled, and the code to scan for its link.
     pub fn detail(&self, now_ms: i64, width: usize) -> Vec<String> {
         let label = |l: &str| paint("2", &format!("{l:<8}"));
         let mut out = vec![

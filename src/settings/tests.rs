@@ -534,3 +534,19 @@ fn an_answer_that_does_not_read_is_said() {
     assert!(foot(&b).contains("unknown command"));
     assert!(b.picked().is_some(), "what was there stays");
 }
+
+/// The picked line in the box the keys are in is drawn as `mode-style`
+/// says, as keepane's own lists draw it: paper-dark's by default, the
+/// `terminal` theme's once it is set.
+#[test]
+fn the_picked_line_follows_the_themes_mode_style() {
+    let mut b = board(120, 30);
+    let paper_dark = crate::dashboard::pick_sgr(&Options::default().get("mode-style").unwrap());
+    assert_eq!(paper_dark, "\x1b[0;1;38;2;206;202;190;48;2;63;38;36m");
+    assert!(b.frame().contains(&paper_dark), "{:?}", b.frame());
+    let mut o = Options::default();
+    o.set("theme", "terminal").unwrap();
+    b.set_settings(&json_of(&o, None));
+    let frame = b.frame();
+    assert!(frame.contains("\x1b[0;1;30;42m") && !frame.contains(&paper_dark), "{frame:?}");
+}
