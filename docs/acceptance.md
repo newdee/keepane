@@ -7343,3 +7343,21 @@ deslop-please（Windows 配置，默认特性）报 193 条，全是结构问题
 | 1 | 范围内测试 | fmt、`clippy exit 0`；Windows lib 856 / 2 ignored（+1）、console 16 / 1 ignored、e2e 202；Linux lib 840 / 2 ignored（+1）、e2e 197；全过；C 盘 184.9 GB。 | 干净（1/3） |
 | 2 | 静态一致性（文档对代码）+ 范围内测试 | README（英、中）原先只说"Windows 上用 win32-input-mode"，补一句：打进另一台机器的 pane 按那台机器的方式送；`docs/design/link.md` 第 3 条补上 `Answer.system` 的规则。`Answer` 的 tag 5 是新号，没有复用（文件头"Field numbers are for good"）。fmt、`clippy exit 0`；Windows lib 856、console 16、e2e 202；Linux lib 840、e2e 197；全过。 | 干净（2/3） |
 | 3 | 边界与退化输入（新旧版本互读）+ 范围内测试 | 新单元测试 `the_system_in_the_answer_reads_both_ways`：1.0.0 形状的 `Answer` 读新应答，`version`/`epoch`/`commands` 不变；新版读老应答，`system` 为 `None`（→ VT）。`windows` 的两个入口：新建的 pane 取镜像当时的值，`Live` 到来时已有的 pane 一起改（重连到升级或降级的对方会更新）。fmt、`clippy exit 0`；Windows lib 857（+1）、console 16、e2e 202；Linux lib 841（+1）、e2e 197；全过。 | 干净（3/3），验收通过 |
+
+## 254. 按键作为记录发给另一台机器，由 pane 所在的机器编码
+
+用户 2026-11-29："不管是什么系统，传输的命令应该都是统一编码后的文本……为什么不同的系统会有编码问题呢"；"改吧，就按更好的做法来"；"不用管老版本，有问题更新就好了"。
+
+- 第 253 条（1.0.1）是"发送方问清对方系统、替对方编码"；编码仍在错的一端：发送方要知道对方系统，应用光标键模式按本机镜像（可能晚一拍）。本条改为用户说的统一格式：发**按键记录**（与系统无关），由 pane 所在的机器按自己的系统和 pane 的实际模式编码——`link watch` 本来就是这样。
+- 协议：`ToServer::Keys { pane, keys: [Key] }`（oneof tag 5）；`Answer.keys`（tag 6）说明对方收；`Answer.system`（tag 5，只有 1.0.1 用过）删掉，号不复用。
+- 发送：镜像 pane 带 `RemoteKeys`；`Pane::press(rec, typing)` 是唯一入口：本机 pane 用本机编码写入，远程 pane 原样发记录。`key_bytes` 改为私有、只给本机 pane。调用点：当前窗口（`press_active`，同步输入时每个 pane 按**自己**的模式编码——原来用活动 pane 的模式编给所有 pane）、popup、`link watch` 收到的键。去掉 1.0.1 的 `RemotePane.windows`、`Mirror.windows`。
+- 接收：`Feed.keys` → `Event::StreamKeys` → `stream_keys`，条件同 `stream_input`（对方仍被喂、pane 是本机的），逐个 `press`。
+- 老版本（用户：不管老版本）：不保留在本机编码的退路；对方不收记录时什么也不发，状态栏说一次"<机器> runs an older keepane: update it to type into its panes"（每次连接一次）——兑现 compatibility.md "较新的一方明确说出较老的一方做不到什么"。
+- 同类的老问题（共性，一并修）：`typed_enter` 在**字节**里找 `\r` 判断"行已送出"；Windows 的回车编成 `ESC[13;28;13;1;0;1_`，没有 `\r`，所以本机 Windows pane 按回车后一直被当作"还有人在这行打字"，直到下一个提示符。按键改为从记录判断（回车且没按 Shift；Shift+Enter 是换行）；粘贴和 `send-keys` 仍是 VT 字节，仍用 `typed_enter`。
+- 测试：单元 `a_key_into_a_pane_of_another_machine_goes_as_typed`（记录原样发出、key-up 也发、程序结束后不发、Enter/Shift+Enter/字母的"在打字"判断）、`keys_go_only_to_a_machine_that_takes_them`（老版本不发、提示一次、重连收记录后能发、降级后再提示）、`link_proto` 的 `a_key_goes_across_as_typed`、`the_keys_flag_in_the_answer_reads_both_ways`（1.0.1 形状的 Answer 互读）；e2e `another_machines_sessions_are_under_it...` 打字那段现在走 Keys 路径。变异"接收端丢掉 Keys"让该 e2e 在 `:356` 超时失败。
+
+| 轮 | 视角 | 做了什么 / 数字 | 结论 |
+|---|---|---|---|
+| 1 | 范围内测试 | fmt、`clippy exit 0`；Windows lib 859 / 2 ignored、console 16 / 1 ignored、e2e 202；Linux lib 843 / 2 ignored、e2e 197；全过；C 盘 172.7 GB。 | 干净（1/3） |
+| 2 | 机制通路存活（Linux 变异）+ 范围内测试 | 变异"接收端的本机 pane 按 Windows 编码"（`key_bytes` 改用 `encode_key_record`）在 Linux 上让 e2e 在 `:356` 超时失败（bash 不认 win32 编码）——接收端按自己的系统编码这一点有测试守着。还原后重建。fmt、`clippy exit 0`；Windows lib 859、console 16、e2e 202；Linux lib 843、e2e 197；全过。 | 干净（2/3） |
+| 3 | 逻辑正确与不变量 + 范围内测试 | 按键变成 pane 的字节只剩一处：`pane.rs` 的 `key_bytes`（私有，`press` 的本机分支）；平台编码器只被它调用；所有按键入口（当前窗口、同步输入、popup、`link watch` 收到的键、对方发来的 `Keys`、`link attach` 的客户端经 `press_active`）都走 `press`（`rg` 列出 10 处调用，全是 `press`/`press_active`）。fmt、`clippy exit 0`；Windows lib 859、console 16、e2e 202；Linux lib 843、e2e 197；全过。 | 干净（3/3），验收通过 |
