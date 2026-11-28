@@ -2615,13 +2615,27 @@ mod tests {
         let took = t.elapsed();
         feed.join().unwrap();
         assert!(took >= Duration::from_millis(140) && took < EXIT_DRAIN_MOST, "{took:?}");
-        // The console ended: at once.
+        // The console ended: at once, even with output still coming in
+        // (without the end, that waits the most). Measured against the most,
+        // not a few milliseconds: a busy runner can hold the thread 30 ms
+        // with nothing to wait for (macOS CI, 2026-11-29: 34 ms).
         let d = Drain::new();
-        d.read();
+        let reader = d.clone();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        let feed = std::thread::spawn(move || {
+            while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                reader.read();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
         d.end();
         let t = Instant::now();
         d.settle();
-        assert!(t.elapsed() < Duration::from_millis(20), "{:?}", t.elapsed());
+        let took = t.elapsed();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        feed.join().unwrap();
+        assert!(took < EXIT_DRAIN_MOST / 2, "{took:?}");
         // Output that never stops: no longer than the most.
         let d = Drain::new();
         let reader = d.clone();
